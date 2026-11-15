@@ -99,6 +99,8 @@ pub struct Button {
     pub tip: String,
     /// The icon is drawn in the warning colour (a plugin's info button while it has warnings).
     pub warn: bool,
+    /// Drawn before the row's control, not after it (the Flare hotkeys info button, left of its switch).
+    pub lead: bool,
 }
 
 /// One row of a page, ready to draw.
@@ -216,8 +218,6 @@ pub struct PageEnv<'a> {
     pub theme_colours: ThemeColours,
     /// Working, finished and question: the agent colours in force.
     pub agent_colours: [String; 3],
-    /// The agent chords' labels from the key table, joined by ", " (the row's tooltip).
-    pub agent_key_labels: String,
     /// Font id to the first installed family of its stack.
     pub face_of: &'a dyn Fn(&str) -> String,
     /// What the Mods page shows (Surfaces stage 8); `None` builds it empty.
@@ -421,7 +421,6 @@ pub(crate) mod test_env {
                 secondary: String::new(),
             },
             agent_colours: [String::new(), String::new(), String::new()],
-            agent_key_labels: String::new(),
             face_of,
             mods: None,
             machines: None,
@@ -456,7 +455,6 @@ pub(crate) mod test_env {
                 secondary: String::new(),
             },
             agent_colours: [String::new(), String::new(), String::new()],
-            agent_key_labels: String::new(),
             face_of,
             mods: Some(&info),
             machines: None,
@@ -494,7 +492,6 @@ pub(crate) mod test_env {
                 secondary: String::new(),
             },
             agent_colours: [String::new(), String::new(), String::new()],
-            agent_key_labels: String::new(),
             face_of,
             mods: None,
             machines: Some(&info),

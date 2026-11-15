@@ -33,6 +33,11 @@ pub enum MenuCmd {
     FullScreen,
     PrevTab,
     NextTab,
+    ReopenTab,
+    NewTabIn,
+    RemoteTab,
+    Browser,
+    OpenFolder,
     /// Tab 1 to 9.
     Tab(u8),
     // The app's own.
@@ -41,7 +46,7 @@ pub enum MenuCmd {
 }
 
 /// Every app command, in menu order (the tag is the place in this list).
-pub const ALL: [MenuCmd; 26] = [
+pub const ALL: [MenuCmd; 31] = [
     MenuCmd::Settings,
     MenuCmd::Quit,
     MenuCmd::NewTab,
@@ -58,6 +63,11 @@ pub const ALL: [MenuCmd; 26] = [
     MenuCmd::FullScreen,
     MenuCmd::PrevTab,
     MenuCmd::NextTab,
+    MenuCmd::ReopenTab,
+    MenuCmd::NewTabIn,
+    MenuCmd::RemoteTab,
+    MenuCmd::Browser,
+    MenuCmd::OpenFolder,
     MenuCmd::Tab(1),
     MenuCmd::Tab(2),
     MenuCmd::Tab(3),
@@ -104,6 +114,11 @@ pub fn key_event(cmd: MenuCmd) -> Option<KeyEvent> {
         MenuCmd::FullScreen => cmd_key("f", "KeyF").ctrl(),
         MenuCmd::PrevTab => cmd_key("{", "BracketLeft").shift(),
         MenuCmd::NextTab => cmd_key("}", "BracketRight").shift(),
+        MenuCmd::ReopenTab => cmd_key("T", "KeyT").shift(),
+        MenuCmd::NewTabIn => cmd_key("N", "KeyN").shift(),
+        MenuCmd::RemoteTab => cmd_key("R", "KeyR").shift(),
+        MenuCmd::Browser => cmd_key("L", "KeyL").shift(),
+        MenuCmd::OpenFolder => cmd_key("E", "KeyE").shift(),
         MenuCmd::Tab(n) => cmd_key(&n.to_string(), &format!("Digit{n}")),
         MenuCmd::Quit | MenuCmd::CommandHelp => return None,
     })
@@ -200,6 +215,11 @@ pub fn main_menu() -> Vec<MenuSpec> {
             MenuRole::Plain,
             vec![
                 app("New Tab", MenuCmd::NewTab),
+                app("New Tab in Folder\u{2026}", MenuCmd::NewTabIn),
+                app("New Tab on Machine\u{2026}", MenuCmd::RemoteTab),
+                app("Reopen Closed Tab", MenuCmd::ReopenTab),
+                Entry::Separator,
+                app("Show Folder in Finder", MenuCmd::OpenFolder),
                 Entry::Separator,
                 app("Close Tab", MenuCmd::CloseTab),
             ],
@@ -224,6 +244,8 @@ pub fn main_menu() -> Vec<MenuSpec> {
                 app("Zoom In", MenuCmd::ZoomIn),
                 app("Zoom Out", MenuCmd::ZoomOut),
                 app("Actual Size", MenuCmd::ZoomReset),
+                Entry::Separator,
+                app("Browser Panel", MenuCmd::Browser),
                 Entry::Separator,
                 app("Enter Full Screen", MenuCmd::FullScreen),
             ],
@@ -309,6 +331,11 @@ mod tests {
             ("Show Next Tab", "}", Mods::CMD),
             ("Tab 1", "1", Mods::CMD),
             ("Tab 9", "9", Mods::CMD),
+            ("Reopen Closed Tab", "t", Mods::CMD_SHIFT),
+            ("New Tab in Folder\u{2026}", "n", Mods::CMD_SHIFT),
+            ("New Tab on Machine\u{2026}", "r", Mods::CMD_SHIFT),
+            ("Browser Panel", "l", Mods::CMD_SHIFT),
+            ("Show Folder in Finder", "e", Mods::CMD_SHIFT),
         ];
         for (title, key, mods) in cases {
             let i = find(&bar, title);
@@ -331,6 +358,11 @@ mod tests {
             (MenuCmd::FullScreen, ChordId::Fullscreen),
             (MenuCmd::PrevTab, ChordId::NextTab),
             (MenuCmd::NextTab, ChordId::NextTab),
+            (MenuCmd::ReopenTab, ChordId::ReopenTab),
+            (MenuCmd::NewTabIn, ChordId::NewTabIn),
+            (MenuCmd::RemoteTab, ChordId::RemoteTab),
+            (MenuCmd::Browser, ChordId::Browser),
+            (MenuCmd::OpenFolder, ChordId::OpenFolder),
         ];
         for (cmd, id) in chords {
             let e = key_event(cmd).expect("a key item");
@@ -388,6 +420,14 @@ mod tests {
         assert_eq!(shown("Zoom Out"), label(ChordId::ZoomOut));
         assert_eq!(shown("Actual Size"), label(ChordId::ZoomReset));
         assert_eq!(shown("Enter Full Screen"), label(ChordId::Fullscreen));
+        assert_eq!(shown("Reopen Closed Tab"), label(ChordId::ReopenTab));
+        assert_eq!(shown("New Tab in Folder\u{2026}"), label(ChordId::NewTabIn));
+        assert_eq!(
+            shown("New Tab on Machine\u{2026}"),
+            label(ChordId::RemoteTab)
+        );
+        assert_eq!(shown("Browser Panel"), label(ChordId::Browser));
+        assert_eq!(shown("Show Folder in Finder"), label(ChordId::OpenFolder));
     }
 
     #[test]

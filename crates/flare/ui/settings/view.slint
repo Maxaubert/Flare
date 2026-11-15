@@ -4,9 +4,10 @@
 // below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
 // For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
-import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook, SharingAskLook, PairCodeLook } from "types.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook, SharingAskLook, PairCodeLook, KeySheetRow } from "types.slint";
 import { PluginLook } from "../plugin_look.slint";
 import { PluginSheet } from "plugin_sheet.slint";
+import { HotkeySheet } from "hotkey_sheet.slint";
 import { SetFrame } from "frame.slint";
 import { SetRowFrame, SetBlockFrame, SetPanel, SetSectionHeading } from "row.slint";
 import { SetSwitch, SetSegmented, SetSaveButton, SetRowButton, SetResetLink, SetTextField } from "controls.slint";
@@ -19,6 +20,7 @@ import { HelpPanel } from "help_panel.slint";
 import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
 import { SetMachineHead, SetMachineRow, MachineAddDialog, SharingAskDialog } from "machines.slint";
 import { AppIconStrip } from "app_icons.slint";
+import { SetNotice } from "notice.slint";
 
 export global SettingsBridge {
     // data, all computed by Rust
@@ -101,6 +103,9 @@ export global SettingsBridge {
     in-out property <float> dict-level;
     in-out property <bool> dict-ask-open;
     in-out property <string> dict-ask-text;
+    // A settings notice (rule 1263): one plain line and OK, for a failure a row must not report in its subtext.
+    in-out property <bool> notice-open;
+    in-out property <string> notice-text;
     // A plugin's details sheet (the info button on its card, 2026-11-08): what it shows, filled by Rust.
     in-out property <bool> sheet-open;
     in-out property <string> sheet-name;
@@ -125,6 +130,11 @@ export global SettingsBridge {
     in-out property <bool> pair-code-open;
     in-out property <PairCodeLook> pair-code;
     // The title of the plugin's panel when the sheet can open it, else "".
+    // The Flare hotkeys sheet (rule 1262): open, what is typed in its search, and the rows that search keeps.
+    in-out property <bool> keys-open;
+    in-out property <string> keys-query;
+    in-out property <[KeySheetRow]> keys-rows;
+    in-out property <length> keys-list-h;
     // events
     callback page-chosen(string);
     callback find-edited(string);
@@ -167,11 +177,14 @@ export global SettingsBridge {
     callback editor-cancel();
     callback ask-answered(int);
     callback dict-ask-answered(int);
+    callback notice-closed();
     callback sheet-close();
     // A toggle tile (its key, the new state) and a dropdown tile (its key, the level's id).
     callback sheet-toggle(string, bool);
     callback sheet-choose(string, string);
     callback sheet-turn-on();
+    callback keys-close();
+    callback keys-query-edited(string);
     callback frame-resized(length, length);
     // The window's scale changed (a move to a monitor with another DPI keeps the logical size, so
     // frame-resized never fires): the Rust-snapped layout is laid out again.
@@ -193,17 +206,23 @@ component RowControls inherits HorizontalLayout {
     spacing: 10px;
     alignment: end;
 
-    // The app icon picker's row (rule 1230): the picked icon's name at the right; the tiles are drawn under the words.
-    if root.data.kind == SetKind.icons: VerticalLayout {
+    // Buttons drawn before the control: the Flare hotkeys info button, left of its switch (rule 1262).
+    for b in root.data.lead-buttons: VerticalLayout {
         alignment: center;
-        Text {
-            text: root.data.badge;
-            font-family: Theme.font-ui;
-            font-size: 12px;
-            color: Theme.text-soft;
-            wrap: no-wrap;
+        SetRowButton {
+            label: b.label;
+            label-alt: b.label-alt;
+            alt: b.alt;
+            off: b.off;
+            icon: b.icon;
+            title: b.tip;
+            warn: b.warn;
+            clicked => { SettingsBridge.row-button(root.data.id, b.id); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
     }
+    // The app icon picker's row (rules 1230 and 1263) draws nothing here but its Restart Explorer button (one of
+    // `buttons`, below); its tiles are drawn under the words.
     if root.data.kind == SetKind.pill: VerticalLayout {
         alignment: center;
         Rectangle {
@@ -574,11 +593,13 @@ export component SettingsView inherits Rectangle {
                             background: SettingsInk.flash;
                             opacity: row.flash;
                         }
+                        // Layout A (rule 1263): 2 under the words, at the words' column, `row.cols` tiles a line.
                         AppIconStrip {
                             x: 60px;
-                            y: 0px;
+                            y: 2px;
                             width: parent.width - 60px - 16px;
-                            height: 40px;
+                            height: parent.height - 2px - 16px;
+                            cols: row.cols;
                             options: row.options;
                             art: row.art;
                             value: row.value;
@@ -742,6 +763,16 @@ export component SettingsPreview inherits Window {
         toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
         chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
     }
+    HotkeySheet {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.keys-open;
+        rows: SettingsBridge.keys-rows;
+        list-h: SettingsBridge.keys-list-h;
+        query <=> SettingsBridge.keys-query;
+        close => { SettingsBridge.keys-close(); }
+        query-edited(q) => { SettingsBridge.keys-query-edited(q); }
+    }
     DictAsk {
         width: parent.width;
         height: parent.height;
@@ -779,6 +810,13 @@ export component SettingsPreview inherits Window {
         look: SettingsBridge.sharing-ask;
         cancel => { SettingsBridge.row-button("machines-sharing", "cancel"); }
         primary => { SettingsBridge.row-button("machines-sharing", "primary"); }
+    }
+    SetNotice {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.notice-open;
+        text: SettingsBridge.notice-text;
+        closed => { SettingsBridge.notice-closed(); }
     }
     SelectMenu {
         width: parent.width;

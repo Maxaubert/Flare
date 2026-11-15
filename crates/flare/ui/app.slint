@@ -25,7 +25,9 @@ import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { DictAsk } from "settings/dictation.slint";
 import { MachineAddDialog, SharingAskDialog, PairCodeDialog } from "settings/machines.slint";
+import { SetNotice } from "settings/notice.slint";
 import { PluginSheet } from "settings/plugin_sheet.slint";
+import { HotkeySheet } from "settings/hotkey_sheet.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
@@ -581,7 +583,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.machine-add-open || SettingsBridge.sharing-ask-open || SettingsBridge.pair-code-open || SettingsBridge.sheet-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.machine-add-open || SettingsBridge.sharing-ask-open || SettingsBridge.pair-code-open || SettingsBridge.notice-open || SettingsBridge.sheet-open || SettingsBridge.keys-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -856,6 +858,12 @@ export component AppWindow inherits Window {
     out property <length> sheet-turn-on-y: sheet.turn-on-y;
     out property <length> sheet-turn-on-w: sheet.turn-on-w;
     out property <length> sheet-turn-on-h: sheet.turn-on-h;
+    // Where the Flare hotkeys sheet is, and whether its search holds the keys (the tests).
+    out property <length> keys-box-x: keys-sheet.box-x;
+    out property <length> keys-box-y: keys-sheet.box-y;
+    out property <length> keys-box-w: keys-sheet.box-w;
+    out property <length> keys-box-h: keys-sheet.box-h;
+    out property <bool> keys-field-focused: keys-sheet.field-focused;
     out property <bool> pask-field-focus: pask.field-has-focus;
     out property <bool> pask-allow-armed: pask.allow-armed;
     out property <bool> pask-revealed: pask.revealed;
@@ -865,6 +873,12 @@ export component AppWindow inherits Window {
     out property <length> pask-box-y: pask.box-y;
     out property <length> pask-box-w: pask.box-w;
     out property <length> pask-box-h: pask.box-h;
+    // The settings notice's box and its OK button (rule 1263; the tests press OK).
+    out property <length> notice-box-w: notice.box-w;
+    out property <length> notice-ok-x: notice.ok-x;
+    out property <length> notice-ok-y: notice.ok-y;
+    out property <length> notice-ok-w: notice.ok-w;
+    out property <length> notice-ok-h: notice.ok-h;
     out property <length> pask-allow-x: pask.allow-x;
     out property <length> pask-allow-y: pask.allow-y;
     out property <length> pask-allow-w: pask.allow-w;
@@ -1785,6 +1799,16 @@ export component AppWindow inherits Window {
             look: SettingsBridge.pair-code;
             decline => { SettingsBridge.row-button("machines-pair", "decline"); }
         }
+        // A settings notice: one plain line and OK (rule 1263, the App icon row's failed shell restart).
+        notice := SetNotice {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.notice-open;
+            text: SettingsBridge.notice-text;
+            closed => { SettingsBridge.notice-closed(); }
+        }
         ColourPopover {
             x: 0px;
             y: 0px;
@@ -1873,6 +1897,20 @@ export component AppWindow inherits Window {
             chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
             turn-on => { SettingsBridge.sheet-turn-on(); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+        // The Flare hotkeys sheet (Settings > Terminal > Keys, the info button, rule 1262): a modal like the plugin
+        // sheet, under a plugin's question and the close question.
+        keys-sheet := HotkeySheet {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.keys-open;
+            rows: SettingsBridge.keys-rows;
+            list-h: SettingsBridge.keys-list-h;
+            query <=> SettingsBridge.keys-query;
+            close => { SettingsBridge.keys-close(); }
+            query-edited(q) => { SettingsBridge.keys-query-edited(q); }
         }
         // A plugin's question sits under the close question: that one is answered first.
         pask := PluginAsk {

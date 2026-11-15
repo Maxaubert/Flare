@@ -34,7 +34,8 @@ export struct SetRow {
     save-dirty: bool, save-title: string,
     placeholder: string,                        // text: the faint words while it is empty
     buttons: [SetButton],
-    note: string,                               // BlockKind.note and about text
+    lead-buttons: [SetButton],                  // drawn before the control (the Flare hotkeys info button, rule 1262)
+    note: string,                              // BlockKind.note and about text
     y: length, h: length,                       // inside the panel, snapped
     flash: float,                               // 0..1, the flash fill alpha scale
     // The Dictation page (M8 Task 25). `value` is the key text or the chosen microphone; `num` the download percentage.
@@ -47,9 +48,9 @@ export struct SetRow {
     button-title: string,                       // the tooltip of the Uninstall or Disable button
     // A plugin's card (2026-11-08): its brand logo (path data, filled in logo-fill on a white tile); "" draws icon.
     logo: string, logo-fill: color,
-    // The app icon picker (rule 1230): each option's picture, in the options' order (`value` is the picked id, `badge`
-    // the picked icon's name, drawn at the row's right).
-    art: [image],
+    // The app icon picker (rule 1230): each option's picture, in the options' order (`value` is the picked id). `cols`
+    // is how many tiles a line the layout gave the row (rule 1263: the tiles wrap and the row grows by whole lines).
+    art: [image], cols: int,
 }
 export struct SetSection {
     id: string, title: string, tag: string,
@@ -84,6 +85,10 @@ export struct RowLook {
     b1-id: string, b1-x: length, b1-y: length, b1-w: length, b1-h: length,
     b1-fill: color, b1-edge: color, b1-radius: length, b1-ink: color,
 }
+
+// The Flare hotkeys sheet (hotkey_sheet.slint, rule 1262): one line, a group's name (heading) or a hotkey (its action
+// in `text`, its keys in `keys`); stripe: the row wears the stripe.
+export struct KeySheetRow { heading: bool, text: string, keys: string, stripe: bool }
 
 // A plugin's details sheet (plugin_sheet.slint): one level of a dropdown tile (tone 0 plain, 1 the brand's usual, 2
 // amber), and one tile (kind 0 toggle, 1 dropdown, 2 fact). caps: the label in capitals. value: a dropdown's level id

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flare_settings::actions::{self, AskAnswer, Ctx, Effect, Event, SaveFrom};
+use flare_settings::app_icon::ShellRestart;
 use flare_settings::colour_format::{COLOUR_FORMAT_KEY, colour_format};
 use flare_settings::custom_theme::CUSTOM_KEY;
 use flare_settings::find::{IndexEnv, page_names, settings_index};
@@ -42,6 +43,7 @@ use flare_settings::rows::all_rows;
 use flare_settings::verb::{DiagControlApi, ExplorerVerb, VerbState};
 use flare_settings::wall::{self, WallLayout};
 use flare_settings::window_colours::{CUSTOM_COLOURS_KEY, EDGES_KEY};
+use flare_tabs::keymap::KeyOs;
 use flare_theme::ansi::ANSI_KEYS;
 use flare_theme::colour::{ColourFormat, Rgba, parse_colour};
 use flare_theme::look::card_ansi;
@@ -52,8 +54,8 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::appctl::{Post, UiMsg};
 use crate::picker_ctl::{PickerCtl, PickerCtx, RowColour};
 use crate::{
-    AppWindow, BlockKind as SlintBlock, EditorWell, RailItem, SetButton, SetHit, SetKind,
-    SetOption, SetRow, SetSection, SettingsBridge, WallCard,
+    AppWindow, BlockKind as SlintBlock, EditorWell, KeySheetRow, RailItem, SetButton, SetHit,
+    SetKind, SetOption, SetRow, SetSection, SettingsBridge, WallCard,
 };
 
 /// How long the Mark button says Marked.
@@ -88,6 +90,8 @@ pub enum SettingsMsg {
     Mods,
     /// A worker of the Machines page answered (remote sessions PR 7).
     Machines(crate::machines_page::MachinesMsg),
+    /// The shell restart of the App icon row finished (rule 1263): Ok, or a short reason.
+    ShellRestarted(Result<(), String>),
 }
 
 /// The Mods page's door to the mods (Surfaces stage 8). The window's controller of mods implements it; a run with
@@ -128,6 +132,9 @@ pub struct SettingsDeps {
     pub look: LookStore,
     pub diag: Rc<dyn DiagControlApi>,
     pub verb: Arc<dyn ExplorerVerb>,
+    /// The App icon row's Restart Explorer (Restart Dock) button (rule 1263). Tests and --e2e give a fake, so nothing
+    /// outside the test restarts.
+    pub shell_restart: Arc<dyn ShellRestart>,
     pub dictation: Rc<dyn DictationPage>,
     pub pick_folder: PickFolder,
     pub open_path: Rc<dyn Fn(&Path)>,
@@ -139,7 +146,6 @@ pub struct SettingsDeps {
     pub face_of: Rc<dyn Fn(&str) -> String>,
     pub theme_colours: Rc<dyn Fn() -> ThemeColours>,
     pub agent_colours: Rc<dyn Fn() -> [String; 3]>,
-    pub agent_key_labels: Rc<dyn Fn() -> String>,
     pub post: Post,
     pub version: String,
     pub copyright: String,
@@ -198,6 +204,8 @@ pub struct SettingsCtl {
     /// The plugin whose details sheet is open, and what it lists now (what its "Turn on" approves).
     sheet: Option<String>,
     sheet_shown: Option<flare_mods::hub::Shown>,
+    /// The Flare hotkeys sheet is open (rule 1262).
+    keys_open: bool,
     pending_pick: RefCell<Option<String>>,
     /// The colour popover, the typed codes of the colour rows and the dropper.
     picker: PickerCtl,
@@ -224,6 +232,11 @@ pub struct SettingsCtl {
     mods: Option<Rc<dyn ModsPort>>,
     /// The Machines page (remote sessions PR 7); none until the window hands it over.
     machines: Option<crate::machines_page::MachinesPage>,
+    /// The App icon row's shell restart (rule 1263): one runs on a worker now (the button is off).
+    restarting: bool,
+    /// The settings notice's one plain line while it is open (rule 1263: a failed shell restart). A row's subtext
+    /// never changes to report state, so a failure is told here.
+    notice: Option<String>,
 }
 
 // ---- the pure mappers ------------------------------------------------------------------------------
@@ -287,6 +300,69 @@ fn no_colour() -> slint::Color {
     slint::Color::from_argb_u8(0, 0, 0, 0)
 }
 
+/// The Flare hotkeys sheet's lines for a search (rule 1262): each group's name over the rows of it the search keeps,
+/// every other row of a group striped from its first; a group with none kept is left out.
+pub fn keys_sheet_rows(os: KeyOs, query: &str) -> ModelRc<KeySheetRow> {
+    use flare_tabs::hotkeys::{filter_rows, hotkey_rows};
+    let mut out = Vec::new();
+    let mut group = "";
+    let mut n = 0;
+    for r in filter_rows(&hotkey_rows(os), query) {
+        if r.group != group {
+            group = r.group;
+            n = 0;
+            out.push(KeySheetRow {
+                heading: true,
+                text: group.into(),
+                keys: SharedString::new(),
+                stripe: false,
+            });
+        }
+        out.push(KeySheetRow {
+            heading: false,
+            text: r.action.into(),
+            keys: r.keys.as_str().into(),
+            stripe: n % 2 == 0,
+        });
+        n += 1;
+    }
+    ModelRc::new(VecModel::from(out))
+}
+
+/// Draws the hotkeys sheet's lines for a search, and the list's height: 29 px a group name, 32 a row, 6 under the last.
+fn show_keys(b: &SettingsBridge<'_>, query: &str) {
+    use slint::Model;
+    let rows = keys_sheet_rows(KeyOs::HOST, query);
+    let h: f32 = rows
+        .iter()
+        .map(|r| if r.heading { 29.0 } else { 32.0 })
+        .sum();
+    b.set_keys_list_h(if h > 0.0 { h + 6.0 } else { 0.0 });
+    b.set_keys_rows(rows);
+}
+
+/// A row's buttons drawn before its control (`lead`) or after it.
+fn row_buttons(buttons: &[flare_settings::page::Button], lead: bool) -> ModelRc<SetButton> {
+    ModelRc::new(VecModel::from(
+        buttons
+            .iter()
+            .filter(|b| b.lead == lead)
+            .map(|b| SetButton {
+                id: b.id.into(),
+                label: b.label.as_str().into(),
+                label_alt: b.alt.clone().unwrap_or_default().into(),
+                off: b.off,
+                alt: b.alt.is_some(),
+                icon: flare_settings::icons::button_icon_path(b.icon)
+                    .unwrap_or("")
+                    .into(),
+                tip: b.tip.as_str().into(),
+                warn: b.warn,
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// One row (`y` inside the panel, below its border) as the view draws it.
 pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
     let mut out = SetRow {
@@ -310,23 +386,8 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
         } else {
             0.0
         },
-        buttons: ModelRc::new(VecModel::from(
-            r.buttons
-                .iter()
-                .map(|b| SetButton {
-                    id: b.id.into(),
-                    label: b.label.as_str().into(),
-                    label_alt: b.alt.clone().unwrap_or_default().into(),
-                    off: b.off,
-                    alt: b.alt.is_some(),
-                    icon: flare_settings::icons::button_icon_path(b.icon)
-                        .unwrap_or("")
-                        .into(),
-                    tip: b.tip.as_str().into(),
-                    warn: b.warn,
-                })
-                .collect::<Vec<_>>(),
-        )),
+        buttons: row_buttons(&r.buttons, false),
+        lead_buttons: row_buttons(&r.buttons, true),
         ..Default::default()
     };
     if let Some(l) = &r.logo {
@@ -341,7 +402,8 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
             out.value = value.as_str().into();
             out.options = options_of(options);
         }
-        // The app icon picker (rule 1230): each tile's picture, and the picked icon's name for the row's right.
+        // The app icon picker (rule 1230): each tile's picture. The row's right holds the Restart Explorer button, not
+        // the picked icon's name (rule 1263), so `badge` stays empty.
         Control::Icons { value, options } => {
             out.value = value.as_str().into();
             out.options = options_of(options);
@@ -351,12 +413,6 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
                     .map(|o| crate::app_icon::tile_image(&o.id))
                     .collect::<Vec<_>>(),
             ));
-            out.badge = options
-                .iter()
-                .find(|o| &o.id == value)
-                .map(|o| o.name.as_str())
-                .unwrap_or_default()
-                .into();
         }
         Control::Slider {
             value,
@@ -528,7 +584,11 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
                 0.0
             };
             let mut row = match b {
-                BlockModel::Row(r) => to_slint_row(r, y, rl.h, ctx),
+                // The app icon row's tiles a line, from the layout that set its height (rule 1263).
+                BlockModel::Row(r) => SetRow {
+                    cols: i32::try_from(rl.cols).unwrap_or(i32::MAX),
+                    ..to_slint_row(r, y, rl.h, ctx)
+                },
                 BlockModel::Wall => block_row("wall", SlintBlock::Wall, y, rl.h),
                 BlockModel::AboutCard {
                     name,
@@ -815,6 +875,7 @@ impl SettingsCtl {
             plugin_url: String::new(),
             sheet: None,
             sheet_shown: None,
+            keys_open: false,
             pending_pick: RefCell::new(None),
             picker: PickerCtl::default(),
             picker_timer: slint::Timer::default(),
@@ -836,6 +897,8 @@ impl SettingsCtl {
             rebuilds: 0,
             mods: None,
             machines: None,
+            restarting: false,
+            notice: None,
             deps,
         };
         let rc = Rc::new(RefCell::new(ctl));
@@ -1013,6 +1076,7 @@ impl SettingsCtl {
         on!(app, rc, on_ask_answered, |c, n: i32| c.ask_answered(n));
         on!(app, rc, on_dict_ask_answered, |c, n: i32| c
             .dict_ask_answered(n));
+        on!(app, rc, on_notice_closed, |c| c.close_notice());
         on!(app, rc, on_sheet_close, |c| c.close_sheet());
         on!(app, rc, on_sheet_toggle, |c, k: SharedString, on: bool| c
             .sheet_choice(&k, if on { "on" } else { "off" }));
@@ -1023,6 +1087,9 @@ impl SettingsCtl {
             |c, k: SharedString, v: SharedString| c.sheet_choice(&k, &v)
         );
         on!(app, rc, on_sheet_turn_on, |c| c.sheet_turn_on());
+        on!(app, rc, on_keys_close, |c| c.close_keys());
+        on!(app, rc, on_keys_query_edited, |c, q: SharedString| c
+            .keys_query(&q));
         on!(app, rc, on_frame_resized, |c, w: f32, h: f32| c
             .frame_resized(f64::from(w), f64::from(h)));
         on!(app, rc, on_scale_changed, |c| c.scale_changed());
@@ -1100,6 +1167,7 @@ impl SettingsCtl {
         crate::dictation_ctl::page_left();
         self.close_select();
         self.close_sheet();
+        self.close_keys();
         self.picker_do(|p, _| p.hide_for_tab_switch());
         self.drop_pencil_wait();
         // The Add a machine dialog closes with the page (a check that runs still saves what answered).
@@ -1135,6 +1203,8 @@ impl SettingsCtl {
         self.ask_open = false;
         self.stale = true;
         self.close_sheet();
+        self.close_keys();
+        self.close_notice();
         self.picker_do(|p, _| p.outside());
         if let Some(app) = self.weak.upgrade() {
             let b = app.global::<SettingsBridge>();
@@ -1188,6 +1258,82 @@ impl SettingsCtl {
                 // The host's code dialog draws over any tab, Settings open or not (machine pairing PR 3).
                 if let Some(app) = self.weak.upgrade() {
                     self.push_pair_code(&app);
+                }
+            }
+            SettingsMsg::ShellRestarted(r) => {
+                self.restarting = false;
+                // The reason is a short word or two with no path in it (rule 1263).
+                crate::diag_ctl::crumb(
+                    "shell-restart",
+                    &[
+                        ("ok", serde_json::Value::Bool(r.is_ok())),
+                        (
+                            "why",
+                            crate::diag_ctl::txt(r.as_ref().err().map_or("", String::as_str)),
+                        ),
+                    ],
+                );
+                if let Err(e) = &r {
+                    log::warn!("shell restart failed: {e}");
+                }
+                self.refresh_if_visible();
+                // A failure is a notice, one plain line and OK; the row's subtext stays as it is.
+                if r.is_err() {
+                    self.show_notice(flare_settings::app_icon::RESTART_FAILED);
+                }
+            }
+        }
+    }
+
+    /// Opens the settings notice with one plain line (rule 1263).
+    fn show_notice(&mut self, line: &str) {
+        self.notice = Some(line.to_string());
+        if let Some(app) = self.weak.upgrade() {
+            let b = app.global::<SettingsBridge>();
+            b.set_notice_text(line.into());
+            b.set_notice_open(true);
+        }
+    }
+
+    /// OK, Enter, Escape or a press outside closed the notice.
+    fn close_notice(&mut self) {
+        self.notice = None;
+        if let Some(app) = self.weak.upgrade() {
+            app.global::<SettingsBridge>().set_notice_open(false);
+        }
+    }
+
+    /// The App icon row's Restart Explorer (Restart Dock) button (rule 1263): the restart runs on a worker through the
+    /// `ShellRestart` seam and answers with `ShellRestarted`. A press while one runs does nothing.
+    fn restart_shell(&mut self) {
+        if self.restarting {
+            return;
+        }
+        self.restarting = true;
+        crate::diag_ctl::crumb("shell-restart-asked", &[]);
+        let restarter = Arc::clone(&self.deps.shell_restart);
+        let post = Arc::clone(&self.deps.post);
+        spawn_worker("flare-shell-restart", move || {
+            let r = restarter.restart();
+            post(UiMsg::Settings(SettingsMsg::ShellRestarted(r)));
+        });
+        self.refresh_if_visible();
+    }
+
+    /// The App icon row as the restart leaves it (rule 1263): its button off while a restart runs. Its subtext never
+    /// changes; a failure is the settings notice (`show_notice`).
+    fn mark_restart(&self, model: &mut PageModel) {
+        use flare_settings::app_icon::RESTART_BUTTON;
+        for s in &mut model.sections {
+            for b in &mut s.blocks {
+                if let BlockModel::Row(r) = b
+                    && r.id == "app-icon"
+                {
+                    for btn in &mut r.buttons {
+                        if btn.id == RESTART_BUTTON {
+                            btn.off = self.restarting;
+                        }
+                    }
                 }
             }
         }
@@ -1251,6 +1397,31 @@ impl SettingsCtl {
         }
     }
 
+    /// The Flare hotkeys sheet (rule 1262): opens with an empty search and every hotkey of this system.
+    fn open_keys(&mut self) {
+        self.keys_open = true;
+        if let Some(app) = self.weak.upgrade() {
+            let b = app.global::<SettingsBridge>();
+            b.set_keys_query(SharedString::new());
+            show_keys(&b, "");
+            b.set_keys_open(true);
+        }
+    }
+
+    /// What is typed in the sheet's search: the rows it keeps, an empty group left out.
+    fn keys_query(&mut self, query: &str) {
+        if let Some(app) = self.weak.upgrade() {
+            show_keys(&app.global::<SettingsBridge>(), query);
+        }
+    }
+
+    fn close_keys(&mut self) {
+        self.keys_open = false;
+        if let Some(app) = self.weak.upgrade() {
+            app.global::<SettingsBridge>().set_keys_open(false);
+        }
+    }
+
     /// The plugin whose details sheet is open (the tests and the e2e read it).
     #[allow(dead_code)]
     pub fn sheet_of(&self) -> Option<&str> {
@@ -1292,8 +1463,16 @@ impl SettingsCtl {
             return false;
         };
         let b = app.global::<SettingsBridge>();
+        if self.notice.is_some() {
+            self.close_notice();
+            return true;
+        }
         if self.sheet.is_some() {
             self.close_sheet();
+            return true;
+        }
+        if self.keys_open {
+            self.close_keys();
             return true;
         }
         if crate::dictation_ctl::page_snap().ask.is_some() {
@@ -1415,12 +1594,13 @@ impl SettingsCtl {
             dictation_wired: crate::dictation_ctl::wired(),
             theme_colours: (self.deps.theme_colours)(),
             agent_colours: (self.deps.agent_colours)(),
-            agent_key_labels: (self.deps.agent_key_labels)(),
             face_of: &*self.deps.face_of,
             mods: mods_info.as_ref(),
             machines: machines_info.as_ref(),
         };
-        build_page(self.page, &env, &*self.deps.dictation)
+        let mut model = build_page(self.page, &env, &*self.deps.dictation);
+        self.mark_restart(&mut model);
+        model
     }
 
     /// The frame (rail included) in logical px, from the last report or the bridge.
@@ -1667,6 +1847,8 @@ impl SettingsCtl {
         self.push_machine_add(app);
         self.push_sharing_ask(app);
         self.push_pair_code(app);
+        b.set_notice_open(self.notice.is_some());
+        b.set_notice_text(self.notice.as_deref().unwrap_or_default().into());
         self.push_editor(app, format);
     }
 
@@ -2026,6 +2208,10 @@ impl SettingsCtl {
             }
             return;
         }
+        if row == "agent-keys" && button == flare_settings::page::terminal::HOTKEYS_BUTTON {
+            self.open_keys();
+            return;
+        }
         if let Some(id) = row.strip_prefix(SWITCH_PREFIX) {
             if button == flare_settings::page::mods::INFO_BUTTON {
                 self.open_sheet(id);
@@ -2044,6 +2230,10 @@ impl SettingsCtl {
             if crate::dictation_ctl::page_button(row, button) {
                 self.refresh_if_visible();
             }
+            return;
+        }
+        if row == "app-icon" && button == flare_settings::app_icon::RESTART_BUTTON {
+            self.restart_shell();
             return;
         }
         if row == "slint" {
@@ -2913,6 +3103,7 @@ mod tests {
             look: LookStore::new(prefs.clone()),
             diag: diag.clone(),
             verb,
+            shell_restart: Arc::new(flare_settings::app_icon::FakeShellRestart::new()),
             dictation,
             pick_folder: {
                 let answer = Rc::clone(&pick_answer);
@@ -2932,7 +3123,6 @@ mod tests {
                 secondary: "#181818".into(),
             }),
             agent_colours: Rc::new(|| ["#111111".into(), "#222222".into(), "#333333".into()]),
-            agent_key_labels: Rc::new(String::new),
             post,
             version: "1.2.3".to_string(),
             copyright: "Copyright 2026".to_string(),

@@ -415,3 +415,27 @@ fn the_section_heading_starts_2_px_inside_the_panel_edge() {
 fn hair(scale: f32) -> f32 {
     scale.floor().max(1.0) / scale
 }
+
+#[test]
+fn a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks() {
+    // Rule 1262: the Flare hotkeys row draws its info button before its switch, an icon-only square.
+    for s in [1.0f32, 2.25] {
+        let mut r = row("keys", SetKind::Switch, 0);
+        r.tap = true;
+        r.lead_buttons = ModelRc::new(VecModel::from(vec![SetButton {
+            id: "hotkeys".into(),
+            icon: ICON.into(),
+            tip: "Show all hotkeys".into(),
+            ..Default::default()
+        }]));
+        let (h, log) = make(s, vec![section(vec![r], false)]);
+        let (_, _, ctl_right) = edges(&h);
+        // The switch is 36 wide at the right; the 32 px button ends 10 px before it.
+        h.click(ctl_right - 36.0 - 10.0 - 16.0, centre(0));
+        h.advance(0);
+        assert_eq!(take(&log), vec!["button:keys:hotkeys".to_string()], "{s}");
+        h.click(ctl_right - 8.0, centre(0));
+        h.advance(0);
+        assert_eq!(take(&log), vec!["switch:keys:true".to_string()], "{s}");
+    }
+}

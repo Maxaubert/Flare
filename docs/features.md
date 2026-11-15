@@ -88,8 +88,12 @@ are added as milestones land.
   none. The roadmap's M3 "rename" line is answered by this, not built.
 - **Ctrl+W closes a tab and reads "Ctrl+W" on its label.** Both Ctrl+W and Ctrl+Shift+W close it
   (owner question Q3 in `docs/parity.md`, assumed). Held by
-  `ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open` and
+  `ctrl_w_and_ctrl_shift_w_both_close_and_ctrl_shift_t_reopens` and
   `every_label_is_the_key_that_chord_answers_to`.
+- **App keys (rule 1236, 2026-11-14).** Ctrl+Shift+T reopens the tab closed last (its place, its agent resumed;
+  more presses walk back through 10), Ctrl+Shift+N asks for a folder, Ctrl+Shift+R lists the linked machines,
+  Ctrl+Shift+L opens the browser panel with the address field holding the keys, Ctrl+Shift+E shows the tab's folder
+  in Explorer. Cmd+Shift on a Mac. Always on; the letters without Shift stay the shell's.
 - **Tabs in one row, one width.** Every tab is the same width (150 px, floor 84 px, shrinking
   equally); when the strip is short it becomes icons (40 px), then the least-needed tabs move to the
   `+N` list. The front tab is never hidden. Held by `strip_plan` and `strip_layout` tests and the
@@ -664,11 +668,19 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   2026-11-13 (owner: "the app icon should stay the same as default, no new default, just a picker so the user can
   change their look"): the original icon is the shipped app icon on both systems again (rule 1230): `build/icon.ico`
   and the Mac's `Flare.icns` both come from `assets/icon/flare-color.svg`. The new designs are choices instead:
-  **Settings > Appearance > App icon**, a line of twelve icon tiles under the row's words (Original first and picked
+  **Settings > Appearance > App icon**, twelve icon tiles under the row's words (Original first and picked
   until another is, then Liquid Glass, High Voltage, Daybreak, Hazard Reverse, Safety Orange, Blue Enamel, Raspberry
   Lacquer, Lemon Ink, Jade Glass, Citrus Punch, Cobalt Electric; sources in `assets/icon/app-icons/`). A tile has no
   words: its name is its tooltip and accessible label ("Original, the default" for the first), the chosen one wears
-  the accent ring, and the picked name sits at the row's right. Stored as `flare.window.appIcon` in `settings.json`.
+  the accent ring. Stored as `flare.window.appIcon` in `settings.json`.
+  2026-11-14 (owner: "the icons are weirdly placed ... instead of saying safety orange in that spot have it be a button
+  to restart explorer"), rule 1263, layout A of `docs/superpowers/specs/2026-11-14-app-icon-row-mockup.html`: the
+  tiles are a fixed 36 px with 10 px gaps, left aligned at the words' column, and wrap onto more lines in a narrow
+  window (the row grows by whole lines). The row's right is a **Restart Explorer** button (**Restart Dock** on a Mac)
+  in place of the icon's name: it ends `explorer.exe` in this user's session and starts the shell again (`killall
+  Dock` on a Mac) on a worker, so the taskbar or the Dock shows the pick at once. A failed restart opens a small
+  Flare dialog with one line, "Explorer did not restart." ("The Dock did not restart." on a Mac), and OK; the row's
+  subtext never changes.
   How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
   at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
   the window's big and small icons (`WM_SETICON`, which the taskbar button shows), at start, on a DPI change and on
@@ -2803,6 +2815,39 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
   symbols and CJK fall back to the system's faces. The help panel's two-line command names are no longer cut to one
   line at 150 percent.
 
+## The agent prompt as a text box, 2026-11-14
+
+With Settings > Terminal > Flare hotkeys on (the default; it was called Agent hotkeys) and Claude in the tab in front, Claude's prompt edits like
+a text box (rule 1235). Windows keys first, the Mac's in brackets.
+
+- **Select:** Ctrl+A (Cmd+A) selects the whole prompt. Shift+Left and Right select by letter, Ctrl+Shift+Left and Right
+  (Option+Shift) by word, Shift+Home and End (Cmd+Shift+Left and Right) to the line's start or end. The selection shows
+  as Flare's own highlight and stays while Claude repaints its box.
+- **Over a selection:** typing or pasting replaces it, Backspace and Delete delete it, Ctrl+X (Cmd+X) cuts it, Left or
+  Right alone go to its start or end, Ctrl+C copies it as before.
+- **Move and delete:** Ctrl+Left and Right (Option) jump a word, Home and End (Cmd+Left and Right) go to the line's
+  ends, Ctrl+Backspace and Ctrl+Delete (Option+Backspace and Option+Delete) delete a word, Ctrl+Z (Cmd+Z) is Claude's
+  undo, Ctrl+Shift+Backspace (Cmd+Shift+Backspace) clears the prompt without stopping the agent.
+- **Your messages:** Ctrl+Shift+Up and Down (Cmd+Shift) scroll to your previous and next message.
+- Shift+Enter (a new line) and Ctrl+V with an image (Claude's Alt+V) already worked and are unchanged.
+- Settings lists every key on the Flare hotkeys sheet (see below), built from the key tables.
+- **Limits:** Claude only (Flare knows no other agent's editor keys). The prompt is read from the screen: a typed line
+  break where the next word would not have fitted reads as a wrap, so a selection across it is one character short;
+  a pasted-text chip (`[Pasted text #1 +40 lines]`) counts as the characters it shows.
+
+## The Flare hotkeys sheet, 2026-11-14
+
+Settings > Terminal > Keys calls the switch **Flare hotkeys** now (it was Agent hotkeys). It is still on by default,
+and a choice made before is kept. Its subtext says "Text box keys in agent prompts, and spare keys for tabs." (rule
+1262).
+
+- The info button left of the switch (tooltip "Show all hotkeys") opens a sheet of every Flare hotkey: the keys for
+  typing to an agent, the tab keys and the app keys, in three groups with striped rows. The keys come from Flare's own
+  key tables, so the sheet always matches what the keys do. A Mac shows its own keys (⌘, ⌥, ⇧).
+- The search at the top filters the list as you type, by what a key does or by the key itself ("tab", "ctrl+shift").
+  A group with nothing left is hidden.
+- Escape or a click outside the sheet closes it.
+- The five lines that listed the keys under the switch are gone: the sheet replaces them.
 ## Machine pairing, PR 1: the Add a machine dialog, plain-words ssh errors and machine fields, 2026-11-14
 
 The first of three PRs that let a person link another computer without leaving Flare. Spec
