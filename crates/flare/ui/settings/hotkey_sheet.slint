@@ -1,0 +1,199 @@
+// The Flare hotkeys sheet (rule 1262; the approved mockup, design 7 "Search and stripes", 2026-11-14): the info button
+// of Settings > Terminal > Keys > Flare hotkeys opens it. One top row holds the title and a pill search field, a
+// divider under it; then the list, grey group names over 32 px striped rows, the action at the left in soft ink, its
+// keys at the right in bold. Rust builds the rows from the key tables and filters them as the search is typed (an
+// empty group is left out). Escape or a press outside the box closes it. The flat ground is the theme's side-flat.
+import { Theme, Px, SettingsInk, SettingsFixed } from "../theme.slint";
+import { KeySheetRow } from "types.slint";
+
+export component HotkeySheet inherits Rectangle {
+    in property <bool> open;
+    in property <[KeySheetRow]> rows;
+    // The list's height, from Rust: 29 px a group name, 32 a row, 6 under the last.
+    in property <length> list-h;
+    in-out property <string> query;
+    callback close();
+    callback query-edited(string);
+
+    // Where the box is, for the tests.
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <bool> field-focused: input.has-focus;
+
+    property <length> head-h: 56px;
+    property <length> max-h: root.height - 48px;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        scroller.content-y = 0px;
+        if root.open {
+            input.focus();
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.scrim;
+    }
+    // A press outside the box closes the sheet.
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            let inside = self.mouse-x >= box.x && self.mouse-x < box.x + box.width && self.mouse-y >= box.y && self.mouse-y < box.y + box.height;
+            if e.kind == PointerEventKind.down && !inside {
+                root.close();
+            }
+        }
+    }
+
+    keys := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        capture-key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            return reject;
+        }
+
+        box := Rectangle {
+            width: min(400px, root.width - 32px);
+            height: max(0px, min(root.max-h, root.head-h + Px.hair() + root.list-h));
+            x: Px.snap((root.width - self.width) / 2);
+            y: Px.snap(max(24px, (root.height - self.height) / 2));
+            background: Theme.side-flat;
+            border-radius: 6px;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            drop-shadow-offset-y: 24px;
+            drop-shadow-blur: 70px;
+            drop-shadow-color: SettingsFixed.modal-shadow;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-label: "Flare hotkeys";
+
+            // The top row: the title and the search field.
+            HorizontalLayout {
+                y: 0px;
+                width: parent.width;
+                height: root.head-h;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 10px;
+                alignment: stretch;
+                Text {
+                    text: "Flare hotkeys";
+                    vertical-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    wrap: no-wrap;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    field := Rectangle {
+                        height: 28px;
+                        border-radius: 14px;
+                        border-width: Px.hair();
+                        border-color: input.has-focus ? Theme.line : Theme.divider;
+                        background: SettingsInk.help-field;
+                        input := TextInput {
+                            x: 11px;
+                            width: parent.width - 22px;
+                            height: parent.height;
+                            text <=> root.query;
+                            single-line: true;
+                            vertical-alignment: center;
+                            font-family: Theme.font-ui;
+                            font-size: 12px;
+                            color: Theme.text;
+                            selection-background-color: SettingsInk.selection;
+                            accessible-role: text-input;
+                            accessible-label: "Search";
+                            edited => { root.query-edited(self.text); }
+                        }
+                        if input.text == "": Text {
+                            x: input.x;
+                            width: input.width;
+                            height: parent.height;
+                            text: "Search";
+                            vertical-alignment: center;
+                            font-family: Theme.font-ui;
+                            font-size: 12px;
+                            color: Theme.dim;
+                        }
+                    }
+                }
+            }
+            // The divider under the top row.
+            Rectangle {
+                y: root.head-h;
+                width: parent.width;
+                height: Px.hair();
+                background: Theme.line;
+            }
+            scroller := Flickable {
+                y: root.head-h + Px.hair();
+                width: parent.width;
+                height: parent.height - self.y;
+                content-width: self.width;
+                content-height: root.list-h;
+                list := VerticalLayout {
+                    width: parent.width;
+                    for r in root.rows: Rectangle {
+                        height: r.heading ? 29px : 32px;
+                        background: !r.heading && r.stripe ? SettingsInk.help-stripe : transparent;
+                        accessible-role: list-item;
+                        accessible-label: r.heading ? r.text : r.text + ", " + r.keys;
+                        if r.heading: Text {
+                            x: 16px;
+                            y: 10px;
+                            width: parent.width - 32px;
+                            height: 15px;
+                            text: r.text;
+                            font-family: Theme.font-ui;
+                            font-size: 11px;
+                            color: Theme.dim;
+                            overflow: elide;
+                        }
+                        if !r.heading: HorizontalLayout {
+                            width: parent.width;
+                            height: parent.height;
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 12px;
+                            Text {
+                                text: r.text;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                font-family: Theme.font-ui;
+                                font-size: 13px;
+                                color: Theme.text-soft;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: r.keys;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                                font-family: Theme.font-ui;
+                                font-size: 11.5px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                wrap: no-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

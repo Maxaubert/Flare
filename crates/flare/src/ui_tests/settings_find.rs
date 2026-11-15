@@ -86,7 +86,6 @@ fn fx() -> Fx {
             secondary: "#181818".into(),
         }),
         agent_colours: Rc::new(|| ["#111111".into(), "#222222".into(), "#333333".into()]),
-        agent_key_labels: Rc::new(String::new),
         post,
         version: "1.2.3".to_string(),
         copyright: "Copyright 2026".to_string(),
@@ -332,6 +331,23 @@ fn the_status_line_says_n_results_and_no_results() {
     assert_eq!(f.b().get_status_text(), want.as_str());
     f.type_query("zzzzqq");
     assert_eq!(f.b().get_status_text(), "No results");
+}
+
+#[test]
+fn flare_hotkeys_is_found_by_its_new_name_and_its_old_one() {
+    // Rule 1262: "Agent hotkeys" is "Flare hotkeys" now; the index finds the row by either name.
+    let f = fx();
+    f.type_query("Flare hotkeys");
+    assert_eq!(
+        f.hit_ids().first().map(String::as_str),
+        Some("agent-keys"),
+        "{:?}",
+        f.hit_ids()
+    );
+    let hit = f.b().get_hits().iter().next().expect("a hit");
+    assert_eq!(hit.label.as_str(), "Flare hotkeys");
+    f.type_query("agent hotkeys");
+    assert!(f.hit_ids().iter().any(|id| id == "agent-keys"));
 }
 
 #[test]

@@ -592,57 +592,6 @@ pub fn agent_chords() -> Vec<ChordId> {
         .collect()
 }
 
-/// The keys agent hotkeys add, as the Settings Keys list shows them, one line a note (rule 1235): the agent chords
-/// and the prompt keys, every key named by its table's label on this system.
-pub fn agent_keys_text(os: KeyOs) -> String {
-    use flare_term::prompt_keys::{MAC_DELETE_LINE_LABEL, PromptKey as P, prompt_key_label};
-    let c = |id| key_label_on(os, id, true);
-    let p = |k| prompt_key_label(os, k);
-    [
-        format!(
-            "{} switches tabs and {} shows the sidebar.",
-            c(ChordId::NextTab),
-            c(ChordId::Sidebar)
-        ),
-        format!(
-            "In Claude's prompt, {} selects it all. {} and {}, {} and {}, {} and {} select by letter, word and line.",
-            p(P::SelectAll),
-            p(P::SelectLeft),
-            p(P::SelectRight),
-            p(P::SelectWordLeft),
-            p(P::SelectWordRight),
-            p(P::SelectHome),
-            p(P::SelectEnd)
-        ),
-        format!(
-            "{} and {} jump a word. {} and {} go to the start and end of the line.",
-            p(P::WordLeft),
-            p(P::WordRight),
-            p(P::Home),
-            p(P::End)
-        ),
-        format!(
-            "{} and {} delete a word.{} {} cuts, {} undoes, {} clears the prompt.",
-            p(P::DeleteWordBack),
-            p(P::DeleteWordForward),
-            if os.is_mac() {
-                format!(" {MAC_DELETE_LINE_LABEL} deletes to the line's start.")
-            } else {
-                String::new()
-            },
-            p(P::Cut),
-            p(P::Undo),
-            p(P::ClearPrompt)
-        ),
-        format!(
-            "{} and {} go to your previous and next message.",
-            p(P::PrevMessage),
-            p(P::NextMessage)
-        ),
-    ]
-    .join("\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1125,28 +1074,6 @@ mod tests {
     #[test]
     fn agent_chords_are_next_tab_and_sidebar() {
         assert_eq!(agent_chords(), vec![ChordId::NextTab, ChordId::Sidebar]);
-    }
-
-    #[test]
-    fn the_agent_keys_list_names_every_key_by_its_label() {
-        use flare_term::prompt_keys::{PROMPT_KEYS, prompt_key_label};
-        for os in [KeyOs::Windows, KeyOs::Mac] {
-            let text = agent_keys_text(os);
-            for id in agent_chords() {
-                assert!(text.contains(key_label_on(os, id, true)), "{os:?} {id:?}");
-            }
-            for k in PROMPT_KEYS {
-                assert!(text.contains(prompt_key_label(os, k)), "{os:?} {k:?}");
-            }
-            assert_eq!(
-                text.contains(flare_term::prompt_keys::MAC_DELETE_LINE_LABEL),
-                os == KeyOs::Mac,
-                "Cmd+Backspace is the Mac's alone"
-            );
-            assert!(!text.contains('\u{2014}'), "no em-dash");
-            assert_eq!(text.lines().count(), 5);
-        }
-        assert!(agent_keys_text(KeyOs::Windows).starts_with("Ctrl+PgDn switches tabs"));
     }
 
     #[test]

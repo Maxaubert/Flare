@@ -2809,7 +2809,7 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
 
 ## The agent prompt as a text box, 2026-11-14
 
-With Settings > Terminal > Agent hotkeys on (the default) and Claude in the tab in front, Claude's prompt edits like
+With Settings > Terminal > Flare hotkeys on (the default; it was called Agent hotkeys) and Claude in the tab in front, Claude's prompt edits like
 a text box (rule 1235). Windows keys first, the Mac's in brackets.
 
 - **Select:** Ctrl+A (Cmd+A) selects the whole prompt. Shift+Left and Right select by letter, Ctrl+Shift+Left and Right
@@ -2822,7 +2822,21 @@ a text box (rule 1235). Windows keys first, the Mac's in brackets.
   undo, Ctrl+Shift+Backspace (Cmd+Shift+Backspace) clears the prompt without stopping the agent.
 - **Your messages:** Ctrl+Shift+Up and Down (Cmd+Shift) scroll to your previous and next message.
 - Shift+Enter (a new line) and Ctrl+V with an image (Claude's Alt+V) already worked and are unchanged.
-- Settings lists every key under the Agent hotkeys switch, built from the key tables.
+- Settings lists every key on the Flare hotkeys sheet (see below), built from the key tables.
 - **Limits:** Claude only (Flare knows no other agent's editor keys). The prompt is read from the screen: a typed line
   break where the next word would not have fitted reads as a wrap, so a selection across it is one character short;
   a pasted-text chip (`[Pasted text #1 +40 lines]`) counts as the characters it shows.
+
+## The Flare hotkeys sheet, 2026-11-14
+
+Settings > Terminal > Keys calls the switch **Flare hotkeys** now (it was Agent hotkeys). It is still on by default,
+and a choice made before is kept. Its subtext says "Text box keys in agent prompts, and spare keys for tabs." (rule
+1262).
+
+- The info button left of the switch (tooltip "Show all hotkeys") opens a sheet of every Flare hotkey: the keys for
+  typing to an agent, the tab keys and the app keys, in three groups with striped rows. The keys come from Flare's own
+  key tables, so the sheet always matches what the keys do. A Mac shows its own keys (⌘, ⌥, ⇧).
+- The search at the top filters the list as you type, by what a key does or by the key itself ("tab", "ctrl+shift").
+  A group with nothing left is hidden.
+- Escape or a click outside the sheet closes it.
+- The five lines that listed the keys under the switch are gone: the sheet replaces them.
