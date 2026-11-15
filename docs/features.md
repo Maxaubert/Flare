@@ -2037,6 +2037,9 @@ Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked lo
   the user folder fill the empty spots, in that order, each once, never one already pinned or in the history; they say
   where they are on the right (`~\Documents`, "user folder"), and a real recent pushes one out. Each folder row keeps its
   pin. Nothing to list at all: a disabled "No recent folders" under the first row.
+- **Open folders are left out** (rule 1269, Max 2026-11-15). When the menu opens, an unpinned recent or starter folder
+  that an open local tab is in is not listed. A pin always stays. A hidden folder frees no spot, so the list just gets
+  shorter, with no note. Remote tabs hide nothing here.
 - **The starter folders** are Windows' known folders (`SHGetKnownFolderPath`, so a Documents redirected to OneDrive is the
   one Explorer shows), checked for existence on a worker once at start (`flare_win::paths::starter_folders`, rule 34);
   until it answers the menu simply has none. Under `--e2e` there are none.

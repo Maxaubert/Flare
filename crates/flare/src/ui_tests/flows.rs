@@ -1303,6 +1303,7 @@ fn plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again() {
         set_new_tab_folder(p, "D:\\w");
         remember_root(p, "C:\\r1");
         remember_root(p, "C:\\r2");
+        remember_root(p, "C:\\r3");
     });
     f.restore();
     let (px, py) = f.plus_center();
@@ -1328,6 +1329,11 @@ fn plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again() {
     let before = labels(&f);
     assert_eq!(before[0], crate::menus_ui::CHOOSE_FOLDER);
     assert!(before.len() >= 4, "recents are listed: {before:?}");
+    // C:\a and D:\w have tabs, so the menu leaves them out (rule 1269).
+    assert!(
+        !before.iter().any(|l| l == "a" || l == "w"),
+        "open folders are listed: {before:?}"
+    );
     let last = before.len() - 1;
     // Pinning the last row keeps the menu open and moves that row to the top.
     let last_name = before[last].clone();
