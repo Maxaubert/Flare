@@ -277,6 +277,7 @@ pub enum CtlOp {
     /// plugin only, never logged) or `{cancelled: true}`.
     SecretAsk {
         plugin: String,
+        plugin_name: String,
         title: String,
         label: String,
         /// The line under the title, the button's word and the error line (in the sub's place, in red); empty when
@@ -1446,12 +1447,13 @@ impl AppDispatcher {
     /// `secret.ask {title, label, sub?, button?, error?}`: Flare's own masked field; the text comes back to this
     /// plugin only.
     fn secret_ask(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
-        let (plugin, _, generation) = self.fill_caller(ctx, "asking for a secret")?;
+        let (plugin, plugin_name, generation) = self.fill_caller(ctx, "asking for a secret")?;
         let req = flare_mods::fill::parse_secret(params)?;
         self.hub()?.asks().admit(&plugin, Instant::now())?;
         self.ask_by(
             CtlOp::SecretAsk {
                 plugin,
+                plugin_name,
                 title: req.title,
                 label: req.label,
                 sub: req.sub,

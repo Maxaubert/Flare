@@ -261,6 +261,7 @@ fn run(ctx: &mut Ctx, app: &mut App, profile: &Path, record: &Path) -> Result<()
             && q["plugin"] == json!(ID)
             && q["title"] == json!("Fill E2E test login?")
             && q["site"] == json!("flare-test.local")
+            && q["foot"] == json!("")
             && q["branded"] == json!(false),
         format!("the question names the login and the host, with no line under it, in Flare's own look (no brand) ({q})"),
     );

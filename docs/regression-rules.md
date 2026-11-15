@@ -4045,9 +4045,14 @@ whose last answer failed (a wrong master password) asks again with `error`, one 
 120 characters (`MAX_ERROR_CHARS`; a control or hidden formatting character, two lines or a non-text value is
 `bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
 in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
-the keys, and the button and Cancel are as before. The dialog ends at Cancel: Max took out the line under it,
-"What you type goes to <Plugin> only. Flare does not keep it or show it." (2026-11-15), so `AskView.foot`,
-`pask-foot` and `PluginAsk.foot` are gone and the box is that line shorter. The look is Max's approved mockup C
+the keys, and the button, Cancel and Flare's line under Cancel are as before. That line is a short grey "Asked by
+<plugin>" ("Asked by Vault (from example.com)" for a plugin Settings installed from an address), the box's last row.
+It replaced "What you type goes to <Plugin> only. Flare does not keep it or show it.", which Max took out; a security
+review then found that with no line at all another plugin could dress as Bitwarden in the box, so Max chose this short
+line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller`) and install host
+(`hub().source_of`, through `plugin_of`), never from the ask: the plugin's `title`, `sub`, `label`, `button` and
+`error` cannot change it, and its `brand` cannot colour it. It is drawn small (11 px) in Flare's own type and dim ink,
+`PluginInk.dim` (`Theme.dim`, or `BrandInk.dim` on the fixed brand surface), never the plugin's colour. The look is Max's approved mockup C
 (2026-11-15). The colours are theme tokens, no hex in the dialog: `BrandInk.error` and `error-edge` on a brand,
 `SettingsFixed.error-dark`, `error-light` and `error-edge` on Flare's theme, through `PluginInk.error` and
 `PluginInk.error-edge`. The error takes the sub's line, so a box with a sub keeps its height. Older plugins are unchanged: no
@@ -4056,5 +4061,10 @@ the keys, and the button and Cancel are as before. The dialog ends at Cancel: Ma
 sub), `pask-error` and `pask-error-shown` in `app.slint`, `PluginAsk.error` in `ui/plugin_ask.slint`. Held by
 `a_secret_ask_may_carry_an_error_line` (`fill.rs`), `an_error_is_kept_beside_the_sub_and_cleaned`
 (`plugin_ask.rs`), and in `ui_tests/secret_error.rs` `an_error_is_red_in_the_sub_place_and_the_field_gets_a_red_edge`
-and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`, and the box ending 16 px under Cancel by
-`the_secret_box_ends_at_cancel_with_no_line_under_it`. Source: Max, 2026-11-15.
+and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. The "Asked by" line: `AskView.foot`,
+`pask-foot` and `pask-foot-x/y/w/h` in `app.slint`, `PluginAsk.foot` in `ui/plugin_ask.slint`, held by
+`a_plugin_installed_from_an_address_is_named_with_its_host` and
+`the_asked_by_line_names_the_real_plugin_whatever_the_ask_says` (`plugin_ask.rs`),
+`secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (`plugin_fill.rs`),
+`the_asked_by_line_sits_under_cancel_small_and_dim` (`ui_tests/secret_error.rs`) and the e2e `brand` scenario
+(the probe's `foot` and `foot_box`). Source: Max, 2026-11-15.

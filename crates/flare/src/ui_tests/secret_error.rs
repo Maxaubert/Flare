@@ -1,6 +1,7 @@
 //! A plugin's secret question with an error line (`secret.ask` `error`, rule 1266, the approved mockup C), headless:
 //! the error stands in the sub's place in the error colour, the field gets a red edge and a soft red glow, it is empty
-//! and has the keys; with no error the dialog looks as it did. The box ends at Cancel: no line under it.
+//! and has the keys; with no error the dialog looks as it did. Flare's short "Asked by <plugin>" line is the last row,
+//! small and dim under Cancel.
 
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{AppWindow, PluginLook};
@@ -130,15 +131,62 @@ fn no_error_keeps_todays_look_and_the_error_does_not_move_the_box() {
 }
 
 #[test]
-fn the_secret_box_ends_at_cancel_with_no_line_under_it() {
-    // Max took out "What you type goes to <Plugin> only. Flare does not keep it or show it." (2026-11-15): the box
-    // ends 16 px under Cancel, its bottom padding, with nothing between.
+fn the_asked_by_line_sits_under_cancel_small_and_dim() {
+    // Max's choice after the security review (2026-11-15): a short grey "Asked by <plugin>" under Cancel, from Flare.
     for s in SCALES {
-        let h = ask(s, crate::plugin_look::look_of(None), "");
-        let _ = h.render();
-        let c = &h.comp;
-        let gap =
-            (c.get_pask_box_y() + c.get_pask_box_h()) - (c.get_pask_deny_y() + c.get_pask_deny_h());
-        assert!((gap - 16.0).abs() <= 1.0, "gap {gap} at scale {s}");
+        for look in [crate::plugin_look::look_of(None), branded()] {
+            let h = ask(s, look.clone(), "");
+            h.comp
+                .set_pask_foot("Asked by Vault (from example.com)".into());
+            h.advance(0);
+            let f = h.render();
+            let c = &h.comp;
+            let cancel_bottom = c.get_pask_deny_y() + c.get_pask_deny_h();
+            let (fx, fy, fw, fh) = (
+                c.get_pask_foot_x(),
+                c.get_pask_foot_y(),
+                c.get_pask_foot_w(),
+                c.get_pask_foot_h(),
+            );
+            let box_bottom = c.get_pask_box_y() + c.get_pask_box_h();
+            let at = format!("scale {s} (branded {})", look.branded);
+            assert!(fh > 8.0 && fh < 20.0, "one small line, {fh} at {at}");
+            assert!(
+                fy >= cancel_bottom - 0.5 && fy - cancel_bottom <= 6.0,
+                "right under Cancel: {fy} vs {cancel_bottom} at {at}"
+            );
+            assert!(
+                (box_bottom - (fy + fh) - 16.0).abs() <= 1.0,
+                "the last row, the box's padding under it at {at}"
+            );
+            // Its ink is drawn in the box, and none of it is the plugin's colour.
+            let bg = f.px(
+                ((c.get_pask_box_x() + 4.0) * s) as u32,
+                ((fy + fh / 2.0) * s) as u32,
+            );
+            let (x0, y0, x1, y1) = (
+                (fx * s) as u32,
+                (fy * s) as u32,
+                ((fx + fw) * s) as u32,
+                ((fy + fh) * s) as u32,
+            );
+            assert!(
+                f.count_where(x0, y0, x1, y1, |p| !Frame::near(p, bg, 24)) > 20,
+                "the line is drawn at {at}"
+            );
+            let accent = [
+                look.accent.red(),
+                look.accent.green(),
+                look.accent.blue(),
+                255,
+            ];
+            if look.branded {
+                assert_eq!(
+                    f.count_where(x0, y0, x1, y1, |p| Frame::near(p, accent, 24)),
+                    0,
+                    "no brand colour in the line at {at}"
+                );
+            }
+        }
     }
 }

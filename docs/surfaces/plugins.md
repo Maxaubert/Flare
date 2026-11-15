@@ -118,10 +118,10 @@ dialogs. With a brand those surfaces use one fixed dark surface (ground `#1f242e
 lines `#353d4c`, text white, muted `#bac0ce`) and the brand's colour for the primary button, the usual level, an on
 toggle and links (a lighter tint, 35 percent toward white). `color` is the only input: a plugin cannot set the surface,
 fonts or the warning colour. Without a brand they wear Flare's theme and its chip. Amber (full control, "Always
-allow") is the same on both and never neutral. The words that say who asks (the asker line on a fill's card) are
-always Flare's, so a plugin dressed as another still shows its own name; the tab named in a fill approval is in
-quotes, as the tab's own words (what runs in a tab can set its title). Neither question has a line under its buttons
-(rules 245 and 1266). Rust:
+allow") is the same on both and never neutral. The words that say whose surface it is (the asker line on a fill's card,
+and the short grey "Asked by <plugin>" under a secret's Cancel) are always Flare's, so a plugin dressed as another still shows its own name, with the host it was installed
+from when Settings installed it from an address ("Vault (from example.com)"); the tab named in a fill approval is in
+quotes, as the tab's own words (what runs in a tab can set its title). Rust:
 `flare_mods::manifest::Brand`, `flare::plugin_look`; Slint: `ui/plugin_look.slint`.
 
 ## The details sheet
@@ -478,8 +478,10 @@ Flare's own dialog, and the user name, password and code never reach the agent.
 - **`browser.fill.page {tab?}`** gives `{tab, url, host}`: the address a plugin picks the login for.
 - **`secret.ask {title, label, sub?, button?, error?}`** shows Flare's masked field, centred in the plugin's look: its
   logo, `title` as the heading, `sub` under it (an account), one field with `label` as its placeholder and an eye that
-  shows what is typed, a full-width button with `button` (`OK` without it) and Cancel as a link, the last row: no
-  line under it (Max took out "What you type goes to <Plugin> only.", 2026-11-15). Enter submits. To ask again after a wrong answer, call it again with `error` (one
+  shows what is typed, a full-width button with `button` (`OK` without it), Cancel as a link, and under it Flare's short
+  grey line "Asked by <Plugin>" ("Asked by Vault (from example.com)" when Settings installed it from an address). Flare
+  writes that line from the plugin's own name and install host, small and in its own dim ink: nothing in the ask
+  changes it and the brand does not colour it, so a plugin dressed as another is still named (rule 1266). Enter submits. To ask again after a wrong answer, call it again with `error` (one
   plain line, at most 120 characters, such as "Wrong password. Try again."): the line shows in red in the sub's place,
   the field gets a red edge and a soft red glow, and it is empty and ready to type. No `error`, or an empty one, is the
   usual look (rule 1266). Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
