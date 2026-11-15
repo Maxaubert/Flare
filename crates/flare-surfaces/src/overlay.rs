@@ -39,6 +39,8 @@ pub enum Overlay {
     DictationAsk,
     /// The Machines page's Add a machine dialog (machine pairing PR 1).
     MachineAdd,
+    /// The Machines page's Computer sharing dialog (machine pairing PR 2).
+    SharingAsk,
     /// A settings notice: one plain line and OK (the App icon row's failed shell restart, rule 1263).
     SettingsNotice,
     /// A plugin's details sheet (Settings > Plugins, its card's info button).
@@ -61,7 +63,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 23] = [
+    pub const ALL: [Overlay; 24] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
@@ -76,6 +78,7 @@ impl Overlay {
         Overlay::SettingsAsk,
         Overlay::DictationAsk,
         Overlay::MachineAdd,
+        Overlay::SharingAsk,
         Overlay::SettingsNotice,
         Overlay::PluginSheet,
         Overlay::HotkeySheet,

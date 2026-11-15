@@ -17,6 +17,7 @@ pub mod import;
 pub mod kv;
 pub mod layout;
 pub mod look;
+pub mod machine_prefs;
 pub mod new_tab;
 pub mod page;
 pub mod pages;

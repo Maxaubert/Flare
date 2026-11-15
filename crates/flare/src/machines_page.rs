@@ -16,8 +16,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use flare_settings::kv::PrefStore;
 use flare_settings::page::machines::{AddForm, LinkStatus, MachineOs, MachineRow, MachinesInfo};
 use flare_tabs::tabs::Os;
+
+use crate::sharing::{NoSharingOs, Sharing, SharingOs};
 
 use crate::appctl::{Post, UiMsg};
 use crate::machines::{
@@ -153,6 +156,8 @@ pub enum MachinesMsg {
     Added(Result<(Vec<Machine>, String), String>),
     /// A machine was removed: the new list.
     Removed(Vec<Machine>),
+    /// The Computer sharing switch's worker (machine pairing PR 2).
+    Sharing(crate::sharing::SharingMsg),
 }
 
 /// The page's state on the UI thread.
@@ -166,6 +171,8 @@ pub struct MachinesPage {
     add: AddForm,
     /// A read is on its way (the page shows what it had until then).
     loading: bool,
+    /// This computer's Computer sharing switch (machine pairing PR 2, rule 1252).
+    sharing: Sharing,
 }
 
 /// Runs `f` on a named worker; a failure to start is logged.
@@ -258,7 +265,14 @@ pub fn new_machine(form: &AddForm) -> Result<Machine, String> {
 }
 
 impl MachinesPage {
+    /// The page with a sharing switch that sets nothing up (`NoSharingOs`) and keeps its state in memory, until the
+    /// window hands over the OS calls ([`Self::with_sharing_os`]) and Settings its store ([`Self::use_prefs`]).
     pub fn new(io: Arc<dyn MachinesIo>, post: Post) -> Self {
+        let sharing = Sharing::new(
+            Arc::new(NoSharingOs),
+            PrefStore::memory(),
+            Arc::clone(&post),
+        );
         Self {
             io,
             post,
@@ -267,7 +281,28 @@ impl MachinesPage {
             hosts: Vec::new(),
             add: AddForm::default(),
             loading: false,
+            sharing,
         }
+    }
+
+    /// The OS calls the sharing switch makes (the real ones in the app, a fake in the tests).
+    pub fn with_sharing_os(mut self, os: Arc<dyn SharingOs>) -> Self {
+        self.sharing = Sharing::new(os, PrefStore::memory(), Arc::clone(&self.post));
+        self
+    }
+
+    /// The settings store: the switch reads where it was left (on after a restart) and saves there from now on.
+    pub fn use_prefs(&mut self, prefs: PrefStore) {
+        self.sharing = Sharing::new(self.sharing.os(), prefs, Arc::clone(&self.post));
+    }
+
+    /// The Computer sharing switch.
+    pub fn sharing(&self) -> &Sharing {
+        &self.sharing
+    }
+
+    pub fn sharing_mut(&mut self) -> &mut Sharing {
+        &mut self.sharing
     }
 
     fn say(post: &Post, m: MachinesMsg) {
@@ -294,6 +329,7 @@ impl MachinesPage {
                 .collect(),
             ssh_hosts: self.hosts.clone(),
             add: self.add.clone(),
+            sharing: self.sharing.info(),
         }
     }
 
@@ -533,6 +569,7 @@ impl MachinesPage {
                 self.checks.retain(|id, _| list.iter().any(|m| &m.id == id));
                 self.machines = list;
             }
+            MachinesMsg::Sharing(m) => return self.sharing.on_msg(m),
         }
         true
     }

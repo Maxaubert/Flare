@@ -2905,3 +2905,39 @@ The first of three PRs that let a person link another computer without leaving F
   (PR 3), and the error table's buttons. The drop-down draws no divider before "Type an address" and draws it in the
   normal ink (the mockup's divider and dim ink are left for PR 3, with the nearby rows). Real ssh: the new lines in
   `docs/remote-sessions-manual-checks.md`.
+
+## Machine pairing, PR 2: the Computer sharing switch, 2026-11-14
+
+The second of three PRs (spec and mockup as in PR 1).
+
+- **This computer.** Settings > Machines starts with a section **This computer** whose one row is the **Computer
+  sharing** switch, subtext "Allows you to control sessions from other devices" (fixed: it never reports state). The
+  switch is on and dimmed while the setup runs, on once it finished, and stays on across restarts
+  (`flare.machines.sharing`). A failure is a Flare dialog with one plain line and OK. Rule 1252.
+- **Windows setup.** One UAC prompt runs one elevated PowerShell script: it installs the OpenSSH Server capability
+  when it is missing, starts `sshd` and sets it to Automatic, and opens port 22 on the Private network profile only.
+  Flare's own two rules let only Flare's program in, Private profile and local subnet only: TCP 47790 to 47794 for
+  pairing (a fixed range PR 3's listener takes its port from), UDP 5353 for the announcement. A server Flare starts
+  takes keys only: `PasswordAuthentication no` and `ChallengeResponseAuthentication no` go at the top of `sshd_config`
+  before it starts, with a backup, and a failed step puts the file back. Before it writes there, the script checks that
+  `%ProgramData%\ssh` and `sshd_config` are no links and that only SYSTEM and Administrators own and can change them;
+  otherwise it stops with one plain line. A server that already ran keeps its config. The script travels inline (no
+  script file) and writes no file: it reports through its exit code, and Flare reads the one line the outer PowerShell
+  prints strictly, as untrusted text. Declining the prompt puts the switch back off. Rule 1253.
+- **Mac setup.** Port 22 answering means Remote Login is on (no prompt). Otherwise macOS' administrator prompt runs
+  `systemsetup -setremotelogin on`; when macOS refuses (no Full Disk Access), the Flare dialog "Turn on Remote Login"
+  opens System Settings at Sharing and closes by itself the moment Remote Login is on. When the Mac firewall blocks all
+  incoming connections, sharing stays off and a dialog says where to turn that off (System Settings, Network,
+  Firewall). `Flare.app` declares `NSLocalNetworkUsageDescription` and `NSBonjourServices` (`_flare-pair._tcp`).
+  Rule 1254.
+- **Turning off.** The switch is off at once and the announcement stops; the keys Flare added (`flare-pair:`) are
+  removed from `authorized_keys`; Flare's firewall rules are removed (one UAC prompt); when Flare turned the SSH server
+  on, a dialog offers Keep it or Stop it. On a Mac, Cancel at the password prompt says at once that macOS did not
+  allow the change. Rule 1255.
+- **Mac keys only.** When Flare turns Remote Login on, the same administrator command writes
+  `/etc/ssh/sshd_config.d/000-flare.conf` with `PasswordAuthentication no` and `KbdInteractiveAuthentication no`
+  (Max chose "Keys only"); Stop it removes the file once Remote Login is off. A Remote Login that was already on, or
+  one the person turns on by hand, keeps macOS' own setting. Rule 1254.
+- **Not yet.** The announcement itself (mDNS), the pairing code and the nearby rows are PR 3; until then
+  `SharingOs::announce` only logs, and no key carries `flare-pair:` yet. Real runs: the new lines in
+  `docs/remote-sessions-manual-checks.md`.

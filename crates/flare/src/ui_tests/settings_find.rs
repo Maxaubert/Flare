@@ -226,8 +226,8 @@ fn index_ids() -> Vec<String> {
 fn the_index_has_31_rows_on_this_pc() {
     let n = index_ids().len();
     assert_eq!(
-        n, 48,
-        "the 38 rows of the other pages (no Mark colours with Ring, Add a machine, the app icon and the two caret rows among them) and the 9 dictation rows"
+        n, 49,
+        "the 39 rows of the other pages (no Mark colours with Ring, Computer sharing, Add a machine, the app icon and the two caret rows among them) and the 9 dictation rows"
     );
     assert!(n >= 30, "PT's own gate says at least 30");
 }
