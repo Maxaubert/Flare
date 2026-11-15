@@ -41,6 +41,8 @@ pub enum Overlay {
     SettingsNotice,
     /// A plugin's details sheet (Settings > Plugins, its card's info button).
     PluginSheet,
+    /// The Flare hotkeys sheet (Settings > Terminal > Keys, the info button; rule 1262).
+    HotkeySheet,
     /// The colour picker.
     ColourPicker,
     /// The Command help panel.
@@ -57,7 +59,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 21] = [
+    pub const ALL: [Overlay; 22] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
@@ -73,6 +75,7 @@ impl Overlay {
         Overlay::DictationAsk,
         Overlay::SettingsNotice,
         Overlay::PluginSheet,
+        Overlay::HotkeySheet,
         Overlay::ColourPicker,
         Overlay::Help,
         Overlay::Find,

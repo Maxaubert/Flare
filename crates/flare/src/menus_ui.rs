@@ -181,6 +181,28 @@ pub enum MenuKind {
     Section {
         sid: String,
     },
+    /// Ctrl+Shift+R (rule 1236): the linked machines alone, the + menu's machine rows; a pick opens a tab there.
+    Machines,
+}
+
+/// The machine menu's note when no machine is linked yet (rule 1236).
+pub const NO_MACHINES: &str = "No linked machines yet";
+
+/// Ctrl+Shift+R's menu (rule 1236): the + menu's machine rows, each carrying its machine like there; with no machine
+/// linked, one disabled note.
+pub fn machine_menu_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, String)> {
+    let mut rows = machine_rows(machines);
+    match rows.first_mut() {
+        // The + menu draws a rule above its first machine; alone in its menu it needs none.
+        Some((first, _)) => first.group = false,
+        None => {
+            let mut note = MenuRowData::plain(NO_MACHINES);
+            note.icon = GLYPH_LINK;
+            note.disabled = true;
+            rows.push((note, String::new()));
+        }
+    }
+    rows
 }
 
 /// The folder menu's first row: the folder picker, then a tab there (2026-10-27).

@@ -343,7 +343,6 @@ mod tests {
             dictation_wired: false,
             theme_colours: colours(),
             agent_colours: [String::new(), String::new(), String::new()],
-            agent_key_labels: String::new(),
             face_of,
             mods: None,
             machines: None,

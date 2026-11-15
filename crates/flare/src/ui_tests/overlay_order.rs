@@ -19,8 +19,9 @@ const APP: &str = include_str!("../../ui/app.slint");
 /// Plugins dropdown (plugins phase 4) is a pop like the Settings dropdown: a section's header menu opens over it.
 /// A plugin's question (`PluginAsk`, the `fill` permission) is a modal declared under the close question. A plugin's
 /// details sheet (`PluginSheet`, 2026-11-08) is a modal declared under it. The hover thumbnail (`ThumbBubble`, 2026-11-09)
-/// is a pop at the bottom: every menu or dialog hides it first.
-const RANKS: [(&str, u8, &str); 20] = [
+/// is a pop at the bottom: every menu or dialog hides it first. The Flare hotkeys sheet (`HotkeySheet`, rule 1262) is a
+/// modal declared after the plugin sheet.
+const RANKS: [(&str, u8, &str); 21] = [
     ("ThumbBubble", 1, "pop"),
     ("UpdateNotice", 1, "pop"),
     ("StagedToast", 1, "pop"),
@@ -35,6 +36,7 @@ const RANKS: [(&str, u8, &str); 20] = [
     ("ColourPopover", 3, "picker"),
     ("UpdateWindow", 4, "modal"),
     ("PluginSheet", 4, "modal"),
+    ("HotkeySheet", 4, "modal"),
     ("PluginAsk", 4, "modal"),
     ("Dialog", 4, "modal"),
     ("CopiedBadge", 5, "toast"),

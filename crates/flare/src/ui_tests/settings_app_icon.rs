@@ -80,7 +80,6 @@ fn fx_sized(scale: f32, prefs: PrefStore, w: u32, restart: Arc<FakeShellRestart>
             secondary: String::new(),
         }),
         agent_colours: Rc::new(|| [String::new(), String::new(), String::new()]),
-        agent_key_labels: Rc::new(String::new),
         post,
         version: "1.2.3".to_string(),
         copyright: "Copyright 2026".to_string(),

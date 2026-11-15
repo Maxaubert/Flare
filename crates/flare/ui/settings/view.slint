@@ -4,9 +4,10 @@
 // below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
 // For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
-import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile } from "types.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, KeySheetRow } from "types.slint";
 import { PluginLook } from "../plugin_look.slint";
 import { PluginSheet } from "plugin_sheet.slint";
+import { HotkeySheet } from "hotkey_sheet.slint";
 import { SetFrame } from "frame.slint";
 import { SetRowFrame, SetBlockFrame, SetPanel, SetSectionHeading } from "row.slint";
 import { SetSwitch, SetSegmented, SetSaveButton, SetRowButton, SetResetLink, SetTextField } from "controls.slint";
@@ -116,6 +117,11 @@ export global SettingsBridge {
     // The plugin is off: the sheet offers "Turn on" (what it lists is what that approves).
     in-out property <bool> sheet-can-turn-on;
     // The title of the plugin's panel when the sheet can open it, else "".
+    // The Flare hotkeys sheet (rule 1262): open, what is typed in its search, and the rows that search keeps.
+    in-out property <bool> keys-open;
+    in-out property <string> keys-query;
+    in-out property <[KeySheetRow]> keys-rows;
+    in-out property <length> keys-list-h;
     // events
     callback page-chosen(string);
     callback find-edited(string);
@@ -164,6 +170,8 @@ export global SettingsBridge {
     callback sheet-toggle(string, bool);
     callback sheet-choose(string, string);
     callback sheet-turn-on();
+    callback keys-close();
+    callback keys-query-edited(string);
     callback frame-resized(length, length);
     // The window's scale changed (a move to a monitor with another DPI keeps the logical size, so
     // frame-resized never fires): the Rust-snapped layout is laid out again.
@@ -185,6 +193,21 @@ component RowControls inherits HorizontalLayout {
     spacing: 10px;
     alignment: end;
 
+    // Buttons drawn before the control: the Flare hotkeys info button, left of its switch (rule 1262).
+    for b in root.data.lead-buttons: VerticalLayout {
+        alignment: center;
+        SetRowButton {
+            label: b.label;
+            label-alt: b.label-alt;
+            alt: b.alt;
+            off: b.off;
+            icon: b.icon;
+            title: b.tip;
+            warn: b.warn;
+            clicked => { SettingsBridge.row-button(root.data.id, b.id); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+    }
     // The app icon picker's row (rules 1230 and 1263) draws nothing here but its Restart Explorer button (one of
     // `buttons`, below); its tiles are drawn under the words.
     if root.data.kind == SetKind.pill: VerticalLayout {
@@ -744,6 +767,16 @@ export component SettingsPreview inherits Window {
         close => { SettingsBridge.sheet-close(); }
         toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
         chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
+    }
+    HotkeySheet {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.keys-open;
+        rows: SettingsBridge.keys-rows;
+        list-h: SettingsBridge.keys-list-h;
+        query <=> SettingsBridge.keys-query;
+        close => { SettingsBridge.keys-close(); }
+        query-edited(q) => { SettingsBridge.keys-query-edited(q); }
     }
     DictAsk {
         width: parent.width;
