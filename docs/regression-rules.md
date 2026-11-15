@@ -171,7 +171,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 
 ## Defaults, drop and migration (added in the M0 review)
 
-125. **New tab is Ctrl+T and opens in the user's folder; Ctrl+W closes a tab.** An empty folder means the user's own, resolved by the backend; there is no ask mode since 2026-10-27 (a stored "ask" opens in the folder; the folder menu's "Choose a folder…" row asks). Ctrl+T and Ctrl+W are taken from the shell knowingly (Ctrl+Shift+W still closes; Ctrl+Backspace covers delete-word). Native: the keymap table owns both chords; `new_tab_folder` reads "" as home. Source: regression-rules.md new-tab-ctrl-t; src/renderer/src/lib/newTabPrefs.ts; keymap.ts. M3 (amended): the label reads Ctrl+W, held by `ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open` (`flare-tabs` keymap).
+125. **New tab is Ctrl+T and opens in the user's folder; Ctrl+W closes a tab.** An empty folder means the user's own, resolved by the backend; there is no ask mode since 2026-10-27 (a stored "ask" opens in the folder; the folder menu's "Choose a folder…" row asks). Ctrl+T and Ctrl+W are taken from the shell knowingly (Ctrl+Shift+W still closes; Ctrl+Backspace covers delete-word). Native: the keymap table owns both chords; `new_tab_folder` reads "" as home. Source: regression-rules.md new-tab-ctrl-t; src/renderer/src/lib/newTabPrefs.ts; keymap.ts. M3 (amended): the label reads Ctrl+W, held by `ctrl_w_and_ctrl_shift_w_both_close_and_ctrl_shift_t_reopens` (`flare-tabs` keymap).
 126. **The accent and the background are settings; unset is the theme's.** Each row shows the theme's colour until a pick, then a plain Reset word forgets it. Applied once where the chrome is painted: a picked background replaces the theme's before the chrome tokens are measured, so mode, inks and the accent floor follow, and the terminal ground follows with text at 4.5:1 and the cursor and the sixteen colours at 3:1. A picked accent is kept where the ground can show it and moved only to the 3:1 floor where it cannot; an unpicked working indicator wears it. Native: `Option<Colour>` fields in settings, resolved in one `flare-theme` function feeding both chrome and grid. Source: regression-rules.md accent-and-background; backgroundPrefs.ts; accentPrefs.ts; colourPref.ts. M4 tests: `unset_colours_follow_the_theme_exactly`, `follows_the_theme_when_nothing_is_chosen`, `a_picked_background_replaces_the_themes_before_the_chrome_is_measured`, `keeps_the_picked_colour_where_the_ground_can_show_it`, `a_chosen_accent_the_ground_cannot_show_is_moved_to_the_floor_not_swapped`, `background_follows_the_theme_and_forgets_on_none`, `accent_follows_the_theme_until_chosen`, `the_working_colour_follows_the_theme_until_picked_and_can_be_given_back`.
 127. **PT Default is the default theme and Custom comes before it in the wall.** A fresh profile wears PT Default; the wall is Custom (when saved), PT Default, then the rest. Native: the default theme id is one constant in `flare-theme`; the wall order is a tested pure function. Source: regression-rules.md pt-default-theme; src/renderer/src/termHost.ts defaults. M4 tests: `the_wall_is_custom_then_the_default_then_the_rest`, `holds_the_whole_order`, `pt_default_leads_the_list_and_prism_is_the_core_fallback`, `a_fresh_store_wears_pt_default_at_100_percent`.
 128. **A dropped file types its quoted path, never Enter, only over a shell; the terminal answers a right-click.** The menu is Paste, Find in scrollback and Command help, led by Copy link over a link and Copy over marked text, with no Close tab. Nothing in a feature list is true until a test has done it: the e2e performs a real OS drop (`WM_DROPFILES` or an OLE drop carrying a real path), not a synthetic event. Native: the drop goes through `quote_path` and the paste-safe write path. Source: regression-rules.md file-drop-and-menu (#16); two-apps.md menu-fits.
@@ -3662,8 +3662,8 @@ systems ship `assets/icon/flare-color.svg`: Windows' `build/icon.ico` (exe resou
 the Mac's `Flare.icns`, which `flare-cef`'s `macos::release` makes with `sips` and `iconutil` from
 `build/icon-source.png` (`APP_ICON_SOURCE`; no `Assets.car`, no `CFBundleIconName`). The owner's other designs
 (`assets/icon/app-icons/*.svg`, and Liquid Glass as the static vector of `assets/icon/app-macos.icon` on the Mac and
-#199's Windows SVG on Windows) are choices of **Settings > Appearance > App icon**: one line of twelve tiles under the
-row's words, Original first; the tiles carry no words, so each has its name as tooltip and accessible label, the
+#199's Windows SVG on Windows) are choices of **Settings > Appearance > App icon**: twelve tiles under the row's
+words (placed by rule 1263), Original first; the tiles carry no words, so each has its name as tooltip and accessible label, the
 first saying "Original, the default". The pick is `flare.window.appIcon` in `settings.json` (`flare_settings::app_icon`):
 `original` until another is picked, and for any stored word that is not a choice. Held by
 `the_original_icon_is_the_shipped_app_icon_and_the_others_are_choices` (`crates/flare/tests/ship_text.rs`),
@@ -3672,7 +3672,7 @@ first saying "Original, the default". The pick is `flare.window.appIcon` in `set
 `an_unknown_stored_word_reads_as_the_original_and_is_never_stored`),
 `the_app_icon_row_picks_the_original_until_another_is_chosen` (`page/appearance.rs`),
 `the_app_icon_row_is_its_words_over_a_line_of_tiles` (`layout.rs`) and the rendered picker in
-`crates/flare/src/ui_tests/settings_app_icon.rs` (`the_picker_shows_every_icon_with_the_original_picked_and_named_the_default`,
+`crates/flare/src/ui_tests/settings_app_icon.rs` (`the_picker_shows_every_icon_on_one_line_with_the_original_picked`,
 `a_press_on_a_tile_stores_it_and_the_row_follows`, `a_stored_pick_is_shown_and_an_unknown_one_shows_the_original`).
 Source: the owner, 2026-11-13 ("the app icon should stay the same as default, no new default, just a picker so the
 user can change their look").
@@ -3801,6 +3801,107 @@ Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems st
 `the_mac_blink_period_comes_from_the_on_default_then_the_off_default`, `a_huge_mac_blink_period_is_steady`,
 `the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
 Source: the macOS parity review of PR #234, 2026-11-14.
+
+1235. **With agent hotkeys on and Claude in the tab in front, its prompt is a text box.** Max, 2026-11-14 ("ctrl A is
+select all instead of go all the way left", "ctrl shift arrows is select word by word"). Ctrl+A (Cmd+A) selects the
+prompt being typed, shown with Flare's own selection; Shift+Left and Right select by letter, Ctrl+Shift (Option+Shift)
+by word, Shift+Home and End (Cmd+Shift+Left and Right) to the line's ends. Typing or pasting over the selection replaces
+it, Backspace and Delete delete it, Ctrl+X (Cmd+X) copies then deletes it, Left or Right alone collapse it. Claude Code
+has no selection of its own: a deletion walks Claude's caret to the selection's end with arrows and sends one Backspace
+per character, the way rule 17 deletes on a shell's line; Flare tracks the caret it walked, because the screen lags the
+keys. The prompt is read from the screen: the box between Claude's two rules whose first row starts with its mark, the
+caret is the reverse-video cell, dim and grey cells are a placeholder or a suggestion, and a row break is a typed line
+break when the next row's first word would have fitted on the row (Claude word-wraps), else a wrap. The selection guard
+keeps the highlight over Claude's erase-and-repaint; should a repaint still drop it, the tick puts it back every 120 ms
+while the prompt's text is unchanged; another text, a mouse press, another tab or any other key lets the selection go. Translated to Claude's
+own keys (its interactive-mode docs, read 2026-11-14): Ctrl+Left and Right (Option) to Alt+B and Alt+F, Home and End
+(Cmd+Left and Right) to Ctrl+A and Ctrl+E, Ctrl+Backspace to ^H (Option+Backspace to ESC DEL), Ctrl+Delete (Option+
+Delete) to Alt+D, Ctrl+Z (Cmd+Z) to Ctrl+_ (undo), Ctrl+Shift+Backspace (Cmd+Shift+Backspace) clears the whole prompt
+with arrows and Backspaces, never Ctrl+C or Escape, so a working agent is not interrupted. Ctrl+Shift+Up and Down
+(Cmd+Shift) scroll the view to your previous or next message: the rows with Claude's `❯` in the first column (Flare has
+no prompt marks from shell integration), the live box's own row left out; on the alternate screen the keys are Claude's.
+Ctrl+X without a selection stays Claude's (it starts Claude's own two-key chords). On a Mac, Cmd+Backspace (⌘⌫,
+`Input::DeleteLineBack`) deletes the selection, else sends ^U (delete to the line's start); without it the selection was
+let go and ^U went out from the walked caret, deleting more than the selection (Mac review, 2026-11-14). With "Use
+Option as Meta" on, an Option key without Ctrl is no typed text (`classify` takes the setting): Option+B, F and D go out
+as ESC and the letter and let the selection go, never erase it first; with the setting off Option still types (Option+2
+is @ on a Norwegian layout) and replaces the selection. Shift+Enter (rule 6) and the image
+key (rule 5) already did what Max asked and are unchanged. Codex, agy and a plain shell keep every key: Flare knows no
+other agent's editor keys. Native: `flare_term::prompt_keys` (`prompt_key_of`, `read_box`, `plan`, `message_scroll`,
+`prompt_key_label`), `Emulator::{prompt_lines, marked_rows, sel_cells}`, `TermUi::{prompt_key, message_key,
+prompt_tick}`, the check in `AppCtl::term_key`; Settings lists the keys on the Flare hotkeys sheet (rule 1262). Held by the
+`prompt_keys` unit tests, `the_prompt_keys_are_no_chords`, `the_mac_prompt_keys_are_no_chords`,
+the hotkeys sheet's tests (rule 1262) and the UI tests
+`ctrl_a_selects_the_claude_prompt_and_typing_replaces_it`,
+`shift_arrows_grow_the_highlight_and_it_survives_the_agents_repaint`,
+`the_prompt_keys_are_claudes_only_and_only_with_agent_hotkeys_on` and
+`ctrl_shift_up_and_down_step_through_your_messages`. Source: Max, 2026-11-14.
+
+## File links: fallback folders (2026-11-14)
+
+1248. **A relative file link the agent's folder lacks is read from the session's start folder, the tab's folder or
+the repo root.** A click or the menu's Open on a relative link gave route `missing` (diag `path-click`, ext `tsx`):
+`TabInfo::link_base` read it only from the folder the agent's hooks last named, but agents write paths relative to
+their session's folder, and the named folder can differ (a `cd` into a subfolder or a worktree, a stale report).
+Owner's pick (Max, 2026-11-14): fallback folders. When no spelling names anything under the agent's folder, the worker
+tries, in order and each folder once: the folder the agent's session first named (`AgentHub::agent_start_folder`,
+the first `panel.state` folder since the agent came or the session changed; the `SessionStart` hook sends none), the
+tab's own shell folder, the nearest git repo root above the agent's folder (a folder holding `.git`, a worktree's
+`.git` file included) and the main repo root a worktree's `.git` file points to (`gitdir:` then `commondir`). Folders
+go outer, spellings inner: the first folder is tried with every spelling, then the next. The agent's folder wins
+whenever it has the file. Nothing found: `missing`, as before. The click, every menu row (Open, Show in Explorer, Show
+in side panel, Copy path) and the hover thumbnail use the same resolution, so they agree. The `path-click` crumb gets
+`base`: `agent`, `start`, `shell`, `repo` or `none`, a fixed word, never the path. Unchanged: an absolute path, a
+rooted path with no drive and `~` read from one folder only; a remote tab resolves nothing here; the worker
+re-resolves the winning spelling under the winning folder and applies the allowlist (rules 13 and 14); nothing is
+run, only stats and a worktree's small `.git` and `commondir` files are read. Only local folders are walked or read: a
+`gitdir:` naming a network share or a `\\?\` path is never followed (the filter the agent's folder gets), so no
+click or hover reaches another machine (review, 2026-11-14). Native: `link_bases::{LinkBases,
+find_link, repo_roots}`, `TabInfo::link_bases`, `FrontTab::start_cwd`. Held by
+`a_relative_link_the_agents_folder_lacks_is_read_from_the_tabs_own_folder`,
+`a_relative_link_is_read_from_the_start_folder_and_the_agents_folder_wins`,
+`a_relative_link_missing_under_the_agents_folder_is_found_under_the_start_folder`,
+`the_agents_folder_wins_when_both_have_the_file`, `folders_go_before_spellings`, `nothing_anywhere_is_none`,
+`the_repo_root_above_the_agents_folder_is_tried`,
+`a_worktree_counts_as_a_root_and_its_main_repo_root_is_tried_after_it`,
+`a_worktree_without_commondir_still_finds_its_main_root`, `a_gitdir_that_is_no_local_folder_is_never_followed`,
+`only_a_relative_link_gets_fallback_folders` and
+`the_start_folder_is_the_first_folder_named_and_goes_with_the_agent`. Source: Max, 2026-11-14.
+
+## App keys (2026-11-14)
+
+1236. **Five app keys, always on: Ctrl+Shift+T reopens, N picks a folder, R picks a machine, L opens the browser, E
+shows the folder.** They are Cmd+Shift+T, N, R, L and E on a Mac. They do not need agent hotkeys or an agent: like
+Ctrl+Shift+P, O and K they are the app's in a plain shell and over a full-screen program too, because the same letter
+without Shift stays the shell's (Ctrl+E, Ctrl+L, Ctrl+R, Ctrl+N keep their meaning for readline and Claude Code). With
+Alt too (AltGr) the key is the shell's. Under a question they do nothing and the shell never hears them. Ctrl+T without
+Shift is still a new tab; Ctrl+Shift+T no longer is one. Ctrl+Shift+T opens the tab closed last again, in its old place
+in the strip, in front: a list of the last 10 closed tabs is kept in memory for this run only (never saved), so more
+presses walk back. Settings and a placeholder are not kept. A Claude tab resumes the session the hooks named for it; when
+none was named, or an open tab holds that session now (two Claudes never share one session), a worker reads the folder's sessions and takes the newest one no open tab holds (rule 4), else a plain
+shell. Codex resumes with `codex resume --last` and agy with `agy -c`, as the restore does. A remote tab comes back on
+its machine in its folder; the host owns its session. Ctrl+Shift+N is the folder menu's "Choose a folder..." row (the
+row shows the key). Ctrl+Shift+R shows the linked machines as a menu under the bar (the + menu's machine rows; "No
+linked machines yet" when there are none); a pick opens a shell tab on that machine in the host's home folder.
+Ctrl+Shift+L shows the browser panel beside the tab in front: a page the tab shows or hid comes back, otherwise
+about:blank opens; then the address field takes the keys with its text selected. Ctrl+Shift+E opens the front tab's
+folder in Explorer (Finder on a Mac) on a worker; a remote tab's folder is on another machine, so nothing opens. The Mac
+menu bar lists them: File > New Tab in Folder..., New Tab on Machine..., Reopen Closed Tab, Show Folder in Finder; View
+> Browser Panel. Native: `flare_tabs::keymap::{ChordId::ReopenTab, NewTabIn, RemoteTab, Browser, OpenFolder}`,
+`chords::ChordTarget::{reopen_tab, new_tab_in_folder, remote_tab, open_browser, open_tab_folder}`,
+`appctl::app_keys_glue`, `menus_ui::{MenuKind::Machines, machine_menu_rows}`. Held by
+`the_app_keys_take_ctrl_shift_letters_everywhere_and_leave_the_plain_letters_to_the_shell`,
+`on_the_mac_the_app_keys_are_cmd_shift_and_ctrl_shift_stays_the_shells`,
+`ctrl_w_and_ctrl_shift_w_both_close_and_ctrl_shift_t_reopens`,
+`the_app_keys_are_taken_in_a_plain_shell_and_a_full_screen_program_and_ctrl_t_still_opens`,
+`ctrl_shift_t_walks_back_through_the_closed_tabs_each_in_its_place`,
+`a_closed_claude_tab_comes_back_with_its_session_and_codex_with_its_own_resume`,
+`a_named_session_an_open_tab_took_since_is_not_resumed_twice`,
+`a_closed_remote_tab_comes_back_on_its_machine`, `ctrl_shift_n_asks_for_a_folder_and_opens_a_tab_there`,
+`ctrl_shift_r_lists_the_linked_machines_and_a_pick_opens_a_tab_there`,
+`ctrl_shift_l_opens_the_browser_panel_with_the_address_field_holding_the_keys`,
+`ctrl_shift_e_shows_the_folder_and_a_remote_tab_opens_nothing` and `the_shown_shortcut_is_the_keymaps_label`. Source:
+Max, 2026-11-14 (the approved hotkeys sheet, design 7).
 
 ## Keys Slint was handed (2026-11-14)
 
@@ -4078,3 +4179,77 @@ leaves the server Flare's, so the next turn off asks again. Held by
 `cancel_at_the_mac_password_prompt_when_turning_off_says_so_at_once`,
 `the_windows_off_script_removes_only_what_flare_added`,
 `only_the_keys_flare_added_are_removed` and `turning_sharing_off_asks_to_stop_flares_server`.
+## The App icon row (2026-11-14)
+
+1263. **The App icon tiles are a tidy grid that wraps, and the row's right restarts the shell instead of naming the
+icon.** Max, 2026-11-14: "change the look of this option, the icons are weirdly placed. also instead of saying safety
+orange in that spot have it be a button to restart explorer, since people dont care about the icon name". Layout A of
+`docs/superpowers/specs/2026-11-14-app-icon-row-mockup.html`: the tiles are a fixed 36 px with 10 px between them,
+left aligned at the words' column (60 in), 2 under the row's 58 of words and 16 above its bottom. They never shrink:
+a row too narrow for all twelve wraps them onto more lines and grows by a tile and a gap per line. Rust picks the
+tiles a line (`flare_settings::layout::{icon_cols, icon_lines, icon_row_h}`, `RowLayout::cols`, `SetRow.cols`) and
+the view places them by it (`AppIconStrip.cols`), so the height and the tiles always agree. The chosen ring, the
+hover fill, the name as tooltip and accessible label and the key focus of each tile stay as rule 1230 made them. The
+row's right is no longer the picked icon's name (`SetRow.badge` stays empty and `RowControls` draws no text for the
+row): it is a row button, **Restart Explorer** on Windows and **Restart Dock** on macOS (`app_icon::RESTART_LABEL`,
+id `restart-shell`), with the mockup's circular arrow (`redo`, in `icons::BUTTON_ICONS`) left of its words and no
+tooltip, as a labelled button.
+A press runs `ShellRestart::restart` on the `flare-shell-restart` worker and answers with
+`SettingsMsg::ShellRestarted`; the button is off while it runs and a second press does nothing. Windows ends every
+`explorer.exe` of this user's session (`ProcessIdToSessionId`, never another session's), waits up to 2.5 s for
+Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path, out of any job Flare
+runs in, checks that it shows within 5 s and starts it once more before it reports a failure; macOS runs
+`/usr/bin/killall Dock` (`flare_win::shell_restart`). A settings row's subtext never changes to report state (Max's
+standing rule), so the row always says "The taskbar and the window. Shortcuts keep the original." (its own fixed text
+on a Mac, `APP_ICON_SUB`). A failure opens the settings notice instead (`SetNotice`, `ui/settings/notice.slint`):
+the Dialog look (scrim, a box of at most 380 px on the side-flat ground, hairline border, modal shadow) with one plain
+line, "Explorer did not restart." ("The Dock did not restart.", `app_icon::RESTART_FAILED`), and an **OK** button
+(labelled, so no tooltip). OK, Enter, Space, Escape and a press outside close it. Rust drives it through
+`SettingsBridge.notice-open`, `notice-text` and `notice-closed` (`SettingsCtl::show_notice` and `close_notice`;
+`SettingsCtl::escape` and leaving Settings close it too). It is counted as an overlay (`Overlay::SettingsNotice`, the
+`overlay-open` term, rank 3 in `overlay_order.rs`). It is not a row, so the Find index does not change. Crumbs:
+`shell-restart-asked`, then `shell-restart` with `ok` and a short `why` (no path). Tests and `--e2e` use
+`FakeShellRestart`: nothing outside the test restarts Explorer or the Dock. Held by
+`the_app_icon_row_is_its_words_over_a_line_of_tiles`, `the_app_icon_tiles_wrap_and_the_row_grows` (`layout.rs`),
+`the_app_icon_row_offers_the_shell_restart_button` (`page/appearance.rs`),
+`the_fake_restart_counts_and_fails_when_told` (`app_icon.rs`) and, in `ui_tests/settings_app_icon.rs`,
+`the_picker_shows_every_icon_on_one_line_with_the_original_picked`,
+`a_narrow_window_wraps_the_tiles_and_the_row_grows_by_whole_lines`,
+`the_right_side_is_the_restart_button_not_the_icon_name`, `the_restart_button_runs_the_fake_restart`,
+`a_failed_restart_opens_the_notice_and_the_subtext_stays` (OK closes it) and
+`escape_closes_the_restart_notice_and_a_good_restart_opens_none`. Source: Max, 2026-11-14.
+
+## Flare hotkeys sheet (2026-11-14)
+
+1262. **Settings > Terminal > Keys names the switch "Flare hotkeys" and its info button opens a sheet of every hotkey.**
+The row was "Agent hotkeys"; it keeps its settings key (`flare.window.agentKeys`, on by default), so a choice made
+before survives. Its subtext is Max's own words, "Text box keys in agent prompts, and spare keys for tabs.", the same
+on and off (a subtext never reports state). The five note lines under the switch are gone. An icon-only info button
+(the circle i, tooltip "Show all hotkeys") sits left of the switch: a `Button` with `lead`, drawn before the control
+(`SetRow.lead-buttons`). It opens the hotkeys sheet, the approved mockup's design 7 "Search and stripes"
+(`docs/superpowers/specs/2026-11-14-hotkeys-sheet-mockup.html`): the title "Flare hotkeys" and a pill search field
+"Search" on one top row with a divider under it, then grey group names ("Typing to an agent", "Tabs", "App") over 32 px
+striped rows, the action left in soft ink and its keys right in bold, on the theme's flat ground (`side-flat`). The
+search holds the keys when the sheet opens; typing keeps the rows whose action, keys or table labels hold the text,
+ignoring case, and leaves out a group with none. Escape or a press outside the box closes it, and so does leaving
+Settings. The rows are built from the key tables per system, never typed: the chord table (`key_label_on`, a chord
+with an agent key shows both, the agent key first), the prompt keys (`prompt_key_label`), the paste key
+(`copy_paste_labels`), the new-line key (`flare_term::keys::newline_label`) and the Mac's Cmd+Backspace
+(`MAC_DELETE_LINE_LABEL`). Two arrow keys with the same modifiers share them ("Shift+←→"). The Mac shows its glyphs
+(⌘, ⌥, ⇧). Every chord of the table is on the sheet except the agent guard, which is no action (its own switch row);
+a key the system lacks has no row (the Window menu on a Mac, the zoom keys on Windows). Beyond the mockup the sheet
+also lists "Go to start or end" (Home, End) and the rest of the chord table (New tab, Close tab, Go to tab 1 to 9,
+Find a tab, Show or hide the panel, Keys to the panel and back, Find, Settings, Command help, Full screen, Window menu,
+and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Overlay::HotkeySheet`,
+`SettingsBridge.keys-open` in `overlay-open`), a modal declared after the plugin sheet. Native:
+`flare_tabs::hotkeys::{hotkey_rows, filter_rows, pair_text}`, `settings_ctl::keys_sheet_rows`,
+`SettingsCtl::{open_keys, keys_query, close_keys}`, `ui/settings/hotkey_sheet.slint`. Held by
+`every_chord_of_the_table_is_on_the_sheet_by_its_label`, `every_prompt_key_paste_and_new_line_are_on_the_sheet`,
+`the_windows_sheet_reads_as_the_mockup`, `the_mac_sheet_names_cmd_and_option_in_their_glyphs`,
+`the_search_reads_actions_keys_and_labels_and_ignores_case`,
+`flare_hotkeys_has_an_info_button_left_of_its_switch_and_no_notes`,
+`the_row_is_flare_hotkeys_with_an_info_button_before_its_switch`,
+`the_button_opens_the_sheet_the_search_filters_and_escape_closes_it`,
+`a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`, `every_chord_in_the_table_is_on_the_sheet`,
+`leaving_settings_closes_the_sheet`, `a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks` and
+`flare_hotkeys_is_found_by_its_new_name_and_its_old_one`. Source: Max, 2026-11-14 (the approved mockup).

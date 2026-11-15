@@ -15,12 +15,14 @@ const APP: &str = include_str!("../../ui/app.slint");
 /// host the colour picker (PT draws a picker inside a dialog at z-10 of that dialog, so it is over
 /// it), so they share the picker's rank and the picker is declared after them. `DictAsk` (the Dictation page's
 /// one-line download question) is a Settings dialog like `AskThree` and takes the same rank (M8 Task 25), as does the Machines
-/// page's `MachineAddDialog` (machine pairing PR 1), which draws its drop-down's menu inside itself, and its
-/// `SharingAskDialog` (machine pairing PR 2). The Plugins dropdown (plugins phase 4) is a pop like the Settings dropdown: a section's header menu opens over it.
+/// page's `MachineAddDialog` (machine pairing PR 1), which draws its drop-down's menu inside itself, its
+/// `SharingAskDialog` (machine pairing PR 2), and `SetNotice` (a settings notice, one line and OK, rule 1263). The
+/// Plugins dropdown (plugins phase 4) is a pop like the Settings dropdown: a section's header menu opens over it.
 /// A plugin's question (`PluginAsk`, the `fill` permission) is a modal declared under the close question. A plugin's
 /// details sheet (`PluginSheet`, 2026-11-08) is a modal declared under it. The hover thumbnail (`ThumbBubble`, 2026-11-09)
-/// is a pop at the bottom: every menu or dialog hides it first.
-const RANKS: [(&str, u8, &str); 21] = [
+/// is a pop at the bottom: every menu or dialog hides it first. The Flare hotkeys sheet (`HotkeySheet`, rule 1262) is a
+/// modal declared after the plugin sheet.
+const RANKS: [(&str, u8, &str); 23] = [
     ("ThumbBubble", 1, "pop"),
     ("UpdateNotice", 1, "pop"),
     ("StagedToast", 1, "pop"),
@@ -33,9 +35,11 @@ const RANKS: [(&str, u8, &str); 21] = [
     ("DictAsk", 3, "picker"),
     ("MachineAddDialog", 3, "picker"),
     ("SharingAskDialog", 3, "picker"),
+    ("SetNotice", 3, "picker"),
     ("ColourPopover", 3, "picker"),
     ("UpdateWindow", 4, "modal"),
     ("PluginSheet", 4, "modal"),
+    ("HotkeySheet", 4, "modal"),
     ("PluginAsk", 4, "modal"),
     ("Dialog", 4, "modal"),
     ("CopiedBadge", 5, "toast"),

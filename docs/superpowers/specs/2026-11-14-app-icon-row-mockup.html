@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>App icon row</title>
+<!-- Approved by Max 2026-11-14: layout A, Tidy grid. Fixed 36 px tiles under the words, 10 px gaps, left aligned, wrapping. A Restart Explorer button (Restart Dock on a Mac) replaces the icon name on the right. -->
+<style>
+:root{
+  --ground:#171717;--text:#dedacf;--soft:#c2bfb5;--dim:#929089;--dim2:#716f6a;
+  --line:#ffffff17;--divider:#ffffff12;--hover:#ffffff0f;--control:#1e1e1d;--pressed:#3d3c39;
+  --accent:#fe8f34;--accent-hi:#f6a25b;--on-accent:#0b0b0f;
+  --panel:rgba(222,218,207,.036);--tile:rgba(222,218,207,.06);--sub:#cbc8bf;--well:#121211;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#0b0b0b;color:var(--text);font:13px/1.4 "Segoe UI",system-ui,sans-serif;padding:24px 16px 60px}
+h1{font-size:16px;font-weight:600;max-width:860px;margin:0 auto 4px}
+.lead{max-width:860px;margin:0 auto 22px;color:var(--dim);font-size:12.5px}
+.cell{max-width:860px;margin:0 auto 26px}
+.num{font-size:12px;color:var(--dim);margin:0 0 8px}.num b{color:var(--text);font-size:13px;margin-right:6px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:5px;overflow:hidden;background-color:#141414}
+.row{display:flex;align-items:center;gap:14px;padding:0 16px 0 14px;min-height:58px}
+.tile{width:32px;height:32px;border-radius:4px;background:var(--tile);display:grid;place-items:center;flex:none}
+.tile svg{width:16px;height:16px;stroke:var(--soft);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.tile img{width:26px;height:26px}
+.col{flex:1;min-width:0}
+.lb{font-weight:600}
+.sb{font-size:11.5px;color:var(--sub)}
+.btn{height:28px;padding:0 12px;border-radius:3px;background:var(--control);border:1px solid var(--divider);color:var(--text);font:12px "Segoe UI";display:flex;align-items:center;gap:7px;flex:none;cursor:pointer}
+.btn:hover{background:#262625}
+.btn svg{width:13px;height:13px;stroke:var(--soft);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* icon tiles */
+.ic{position:relative;border-radius:28%;display:grid;place-items:center;cursor:pointer;flex:none}
+.ic img{width:84%;height:84%;display:block}
+.ic:hover{background:var(--hover)}
+.ic.on::after{content:"";position:absolute;inset:-4px;border:2px solid var(--accent);border-radius:30%}
+
+/* A: a grid aligned under the words, fixed 36 px tiles, 10 px gap, left aligned, ends where the row ends */
+.a .strip{display:flex;flex-wrap:wrap;gap:10px;padding:2px 16px 16px 60px}
+.a .ic{width:36px;height:36px}
+
+/* B: the icons sit in a dark well spanning the row */
+.b .well{margin:0 16px 16px 60px;background:var(--well);border:1px solid var(--divider);border-radius:6px;padding:12px 14px;display:flex;justify-content:space-between}
+.b .ic{width:34px;height:34px}
+
+/* C: even spread across the full width, a hairline above */
+.c .strip{border-top:1px solid var(--line);margin-left:60px;padding:14px 16px 14px 0;display:flex;justify-content:space-between}
+.c .ic{width:36px;height:36px}
+
+/* D: the row's own tile shows the chosen icon; smaller strip */
+.d .strip{display:flex;gap:6px;padding:0 16px 14px 60px}
+.d .ic{width:30px;height:30px}
+.d .ic.on::after{inset:-3px}
+
+/* E: two rows of six, bigger tiles, under the words */
+.e .strip{display:grid;grid-template-columns:repeat(6,44px);gap:12px 14px;padding:4px 16px 18px 60px}
+.e .ic{width:44px;height:44px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute"><symbol id="drop" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8c1.8 2 3 3.4 3 5a3 3 0 0 1-6 0c0-1.6 1.2-3 3-5z"/></symbol>
+<symbol id="redo" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol></svg>
+
+<h1>App icon row: five layouts</h1>
+<p class="lead">Each has "Restart Explorer" where the icon name was. Pick one, or mix.</p>
+<div id="out"></div>
+
+<script>
+const A='file:///C:/Users/Admin/Documents/Claude/Github/Flare/assets/icon/';
+const icons=['flare-color','app-icons/liquid-glass-windows','app-icons/high-voltage','app-icons/daybreak','app-icons/hazard-reverse','app-icons/safety-orange','app-icons/blue-enamel','app-icons/raspberry-lacquer','app-icons/lemon-ink','app-icons/jade-glass','app-icons/citrus-punch','app-icons/cobalt-electric'];
+const chosen=5;
+const tiles=()=>icons.map((p,i)=>`<div class="ic${i===chosen?' on':''}"><img src="${A}${p}.svg" alt=""></div>`).join('');
+const btn=`<div class="btn"><svg><use href="#redo"/></svg>Restart Explorer</div>`;
+const head=(tileInner)=>`<div class="row"><div class="tile">${tileInner}</div><div class="col"><div class="lb">App icon</div><div class="sb">The taskbar and the window. Shortcuts keep the original.</div></div>${btn}</div>`;
+const plain='<svg><use href="#drop"/></svg>';
+const V=[
+ ['A. Tidy grid','fixed tiles under the words, even gaps, nothing stretched','a',head(plain)+`<div class="strip">${tiles()}</div>`],
+ ['B. Icon well','the icons sit in a dark tray that spans the row','b',head(plain)+`<div class="well">${tiles()}</div>`],
+ ['C. Full spread','a hairline, then the icons spread edge to edge','c',head(plain)+`<div class="strip">${tiles()}</div>`],
+ ['D. Chosen in the tile','the row\'s own tile shows the chosen icon; a tighter strip','d',head(`<img src="${A}${icons[chosen]}.svg" alt="">`)+`<div class="strip">${tiles()}</div>`],
+ ['E. Two rows','bigger icons, six per line','e',head(plain)+`<div class="strip">${tiles()}</div>`]];
+document.getElementById('out').innerHTML=V.map(([n,d,c,body])=>`<div class="cell"><div class="num"><b>${n}</b>${d}</div><div class="panel ${c}">${body}</div></div>`).join('');
+</script>
+</body>
+</html>

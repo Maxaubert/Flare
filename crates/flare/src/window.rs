@@ -709,6 +709,12 @@ fn settings_deps(
             flare_diag::control::DiagControl::with_log(&profile, flare_diag::writer::main()),
         )),
         verb,
+        // Under --e2e a stand-in: a scenario never restarts Explorer or the Dock (rule 1263).
+        shell_restart: if e2e_on {
+            Arc::new(flare_settings::app_icon::FakeShellRestart::new())
+        } else {
+            Arc::new(flare_win::shell_restart::SystemShellRestart)
+        },
         dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(move |default_dir, answer| {
             let parent = weak
@@ -772,13 +778,6 @@ fn settings_deps(
             let prefs = prefs.clone();
             Rc::new(move || crate::settings_ctl::agent_colours_in_force(&prefs))
         },
-        agent_key_labels: Rc::new(|| {
-            flare_tabs::keymap::agent_chords()
-                .into_iter()
-                .map(|id| flare_tabs::keymap::key_label(id, true))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }),
         post,
         version: crate::app_facts::version().to_string(),
         copyright: crate::startup::copyright_line(crate::startup::LICENCE),

@@ -583,12 +583,12 @@ pub const APP_OPTIONS: [RowDef; 23] = [
     },
     RowDef {
         id: "agent-keys",
-        label: "Agent hotkeys",
-        sub: "Spare shell keys open the sidebar, switch tabs.",
+        label: "Flare hotkeys",
+        sub: "Text box keys in agent prompts, and spare keys for tabs.",
         section: "keys",
         page: "terminal",
         icon: "key",
-        keywords: "shortcuts hotkeys keyboard bindings ctrl s page up page down sidebar agent claude codex keys",
+        keywords: "agent hotkeys shortcuts keyboard bindings list all show every key ctrl s page up page down sidebar agent claude codex keys select all ctrl a shift arrows word undo cut paste new line clear prompt message reopen tab folder machine browser",
         keys: &["flare.window.agentKeys"],
         kind: RowKind::Switch,
         source: Source::App,
@@ -1089,8 +1089,9 @@ mod tests {
                 r.id,
                 copy_problem(r.sub)
             );
-            if r.id == "term-acrylic" {
-                // The one row over the word limit, on purpose (O8, decision D5).
+            if r.id == "term-acrylic" || r.id == "agent-keys" {
+                // The two rows over the word limit, on purpose: See-through (O8, decision D5) and Flare hotkeys, whose
+                // words are Max's own (2026-11-14, rule 1262).
                 assert!(sub_too_long(r.sub));
             } else {
                 assert!(

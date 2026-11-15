@@ -123,6 +123,15 @@ pub struct KeyState<'a> {
     pub agent_here: bool,
 }
 
+/// What the UI calls the new-line key where an agent runs (`TermKeyAction::Newline`): Shift+Enter on both systems, the
+/// Mac in its glyphs.
+pub fn newline_label(os: KeyOs) -> &'static str {
+    match os {
+        KeyOs::Windows => "Shift+Enter",
+        KeyOs::Mac => "\u{21e7}\u{21a9}",
+    }
+}
+
 /// Decision order (PT termKeyAction): !pressed -> Pty; Ctrl+C with a selection and no other
 /// modifier -> Copy; Backspace or Delete with no modifier and a selection the line takes ->
 /// Deleted (the closure runs only then); host_owns -> Host; Shift+Enter where an agent runs ->
@@ -308,6 +317,9 @@ mod tests {
             run(&key("Enter").shift(), false, false, false, false),
             TermKeyAction::Pty
         );
+        // The label the hotkeys sheet shows names that key.
+        assert_eq!(newline_label(KeyOs::Windows), "Shift+Enter");
+        assert_eq!(newline_label(KeyOs::Mac), "\u{21e7}\u{21a9}");
     }
 
     #[test]

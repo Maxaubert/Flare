@@ -84,6 +84,7 @@ pub fn deps(prefs: &PrefStore, post: Post, clock: Rc<dyn Fn() -> u64>) -> Settin
         look: LookStore::new(prefs.clone()),
         diag: Rc::new(FakeDiag::new(LOG_DIR, false)),
         verb: Arc::new(FakeVerb::new(VerbState::Off)),
+        shell_restart: Arc::new(flare_settings::app_icon::FakeShellRestart::new()),
         dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(|_, done| done(None::<PathBuf>)),
         open_path: Rc::new(|_| {}),
@@ -109,13 +110,6 @@ pub fn deps(prefs: &PrefStore, post: Post, clock: Rc<dyn Fn() -> u64>) -> Settin
             let prefs = prefs.clone();
             Rc::new(move || crate::settings_ctl::agent_colours_in_force(&prefs))
         },
-        agent_key_labels: Rc::new(|| {
-            flare_tabs::keymap::agent_chords()
-                .into_iter()
-                .map(|id| flare_tabs::keymap::key_label(id, true))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }),
         post,
         version: VERSION.to_string(),
         copyright: COPYRIGHT.to_string(),

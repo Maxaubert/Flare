@@ -1,5 +1,5 @@
-// The app icon picker (rule 1230, 2026-11-13): one line of icon tiles under the App icon row's words, the original
-// first. Rust owns the choices, their order and the pick; this file draws them and reports a pick back.
+// The app icon picker (rule 1230, 2026-11-13; layout A, rule 1263, 2026-11-14): icon tiles under the App icon row's
+// words, the original first, wrapping onto more lines in a narrow row. Rust owns the choices, their order and the pick; this file draws them and reports a pick back.
 // A tile carries no words, so its name is its tooltip and its accessible label; the chosen tile wears the accent
 // ring the theme wall's chosen card wears, with a gap between the ring and the icon.
 import { Theme, Px, SettingsInk, Motion } from "../theme.slint";
@@ -9,7 +9,7 @@ export component AppIconTile inherits Rectangle {
     in property <SetOption> option;
     in property <image> art;
     in property <bool> chosen;
-    in property <length> size: 40px;
+    in property <length> size: 36px;
     callback picked(string);
     callback tip(string, length, length, length, length);
 
@@ -87,25 +87,29 @@ export component AppIconTile inherits Rectangle {
     }
 }
 
-// The line of tiles. `width` is the room the row leaves (from its label column to 16 px short of its right edge):
-// the tiles are 40 px with 8 px between them, and shrink together when the room is less.
+// The tiles (layout A, rule 1263, 2026-11-14): fixed 36 px tiles with 10 px between them, left aligned, `cols` a
+// line, wrapping onto the next line. Rust's layout (`flare_settings::layout::icon_cols`) picks `cols` from the row's
+// width and grows the row by whole lines, so the tiles never run past the row. 0 (a strip with no layout, such as the
+// preview below) fits as many as `width` holds.
 export component AppIconStrip inherits Rectangle {
     in property <[SetOption]> options;
     in property <[image]> art;
     in property <string> value;
     in property <string> label;
+    in property <int> cols;
     callback picked(string);
     callback tip(string, length, length, length, length);
 
-    property <length> gap: 8px;
-    property <length> tile: Px.snap(min(40px, (root.width - (root.options.length - 1) * root.gap) / max(1, root.options.length)));
+    property <length> gap: 10px;
+    property <length> tile: 36px;
+    property <int> per-line: root.cols > 0 ? root.cols : max(1, floor((root.width + root.gap) / (root.tile + root.gap)));
 
     accessible-role: list;
     accessible-label: root.label;
 
     for o[i] in root.options: AppIconTile {
-        x: i * (root.tile + root.gap);
-        y: 0px;
+        x: Math.mod(i, root.per-line) * (root.tile + root.gap);
+        y: floor(i / root.per-line) * (root.tile + root.gap);
         size: root.tile;
         option: o;
         art: root.art[i];
@@ -126,7 +130,7 @@ export component AppIconsPreview inherits Window {
         x: 20px;
         y: 20px;
         width: 260px;
-        height: 40px;
+        height: 36px;
         label: "App icon";
         options: [
             { id: "original", name: "Original, the default", face: "" },

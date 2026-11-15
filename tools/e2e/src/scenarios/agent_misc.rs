@@ -730,7 +730,7 @@ fn agent_keys_body(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let on = open_settings(ctx, app)
         && goto_row(ctx, app, "agent-keys")
         && switch_on(app, "agent-keys") == Some(true);
-    ctx.ok(on, "Agent hotkeys is on by default");
+    ctx.ok(on, "Flare hotkeys is on by default");
     let _ = app.session.key("Ctrl+W");
     soft(4_000, &mut || all_tab_count(app) == 1);
     tab_click(app, 0);
