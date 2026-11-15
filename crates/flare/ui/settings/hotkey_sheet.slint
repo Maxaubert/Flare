@@ -23,7 +23,10 @@ export component HotkeySheet inherits Rectangle {
     out property <bool> field-focused: input.has-focus;
 
     property <length> head-h: 56px;
-    property <length> max-h: root.height - 48px;
+    // The box is 520 px wide (less in a narrow window) and at most 70 percent of the window tall, 640 px at most,
+    // centred; a longer list scrolls inside it.
+    property <length> max-w: 520px;
+    property <length> max-h: min(640px, root.height * 0.7, root.height - 48px);
 
     visible: root.open;
     width: 100%;
@@ -64,7 +67,7 @@ export component HotkeySheet inherits Rectangle {
         }
 
         box := Rectangle {
-            width: min(400px, root.width - 32px);
+            width: min(root.max-w, root.width - 32px);
             height: max(0px, min(root.max-h, root.head-h + Px.hair() + root.list-h));
             x: Px.snap((root.width - self.width) / 2);
             y: Px.snap(max(24px, (root.height - self.height) / 2));

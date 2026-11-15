@@ -33,6 +33,10 @@ struct Fx {
 }
 
 fn fx_at(scale: f32) -> Fx {
+    fx_sized(scale, 1000, 640)
+}
+
+fn fx_sized(scale: f32, w: u32, h: u32) -> Fx {
     let prefs = PrefStore::memory();
     let look = LookStore::new(prefs.clone());
     let q: Queue = Arc::default();
@@ -44,7 +48,7 @@ fn fx_at(scale: f32) -> Fx {
                 .push_back(m);
         })
     };
-    let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
+    let h = Harness::new(scale, w, h, || AppWindow::new().unwrap());
     h.comp.set_front_kind(1);
     h.activate();
     h.advance(0);
@@ -191,10 +195,13 @@ fn the_button_opens_the_sheet_the_search_filters_and_escape_closes_it() {
         // Every group's first row wears the stripe, the second does not.
         let lines = f.lines();
         assert!(lines[0].heading && lines[1].stripe && !lines[2].stripe);
-        // The box is drawn, inside the window.
+        // The box is 520 px wide and 70 percent of the 640 px window tall, centred; the list scrolls inside.
         let (bw, bh) = (f.h.comp.get_keys_box_w(), f.h.comp.get_keys_box_h());
-        assert!(bw > 300.0 && bw <= 400.0, "{s}: {bw}");
-        assert!(bh > 100.0 && bh <= 640.0 - 48.0, "{s}: {bh}");
+        assert!((bw - 520.0).abs() < 1.0, "{s}: {bw}");
+        assert!((bh - 640.0 * 0.7).abs() < 1.0, "{s}: {bh}");
+        let (bx, by) = (f.h.comp.get_keys_box_x(), f.h.comp.get_keys_box_y());
+        assert!((bx - (1000.0 - bw) / 2.0).abs() < 1.0, "{s}: {bx}");
+        assert!((by - (640.0 - bh) / 2.0).abs() < 1.0, "{s}: {by}");
 
         // Typing filters by action: "tab" keeps the Tabs and App rows that say it, and no typing row.
         f.h.key_text("tab");
@@ -257,6 +264,25 @@ fn a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not() {
         f.h.click(x + w / 2.0, (y + h + 12.0).min(630.0));
         f.h.advance(16);
         assert!(!f.b().get_keys_open(), "{s}: a press outside closes it");
+    }
+}
+
+#[test]
+fn the_box_is_at_most_640_tall_in_a_tall_window_and_fits_a_narrow_one() {
+    for s in SCALES2 {
+        // A tall window: 70 percent would be 840, so the box stops at 640, centred.
+        let f = fx_sized(s, 1200, 1200);
+        f.open();
+        let (bw, bh) = (f.h.comp.get_keys_box_w(), f.h.comp.get_keys_box_h());
+        assert!((bw - 520.0).abs() < 1.0, "{s}: {bw}");
+        assert!((bh - 640.0).abs() < 1.0, "{s}: {bh}");
+        let by = f.h.comp.get_keys_box_y();
+        assert!((by - (1200.0 - bh) / 2.0).abs() < 1.0, "{s}: {by}");
+        // A narrow window: the box keeps 16 px each side.
+        let f = fx_sized(s, 480, 640);
+        f.open();
+        let bw = f.h.comp.get_keys_box_w();
+        assert!((bw - (480.0 - 32.0)).abs() < 1.0, "{s}: {bw}");
     }
 }
 
