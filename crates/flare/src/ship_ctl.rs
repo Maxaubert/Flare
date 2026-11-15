@@ -379,6 +379,53 @@ static ICON_WINDOW: AtomicIsize = AtomicIsize::new(0);
 #[cfg(windows)]
 static WORN: std::sync::Mutex<&'static str> = std::sync::Mutex::new("original");
 
+/// The window id written last (rule 1265): the window and its id, so a DPI change or the same pick writes nothing.
+#[cfg(windows)]
+static WORN_ID: std::sync::Mutex<Option<(isize, String)>> = std::sync::Mutex::new(None);
+
+/// What the main window's own taskbar id ends in while a custom icon is picked (rule 1265).
+pub const ICON_AUMID_SUFFIX: &str = ".icon";
+
+/// The window-level taskbar id for a pick (rule 1265). The original keeps `base`, the id of the Start menu shortcut,
+/// whose icon is the original, so pinning works as before. Any other pick gets `base` + `.icon`, one stable id per
+/// profile that has no shortcut, so the taskbar draws the window's own `WM_SETICON` icon.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn window_aumid(base: &str, worn: &str) -> String {
+    if worn == flare_settings::app_icon::ORIGINAL {
+        base.to_string()
+    } else {
+        format!("{base}{ICON_AUMID_SUFFIX}")
+    }
+}
+
+/// Puts the pick's window id on `hwnd` through `write` (the shell in the app, a recorder in tests). A window with no
+/// id of its own has the process id, `base`, so nothing is written while that is the one wanted. A write that does
+/// not change the id is skipped; a failed one is logged and not kept, so the next call tries again.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn wear_window_aumid(
+    last: &std::sync::Mutex<Option<(isize, String)>>,
+    hwnd: isize,
+    base: &str,
+    worn: &str,
+    write: &dyn Fn(isize, &str) -> Result<(), String>,
+) {
+    let want = window_aumid(base, worn);
+    let mut last = last
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = match last.as_ref() {
+        Some((h, id)) if *h == hwnd => id.as_str(),
+        _ => base,
+    };
+    if now == want {
+        return;
+    }
+    match write(hwnd, &want) {
+        Ok(()) => *last = Some((hwnd, want)),
+        Err(why) => log::warn!("window taskbar id: {why}"),
+    }
+}
+
 /// The window icon comes from the app bundle on macOS (phase 8 of the port plan): nothing to set. The app icon
 /// picker's choice is AppKit's application icon there (`app_icon`).
 #[cfg(not(windows))]
@@ -397,9 +444,10 @@ pub fn set_worn_icon(id: &'static str) {
 }
 
 /// Puts the icon on the window at its monitor's DPI: the exe's own icon (resource 1) for the original, else the
-/// picked design drawn at each size (rule 1230). The taskbar button shows the big one. A null handle (a test binary
-/// without the resource) is ignored. The resource's handles are shared system-cached icons, never destroyed; a drawn
-/// icon is destroyed once the next one has replaced it.
+/// picked design drawn at each size (rule 1230). The title bar and Alt+Tab show it. The taskbar button shows it only
+/// while the window has its own id with no shortcut, so the pick's window id is set after the icons (rule 1265). A
+/// null handle (a test binary without the resource) is ignored. The resource's handles are shared system-cached
+/// icons, never destroyed; a drawn icon is destroyed once the next one has replaced it.
 #[cfg(windows)]
 pub fn set_window_icon(hwnd: isize) {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -461,6 +509,13 @@ pub fn set_window_icon(hwnd: isize) {
         keep(&BIG_ICON, ICON_BIG, big, big_drawn);
         keep(&SMALL_ICON, ICON_SMALL, small, small_drawn);
     }
+    wear_window_aumid(
+        &WORN_ID,
+        hwnd,
+        &effective_aumid(),
+        worn,
+        &flare_win::window_app_id::set,
+    );
 }
 
 /// An icon of the picked design drawn at `px` (rule 1230): a 32-bit top-down colour bitmap with its alpha, and an
@@ -979,6 +1034,85 @@ mod tests {
     #[test]
     fn set_window_icon_ignores_a_null_window() {
         set_window_icon(0);
+    }
+
+    #[test]
+    fn a_custom_pick_wears_one_icon_id_and_the_original_wears_the_shortcuts() {
+        let base = "com.flare.terminal";
+        assert_eq!(window_aumid(base, "original"), base);
+        for icon in ["liquid-glass", "safety-orange", "cobalt-electric"] {
+            assert_eq!(window_aumid(base, icon), "com.flare.terminal.icon");
+        }
+        let profile = "com.flare.terminal.p0123456789abcdef";
+        assert_eq!(window_aumid(profile, "original"), profile);
+        assert_eq!(
+            window_aumid(profile, "daybreak"),
+            "com.flare.terminal.p0123456789abcdef.icon"
+        );
+    }
+
+    #[test]
+    fn the_window_id_is_written_only_when_it_changes_and_a_failure_retries() {
+        let last = std::sync::Mutex::new(None);
+        let writes = std::cell::RefCell::new(Vec::<(isize, String)>::new());
+        let fail = std::cell::Cell::new(false);
+        let write = |h: isize, id: &str| {
+            writes.borrow_mut().push((h, id.to_string()));
+            if fail.get() {
+                Err("refused".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let base = "com.flare.terminal";
+        // The window is made with the original picked: the process id already covers it.
+        wear_window_aumid(&last, 7, base, "original", &write);
+        assert!(writes.borrow().is_empty());
+        // A pick moves the window to the icon id, live; the same pick again (a DPI change) writes nothing.
+        wear_window_aumid(&last, 7, base, "daybreak", &write);
+        wear_window_aumid(&last, 7, base, "daybreak", &write);
+        wear_window_aumid(&last, 7, base, "safety-orange", &write);
+        // Back to the original: the window wears the shortcut's id again.
+        wear_window_aumid(&last, 7, base, "original", &write);
+        assert_eq!(
+            *writes.borrow(),
+            vec![
+                (7, "com.flare.terminal.icon".to_string()),
+                (7, base.to_string())
+            ]
+        );
+        // A failed write is not kept, so the next call tries again.
+        writes.borrow_mut().clear();
+        fail.set(true);
+        wear_window_aumid(&last, 7, base, "jade-glass", &write);
+        fail.set(false);
+        wear_window_aumid(&last, 7, base, "jade-glass", &write);
+        assert_eq!(writes.borrow().len(), 2);
+        // A new window made while a custom icon is picked gets the icon id at once.
+        writes.borrow_mut().clear();
+        wear_window_aumid(&last, 9, base, "jade-glass", &write);
+        assert_eq!(
+            *writes.borrow(),
+            vec![(9, "com.flare.terminal.icon".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_window_wears_the_pick_id_and_the_process_keeps_the_base_id() {
+        let ship = code_of(&src("ship_ctl.rs")).to_string();
+        let icon = ship
+            .split("pub fn set_window_icon(hwnd: isize)")
+            .nth(1)
+            .unwrap();
+        let icon = icon.split("\n}\n").next().unwrap();
+        assert!(icon.contains("wear_window_aumid("));
+        assert!(icon.contains("&effective_aumid(),"));
+        assert!(icon.contains("flare_win::window_app_id::set"));
+        // The process id, which toasts use, stays the base id.
+        let process = ship.split("pub fn set_aumid() {").nth(1).unwrap();
+        let process = process.split("\n}\n").next().unwrap();
+        assert!(process.contains("effective_aumid()"));
+        assert!(!process.contains("window_aumid"));
     }
 
     #[test]
