@@ -178,6 +178,7 @@ mod imp {
     pub fn restart() -> Result<(), String> {
         let status = std::process::Command::new("/usr/bin/killall") // sync-ok: the restart worker only
             .arg("Dock")
+            // sync-ok: the restart worker only, waits for killall
             .status()
             .map_err(|e| format!("killall did not start: {}", e.kind()))?;
         if status.success() {
