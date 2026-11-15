@@ -592,6 +592,57 @@ pub fn agent_chords() -> Vec<ChordId> {
         .collect()
 }
 
+/// The keys agent hotkeys add, as the Settings Keys list shows them, one line a note (rule 1235): the agent chords
+/// and the prompt keys, every key named by its table's label on this system.
+pub fn agent_keys_text(os: KeyOs) -> String {
+    use flare_term::prompt_keys::{MAC_DELETE_LINE_LABEL, PromptKey as P, prompt_key_label};
+    let c = |id| key_label_on(os, id, true);
+    let p = |k| prompt_key_label(os, k);
+    [
+        format!(
+            "{} switches tabs and {} shows the sidebar.",
+            c(ChordId::NextTab),
+            c(ChordId::Sidebar)
+        ),
+        format!(
+            "In Claude's prompt, {} selects it all. {} and {}, {} and {}, {} and {} select by letter, word and line.",
+            p(P::SelectAll),
+            p(P::SelectLeft),
+            p(P::SelectRight),
+            p(P::SelectWordLeft),
+            p(P::SelectWordRight),
+            p(P::SelectHome),
+            p(P::SelectEnd)
+        ),
+        format!(
+            "{} and {} jump a word. {} and {} go to the start and end of the line.",
+            p(P::WordLeft),
+            p(P::WordRight),
+            p(P::Home),
+            p(P::End)
+        ),
+        format!(
+            "{} and {} delete a word.{} {} cuts, {} undoes, {} clears the prompt.",
+            p(P::DeleteWordBack),
+            p(P::DeleteWordForward),
+            if os.is_mac() {
+                format!(" {MAC_DELETE_LINE_LABEL} deletes to the line's start.")
+            } else {
+                String::new()
+            },
+            p(P::Cut),
+            p(P::Undo),
+            p(P::ClearPrompt)
+        ),
+        format!(
+            "{} and {} go to your previous and next message.",
+            p(P::PrevMessage),
+            p(P::NextMessage)
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1074,6 +1125,101 @@ mod tests {
     #[test]
     fn agent_chords_are_next_tab_and_sidebar() {
         assert_eq!(agent_chords(), vec![ChordId::NextTab, ChordId::Sidebar]);
+    }
+
+    #[test]
+    fn the_agent_keys_list_names_every_key_by_its_label() {
+        use flare_term::prompt_keys::{PROMPT_KEYS, prompt_key_label};
+        for os in [KeyOs::Windows, KeyOs::Mac] {
+            let text = agent_keys_text(os);
+            for id in agent_chords() {
+                assert!(text.contains(key_label_on(os, id, true)), "{os:?} {id:?}");
+            }
+            for k in PROMPT_KEYS {
+                assert!(text.contains(prompt_key_label(os, k)), "{os:?} {k:?}");
+            }
+            assert_eq!(
+                text.contains(flare_term::prompt_keys::MAC_DELETE_LINE_LABEL),
+                os == KeyOs::Mac,
+                "Cmd+Backspace is the Mac's alone"
+            );
+            assert!(!text.contains('\u{2014}'), "no em-dash");
+            assert_eq!(text.lines().count(), 5);
+        }
+        assert!(agent_keys_text(KeyOs::Windows).starts_with("Ctrl+PgDn switches tabs"));
+    }
+
+    #[test]
+    fn the_prompt_keys_are_no_chords() {
+        // They are the terminal's (rule 1235): the chord table never takes them, so they reach the prompt.
+        use flare_term::prompt_keys::{PROMPT_KEYS, prompt_key_of};
+        let agent = KeyContext {
+            agent_keys: true,
+            ..on()
+        };
+        let keys = [
+            KeyEvent::new("a", "KeyA").ctrl(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").shift(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").ctrl().shift(),
+            KeyEvent::new("Home", "Home").shift(),
+            KeyEvent::new("ArrowRight", "ArrowRight").ctrl(),
+            KeyEvent::new("Home", "Home"),
+            KeyEvent::new("Backspace", "Backspace").ctrl(),
+            KeyEvent::new("Delete", "Delete").ctrl(),
+            KeyEvent::new("z", "KeyZ").ctrl(),
+            KeyEvent::new("x", "KeyX").ctrl(),
+            KeyEvent::new("Backspace", "Backspace").ctrl().shift(),
+            KeyEvent::new("ArrowUp", "ArrowUp").ctrl().shift(),
+            KeyEvent::new("ArrowDown", "ArrowDown").ctrl().shift(),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for e in keys {
+            assert_eq!(chord_of(&e, &agent), None, "{e:?}");
+            seen.insert(prompt_key_of(&e, KeyOs::Windows).expect("a prompt key"));
+        }
+        // Every kind of prompt key is reached by one of these or its mirror (Right for Left, End for Home).
+        assert!(seen.len() >= 13 && seen.len() <= PROMPT_KEYS.len());
+    }
+
+    #[test]
+    fn the_mac_prompt_keys_are_no_chords() {
+        // The Mac's Cmd and Option keys for the prompt (rule 1235) reach the terminal too.
+        use flare_term::prompt_keys::{PROMPT_KEYS, prompt_key_of};
+        let agent = KeyContext {
+            agent_keys: true,
+            ..mac()
+        };
+        let keys = [
+            KeyEvent::new("a", "KeyA").meta(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").shift(),
+            KeyEvent::new("ArrowRight", "ArrowRight").shift(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").alt().shift(),
+            KeyEvent::new("ArrowRight", "ArrowRight").alt().shift(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").meta().shift(),
+            KeyEvent::new("ArrowRight", "ArrowRight").meta().shift(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").alt(),
+            KeyEvent::new("ArrowRight", "ArrowRight").alt(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").meta(),
+            KeyEvent::new("ArrowRight", "ArrowRight").meta(),
+            KeyEvent::new("Backspace", "Backspace").alt(),
+            KeyEvent::new("Delete", "Delete").alt(),
+            KeyEvent::new("z", "KeyZ").meta(),
+            KeyEvent::new("x", "KeyX").meta(),
+            KeyEvent::new("Backspace", "Backspace").meta().shift(),
+            KeyEvent::new("ArrowUp", "ArrowUp").meta().shift(),
+            KeyEvent::new("ArrowDown", "ArrowDown").meta().shift(),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for e in keys {
+            assert_eq!(chord_of(&e, &agent), None, "{e:?}");
+            assert!(!app_owns_key(&e, &agent), "{e:?}");
+            seen.insert(prompt_key_of(&e, KeyOs::Mac).expect("a prompt key"));
+        }
+        assert_eq!(seen.len(), PROMPT_KEYS.len());
+        // Cmd+Backspace (delete to the line's start) reaches the prompt too.
+        let cmd_bs = KeyEvent::new("Backspace", "Backspace").meta();
+        assert_eq!(chord_of(&cmd_bs, &agent), None);
+        assert!(!app_owns_key(&cmd_bs, &agent));
     }
 
     // ---- macOS (port phase 3) ---------------------------------------------------------------------

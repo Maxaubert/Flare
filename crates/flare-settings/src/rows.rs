@@ -584,11 +584,11 @@ pub const APP_OPTIONS: [RowDef; 22] = [
     RowDef {
         id: "agent-keys",
         label: "Agent hotkeys",
-        sub: "Spare shell keys open the sidebar, switch tabs.",
+        sub: "Switch tabs and edit the prompt like text.",
         section: "keys",
         page: "terminal",
         icon: "key",
-        keywords: "shortcuts hotkeys keyboard bindings ctrl s page up page down sidebar agent claude codex keys",
+        keywords: "shortcuts hotkeys keyboard bindings ctrl s page up page down sidebar agent claude codex keys select all ctrl a shift arrows word undo cut clear prompt message",
         keys: &["flare.window.agentKeys"],
         kind: RowKind::Switch,
         source: Source::App,

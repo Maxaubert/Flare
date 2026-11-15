@@ -773,11 +773,7 @@ fn settings_deps(
             Rc::new(move || crate::settings_ctl::agent_colours_in_force(&prefs))
         },
         agent_key_labels: Rc::new(|| {
-            flare_tabs::keymap::agent_chords()
-                .into_iter()
-                .map(|id| flare_tabs::keymap::key_label(id, true))
-                .collect::<Vec<_>>()
-                .join(", ")
+            flare_tabs::keymap::agent_keys_text(flare_tabs::keymap::KeyOs::HOST)
         }),
         post,
         version: crate::app_facts::version().to_string(),
