@@ -683,14 +683,21 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   with no restart button, since the Dock already shows a pick at once and restarting it may drop that icon.
   How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
   at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
-  the window's big and small icons (`WM_SETICON`), at start, on a DPI change and on every pick; shortcuts, the exe
-  and the installer keep the original.
+  the window's big and small icons (`WM_SETICON`), at start, on a DPI change and on every pick; the exe and the
+  installer keep the original (the Start menu shortcut follows the pick, rule 1272 below).
   2026-11-15 (Max: "it doesnt change wheni picka differnt icon thoguh, not before or after restart explorer"),
   rule 1265: the taskbar drew the Start menu shortcut's icon, since the window's id was the shortcut's. While a
   custom icon is picked, the main window now has its own taskbar id, the profile's id plus `.icon`, which has no
   shortcut, so the button shows the pick at once. The original gives the window the shortcut's id back. Note: while
   a custom icon is picked, a pinned Flare and its Jump List belong to the other id, so the running window shows as
   its own button beside the pin. Toasts keep the base id.
+  2026-11-16 (Max: the pick should also change the Start menu icon), rule 1272: an installed Flare on Windows also
+  puts the pick on this profile's Start menu shortcut, found by its taskbar id, never by its name. A worker draws the
+  pick as a multi-size `.ico` (16 to 256 px) into the profile's data folder under a content-hash name, points the
+  shortcut's icon at it, tells the shell so the Start menu updates without an Explorer restart, and deletes older
+  icon files. The original points the shortcut back at the exe's own icon, but only when Flare had changed it. No
+  shortcut means nothing is done; Flare never makes one. It runs at start too, so a shortcut an update rewrote gets
+  the pick again. The row now says "The taskbar, the window and the Start menu." on Windows. macOS is unchanged.
 - **Taskbar identity per profile.** 2026-10-22 (owner: the stable copy showed the installed Flare's old icon on
   the taskbar): a run with its own `--user-data-dir` has its own taskbar identity,
   `com.flare.terminal.p<16 hex>`, the FNV-1a 64 hash of the lowercased profile path (`/` as `\`, trailing

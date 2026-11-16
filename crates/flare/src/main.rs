@@ -77,6 +77,7 @@ mod side_slide;
 mod sidebar_ui;
 mod ssh_config;
 mod ssh_problem;
+mod start_menu_icon;
 mod startup;
 mod startup_trace;
 mod tab_host;
