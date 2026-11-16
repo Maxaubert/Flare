@@ -368,3 +368,21 @@ fn a_secret_result_is_checked_before_it_reaches_the_window() {
     .unwrap_err();
     assert_eq!(e.code, code::BAD_PARAMS);
 }
+
+#[test]
+fn an_empty_field_sends_nothing_and_the_box_stays_at_the_field() {
+    let (f, _a, _b) = two_tabs();
+    let _slot = with_fake(&f);
+    let w = world(&f, |r| fill_plugin(r, "vault"));
+    turn(&f, "vault", true);
+    let rx = start(&w, "vault", Method::SecretAsk, ask_params());
+    f.pump_until("the question", asking);
+    // Unlock (or Enter) on an empty field: nothing goes to the plugin, and the box never sits checking.
+    f.h.comp.invoke_pask_secret(true, "".into());
+    assert_eq!(stage(&f).as_deref(), Some("input"));
+    assert!(rx.try_recv().is_err(), "the plugin's call still waits");
+    f.h.comp.invoke_pask_secret(true, PASS.into());
+    let got = answer_of(&f, &rx).unwrap();
+    assert_eq!(got["text"], PASS);
+    assert_eq!(stage(&f).as_deref(), Some("checking"));
+}

@@ -572,7 +572,8 @@ without it) and the plain `line`, closed after 2.5 s (`END_HOLD`). A check with 
 field back with `The check took too long. Try again.`; a text sent then waits for the plugin's next `secret.result` (a
 late `ok: false` gets it at once). Cancel while checking closes the dialog, and the plugin's next `secret.result` for
 that ask answers `{"cancelled": true}`. Each stage of the field waits at most 60 s. `secret.result` is not an ask (it
-spends none of the 6 a minute). A plugin that leaves `verify` out gets today's ask, closed on send.
+spends none of the 6 a minute). With `verify`, the button on an empty field sends nothing, so the plugin always gets a
+text to check. A plugin that leaves `verify` out gets today's ask, closed on send.
 
 Any other key is `bad_params`, and no error names a value. **The site rule:** the page's address must be `http` or
 `https` with a host, and a site of one of `login_uris`: the login's host or a subdomain of it (a leading `www.` of the

@@ -602,6 +602,9 @@ impl AppCtl {
                 log::info!("secret.ask: plugin {}: cancelled", ask.plugin);
                 self.end_verify_unheard(ask, json!({"cancelled": true}));
             }
+            // An empty field sends nothing: the plugin would read it as a cancel and never answer, leaving the box
+            // checking until it timed out.
+            (Stage::Input, true) if text.expose().is_empty() => {}
             (Stage::Input, true) => {
                 let live = self
                     .plugin_ask

@@ -4636,7 +4636,8 @@ with `The check took too long. Try again.`; a text sent then is held (a `Secret`
 (a late `ok: false` gets it at once and the box checks it). Cancel while checking, or a field left alone, closes the
 box, and the plugin's next `secret.result` for that ask answers `{cancelled: true}` (`timed_out` too for the timeout),
 once; any other id is `not_found`. Each stage's timer carries a round number, so a timer of an earlier stage ends
-nothing. Without `verify` nothing changes (old plugins). Nothing in Flare runs before the box shows. Native:
+nothing. With `verify` the button on an empty field sends nothing (the box would sit checking a text the plugin
+reads as a cancel). Without `verify` nothing changes (old plugins). Nothing in Flare runs before the box shows. Native:
 `flare_mods::fill::{parse_secret, parse_secret_result, Verdict}`, `Method::SecretResult`, `CtlOp::SecretResult`,
 `ask_glue.rs` (`Stage`, `Verify`, `answer_checked_secret`, `secret_result`, `plugin_ask_expired`),
 `plugin_ask::{checking_line, wrong_line, result_view}`, `pask-stage`, `pask-verify`, `pask-checking`,
@@ -4644,9 +4645,9 @@ nothing. Without `verify` nothing changes (old plugins). Nothing in Flare runs b
 and the e2e probe's `ui_stage`, `checking_shown`, `result_shown`, `field_read_only`, `ok_enabled` and the controller's
 `stage` and `waiting`. Held by `verify_is_an_optional_flag_and_checking_goes_with_it` and
 `a_secret_result_is_right_wrong_or_done_and_nothing_else` (`fill.rs`),
-`a_checked_secret_has_flares_words_where_the_plugin_names_none` (`plugin_ask.rs`), the seven tests of
+`a_checked_secret_has_flares_words_where_the_plugin_names_none` (`plugin_ask.rs`), the eight tests of
 `appctl/tests/mods_tests/plugin_secret_verify.rs` (right, wrong, done, cancel while checking, the timeout, the plugin
-turned off, refused params), `secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (an ask
+turned off, refused params, an empty field), `secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (an ask
 without `verify`), and `ui_tests/secret_verify.rs` at every scale in both looks (checking with a turning spinner and a
 box that does not move, wrong in place and focused, the green check, the end line, no `verify`). Source: Max,
 2026-11-16.
