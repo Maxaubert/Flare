@@ -4532,23 +4532,27 @@ the keys, and the button, Cancel and Flare's line under Cancel are as before. Th
 `Asked by "<plugin>"`, the box's last row: `Asked by "Vault" · from example.com` for a plugin Settings installed from
 an address, and only `Asked by "Vault"` for one installed from a file or a folder put in place (no address) or whose
 address has no host (Max took "· from a file" out, 2026-11-16). The name is always in quotes and the host is always
-Flare's, so a plugin named `Bitwarden (from bitwarden.com)` reads `Asked by "Bitwarden (from bitwarden.com)"`, the
-host inside the quotes, never like the real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
+Flare's, so a plugin named `Bitwarden (from bitwarden.com)` from a file reads `Asked by "Bitwarden"`, never like the
+real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
 from `url::Url::parse(source)` and `host_str()` (the parser the download check uses; never a user name, password, port or
 path), is shown whole, and a host longer than 80 characters is cut from the LEFT, keeping its last labels
-(`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`; the name is cut at 40 characters, has
-control, bidi (U+061C, U+200E/F, U+202A to U+202E, U+2066 to U+2069) and zero-width characters (U+200B to U+200D, U+2060,
-U+FEFF) taken out (every name in the dialog loses them). A third security review (2026-11-16) found that a plugin from a
-file named `Bitwarden″ · from bitwarden.com`, with a look-alike quote, could read like a real address install, since
-the name is the last thing on its line. So `foot_name` now also: turns every space-like character into one plain space;
-takes out every quote-like character (`quote_like`: ASCII `"`, `'` and the backtick, U+2018 to U+201F, the primes U+2032
-to U+2037 and U+2057, U+02B9 to U+02BC, U+02DD, U+3003, U+FF02, U+FF07, the angle, CJK and dingbat quotes and the like,
-so `Max's Vault` shows as `Maxs Vault`); cuts the name at its first dot-like separator (`separator_like`: U+00B7,
-U+0387, U+2022, U+2023, U+2024, U+2027, U+2043, U+2219, U+22C5, U+30FB, U+FF65 and other raised dots and bullets);
-and cuts it at its first ` from ` in any case. Then it is trimmed and cut at 40 characters. So the line holds ` · from `
-only where Flare wrote it, for an address install: `Bitwarden″ · from bitwarden.com` shows as `Asked by "Bitwarden"`,
-and a name that is only a separator and a tail shows as `Asked by ""`. The plugin_ask tests try each spoof shape
-(look-alike quotes, dots, a ` from ` tail, and mixes with hidden and non-breaking spaces). Max's wording is unchanged.
+(`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`. A third security review (2026-11-16)
+found that a plugin from a file named `Bitwarden″ · from bitwarden.com`, with a look-alike quote, could read like a
+real address install, since the name is the last thing on its line, and that a list of quote-like and dot-like
+characters would always miss some. So `foot_name` uses an allowlist: it drops spacing accents (a character whose
+compatibility form is a space and a mark, such as U+00B4), normalises the name with Unicode NFKC (`unicode-normalization`,
+so fullwidth, styled and circled letters become plain ones and non-breaking and wide spaces become a plain space), and
+then keeps only letters (general category L) and numbers (Nd, Nl, No), the ASCII space, `-` and `_`. Everything else
+goes: marks, symbols, all punctuation (dots, quotes, brackets), format and control characters (bidi, zero-width, BOM)
+and other spaces. Letters drawn as a quote, prime or dot are dropped too (U+02B9 to U+02FF, U+0559, U+07F4, U+07F5,
+U+1427, U+A788, U+A78B, U+A78C, U+A78F), and so are the circled and squared letter symbols that Rust's `is_alphabetic`
+counts. Runs of spaces become one. Then the name is cut at its first ` from ` in any case (a name that starts or ends
+with "from" counts, so fullwidth `ｆｒｏｍ` is cut too), trimmed and cut at 40 characters. So `Max's Vault` shows as
+`Maxs Vault`, `Vault 2` and `Ålesund-sync` stay as they are, and the line holds a dot, a quote or ` · from ` only where
+Flare wrote it, for an address install: `Bitwarden″ · from bitwarden.com` shows as `Asked by "Bitwarden"`, and a name
+that is only a separator and a tail shows as `Asked by ""`. The plugin_ask tests try each spoof shape (look-alike
+quotes, middle dots and other dots, fullwidth and styled letters spelling "from", combining marks, bidi, ` from `
+tails) and check that normal names stay readable. Max's wording is unchanged.
 It replaced "What you type goes to <Plugin> only. Flare does not keep it or show it.", which Max took out; a security
 review then found that with no line at all another plugin could dress as Bitwarden in the box, so Max chose this short
 line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller`) and install host

@@ -482,9 +482,9 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   shows what is typed, a full-width button with `button` (`OK` without it), Cancel as a link, and under it Flare's short
   grey line `Asked by "<Plugin>"`: `Asked by "Vault" · from example.com` when Settings installed it from an address,
   and only `Asked by "Vault"` for a file or a folder put in place. Flare writes that line from
-  the plugin's own name (in quotes, cut at 40 characters, with control, bidi, zero-width and every quote-like character
-  taken out, and cut at its first dot-like separator such as `·` or `•` and at its first ` from `, so a name like
-  `Bitwarden″ · from bitwarden.com` shows as `"Bitwarden"` and only Flare writes ` · from `) and the install address's host (parsed with `url`, shown whole or cut from the left,
+  the plugin's own name (in quotes, normalised with NFKC, kept to letters, numbers, spaces, `-` and `_`, cut at its
+  first ` from ` and at 40 characters, so a name like `Bitwarden″ · from bitwarden.com` shows as `"Bitwarden"` and
+  only Flare writes a dot, a quote or ` · from `) and the install address's host (parsed with `url`, shown whole or cut from the left,
   never from the right), small and in its own dim ink: nothing in the ask changes it and the brand does not colour it,
   so a plugin dressed as another, or named "Bitwarden (from bitwarden.com)", is still told apart (rule 1266). Enter submits. To ask again after a wrong answer, call it again with `error` (one
   plain line, at most 120 characters, such as "Wrong password. Try again."): the line shows in red in the sub's place,

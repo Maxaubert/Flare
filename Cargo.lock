@@ -1913,6 +1913,7 @@ dependencies = [
  "slint-build",
  "spake2",
  "tempfile",
+ "unicode-normalization",
  "url",
  "velopack",
  "wgpu",
