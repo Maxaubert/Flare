@@ -23,7 +23,7 @@ approve. This file is the contract, for plugin authors and for the Prism Termina
 - **Brand, details sheet and choices (2026-11-08):** `brand` in the manifest, the details sheet with the person's own
   choice per permission, the centred questions and the flat tab-menu item (see "Brand", "The details sheet" and the
   rules below). Spec: `../superpowers/specs/2026-11-08-plugin-brand-and-sheet.md`.
-- **Fill (2026-10-28):** the `fill` permission (`browser.fill`, `browser.fill.page`, `secret.ask`), tool scope, and tool
+- **Fill (2026-10-28):** the `fill` permission (`browser.fill`, `browser.fill.page`, `secret.ask`, and since 2026-11-16 `secret.result` for a checked secret), tool scope, and tool
   calls answered by a helper (see "Filling logins"). Design: `../superpowers/specs/2026-10-28-plugin-fill.md`.
 
 ## A plugin in two minutes
@@ -292,7 +292,7 @@ worker, and every limit spent there, before the window hears of it.
 | Convo (`convo`) | `convo.state` | |
 | Tools (`tools`) | `tools.respond` (the bridge's `respond`) | 8 calls waiting per plugin |
 | Browser (`browser`) | `browser.*` | answered `unavailable` (not built) |
-| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label, sub?, button?, error?}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together; a minute to answer |
+| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label, sub?, button?, error?, verify?, checking?}`, `secret.result {ask, ok, title?, line?, error?, done?}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together (`secret.result` is not an ask); a minute to answer |
 
 **Decor.** A badge is a bare glyph (no ring) Flare draws before the tab's end (left of the ring on a sidebar row),
 in the tone `ink` (default), `accent` or `muted` (`mic` never `accent`, Flare's dictation mark). A progress is a static
@@ -490,11 +490,26 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   the field gets a red edge and a soft red glow, and it is empty and ready to type. No `error`, or an empty one, is the
   usual look (rule 1266). Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
   and logs none of it. It shares the 6 asks a minute.
+- **A secret you check with the box still open (`verify`, rule 1274, 2026-11-16).** Send `verify: true` (and, if you
+  like, `checking`, such as "Checking the password..."). When the person presses the button, `secret.ask` answers
+  `{text, ask}` and the box stays open: the field dimmed and read-only, a small spinner in the button, your `checking`
+  line (or "Checking...") in the sub's place, Cancel still there. Check the text, then call
+  `secret.result {ask, ok: true, title?, line?}`: a green check with `title` ("Done" without it) and your line, and
+  Flare closes the box after 0.8 s. A wrong one is `secret.result {ask, ok: false, error?}`: the same box comes back to
+  the field in place, cleared and ready to type, with `error` in red ("That was not right. Try again." without it),
+  and that call waits for the next try, answering `{text, ask}` again (or `{cancelled: true}`). To stop asking (a limit
+  of tries), call `secret.result {ask, ok: false, done: true, title?, line?}`: your logo, the title (the ask's own
+  without it) and your plain line, closed after 2.5 s. If you say nothing for 60 s the field comes back with "The check
+  took too long. Try again."; a text sent then waits for your next `secret.result`. Cancel while checking closes the
+  box, and your next `secret.result` for that ask answers `{cancelled: true}`. `secret.result` is not a new ask (it
+  spends none of the 6 a minute), answers `not_found` for an ask that is not open, and `busy` while a call already
+  waits for the next try. Without `verify` the box closes on send, as before. Nothing in Flare runs before the box
+  shows: do your slow work (such as `bw unlock`) after `{text, ask}` comes back.
 - **A tool answered by a helper.** Claude's call to a plugin with a helper and neither a background page nor a panel
   reaches the helper as the `tool` event; while it waits the helper may fill into the caller's tab. Claude has 30 s for
   the whole call, so a fill inside a tool call leaves you about 25 s to answer.
 - **Nothing is written down.** The one log line of a fill is `fill: plugin <id> on <host>: <outcome>`, of a secret
-  `secret.ask: plugin <id>: answered|cancelled`. The agent never holds `fill`.
+  `secret.ask: plugin <id>: answered|cancelled` (a checked secret: `answered, checking` and `checked, right|wrong|ended`). The agent never holds `fill`.
 
 ## Helper programs
 

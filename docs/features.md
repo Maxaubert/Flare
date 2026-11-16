@@ -2123,9 +2123,13 @@ Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitw
 
 - **The `fill` permission.** "Fill logins into your web panel", with the warning "Can type passwords into pages, after
   you approve each one." (and, with `network`, that it can send the passwords you type for it to the internet). Its
-  namespace holds `browser.fill`, `browser.fill.page` and `secret.ask`; the agent never has it and `browser` does not open
+  namespace holds `browser.fill`, `browser.fill.page`, `secret.ask` and `secret.result`; the agent never has it and `browser` does not open
   it. Held by `fill_opens_only_the_fill_methods_and_never_for_the_agent` (`flare-ctl`) and the hub's words and warnings
   tests.
+- **A checked secret (rule 1274, 2026-11-16).** `secret.ask` with `verify` keeps the box open after the button:
+  checking (field read-only, a spinner in the button, Cancel still works), then a green check that closes by itself, the
+  field back in place with the red line for a wrong try, or the plugin's plain end line; `secret.result` says which.
+  The Bitwarden plugin unlocks this way.
 - **`browser.fill`.** Only into the tab's web page, only when its site is the login's (host or subdomain, `https` unless
   the login says `http`; no public suffix list), and only after Allow in Flare's own dialog ("Fill <login> into <host>?",
   Deny and Fill and nothing under them; Fill by the pointer only and not in its first 0.7 s, Enter presses Deny). The

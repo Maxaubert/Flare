@@ -4615,3 +4615,38 @@ cleared). Held by `the_value_owns_a_com_string_that_its_drop_frees_once` and `th
 (`flare-win/src/window_app_id.rs`). The test process uses the classic heap, which does not always catch a double free,
 so the source check is the main guard. Source: Max, 2026-11-16; crash dumps `FlareStable.exe.34872.dmp` and
 `FlareStable.exe.70884.dmp`.
+
+1274. **A checked secret keeps its box open: `secret.ask` with `verify` shows checking, then a green check, the field
+back in place with the red line, or the plugin's end line, and never closes and reopens.** Max, 2026-11-16 (approved
+mockup "Unlock Bitwarden: the box stays open"): the Bitwarden unlock box closed on Unlock while `bw unlock` ran (about
+3 s) and, on a wrong password, opened again. Now a plugin may send `verify: true` (optional, default false) and
+`checking` (one clean line, at most 120, only with `verify`; `bad_params` without it). The button sends the text once:
+the plugin's `secret.ask` answers `{text, ask}` (the ask's id, `s<n>`) and the box stays up, checking: the field at 0.6
+opacity and read-only, keeping its dots; the button off (0.55) with a small turning spinner in place of its word; the
+checking line (`Checking...` by default) in the sub's place, never red; Cancel, Escape and a press outside still cancel.
+The plugin answers with `secret.result {ask, ok, title?, line?, error?, done?}` (Namespace `Fill`, the `fill`
+permission, never the agent's; not an ask, so it spends none of the 6 a minute; `FILL_TIMEOUT`). `ok: true`: a green
+check on a soft round tile (the theme token `PluginInk.ok`: `BrandInk.ok`, or `SettingsFixed.ok-dark` and `ok-light`),
+`title` (`Done` without it) and `line`, no field, button, Cancel or foot; it closes after 0.8 s (`RESULT_HOLD`) and
+answers `{shown: true}`. `ok: false`: the box goes back to the field in place, cleared, holding the keys, with `error`
+in red (`That was not right. Try again.` without it), and that call waits for the person's next try (`{text, ask}`, same
+id) or a cancel; a second waiting call is `busy`. `ok: false, done: true`: the plugin's logo, `title` (the ask's own
+without it) and its plain `line`, closed after 2.5 s (`END_HOLD`). No word in 60 s (`VERIFY_WAIT`) puts the field back
+with `The check took too long. Try again.`; a text sent then is held (a `Secret`) for the plugin's next `secret.result`
+(a late `ok: false` gets it at once and the box checks it). Cancel while checking, or a field left alone, closes the
+box, and the plugin's next `secret.result` for that ask answers `{cancelled: true}` (`timed_out` too for the timeout),
+once; any other id is `not_found`. Each stage's timer carries a round number, so a timer of an earlier stage ends
+nothing. Without `verify` nothing changes (old plugins). Nothing in Flare runs before the box shows. Native:
+`flare_mods::fill::{parse_secret, parse_secret_result, Verdict}`, `Method::SecretResult`, `CtlOp::SecretResult`,
+`ask_glue.rs` (`Stage`, `Verify`, `answer_checked_secret`, `secret_result`, `plugin_ask_expired`),
+`plugin_ask::{checking_line, wrong_line, result_view}`, `pask-stage`, `pask-verify`, `pask-checking`,
+`pask-result-title`, `pask-result-line` in `app.slint`, `PluginAsk.stage` and `AskButton.busy` in `ui/plugin_ask.slint`,
+and the e2e probe's `ui_stage`, `checking_shown`, `result_shown`, `field_read_only`, `ok_enabled` and the controller's
+`stage` and `waiting`. Held by `verify_is_an_optional_flag_and_checking_goes_with_it` and
+`a_secret_result_is_right_wrong_or_done_and_nothing_else` (`fill.rs`),
+`a_checked_secret_has_flares_words_where_the_plugin_names_none` (`plugin_ask.rs`), the seven tests of
+`appctl/tests/mods_tests/plugin_secret_verify.rs` (right, wrong, done, cancel while checking, the timeout, the plugin
+turned off, refused params), `secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (an ask
+without `verify`), and `ui_tests/secret_verify.rs` at every scale in both looks (checking with a turning spinner and a
+box that does not move, wrong in place and focused, the green check, the end line, no `verify`). Source: Max,
+2026-11-16.

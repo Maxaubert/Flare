@@ -673,6 +673,9 @@ pub struct AppCtl {
     plugin_ask: Option<ask_glue::PluginAsk>,
     /// Numbers the plugins' questions, so a timer of an older one ends nothing.
     plugin_ask_seq: u64,
+    /// The last checked secret that ended while its plugin had no call waiting (a cancel or a timeout while checking):
+    /// the plugin, the ask's id and the answer its next `secret.result` gets (rule 1274).
+    plugin_ask_ended: Option<(String, String, serde_json::Value)>,
     /// The prompt hook's `panel.state` calls that wait for a page's selection (rule 1268), by the read's id.
     quiet_reads: quiet_glue::QuietReads,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
@@ -1178,6 +1181,7 @@ impl AppCtl {
             app_launcher: Rc::new(crate::app_ask::RecordingLauncher::default()),
             plugin_ask: None,
             plugin_ask_seq: 0,
+            plugin_ask_ended: None,
             quiet_reads: quiet_glue::QuietReads::default(),
             panel_focus_seen: false,
             key_from_page: false,
@@ -4396,6 +4400,7 @@ impl AppCtl {
             | CtlOp::ModTool { .. }
             | CtlOp::Fill { .. }
             | CtlOp::SecretAsk { .. }
+            | CtlOp::SecretResult { .. }
             | CtlOp::ShowApp { .. } => Err(CtlError::new(
                 code::INTERNAL,
                 "a browser call reached the wrong handler",
@@ -5634,6 +5639,13 @@ impl AppCtl {
                         op @ (CtlOp::Fill { .. } | CtlOp::SecretAsk { .. }) => {
                             self.ctl_plugin_ask(op, req.reply);
                         }
+                        // A plugin's word on its checked secret (rule 1274): a wrong one waits for the next try.
+                        CtlOp::SecretResult {
+                            plugin,
+                            ask,
+                            verdict,
+                            generation,
+                        } => self.secret_result(&plugin, generation, &ask, verdict, req.reply),
                         op => {
                             let answer = self.ctl_op(op);
                             let _ = req.reply.send(answer);
