@@ -15,17 +15,12 @@ pub const APP_ID_PID: u32 = 5;
 /// the apartment model and closed again when this call opened it; a thread already in another model keeps it.
 #[cfg(windows)]
 pub fn set(hwnd: isize, id: &str) -> Result<(), String> {
-    use std::mem::ManuallyDrop;
     use windows::Win32::Foundation::{HWND, PROPERTYKEY, RPC_E_CHANGED_MODE};
-    use windows::Win32::System::Com::StructuredStorage::{
-        PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
-    };
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
-    use windows::Win32::System::Variant::VT_LPWSTR;
     use windows::Win32::UI::Shell::PropertiesSystem::{
         IPropertyStore, SHGetPropertyStoreForWindow,
     };
-    use windows::core::{GUID, PWSTR};
+    use windows::core::GUID;
 
     if hwnd == 0 || id.is_empty() {
         return Err("no window or no id".to_string());
@@ -39,9 +34,52 @@ pub fn set(hwnd: isize, id: &str) -> Result<(), String> {
         fmtid: GUID::from_u128(APP_ID_FMTID),
         pid: APP_ID_PID,
     };
-    // The string stays owned here: SetValue copies the value, so nothing is allocated for COM to free.
-    let mut text: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
-    let value = PROPVARIANT {
+    let result = lpwstr_value(id).and_then(|value| {
+        // SAFETY: `hwnd` is a window of this process; the store is a COM interface released when it drops,
+        // at the end of this closure, before COM is closed. `value` drops here too: `PropVariantClear` frees
+        // its string, which COM's allocator gave out, after SetValue has copied it.
+        let store: windows::core::Result<IPropertyStore> =
+            unsafe { SHGetPropertyStoreForWindow(HWND(hwnd as *mut _)) };
+        match store {
+            // SAFETY: `key` and `value` live across both calls.
+            Ok(store) => unsafe { store.SetValue(&key, &value).and_then(|()| store.Commit()) }
+                .map_err(|e| format!("SetValue or Commit {:#010x}", e.code().0)),
+            Err(e) => Err(format!("SHGetPropertyStoreForWindow {:#010x}", e.code().0)),
+        }
+    });
+    if hr.is_ok() {
+        // SAFETY: balances the successful CoInitializeEx above on the same thread.
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+/// A `VT_LPWSTR` value holding `text`, with the string in COM's task memory (rule 1270). The windows crate's
+/// `PROPVARIANT` has a `Drop` that calls `PropVariantClear`, which frees `pwszVal` with `CoTaskMemFree`. So the
+/// string must come from `CoTaskMemAlloc`: a Rust buffer there is freed twice (once by Rust, once by the drop).
+/// That corrupted the heap and killed Flare at start while a custom app icon was picked (2026-11-16).
+#[cfg(windows)]
+fn lpwstr_value(
+    text: &str,
+) -> Result<windows::Win32::System::Com::StructuredStorage::PROPVARIANT, String> {
+    use std::mem::ManuallyDrop;
+    use windows::Win32::System::Com::CoTaskMemAlloc;
+    use windows::Win32::System::Com::StructuredStorage::{
+        PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
+    };
+    use windows::Win32::System::Variant::VT_LPWSTR;
+    use windows::core::PWSTR;
+
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = std::mem::size_of_val(wide.as_slice());
+    // SAFETY: a plain allocation of `bytes` bytes from COM's task allocator; null is handled below.
+    let buf = unsafe { CoTaskMemAlloc(bytes) }.cast::<u16>();
+    if buf.is_null() {
+        return Err("CoTaskMemAlloc failed".to_string());
+    }
+    // SAFETY: `buf` holds `wide.len()` u16s (just allocated, aligned for u16) and does not overlap `wide`.
+    unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), buf, wide.len()) };
+    Ok(PROPVARIANT {
         Anonymous: PROPVARIANT_0 {
             Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
                 vt: VT_LPWSTR,
@@ -49,29 +87,11 @@ pub fn set(hwnd: isize, id: &str) -> Result<(), String> {
                 wReserved2: 0,
                 wReserved3: 0,
                 Anonymous: PROPVARIANT_0_0_0 {
-                    pwszVal: PWSTR(text.as_mut_ptr()),
+                    pwszVal: PWSTR(buf),
                 },
             }),
         },
-    };
-    let result = {
-        // SAFETY: `hwnd` is a window of this process; the store is a COM interface released when it drops,
-        // at the end of this block, before COM is closed.
-        let store: windows::core::Result<IPropertyStore> =
-            unsafe { SHGetPropertyStoreForWindow(HWND(hwnd as *mut _)) };
-        match store {
-            // SAFETY: `key` and `value` live across both calls, and `text` outlives `value`.
-            Ok(store) => unsafe { store.SetValue(&key, &value).and_then(|()| store.Commit()) }
-                .map_err(|e| format!("SetValue or Commit {:#010x}", e.code().0)),
-            Err(e) => Err(format!("SHGetPropertyStoreForWindow {:#010x}", e.code().0)),
-        }
-    };
-    drop(text);
-    if hr.is_ok() {
-        // SAFETY: balances the successful CoInitializeEx above on the same thread.
-        unsafe { CoUninitialize() };
-    }
-    result
+    })
 }
 
 /// The window id is a Windows notion; elsewhere nothing is written.
@@ -91,6 +111,37 @@ mod tests {
             "9F4C28559F794B39A8D0E1D42DE1D5F3"
         );
         assert_eq!(APP_ID_PID, 5);
+    }
+
+    /// Rule 1270: the value owns a COM string, so dropping it (`PropVariantClear`) frees what COM gave out. A Rust
+    /// buffer here was freed twice and the heap check killed the process (0xc0000374) on the drop.
+    #[cfg(windows)]
+    #[test]
+    fn the_value_owns_a_com_string_that_its_drop_frees_once() {
+        use windows::Win32::System::Variant::VT_LPWSTR;
+        for _ in 0..2000 {
+            let value = lpwstr_value("com.flare.terminal.icon").expect("allocated");
+            // SAFETY: `lpwstr_value` sets `vt` and a NUL-ended `pwszVal`.
+            let (vt, text) = unsafe {
+                let inner = &value.Anonymous.Anonymous;
+                (
+                    inner.vt,
+                    inner.Anonymous.pwszVal.to_string().expect("utf-16"),
+                )
+            };
+            assert_eq!(vt, VT_LPWSTR);
+            assert_eq!(text, "com.flare.terminal.icon");
+            drop(value);
+        }
+    }
+
+    /// Rule 1270: no PROPVARIANT in this file points at a Rust-owned buffer.
+    #[test]
+    fn the_value_is_never_built_on_a_rust_buffer() {
+        let src = include_str!("window_app_id.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(!body.contains(concat!(".as_mut", "_ptr()")));
+        assert!(body.contains("CoTaskMemAlloc("));
     }
 
     #[cfg(windows)]
