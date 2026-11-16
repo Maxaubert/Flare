@@ -4632,7 +4632,10 @@ The shortcut's icon is pointed at it with `IShellLinkW::SetIconLocation` (index 
 `SHCNE_ASSOCCHANGED`, so the Start menu shows it without an Explorer restart. Older `app-icon-*.ico` files are deleted
 once the shortcut no longer names them. The original points the shortcut back at the exe's own icon (index 0) and
 deletes Flare's files, but only when the shortcut wears one of them: an icon the installer or the person set stays.
-The same pick again writes nothing and tells nobody. A failed write is logged and keeps the old file. No shortcut
+In that case Flare's leftover files are deleted, but never one whose name the shortcut names.
+The same pick again writes nothing and tells nobody. A failed write is logged, keeps the old file and removes the
+file just written for it. The data folder is made absolute first, so a relative `--user-data-dir` never lands in
+the shortcut. No shortcut
 with this id means nothing is drawn, written or told. The run at start puts the pick back after an update rewrote
 the shortcut. Only an installed run does this (`Ship.packaged`, never under `--e2e`, never a dev build, whose exe is
 not the shortcut's). COM is opened per call in the apartment model and closed after every interface is released; a
@@ -4642,7 +4645,8 @@ The file and shell calls sit behind `IconFiles` and `LinkShell`, so tests use a 
 touch the real Start menu. Held by `the_shortcut_is_matched_by_its_id_and_only_it_is_touched`,
 `a_new_pick_replaces_the_old_file_and_the_same_pick_is_a_no_op`, `the_original_restores_the_exes_icon_zero`,
 `the_original_leaves_an_icon_flare_did_not_set`, `a_rewritten_shortcut_gets_the_pick_again`, `no_shortcut_is_a_no_op`,
-`a_failed_set_keeps_the_old_file`, `the_file_name_is_a_content_hash`,
+`a_failed_set_keeps_the_old_file`, `the_original_on_a_rewritten_shortcut_clears_leftover_files`,
+`the_file_name_is_a_content_hash`,
 `the_shell_runs_on_the_worker_and_no_shortcut_is_made` (`start_menu_icon.rs`), `the_ico_holds_every_size_as_a_png`
 (`app_icon.rs`), `a_temp_shortcut_reads_its_id_and_takes_a_new_icon`, `a_missing_shortcut_reads_as_an_error`,
 `no_propvariant_is_built_here` (`flare-win/src/shell_link.rs`) and `the_app_icon_row_picks_the_original_until_another_is_chosen`

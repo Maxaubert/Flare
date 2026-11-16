@@ -126,9 +126,21 @@ pub fn apply(
     let Some((lnk, facts)) = find_link(files, shell, &places.programs, &places.aumid) else {
         return Outcome::NoShortcut;
     };
+    let mut wrote = false;
     let (icon, keep) = if id == ORIGINAL {
         if !is_ours(&facts.icon, &places.data) {
-            // The installer's icon, or one the person set by hand: it stays.
+            // The installer's icon, or one the person set by hand: it stays. Flare's leftover files (an update
+            // rewrote the shortcut while a pick was worn) go, but never the file the shortcut names.
+            let worn_name = Path::new(&facts.icon).file_name();
+            for old in files.icons(&places.data) {
+                let named = old.file_name().zip(worn_name).is_some_and(|(a, b)| {
+                    a.to_string_lossy()
+                        .eq_ignore_ascii_case(&b.to_string_lossy())
+                });
+                if !named {
+                    files.remove(&old);
+                }
+            }
             return Outcome::Unchanged(PathBuf::from(&facts.icon));
         }
         (places.exe.clone(), None)
@@ -137,16 +149,21 @@ pub fn apply(
             return Outcome::Failed(format!("{id}: not drawn"));
         };
         let path = places.data.join(ico_name(&bytes));
-        if !files.exists(&path)
-            && let Err(e) = files.write(&path, &bytes)
-        {
-            return Outcome::Failed(e);
+        if !files.exists(&path) {
+            if let Err(e) = files.write(&path, &bytes) {
+                return Outcome::Failed(e);
+            }
+            wrote = true;
         }
         (path.clone(), Some(path))
     };
     let worn = same_path(&facts.icon, &icon) && facts.index == 0;
     if !worn {
         if let Err(e) = shell.set_icon(&lnk, &icon, 0) {
+            // The shortcut still names its old file; the one just written for it is not left behind.
+            if wrote {
+                files.remove(&icon);
+            }
             return Outcome::Failed(e);
         }
         shell.notify(&lnk);
@@ -288,7 +305,8 @@ pub fn for_run(ship: &crate::ship_ctl::Ship, profile: &Path) -> Option<Worker> {
     if !ship.packaged || ship.e2e {
         return None;
     }
-    let data = profile.to_path_buf();
+    // A relative `--user-data-dir` would leave the shortcut naming a path that depends on the shell's folder.
+    let data = std::path::absolute(profile).unwrap_or_else(|_| profile.to_path_buf());
     let exe = ship.exe.clone();
     let aumid = crate::ship_ctl::effective_aumid();
     Worker::spawn(
@@ -528,7 +546,30 @@ mod tests {
         let out = apply(&DiskFiles, &refusing, &places, "lemon-ink", &fake_ico);
         assert_eq!(out, Outcome::Failed("denied".into()));
         assert!(places.data.join(ico_name(b"ico of daybreak")).exists());
+        assert!(
+            !places.data.join(ico_name(b"ico of lemon-ink")).exists(),
+            "the file written for the failed pick is not left behind"
+        );
         assert_eq!(refusing.0.notified.lock().unwrap().len(), 1);
+    }
+
+    /// An update rewrote the shortcut while a pick was worn, then the original is picked: the shortcut is left alone
+    /// and Flare's leftover files go, but never a file the shortcut still names.
+    #[test]
+    fn the_original_on_a_rewritten_shortcut_clears_leftover_files() {
+        let (_root, places, shell, mine) = setup();
+        apply(&DiskFiles, &shell, &places, "daybreak", &fake_ico);
+        std::fs::write(places.data.join("app-icon-mine.ico"), b"x").unwrap();
+        shell.with(
+            &mine,
+            Some(AUMID),
+            r"D:\Elsewhere\APP-ICON-MINE.ICO", // a hand-set copy that shares the name: kept
+        );
+        let out = apply(&DiskFiles, &shell, &places, ORIGINAL, &fake_ico);
+        assert!(matches!(out, Outcome::Unchanged(_)), "{out:?}");
+        assert!(!places.data.join(ico_name(b"ico of daybreak")).exists());
+        assert!(places.data.join("app-icon-mine.ico").exists());
+        assert_eq!(shell.sets.lock().unwrap().len(), 1);
     }
 
     #[test]
