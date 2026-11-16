@@ -6,7 +6,8 @@
 //! title) cannot change it. The name is quoted, and for a plugin installed from an address Flare adds "from <host>"
 //! (parsed with `url`, the host never cut from the right; nothing for a plugin from a file, 2026-11-16), so a copy that
 //! took another's name and colour, or a name like "Bitwarden (from bitwarden.com)", is told apart (rule 1266,
-//! 2026-11-15). A fill has no such line (the owner took it out, 2026-11-10). A tab's title can be set by what runs in it, so the asker line quotes it as the tab's own words.
+//! 2026-11-15). The name loses its quote-like characters and is cut at its first dot-like separator and at " from ",
+//! so the line holds " · from " only where Flare wrote it (a security review, 2026-11-16). A fill has no such line (the owner took it out, 2026-11-10). A tab's title can be set by what runs in it, so the asker line quotes it as the tab's own words.
 
 /// What the dialog shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -106,20 +107,101 @@ fn origin_of(source: &str) -> Option<String> {
         .map(|host| format!("from {}", host_shown(host)))
 }
 
-/// The plugin as the secret's "Asked by" line names it: its name in quotes (its own words, so they cannot run into
-/// Flare's), then, for a plugin from an address, its host ([`origin_of`]). A quote mark in the name becomes an
-/// apostrophe, so the name cannot close its quotes early.
-fn plugin_of(plugin_name: &str, source: &str) -> String {
-    let name: String = cut_to(plugin_name.trim(), FOOT_NAME_MAX)
+/// A quote-like character: the ASCII quote and apostrophe, the backtick, the curly and low quotes (U+2018 to U+201F),
+/// the angle quotes, the primes (U+2032 to U+2037, U+2057), the modifier letters drawn as quotes (U+02B9 to U+02BC,
+/// U+02BA, U+02DD, U+02EE), the acute accent, Hebrew geresh and gershayim, the ditto mark (U+3003), the CJK and
+/// fullwidth quotes (U+301D to U+301F, U+FF02, U+FF07, U+FF40) and the dingbat quotes. A name loses them all, so it
+/// can never seem to close the quotes Flare puts around it.
+fn quote_like(c: char) -> bool {
+    matches!(
+        c,
+        '"' | '\''
+            | '`'
+            | '\u{00AB}'
+            | '\u{00B4}'
+            | '\u{00BB}'
+            | '\u{02B9}'..='\u{02BC}'
+            | '\u{02C8}'
+            | '\u{02DD}'
+            | '\u{02EE}'
+            | '\u{05F3}'
+            | '\u{05F4}'
+            | '\u{2018}'..='\u{201F}'
+            | '\u{2032}'..='\u{2037}'
+            | '\u{2039}'
+            | '\u{203A}'
+            | '\u{2057}'
+            | '\u{275B}'..='\u{2760}'
+            | '\u{2E42}'
+            | '\u{3003}'
+            | '\u{301D}'..='\u{301F}'
+            | '\u{FF02}'
+            | '\u{FF07}'
+            | '\u{FF40}'
+            | '\u{1F676}'..='\u{1F678}'
+    )
+}
+
+/// A dot-like separator, such as the middle dot (U+00B7) Flare puts before "from <host>": the Greek ano teleia,
+/// the bullets (U+2022, U+2023, U+2043, U+25CF, U+25E6), the one-dot leader, the hyphenation point (U+2027), the
+/// bullet and dot operators (U+2219, U+22C5), the katakana and halfwidth middle dots (U+30FB, U+FF65) and other
+/// raised dots. The "Asked by" line cuts a name at the first one.
+fn separator_like(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00B7}'
+            | '\u{0387}'
+            | '\u{16EB}'
+            | '\u{1427}'
+            | '\u{2022}'
+            | '\u{2023}'
+            | '\u{2024}'
+            | '\u{2027}'
+            | '\u{2043}'
+            | '\u{2219}'
+            | '\u{22C5}'
+            | '\u{25CF}'
+            | '\u{25E6}'
+            | '\u{2981}'
+            | '\u{2E31}'
+            | '\u{2E33}'
+            | '\u{30FB}'
+            | '\u{A78F}'
+            | '\u{FF65}'
+            | '\u{10101}'
+    )
+}
+
+/// The plugin's name as the "Asked by" line shows it (rule 1266, hardened 2026-11-16). Hidden characters go, every
+/// space-like character becomes one plain space, and quote-like characters ([`quote_like`]) are taken out. Then the
+/// name is cut at its first dot-like separator ([`separator_like`]) and at its first " from " (any case), so a name
+/// such as `Bitwarden″ · from bitwarden.com` shows as `Bitwarden`. Last, it is trimmed and cut at 40 characters.
+/// The line can so only hold " · from " where Flare wrote it, for a plugin installed from an address.
+fn foot_name(plugin_name: &str) -> String {
+    let mut name = String::new();
+    for c in plugin_name
         .chars()
-        .map(|c| {
-            if matches!(c, '"' | '\u{201C}' | '\u{201D}') {
-                '\''
-            } else {
-                c
-            }
-        })
-        .collect();
+        .filter(|c| !hidden(*c) && !quote_like(*c))
+    {
+        if separator_like(c) {
+            break;
+        }
+        let c = if c.is_whitespace() { ' ' } else { c };
+        if c == ' ' && (name.is_empty() || name.ends_with(' ')) {
+            continue;
+        }
+        name.push(c);
+    }
+    if let Some(at) = name.to_ascii_lowercase().find(" from ") {
+        name.truncate(at);
+    }
+    cut_to(name.trim(), FOOT_NAME_MAX)
+}
+
+/// The plugin as the secret's "Asked by" line names it: its name in quotes ([`foot_name`]: its own words, so they
+/// cannot run into Flare's), then, for a plugin from an address, its host ([`origin_of`]).
+fn plugin_of(plugin_name: &str, source: &str) -> String {
+    let name = foot_name(plugin_name);
     match origin_of(source) {
         Some(origin) => format!("\"{name}\" \u{00B7} {origin}"),
         None => format!("\"{name}\""),
@@ -272,10 +354,9 @@ mod tests {
         assert_eq!(real, "\"Bitwarden\" \u{00B7} from bitwarden.com");
         assert_eq!(fake, "\"Bitwarden (from bitwarden.com)\"");
         assert!(!fake.ends_with("from bitwarden.com"));
-        // A name that closes its own quotes and writes Flare's words: the quotes become apostrophes.
+        // A name that closes its own quotes and writes Flare's words: the quote goes and the name is cut at the dot.
         let fake = plugin_of("Bitwarden\" \u{00B7} from bitwarden.com", "");
-        assert_eq!(fake, "\"Bitwarden' \u{00B7} from bitwarden.com\"");
-        assert!(!fake.ends_with("from bitwarden.com"));
+        assert_eq!(fake, "\"Bitwarden\"");
         assert_eq!(fake.matches('"').count(), 2);
         // Bidi overrides, isolates and zero-width characters are taken out.
         let fake = plugin_of("Bit\u{202E}nedraw\u{202C}\u{2066}\u{200B}\u{FEFF}", "");
@@ -288,6 +369,127 @@ mod tests {
                 "\"{}...\" \u{00B7} from evil.net",
                 "B".repeat(FOOT_NAME_MAX)
             )
+        );
+    }
+
+    /// Flare's own separator before an origin. A line holds it only when Flare wrote it for an address install.
+    const FLARE_SEP: &str = " \u{00B7} from ";
+
+    #[test]
+    fn look_alike_quotes_are_taken_out_of_the_name() {
+        for q in [
+            '"',
+            '\'',
+            '`',
+            '\u{00AB}',
+            '\u{00BB}',
+            '\u{00B4}',
+            '\u{02BA}',
+            '\u{02BC}',
+            '\u{02DD}',
+            '\u{05F4}',
+            '\u{2018}',
+            '\u{2019}',
+            '\u{201A}',
+            '\u{201B}',
+            '\u{201C}',
+            '\u{201D}',
+            '\u{201E}',
+            '\u{201F}',
+            '\u{2032}',
+            '\u{2033}',
+            '\u{2036}',
+            '\u{2039}',
+            '\u{203A}',
+            '\u{2057}',
+            '\u{275E}',
+            '\u{3003}',
+            '\u{301E}',
+            '\u{FF02}',
+            '\u{FF07}',
+            '\u{FF40}',
+            '\u{1F677}',
+        ] {
+            let foot = secret_view(&format!("Bit{q}warden{q}"), "", "t", "l", "", "", "").foot;
+            assert_eq!(foot, "Asked by \"Bitwarden\"", "{:04X}", q as u32);
+        }
+        // A plain apostrophe is a quote too: "Max's Vault" shows as "Maxs Vault".
+        assert_eq!(plugin_of("Max's Vault", ""), "\"Maxs Vault\"");
+    }
+
+    #[test]
+    fn a_name_is_cut_at_a_dot_like_separator() {
+        for dot in [
+            '\u{00B7}', '\u{0387}', '\u{2022}', '\u{2023}', '\u{2024}', '\u{2027}', '\u{2043}',
+            '\u{2219}', '\u{22C5}', '\u{25CF}', '\u{2E31}', '\u{30FB}', '\u{FF65}',
+        ] {
+            let name = format!("Bitwarden {dot} example.org");
+            assert_eq!(plugin_of(&name, ""), "\"Bitwarden\"", "{:04X}", dot as u32);
+            assert_eq!(
+                plugin_of(&name, "https://evil.net/b.zip"),
+                "\"Bitwarden\" \u{00B7} from evil.net"
+            );
+        }
+        // A name that is only a separator and words after it shows as empty quotes, never as an origin.
+        assert_eq!(plugin_of("\u{00B7} from bitwarden.com", ""), "\"\"");
+    }
+
+    #[test]
+    fn a_from_tail_is_cut_off_the_name() {
+        for name in [
+            "Bitwarden from bitwarden.com",
+            "Bitwarden FROM bitwarden.com",
+            "Bitwarden  From\u{3000}bitwarden.com",
+            "Bitwarden\u{00A0}from\u{2003}bitwarden.com",
+            "Bitwarden from ",
+        ] {
+            assert_eq!(plugin_of(name, ""), "\"Bitwarden\"", "{name:?}");
+        }
+        // "from" inside a word, or not standing alone, stays.
+        assert_eq!(plugin_of("Fromage", ""), "\"Fromage\"");
+        assert_eq!(plugin_of("Notes fromage", ""), "\"Notes fromage\"");
+        assert_eq!(
+            plugin_of("Bitwarden (from bitwarden.com)", ""),
+            "\"Bitwarden (from bitwarden.com)\""
+        );
+    }
+
+    #[test]
+    fn spoof_shapes_never_write_flares_separator() {
+        let shapes = [
+            "Bitwarden\u{2033} \u{00B7} from bitwarden.com",
+            "Bitwarden\u{201D} \u{00B7} from bitwarden.com",
+            "Bitwarden\" \u{00B7} from bitwarden.com",
+            "Bitwarden\u{FF02} \u{30FB} from bitwarden.com",
+            "Bitwarden\u{02BA} \u{2022} FROM bitwarden.com",
+            "Bitwarden\u{3003}\u{00A0}\u{2027}\u{00A0}from\u{00A0}bitwarden.com",
+            "Bitwarden\u{2036} \u{FF65} from bitwarden.com",
+            "Bitwarden\u{200B}\u{2033}\u{202E} \u{00B7} from bitwarden.com",
+            "Bitwarden\u{2019}\u{2019} from bitwarden.com",
+            "Bitwarden\u{FF07} \u{0387} from bitwarden.com",
+            "\u{2033}\u{00B7} from bitwarden.com",
+        ];
+        for name in shapes {
+            let file = secret_view(name, "", "t", "l", "", "", "").foot;
+            assert!(!file.contains(FLARE_SEP), "{file}");
+            assert!(!file.contains('\u{00B7}'), "{file}");
+            assert!(!file.to_lowercase().contains("from"), "{file}");
+            assert_eq!(file.matches('"').count(), 2, "{file}");
+            assert!(
+                file == "Asked by \"Bitwarden\"" || file == "Asked by \"\"",
+                "{file}"
+            );
+            // From an address the separator shows once, Flare's, before the real host.
+            let addr = secret_view(name, "https://evil.net/b.zip", "t", "l", "", "", "").foot;
+            assert_eq!(addr.matches(FLARE_SEP).count(), 1, "{addr}");
+            assert!(addr.ends_with(" \u{00B7} from evil.net"), "{addr}");
+            assert!(!addr.contains("bitwarden.com"), "{addr}");
+        }
+        // The cut still holds after the name is cut: a long name ends in "...", never in an origin.
+        let long = format!("{} \u{00B7} from bitwarden.com", "B".repeat(60));
+        assert_eq!(
+            plugin_of(&long, ""),
+            format!("\"{}...\"", "B".repeat(FOOT_NAME_MAX))
         );
     }
 

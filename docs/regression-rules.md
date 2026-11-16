@@ -4538,8 +4538,17 @@ from `url::Url::parse(source)` and `host_str()` (the parser the download check u
 path), is shown whole, and a host longer than 80 characters is cut from the LEFT, keeping its last labels
 (`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`; the name is cut at 40 characters, has
 control, bidi (U+061C, U+200E/F, U+202A to U+202E, U+2066 to U+2069) and zero-width characters (U+200B to U+200D, U+2060,
-U+FEFF) taken out (every name in the dialog loses them), and a quote mark in it becomes an apostrophe, so it cannot close
-its quotes early.
+U+FEFF) taken out (every name in the dialog loses them). A third security review (2026-11-16) found that a plugin from a
+file named `Bitwarden″ · from bitwarden.com`, with a look-alike quote, could read like a real address install, since
+the name is the last thing on its line. So `foot_name` now also: turns every space-like character into one plain space;
+takes out every quote-like character (`quote_like`: ASCII `"`, `'` and the backtick, U+2018 to U+201F, the primes U+2032
+to U+2037 and U+2057, U+02B9 to U+02BC, U+02DD, U+3003, U+FF02, U+FF07, the angle, CJK and dingbat quotes and the like,
+so `Max's Vault` shows as `Maxs Vault`); cuts the name at its first dot-like separator (`separator_like`: U+00B7,
+U+0387, U+2022, U+2023, U+2024, U+2027, U+2043, U+2219, U+22C5, U+30FB, U+FF65 and other raised dots and bullets);
+and cuts it at its first ` from ` in any case. Then it is trimmed and cut at 40 characters. So the line holds ` · from `
+only where Flare wrote it, for an address install: `Bitwarden″ · from bitwarden.com` shows as `Asked by "Bitwarden"`,
+and a name that is only a separator and a tail shows as `Asked by ""`. The plugin_ask tests try each spoof shape
+(look-alike quotes, dots, a ` from ` tail, and mixes with hidden and non-breaking spaces). Max's wording is unchanged.
 It replaced "What you type goes to <Plugin> only. Flare does not keep it or show it.", which Max took out; a security
 review then found that with no line at all another plugin could dress as Bitwarden in the box, so Max chose this short
 line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller`) and install host
