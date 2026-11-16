@@ -8,7 +8,7 @@
 //! those in the light theme. It saves a picture of each surface into `<shots>/plugin-brand/`: the card, the details
 //! sheet (closed and with the Fills logins dropdown open), the unlock question, the fill approval and the tab menu.
 //! It holds: the one action is a flat tab-menu row titled by the plugin, wearing the brand's logo or Flare's chip and
-//! the plugin's name as its hint; `secret.ask` shows the plugin's heading, sub line, button and Flare's line right under Cancel (`Asked by "<plugin>" · from a file`),
+//! the plugin's name as its hint; `secret.ask` shows the plugin's heading, sub line, button and Flare's line right under Cancel (`Asked by "<plugin>"`),
 //! the eye shows and hides, Enter submits and the helper gets only that a secret came; the fill approval names the
 //! login, the site and the tab the agent asked in (in quotes), and the first press on Deny answers it; every surface
 //! wears the brand exactly when the manifest has one, and the logo only with a logo; the card's Details button opens the
@@ -405,8 +405,8 @@ fn run(
             && q["branded"] == json!(dress.branded())
             && q["plate"] == json!(dress == Dress::Logo)
             && q["field_focus"] == json!(true)
-            // The name in quotes, then Flare's origin: the plugin is a folder put in place, so "from a file".
-            && q["foot"] == json!(format!("Asked by \"{NAME}\" \u{00B7} from a file")),
+            // The name in quotes only: the plugin is a folder put in place, so no host follows it.
+            && q["foot"] == json!(format!("Asked by \"{NAME}\"")),
         format!("{pct}: the unlock question is the plugin's, centred, with Flare's \"Asked by\" line naming it ({q})"),
     );
     // Flare's line sits right under Cancel (the secret's `deny` is its Cancel link), the box's last row.

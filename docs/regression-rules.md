@@ -4529,11 +4529,11 @@ whose last answer failed (a wrong master password) asks again with `error`, one 
 `bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
 in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
 the keys, and the button, Cancel and Flare's line under Cancel are as before. That line is a short grey
-`Asked by "<plugin>" · from <origin>`, the box's last row: `Asked by "Vault" · from example.com` for a plugin Settings
-installed from an address, `Asked by "Vault" · from a file` for one installed from a file or a folder put in place (no
-address), and `from an address` when the address has no host. The name is always in quotes and the origin is always
-Flare's, so a plugin named `Bitwarden (from bitwarden.com)` reads `Asked by "Bitwarden (from bitwarden.com)" · from a
-file`, never like the real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
+`Asked by "<plugin>"`, the box's last row: `Asked by "Vault" · from example.com` for a plugin Settings installed from
+an address, and only `Asked by "Vault"` for one installed from a file or a folder put in place (no address) or whose
+address has no host (Max took "· from a file" out, 2026-11-16). The name is always in quotes and the host is always
+Flare's, so a plugin named `Bitwarden (from bitwarden.com)` reads `Asked by "Bitwarden (from bitwarden.com)"`, the
+host inside the quotes, never like the real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
 from `url::Url::parse(source)` and `host_str()` (the parser the download check uses; never a user name, password, port or
 path), is shown whole, and a host longer than 80 characters is cut from the LEFT, keeping its last labels
 (`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`; the name is cut at 40 characters, has

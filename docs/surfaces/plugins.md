@@ -119,9 +119,9 @@ lines `#353d4c`, text white, muted `#bac0ce`) and the brand's colour for the pri
 toggle and links (a lighter tint, 35 percent toward white). `color` is the only input: a plugin cannot set the surface,
 fonts or the warning colour. Without a brand they wear Flare's theme and its chip. Amber (full control, "Always
 allow") is the same on both and never neutral. The words that say whose surface it is (the asker line on a fill's card,
-and the short grey `Asked by "<plugin>" · from <origin>` under a secret's Cancel) are always Flare's, so a plugin dressed
-as another still shows its own name in quotes and where it came from, which Flare writes: the address's host when
-Settings installed it from one (`Asked by "Vault" · from example.com`), else "from a file"; the tab named in a fill approval is in
+and the short grey `Asked by "<plugin>"` under a secret's Cancel) are always Flare's, so a plugin dressed as another
+still shows its own name in quotes, and Flare adds the address's host when Settings installed it from one
+(`Asked by "Vault" · from example.com`), else nothing (`Asked by "Vault"`); the tab named in a fill approval is in
 quotes, as the tab's own words (what runs in a tab can set its title). Rust:
 `flare_mods::manifest::Brand`, `flare::plugin_look`; Slint: `ui/plugin_look.slint`.
 
@@ -480,8 +480,8 @@ Flare's own dialog, and the user name, password and code never reach the agent.
 - **`secret.ask {title, label, sub?, button?, error?}`** shows Flare's masked field, centred in the plugin's look: its
   logo, `title` as the heading, `sub` under it (an account), one field with `label` as its placeholder and an eye that
   shows what is typed, a full-width button with `button` (`OK` without it), Cancel as a link, and under it Flare's short
-  grey line `Asked by "<Plugin>" · from <origin>`: `Asked by "Vault" · from example.com` when Settings installed it
-  from an address, `Asked by "Vault" · from a file` for a file or a folder put in place. Flare writes that line from
+  grey line `Asked by "<Plugin>"`: `Asked by "Vault" · from example.com` when Settings installed it from an address,
+  and only `Asked by "Vault"` for a file or a folder put in place. Flare writes that line from
   the plugin's own name (in quotes, cut at 40 characters, with control, bidi and zero-width characters taken out and a
   quote mark made an apostrophe) and the install address's host (parsed with `url`, shown whole or cut from the left,
   never from the right), small and in its own dim ink: nothing in the ask changes it and the brand does not colour it,
