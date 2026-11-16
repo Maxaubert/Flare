@@ -377,6 +377,159 @@ fn one_tab_menu_action_is_flat_with_the_plugins_logo_and_more_are_a_flyout_whose
     assert!(rows.iter().any(|(r, _)| r.label == "Unlock it"));
 }
 
+/// The plugin's helper on the channel (a pipe connection with the plugin's token): its live grant, no tab.
+fn helper_ctx(w: &World, id: &str) -> CallContext {
+    CallContext {
+        conn: 7,
+        client: format!("helper:{id}"),
+        client_version: String::new(),
+        grant: w.hub.grant_of_mod(id).expect("the plugin is on"),
+        tab: None,
+        cancel: Default::default(),
+    }
+}
+
+/// The labels of the tab's menu, opened afresh.
+fn menu_labels(f: &Fx, tab: &str) -> Vec<String> {
+    f.ctl.borrow_mut().open_tab_menu(tab, 10.0, 10.0);
+    let labels = f
+        .ctl
+        .borrow()
+        .menu
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .map(|(r, _)| r.label.clone())
+        .collect();
+    f.ctl.borrow_mut().close_menu();
+    labels
+}
+
+/// Rule 1273: a title the plugin's helper sets (`actions.set` with no tab, from a connection that sits in no tab) is
+/// what every tab's menu says. Written for Bitwarden 0.3.2's "still says Unlock": it passes, so Flare was not the cause.
+#[test]
+fn a_title_the_plugins_helper_sets_is_what_the_tab_menu_says() {
+    let (f, a, b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        surface_plugin(
+            r,
+            "vault",
+            &["actions"],
+            r#"{"actions":[{"key":"toggle","title":"Unlock it","where":["tab-menu"]}]}"#,
+        );
+    });
+    turn(&f, "vault", true);
+    bg_up(&f, &slot, "vault");
+    assert!(menu_labels(&f, &b).iter().any(|l| l == "Unlock it"));
+    // The helper sets the title: both tabs' menus say it.
+    let r = answer_of(
+        &f,
+        &call_on_thread(
+            &w.dispatcher,
+            helper_ctx(&w, "vault"),
+            Method::ActionsSet,
+            json!({"key": "toggle", "title": "Lock it"}),
+        ),
+    );
+    assert!(r.is_ok(), "{r:?}");
+    for t in [&a, &b] {
+        let labels = menu_labels(&f, t);
+        assert!(labels.iter().any(|l| l == "Lock it"), "{labels:?}");
+        assert!(!labels.iter().any(|l| l == "Unlock it"), "{labels:?}");
+    }
+}
+
+/// The same over the real channel: the app's own server on a fresh pipe, and a client that does what a plugin's
+/// helper does (hello with the plugin's token and no events, its store, then `actions.set` with no tab).
+#[cfg(windows)]
+#[test]
+fn a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says() {
+    use crate::ctl_app::{AppsCfg, CtlServer, MERMAID};
+    use flare_ctl::HelloParams;
+    let (f, _a, b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        let text = r#"{"id":"vault","name":"Vault","version":"1.0.0","protocol":2,"description":"A test plugin.","author":"me","homepage":"https://example.com/vault","permissions":["process","tools","actions"],"background":"bg.html","helper":{"command":"helper.exe"},"helpers":{"macos":{"command":"helper"}},"contributes":{"actions":[{"key":"toggle","title":"Unlock it","icon":"lock","where":["tab-menu"]}]},"tools":[{"name":"fill_login","description":"Fills.","input_schema":{"type":"object"}}]}"#;
+        let to = r.join("vault");
+        std::fs::create_dir_all(&to).unwrap(); // sync-ok: test code only, never the app
+        std::fs::write(to.join("plugin.json"), text).unwrap(); // sync-ok: test code only, never the app
+        std::fs::write(to.join("bg.html"), "<p>bg</p>").unwrap(); // sync-ok: test code only, never the app
+        std::fs::write(to.join("helper.exe"), b"MZ").unwrap(); // sync-ok: test code only, never the app
+        std::fs::write(to.join("helper"), b"#!/bin/sh\n").unwrap(); // sync-ok: test code only, never the app
+    });
+    turn(&f, "vault", true);
+    bg_up(&f, &slot, "vault");
+    let token = w.hub.helper_of("vault").expect("a helper may run").token;
+    let pipe = flare_ctl::pipe_name(
+        &format!("flare-helper-title-test-{}", std::process::id()),
+        None,
+    );
+    let post: Post = {
+        let q = f.q.clone();
+        Arc::new(move |m| q.lock().unwrap().push_back(m))
+    };
+    let _server = CtlServer::start(
+        &pipe,
+        post,
+        Arc::new(|_: &str| None),
+        f.dir.path().to_string_lossy().into_owned(),
+        Arc::new(|| false),
+        AppsCfg::new(
+            f.dir.path().join("apps"),
+            Arc::new(flare_term::path_open::resolve_html_file),
+            Arc::new(|_, _, _| None),
+            Arc::new(|| false),
+            MERMAID,
+        ),
+        Some(Arc::clone(&w.hub)),
+        None,
+        Arc::new(crate::machines::FileMachines::new(f.dir.path())),
+    )
+    .expect("the app's server starts on the pipe");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let wait = Duration::from_secs(8);
+        let r = flare_ctl::connect_to_server(&pipe, wait, std::process::id()).and_then(|mut c| {
+            c.hello(
+                &HelloParams {
+                    client: "helper:vault".into(),
+                    version: "1".into(),
+                    token: Some(token),
+                    tab_token: None,
+                    no_events: true,
+                },
+                wait,
+            )?;
+            c.call(Method::StorageGet, json!({}), wait)?;
+            c.call(
+                Method::StorageSet,
+                json!({"key": "status", "value": {"vault": "unlocked"}}),
+                wait,
+            )?;
+            c.call(
+                Method::ActionsSet,
+                json!({"key": "toggle", "title": "Lock it"}),
+                wait,
+            )
+        });
+        let _ = tx.send(r.map_err(|e| e.to_string()));
+    });
+    let t = Instant::now();
+    let r = loop {
+        f.pump();
+        if let Ok(r) = rx.try_recv() {
+            break r;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "no answer");
+        std::thread::sleep(Duration::from_millis(5)); // sync-ok: test code only
+    };
+    assert!(r.is_ok(), "{r:?}");
+    let labels = menu_labels(&f, &b);
+    assert!(labels.iter().any(|l| l == "Lock it"), "{labels:?}");
+}
+
 #[test]
 fn actions_show_in_the_tab_menu_on_hover_and_in_the_top_bar_and_a_click_is_an_event_with_click_scope()
  {
