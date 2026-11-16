@@ -4599,3 +4599,19 @@ Explorer button stays. Held by `a_custom_pick_wears_one_icon_id_and_the_original
 `the_window_wears_the_pick_id_and_the_process_keeps_the_base_id` (`ship_ctl.rs`),
 `the_key_is_pkey_app_user_model_id` and `a_null_window_or_an_empty_id_is_refused_without_the_shell`
 (`flare-win/src/window_app_id.rs`). Source: Max, 2026-11-15.
+
+1270. **A PROPVARIANT never holds a Rust-owned buffer.** Max, 2026-11-16: "when the flare stable temrinal loads in and
+if you tehn click another tab before its finished loading the sessions it crashes". Two crashes about 0.5 s after start,
+0xc0000374 (heap corruption) on the UI thread: `combase!PropVariantClear` freed `pwszVal` from
+`<windows::...::PROPVARIANT as Drop>::drop`, called at the end of `flare_win::window_app_id::set`, from
+`ship_ctl::set_window_icon` when the window handle was ready. The tab click only happened at the same time. The windows
+crate's `PROPVARIANT` has a `Drop` (`extensions/Win32/System/StructuredStorage.rs`, on whenever the
+`Win32_System_Com_StructuredStorage` and `Win32_System_Variant` features are on) that calls `PropVariantClear`, which
+frees a `VT_LPWSTR` string with `CoTaskMemFree`. `set` pointed `pwszVal` at a Rust `Vec<u16>`, dropped the Vec, then
+the value dropped and freed it again. It hit every start with a custom app icon picked (rule 1265). Now
+`window_app_id::lpwstr_value` copies the id into `CoTaskMemAlloc` memory that the value owns, and its drop frees it
+once. Any new PROPVARIANT that carries a pointer gets it from COM's allocator (or is kept in `ManuallyDrop` and never
+cleared). Held by `the_value_owns_a_com_string_that_its_drop_frees_once` and `the_value_is_never_built_on_a_rust_buffer`
+(`flare-win/src/window_app_id.rs`). The test process uses the classic heap, which does not always catch a double free,
+so the source check is the main guard. Source: Max, 2026-11-16; crash dumps `FlareStable.exe.34872.dmp` and
+`FlareStable.exe.70884.dmp`.
