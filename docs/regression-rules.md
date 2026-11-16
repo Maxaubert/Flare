@@ -4528,37 +4528,16 @@ whose last answer failed (a wrong master password) asks again with `error`, one 
 120 characters (`MAX_ERROR_CHARS`; a control or hidden formatting character, two lines or a non-text value is
 `bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
 in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
-the keys, and the button, Cancel and Flare's line under Cancel are as before. That line is a short grey
-`Asked by "<plugin>"`, the box's last row: `Asked by "Vault" · from example.com` for a plugin Settings installed from
-an address, and only `Asked by "Vault"` for one installed from a file or a folder put in place (no address) or whose
-address has no host (Max took "· from a file" out, 2026-11-16). The name is always in quotes and the host is always
-Flare's, so a plugin named `Bitwarden (from bitwarden.com)` from a file reads `Asked by "Bitwarden"`, never like the
-real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
-from `url::Url::parse(source)` and `host_str()` (the parser the download check uses; never a user name, password, port or
-path), is shown whole, and a host longer than 80 characters is cut from the LEFT, keeping its last labels
-(`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`. A third security review (2026-11-16)
-found that a plugin from a file named `Bitwarden″ · from bitwarden.com`, with a look-alike quote, could read like a
-real address install, since the name is the last thing on its line, and that a list of quote-like and dot-like
-characters would always miss some. So `foot_name` uses an allowlist: it drops spacing accents (a character whose
-compatibility form is a space and a mark, such as U+00B4), normalises the name with Unicode NFKC (`unicode-normalization`,
-so fullwidth, styled and circled letters become plain ones and non-breaking and wide spaces become a plain space), and
-then keeps only letters (general category L) and numbers (Nd, Nl, No), the ASCII space, `-` and `_`. Everything else
-goes: marks, symbols, all punctuation (dots, quotes, brackets), format and control characters (bidi, zero-width, BOM)
-and other spaces. Letters drawn as a quote, prime or dot are dropped too (U+02B9 to U+02FF, U+0559, U+07F4, U+07F5,
-U+1427, U+A788, U+A78B, U+A78C, U+A78F), and so are the circled and squared letter symbols that Rust's `is_alphabetic`
-counts. Runs of spaces become one. Then the name is cut at its first ` from ` in any case (a name that starts or ends
-with "from" counts, so fullwidth `ｆｒｏｍ` is cut too), trimmed and cut at 40 characters. So `Max's Vault` shows as
-`Maxs Vault`, `Vault 2` and `Ålesund-sync` stay as they are, and the line holds a dot, a quote or ` · from ` only where
-Flare wrote it, for an address install: `Bitwarden″ · from bitwarden.com` shows as `Asked by "Bitwarden"`, and a name
-that is only a separator and a tail shows as `Asked by ""`. The plugin_ask tests try each spoof shape (look-alike
-quotes, middle dots and other dots, fullwidth and styled letters spelling "from", combining marks, bidi, ` from `
-tails) and check that normal names stay readable. Max's wording is unchanged.
-It replaced "What you type goes to <Plugin> only. Flare does not keep it or show it.", which Max took out; a security
-review then found that with no line at all another plugin could dress as Bitwarden in the box, so Max chose this short
-line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller`) and install host
-(`hub().source_of`, through `plugin_of`), never from the ask: the plugin's `title`, `sub`, `label`, `button` and
-`error` cannot change it, and its `brand` cannot colour it. It is drawn small (11 px) in Flare's own type and dim ink,
-`PluginInk.dim` (`Theme.dim`, or `BrandInk.dim` on the fixed brand surface), never the plugin's colour. The look is Max's approved mockup C
+the keys, and the button and Cancel are as before. **No line under Cancel** (Max, 2026-11-16): Cancel is the box's
+last row, 16 px above its bottom edge, and nothing in the box names the plugin that asked or where it was installed
+from. Max took out first "What you type goes to <Plugin> only. Flare does not keep it or show it." (2026-11-15), then
+the short grey `Asked by "<plugin>" · from <origin>` line that replaced it (2026-11-16, "the text is still there"),
+with `AskView.foot`, `plugin_of`, `origin_of`, `host_shown`, `pask-foot` and `pask-foot-x/y/w/h`, `PluginAsk.foot`, the
+`plugin_name` of `CtlOp::SecretAsk`, `hub().source_of` and the `flare` crate's `url` dependency. Do not bring the line
+back without Max: the security reviews of 2026-11-15 and 2026-11-16 found that another plugin can dress as Bitwarden in
+the box, and Max chose a box without the line knowing that. Every name in the dialog still loses control, bidi
+(U+061C, U+200E/F, U+202A to U+202E, U+2066 to U+2069) and zero-width characters (U+200B to U+200D, U+2060, U+FEFF).
+The look is Max's approved mockup C
 (2026-11-15). The colours are theme tokens, no hex in the dialog: `BrandInk.error` and `error-edge` on a brand,
 `SettingsFixed.error-dark`, `error-light` and `error-edge` on Flare's theme, through `PluginInk.error` and
 `PluginInk.error-edge`. The error takes the sub's line, so a box with a sub keeps its height. Older plugins are unchanged: no
@@ -4567,14 +4546,10 @@ line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller
 sub), `pask-error` and `pask-error-shown` in `app.slint`, `PluginAsk.error` in `ui/plugin_ask.slint`. Held by
 `a_secret_ask_may_carry_an_error_line` (`fill.rs`), `an_error_is_kept_beside_the_sub_and_cleaned`
 (`plugin_ask.rs`), and in `ui_tests/secret_error.rs` `an_error_is_red_in_the_sub_place_and_the_field_gets_a_red_edge`
-and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. The "Asked by" line: `AskView.foot`,
-`pask-foot` and `pask-foot-x/y/w/h` in `app.slint`, `PluginAsk.foot` in `ui/plugin_ask.slint`, held by
-`a_plugin_installed_from_an_address_is_named_with_its_host`,
-`the_asked_by_line_names_the_real_plugin_whatever_the_ask_says`, `a_host_is_never_cut_from_the_right` and
-`a_name_cannot_pass_for_another_plugins_origin` (`plugin_ask.rs`),
-`secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (`plugin_fill.rs`),
-`the_asked_by_line_sits_under_cancel_small_and_dim` (`ui_tests/secret_error.rs`) and the e2e `brand` scenario
-(the probe's `foot` and `foot_box`). Source: Max, 2026-11-15.
+and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. No line under Cancel: held by
+`the_secret_names_no_plugin_under_cancel` and `names_from_a_plugin_are_cut_and_cleaned` (`plugin_ask.rs`),
+`the_secret_box_ends_at_cancel_with_no_line_under_it` (`ui_tests/secret_error.rs`, both looks, every scale) and the
+e2e `brand` scenario (the box ends 16 px under Cancel). Source: Max, 2026-11-15, and 2026-11-16 for the line's removal.
 
 1269. **The folder menu leaves out the folders of open tabs.** Max, 2026-11-15: the New tab button's folder menu (and
 the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned

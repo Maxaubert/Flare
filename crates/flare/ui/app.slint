@@ -770,7 +770,6 @@ export component AppWindow inherits Window {
     in property <string> pask-site;
     in property <string> pask-asker;
     in property <string> pask-letter;
-    in property <string> pask-foot;
     in property <PluginLook> pask-look;
     in property <bool> tip-visible;
     in property <string> tip-text;
@@ -876,11 +875,6 @@ export component AppWindow inherits Window {
     out property <length> pask-field-y: pask.field-y;
     out property <length> pask-field-w: pask.field-w;
     out property <length> pask-field-h: pask.field-h;
-    // A secret's "Asked by <plugin>" line under Cancel (rule 1266; the tests read where it sits).
-    out property <length> pask-foot-x: pask.foot-x;
-    out property <length> pask-foot-y: pask.foot-y;
-    out property <length> pask-foot-w: pask.foot-w;
-    out property <length> pask-foot-h: pask.foot-h;
     // The settings notice's box and its OK button (rule 1263; the tests press OK).
     out property <length> notice-box-w: notice.box-w;
     out property <length> notice-ok-x: notice.ok-x;
@@ -1933,7 +1927,6 @@ export component AppWindow inherits Window {
             site: root.pask-site;
             asker: root.pask-asker;
             letter: root.pask-letter;
-            foot: root.pask-foot;
             look: root.pask-look;
             fill-answer(c) => { root.pask-fill(c); }
             secret-answer(ok, t) => { root.pask-secret(ok, t); }
