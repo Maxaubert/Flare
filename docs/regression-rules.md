@@ -4599,3 +4599,19 @@ Explorer button stays. Held by `a_custom_pick_wears_one_icon_id_and_the_original
 `the_window_wears_the_pick_id_and_the_process_keeps_the_base_id` (`ship_ctl.rs`),
 `the_key_is_pkey_app_user_model_id` and `a_null_window_or_an_empty_id_is_refused_without_the_shell`
 (`flare-win/src/window_app_id.rs`). Source: Max, 2026-11-15.
+
+## The plugin zip picker starts in Downloads (2026-11-16)
+
+1271. **The Install and Update file pickers in Settings > Plugins open in Downloads, or for Update in the folder the
+zip was last installed from.** Max, 2026-11-16: "the update buton in plugins doesnt open a fodler with where to udpate
+for me it jsut opene dnightwatch which is the alst fodler i opened in flare". A picker with no start folder opens
+where Windows' file dialog was last used, which can be any folder. Now Update opens in the folder Flare remembers for
+the plugin (`folder` in the install record) while that folder is there. Install, an Update with no remembered folder
+and an Update whose folder is gone open in the user's Downloads folder (Windows: the Downloads known folder, so a
+moved Downloads is the one Explorer shows; macOS: `~/Downloads`). Only `.zip` files are listed. The folder check runs
+on the picker's worker, never on the UI thread. The e2e seam still answers with no dialog. Native:
+`flare_win::pick::{PickOptions::fallback_dir, start_dir}`, `flare_win::paths::downloads_folder` and the
+`set_pick_zip` closure in `window.rs`. Held by `the_picker_starts_in_the_remembered_folder_then_the_fallback`,
+`the_start_folder_is_checked_on_the_disk` (`flare-win/src/pick.rs`), `the_downloads_folder_is_the_known_folder`
+(`flare-win/src/paths.rs`) and `update_opens_the_picker_in_the_folder_the_zip_came_from_and_a_restart_keeps_it`
+(`plugin_install.rs`). Source: Max, 2026-11-16.

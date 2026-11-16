@@ -143,7 +143,8 @@ pub struct InstallState {
 /// Where the channel's events for one plugin's helper go: (event, params, plugin id). Answers how many of the
 /// plugin's connections it was queued for (0: its helper is not connected).
 pub type OwnerEvents = Arc<dyn Fn(&str, Value, &str) -> usize + Send + Sync>;
-/// The file picker for a plugin zip, opened in the folder given (else where Windows likes); its answer comes on a worker.
+/// The file picker for a plugin zip, opened in the folder given while it is there, else in Downloads (rule 1271); its
+/// answer comes on a worker.
 pub type PickZip = std::rc::Rc<dyn Fn(Option<std::path::PathBuf>, crate::settings_ctl::PickAnswer)>;
 
 /// A `ModsMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never a call's data.

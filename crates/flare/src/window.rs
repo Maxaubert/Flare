@@ -727,6 +727,7 @@ fn settings_deps(
                 PickOptions {
                     parent,
                     default_dir,
+                    fallback_dir: None,
                     seam,
                 },
                 move |p| answer(p),
@@ -1171,6 +1172,7 @@ pub fn run_window(
                         PickOptions {
                             parent,
                             default_dir,
+                            fallback_dir: None,
                             seam,
                         },
                         move |p| answer(p),
@@ -1446,10 +1448,13 @@ pub fn run_window(
                 // Under --e2e an unset seam is a cancel: no real dialog shows.
                 let seam =
                     e2e::global().dialog_seam(&["FLARE_E2E", "_PICK_ZIP"].concat(), "", |_| true);
+                // Where the zip was last installed from while it is there, else Downloads, never the folder
+                // Windows used last (rule 1271).
                 flare_win::pick::pick_file(
                     PickOptions {
                         parent,
                         default_dir: folder,
+                        fallback_dir: flare_win::paths::downloads_folder(),
                         seam,
                     },
                     ("Plugin (.zip)", &["zip"]),
