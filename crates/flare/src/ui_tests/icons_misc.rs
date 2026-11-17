@@ -430,6 +430,90 @@ fn the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale() {
     }
 }
 
+// --- A checked secret (rule 1274): the green check of a right answer (24 px, stroke 3) and the button's spinner
+// (16 px, stroke 2; its quarter at rest, before the first turn). ---
+
+const CHECK: &str = "M5 12.5L9.5 17L19 7.5";
+const SPINNER_AT_REST: &str = "M8 1C11.866 1 15 4.134 15 8";
+/// `SettingsFixed.ok-dark`: the check's green on Flare's dark theme.
+const OK_GREEN: [f32; 3] = [82.0, 194.0, 122.0];
+
+/// The ink of a glyph drawn under an opacity, from the pixel of `r` farthest from its ground pushed a third further:
+/// at small scales a 2 px stroke never reaches its full ink, and the spinner's faint track (about a third of the ink)
+/// must stay under the half-way mark.
+fn farthest(f: &Frame, r: (u32, u32, u32, u32)) -> [f32; 3] {
+    let g = ground(f, r);
+    let d = |p: [u8; 4]| {
+        (0..3)
+            .map(|i| (i32::from(p[i]) - i32::from(g[i])).pow(2))
+            .sum::<i32>()
+    };
+    let mut best = g;
+    for y in r.1..r.3.min(f.h) {
+        for x in r.0..r.2.min(f.w) {
+            if d(f.px(x, y)) > d(best) {
+                best = f.px(x, y);
+            }
+        }
+    }
+    let push = |i: usize| f32::from(g[i]) + 1.35 * (f32::from(best[i]) - f32::from(g[i]));
+    [push(0), push(1), push(2)]
+}
+
+fn draw_check(s: f32) -> Drawn {
+    let h = secret_ask(s);
+    h.comp.set_pask_verify(true);
+    h.comp.set_pask_result_title("Done".into());
+    h.comp.set_pask_stage(2);
+    h.advance(0);
+    let f = h.render();
+    let cx = h.comp.get_pask_mark_x() + h.comp.get_pask_mark_w() / 2.0;
+    let cy = h.comp.get_pask_mark_y() + h.comp.get_pask_mark_h() / 2.0;
+    let r = region_around(&f, cx * s, cy * s, 13.0 * s);
+    (
+        drawn(&f, r, OK_GREEN),
+        expected_extent_px(CHECK, 24.0, 24.0, 3.0, s),
+    )
+}
+
+/// The spinner's quarter: the box of the pixels at least 60 percent of the way to its full ink, so the faint track
+/// under it (about a third of the ink) is left out (`ink_edges` counts any trace of ink, which the track is).
+fn draw_spinner(s: f32) -> Drawn {
+    let h = secret_ask(s);
+    h.comp.set_pask_verify(true);
+    h.comp.set_pask_stage(1);
+    h.advance(0);
+    let f = h.render();
+    let cx = h.comp.get_pask_ok_x() + h.comp.get_pask_ok_w() / 2.0;
+    let cy = h.comp.get_pask_ok_y() + h.comp.get_pask_ok_h() / 2.0;
+    let r = region_around(&f, cx * s, cy * s, 12.0 * s);
+    let g = ground(&f, r);
+    let full = farthest(&f, r);
+    let d: Vec<f32> = (0..3).map(|i| full[i] - f32::from(g[i])).collect();
+    let dd: f32 = d.iter().map(|v| v * v).sum();
+    let strong = |p: [u8; 4]| {
+        let t: f32 = (0..3)
+            .map(|i| (f32::from(p[i]) - f32::from(g[i])) * d[i])
+            .sum::<f32>()
+            / dd;
+        t >= 0.6 / 1.35
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for y in r.1..r.3.min(f.h) {
+        for x in r.0..r.2.min(f.w) {
+            if strong(f.px(x, y)) {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            }
+        }
+    }
+    assert!(x1 > x0, "the spinner is drawn at {s}");
+    (
+        (x0 as f32, y0 as f32, x1 as f32, y1 as f32),
+        // Butt ends add nothing along the quarter: only the outer half of the 2 px stroke widens it.
+        expected_extent_px(SPINNER_AT_REST, 16.0, 16.0, 1.0, s),
+    )
+}
+
 // --- A plugin's notice (rule 1275): the close button's cross, 9 px in a 16 px button (plugin_notice.slint). ---
 
 fn draw_notice_close(s: f32) -> Drawn {
@@ -457,6 +541,22 @@ fn draw_notice_close(s: f32) -> Drawn {
 }
 
 #[test]
+fn the_checked_secrets_check_and_spinner_draw_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("secret check", s, draw_check(s));
+        // Whole pixels at a 60 percent mark: within two device pixels of the quarter's size.
+        let (got, want) = draw_spinner(s);
+        let (w, hh) = (got.2 - got.0, got.3 - got.1);
+        assert!(
+            (w - want.0).abs() <= 2.0 && (hh - want.1).abs() <= 2.0,
+            "secret spinner at {s}: drawn {w} x {hh} px, want {} x {} px",
+            want.0,
+            want.1
+        );
+    }
+}
+
+#[test]
 fn the_plugin_notices_close_cross_draws_at_full_size_at_every_scale() {
     for s in SCALES {
         assert_size("notice close", s, draw_notice_close(s));
@@ -469,8 +569,9 @@ fn the_plugin_notices_close_cross_draws_at_full_size_at_every_scale() {
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
 const SIZED: [(&str, usize); 16] = [
-    // `the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale`.
-    ("plugin_ask.slint", 1),
+    // `the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale`, and the check and the spinner:
+    // `the_checked_secrets_check_and_spinner_draw_at_full_size_at_every_scale`.
+    ("plugin_ask.slint", 3),
     ("plugin_look.slint", 1),
     ("convo.slint", 1),
     ("tabs.slint", 5),

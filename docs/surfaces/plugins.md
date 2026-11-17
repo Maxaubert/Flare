@@ -23,7 +23,7 @@ approve. This file is the contract, for plugin authors and for the Prism Termina
 - **Brand, details sheet and choices (2026-11-08):** `brand` in the manifest, the details sheet with the person's own
   choice per permission, the centred questions and the flat tab-menu item (see "Brand", "The details sheet" and the
   rules below). Spec: `../superpowers/specs/2026-11-08-plugin-brand-and-sheet.md`.
-- **Fill (2026-10-28):** the `fill` permission (`browser.fill`, `browser.fill.page`, `secret.ask`), tool scope, and tool
+- **Fill (2026-10-28):** the `fill` permission (`browser.fill`, `browser.fill.page`, `secret.ask`, and since 2026-11-16 `secret.result` for a checked secret), tool scope, and tool
   calls answered by a helper (see "Filling logins"). Design: `../superpowers/specs/2026-10-28-plugin-fill.md`.
 
 ## A plugin in two minutes
@@ -118,11 +118,9 @@ dialogs. With a brand those surfaces use one fixed dark surface (ground `#1f242e
 lines `#353d4c`, text white, muted `#bac0ce`) and the brand's colour for the primary button, the usual level, an on
 toggle and links (a lighter tint, 35 percent toward white). `color` is the only input: a plugin cannot set the surface,
 fonts or the warning colour. Without a brand they wear Flare's theme and its chip. Amber (full control, "Always
-allow") is the same on both and never neutral. The words that say whose surface it is (the asker line on a fill's card,
-and the short grey `Asked by "<plugin>" · from <origin>` under a secret's Cancel) are always Flare's, so a plugin dressed
-as another still shows its own name in quotes and where it came from, which Flare writes: the address's host when
-Settings installed it from one (`Asked by "Vault" · from example.com`), else "from a file"; the tab named in a fill approval is in
-quotes, as the tab's own words (what runs in a tab can set its title). Rust:
+allow") is the same on both and never neutral. The asker line on a fill's card is always Flare's words; a secret's
+box has no line naming the plugin (Max took "Asked by <plugin>" out, 2026-11-16, rule 1266); the tab named in a fill
+approval is in quotes, as the tab's own words (what runs in a tab can set its title). Rust:
 `flare_mods::manifest::Brand`, `flare::plugin_look`; Slint: `ui/plugin_look.slint`.
 
 ## The details sheet
@@ -293,7 +291,7 @@ worker, and every limit spent there, before the window hears of it.
 | Convo (`convo`) | `convo.state` | |
 | Tools (`tools`) | `tools.respond` (the bridge's `respond`) | 8 calls waiting per plugin |
 | Browser (`browser`) | `browser.*` | answered `unavailable` (not built) |
-| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label, sub?, button?, error?}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together; a minute to answer |
+| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label, sub?, button?, error?, verify?, checking?}`, `secret.result {ask, ok, title?, line?, error?, done?}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together (`secret.result` is not an ask); a minute to answer |
 
 **Decor.** A badge is a bare glyph (no ring) Flare draws before the tab's end (left of the ring on a sidebar row),
 in the tone `ink` (default), `accent` or `muted` (`mic` never `accent`, Flare's dictation mark). A progress is a static
@@ -315,8 +313,10 @@ starts with the plugin's name. Setting the same key replaces; a tab has one prog
   every 10 seconds (the bridge answers by itself); no answer in 10 seconds, or still loading 10 seconds after it began,
   counts as an end.
 - **Nothing on the UI thread:** every call is checked and answered off it, and the window applies what plugins changed
-  at most once a frame. Diagnostics: `plugin` lines in `diag.jsonl` (start, stop, crash, rate limit, refusals; no
-  content).
+  at most once a frame. Diagnostics: `plugin` lines in `diag.jsonl` (start, stop, crash, rate limit; no content). A
+  call Flare refuses, from a page or a helper, is a `plugin-refused` crumb: the plugin, the method, the error code and
+  `via` (`page` or `pipe`), at most once a minute for each plugin, method and code, never the error's words or the
+  params (rule 1273).
 
 ## Pages and the serving rule
 
@@ -491,22 +491,32 @@ Flare's own dialog, and the user name, password and code never reach the agent.
 - **`browser.fill.page {tab?}`** gives `{tab, url, host}`: the address a plugin picks the login for.
 - **`secret.ask {title, label, sub?, button?, error?}`** shows Flare's masked field, centred in the plugin's look: its
   logo, `title` as the heading, `sub` under it (an account), one field with `label` as its placeholder and an eye that
-  shows what is typed, a full-width button with `button` (`OK` without it), Cancel as a link, and under it Flare's short
-  grey line `Asked by "<Plugin>" · from <origin>`: `Asked by "Vault" · from example.com` when Settings installed it
-  from an address, `Asked by "Vault" · from a file` for a file or a folder put in place. Flare writes that line from
-  the plugin's own name (in quotes, cut at 40 characters, with control, bidi and zero-width characters taken out and a
-  quote mark made an apostrophe) and the install address's host (parsed with `url`, shown whole or cut from the left,
-  never from the right), small and in its own dim ink: nothing in the ask changes it and the brand does not colour it,
-  so a plugin dressed as another, or named "Bitwarden (from bitwarden.com)", is still told apart (rule 1266). Enter submits. To ask again after a wrong answer, call it again with `error` (one
+  shows what is typed, a full-width button with `button` (`OK` without it), and Cancel as a link, the box's last row:
+  no line under it names the plugin (Max took "Asked by <Plugin>" out, 2026-11-16, rule 1266). Enter submits. To ask again after a wrong answer, call it again with `error` (one
   plain line, at most 120 characters, such as "Wrong password. Try again."): the line shows in red in the sub's place,
   the field gets a red edge and a soft red glow, and it is empty and ready to type. No `error`, or an empty one, is the
   usual look (rule 1266). Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
   and logs none of it. It shares the 6 asks a minute.
+- **A secret you check with the box still open (`verify`, rule 1274, 2026-11-16).** Send `verify: true` (and, if you
+  like, `checking`, such as "Checking the password..."). When the person presses the button, `secret.ask` answers
+  `{text, ask}` and the box stays open: the field dimmed and read-only, a small spinner in the button, your `checking`
+  line (or "Checking...") in the sub's place, Cancel still there. Check the text, then call
+  `secret.result {ask, ok: true, title?, line?}`: a green check with `title` ("Done" without it) and your line, and
+  Flare closes the box after 0.8 s. A wrong one is `secret.result {ask, ok: false, error?}`: the same box comes back to
+  the field in place, cleared and ready to type, with `error` in red ("That was not right. Try again." without it),
+  and that call waits for the next try, answering `{text, ask}` again (or `{cancelled: true}`). To stop asking (a limit
+  of tries), call `secret.result {ask, ok: false, done: true, title?, line?}`: your logo, the title (the ask's own
+  without it) and your plain line, closed after 2.5 s. If you say nothing for 60 s the field comes back with "The check
+  took too long. Try again."; a text sent then waits for your next `secret.result`. Cancel while checking closes the
+  box, and your next `secret.result` for that ask answers `{cancelled: true}`. `secret.result` is not a new ask (it
+  spends none of the 6 a minute), answers `not_found` for an ask that is not open, and `busy` while a call already
+  waits for the next try. Without `verify` the box closes on send, as before. Nothing in Flare runs before the box
+  shows: do your slow work (such as `bw unlock`) after `{text, ask}` comes back.
 - **A tool answered by a helper.** Claude's call to a plugin with a helper and neither a background page nor a panel
   reaches the helper as the `tool` event; while it waits the helper may fill into the caller's tab. Claude has 30 s for
   the whole call, so a fill inside a tool call leaves you about 25 s to answer.
 - **Nothing is written down.** The one log line of a fill is `fill: plugin <id> on <host>: <outcome>`, of a secret
-  `secret.ask: plugin <id>: answered|cancelled`. The agent never holds `fill`.
+  `secret.ask: plugin <id>: answered|cancelled` (a checked secret: `answered, checking` and `checked, right|wrong|ended`). The agent never holds `fill`.
 
 ## Helper programs
 

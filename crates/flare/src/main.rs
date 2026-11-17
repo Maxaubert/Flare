@@ -57,6 +57,7 @@ mod plugin_bar;
 mod plugin_install;
 mod plugin_look;
 mod plugin_notice;
+mod plugin_refused;
 mod plugin_safe;
 mod plugin_sessions;
 mod plugin_ui;

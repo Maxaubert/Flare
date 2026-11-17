@@ -351,6 +351,7 @@ mod tests {
                 Method::BrowserFill,
                 Method::BrowserFillPage,
                 Method::SecretAsk,
+                Method::SecretResult,
                 Method::NoticeShow,
             ] {
                 let err = g.check(m).unwrap_err();
@@ -833,6 +834,7 @@ mod tests {
             Method::BrowserFill,
             Method::BrowserFillPage,
             Method::SecretAsk,
+            Method::SecretResult,
         ] {
             assert_eq!(m.namespace(), Namespace::Fill);
             assert!(!mod_with(&rest).may_call(m), "{}", m.name());

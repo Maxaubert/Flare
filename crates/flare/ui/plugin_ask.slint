@@ -5,13 +5,17 @@
 // label as its placeholder and an eye to show it, a full-width button with the plugin's word, Cancel as a link).
 // A secret ask with an `error` (2026-11-15, the approved mockup C) shows that line in the sub's place in the error
 // colour, and the field gets a red edge with a soft red glow; it is empty and has the keys as always.
-// The short grey line under a secret's Cancel, "Asked by <plugin>", says whose question it is: Flare writes it from
-// the plugin's resolved name (and install host), never from the ask, in Flare's own dim ink (rule 1266, 2026-11-15).
+// A secret ends at Cancel: Max took the short grey "Asked by <plugin>" line under it out (rule 1266, 2026-11-16).
 // Fill is pressed by the pointer only: no key presses it (Enter and Space press Deny, which holds the keys),
 // so a key sent at the window cannot approve a fill. Escape and a press outside the box are Deny (or Cancel).
 // Fill takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
 // (an agent can time its fill to the person's clicks) is never approved by that click.
 // The field's text is cleared as the dialog closes; it is handed to the glue once, with the button or Enter.
+// A secret ask with `verify` (2026-11-16, rule 1274, Max's approved mockup) stays open after Unlock while the plugin
+// checks: the field dimmed and read-only (it keeps the dots), the button off with a small spinner, the checking line
+// in the sub's place, Cancel still works. Then a green check with the plugin's heading and line (Flare closes it
+// after 0.8 s), or back to the field in place with the red error line, the field cleared and holding the keys, or
+// the plugin's plain end line under its logo. The green is a theme token (`PluginInk.ok`).
 import { Theme, Px, BrandInk } from "theme.slint";
 import { PluginLook, PluginInk, PluginLogo } from "plugin_look.slint";
 
@@ -25,24 +29,61 @@ component AskButton inherits Rectangle {
     in property <bool> ringed;
     // True leaves out the accessible default action, so only the pointer presses it (a fill's Fill).
     in property <bool> pointer-only;
+    // A small spinner in place of the label (a secret being checked, the mockup's button); the button is off then.
+    in property <bool> busy;
     callback clicked();
+    property <angle> turn: 0deg;
     height: 36px;
     min-width: lbl.preferred-width + (root.link ? 12px : 32px);
     border-radius: 8px;
-    opacity: root.enabled ? 1 : 0.45;
+    opacity: root.enabled ? 1 : (root.busy ? 0.55 : 0.45);
     background: root.primary ? (ta.has-hover && root.enabled ? PluginInk.accent(root.look).brighter(0.1) : PluginInk.accent(root.look))
         : (!root.link && ta.has-hover && root.enabled ? PluginInk.card(root.look) : transparent);
     border-width: root.primary || root.link ? 0px : Px.hair();
     border-color: PluginInk.line(root.look);
     accessible-role: button;
-    accessible-label: root.label;
+    accessible-label: root.busy ? "Checking" : root.label;
     accessible-enabled: root.enabled;
     accessible-action-default => {
         if root.enabled && !root.pointer-only {
             root.clicked();
         }
     }
+    // The spinner turns (the Computer sharing dialog's pattern): a 16 px ring in a faint ink with a full quarter.
+    Timer {
+        interval: 50ms;
+        running: root.busy;
+        triggered => { root.turn = root.turn + 18deg; }
+    }
+    if root.busy: Rectangle {
+        x: (root.width - 16px) / 2;
+        y: (root.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: (root.primary ? PluginInk.on-accent(root.look) : PluginInk.text(root.look)).with-alpha(0.35);
+    }
+    // One stroke wider than its 16 px box, moved back by half a stroke: Slint fits a stroked Path into its box less
+    // one stroke (the eye's pattern; `ui_tests::icons_misc` measures it).
+    if root.busy: Path {
+        x: (root.width - 16px) / 2 - 1px;
+        y: (root.height - 16px) / 2 - 1px;
+        width: 16px + 2px;
+        height: 16px + 2px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        // The quarter is drawn at its angle (a Path does not turn with transform-rotation), as one cubic curve.
+        commands: "M" + (8 + 7 * cos(root.turn - 90deg)) + " " + (8 + 7 * sin(root.turn - 90deg))
+            + "C" + (8 + 7 * cos(root.turn - 90deg) - 3.866 * sin(root.turn - 90deg)) + " " + (8 + 7 * sin(root.turn - 90deg) + 3.866 * cos(root.turn - 90deg))
+            + " " + (8 + 7 * cos(root.turn) + 3.866 * sin(root.turn)) + " " + (8 + 7 * sin(root.turn) - 3.866 * cos(root.turn))
+            + " " + (8 + 7 * cos(root.turn)) + " " + (8 + 7 * sin(root.turn));
+        fill: transparent;
+        stroke: root.primary ? PluginInk.on-accent(root.look) : PluginInk.text(root.look);
+        stroke-width: 2px;
+    }
     lbl := Text {
+        visible: !root.busy;
         text: root.label;
         vertical-alignment: center;
         horizontal-alignment: center;
@@ -85,9 +126,19 @@ export component PluginAsk inherits Rectangle {
     in property <string> site;
     in property <string> asker;
     in property <string> letter;
-    // A secret's line saying whose question it is, from Flare (a fill shows none).
-    in property <string> foot;
     in property <PluginLook> look;
+    // A secret's stage (`secret.ask` with `verify`, 2026-11-16, Max's approved mockup): 0 the field, 1 checking what
+    // was sent (the field dimmed and read-only, a spinner in the button, Cancel still works), 2 checked and right (a
+    // green check, the result's heading and line; Flare closes it a moment later), 3 ended by the plugin with a plain
+    // line (its logo, the heading and the line). An ask without `verify` stays at 0.
+    in property <int> stage;
+    // A `verify` ask: the field keeps what was sent while it is checked (it is cleared when it comes back as wrong).
+    in property <bool> verify;
+    // The line under the title while checking, in the sub's place ("Checking the password...").
+    in property <string> checking;
+    // The heading and the line of a result (stages 2 and 3).
+    in property <string> result-title;
+    in property <string> result-line;
     // A fill's answer: 0 Deny, 1 Fill.
     callback fill-answer(int);
     // A secret's answer: the button with the text, or Cancel.
@@ -99,10 +150,25 @@ export component PluginAsk inherits Rectangle {
     property <bool> armed;
     // The eye: the secret is shown as typed.
     property <bool> reveal;
+    // A secret's field, button, Cancel and foot are up (any stage but a result).
+    property <bool> asking: root.kind == 1 && root.stage < 2;
+    // The line under a secret's title: a result's line, the checking line, the error (in red) or the sub.
+    property <string> under: root.kind != 1 ? "" : root.stage >= 2 ? root.result-line : root.stage == 1 ? root.checking : root.error-shown ? root.error : root.sub;
     out property <bool> allow-armed: root.armed;
     out property <bool> field-has-focus: field.has-focus;
     // The secret shows its error: the red line and the field's red edge.
-    out property <bool> error-shown: root.kind == 1 && root.error != "";
+    out property <bool> error-shown: root.kind == 1 && root.stage == 0 && root.error != "";
+    // The stages as the tests read them: checking (field read-only, the button off with its spinner) and a result.
+    out property <bool> checking-shown: root.kind == 1 && root.stage == 1;
+    out property <bool> result-shown: root.kind == 1 && root.stage >= 2;
+    out property <bool> field-read-only: field.read-only;
+    out property <bool> field-empty: field.text == "";
+    out property <bool> ok-enabled: ok-btn.enabled;
+    // Where the mark above the title is (the logo, or a result's green check), for the UI tests.
+    out property <length> mark-x: mark.absolute-position.x;
+    out property <length> mark-y: mark.absolute-position.y;
+    out property <length> mark-w: mark.width;
+    out property <length> mark-h: mark.height;
     // Where the field is, for the UI tests (its edge).
     out property <length> field-x: fbox.absolute-position.x;
     out property <length> field-y: fbox.absolute-position.y;
@@ -124,11 +190,6 @@ export component PluginAsk inherits Rectangle {
     out property <length> ok-h: ok-btn.height;
     out property <length> eye-x: eye.absolute-position.x;
     out property <length> eye-y: eye.absolute-position.y;
-    // Where a secret's "Asked by" line is, for the UI tests (it sits under Cancel).
-    out property <length> foot-x: foot-txt.absolute-position.x;
-    out property <length> foot-y: foot-txt.absolute-position.y;
-    out property <length> foot-w: foot-txt.width;
-    out property <length> foot-h: foot-txt.height;
     out property <length> box-x: box.x;
     out property <length> box-y: box.y;
     out property <length> box-w: box.width;
@@ -136,6 +197,10 @@ export component PluginAsk inherits Rectangle {
 
     function cancel() {
         if root.kind == 1 {
+            // A result closes by itself in a moment: nothing to cancel.
+            if root.stage >= 2 {
+                return;
+            }
             field.text = "";
             root.secret-answer(false, "");
         } else {
@@ -143,14 +208,30 @@ export component PluginAsk inherits Rectangle {
         }
     }
     function send-secret() {
+        // Sent once: while it is checked the field is read-only and the button off.
+        if root.stage != 0 {
+            return;
+        }
         let t = field.text;
-        field.text = "";
+        if !root.verify {
+            field.text = "";
+        }
         root.secret-answer(true, t);
     }
 
     visible: root.open;
     width: 100%;
     height: 100%;
+    // Back from checking (the plugin said wrong, or the check ran out of time): the field is cleared and has the keys.
+    changed stage => {
+        if root.open && root.kind == 1 && root.stage == 0 {
+            field.text = "";
+            field.focus();
+        }
+        if root.stage != 0 {
+            root.reveal = false;
+        }
+    }
     changed open => {
         field.text = "";
         root.reveal = false;
@@ -234,14 +315,40 @@ export component PluginAsk inherits Rectangle {
             padding-bottom: root.kind == 0 ? 20px : 16px;
             HorizontalLayout {
                 alignment: center;
-                PluginLogo {
-                    look: root.look;
-                    size: root.kind == 1 ? 44px : 40px;
+                mark := Rectangle {
+                    width: root.kind == 1 ? 44px : 40px;
+                    height: self.width;
+                    // A right answer: the green check on a soft round tile of its colour (the mockup's `.okc`).
+                    if root.kind == 1 && root.stage == 2: Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        border-radius: self.width / 2;
+                        background: PluginInk.ok(root.look).with-alpha(0.15);
+                        // One stroke wider than its 24 px box, moved back by half a stroke (the eye's pattern).
+                        Path {
+                            x: (parent.width - 24px) / 2 - 1.5px;
+                            y: (parent.height - 24px) / 2 - 1.5px;
+                            width: 24px + 3px;
+                            height: 24px + 3px;
+                            viewbox-width: 24;
+                            viewbox-height: 24;
+                            commands: "M5 12.5L9.5 17L19 7.5";
+                            fill: transparent;
+                            stroke: PluginInk.ok(root.look);
+                            stroke-width: 3px;
+                            stroke-line-cap: round;
+                            stroke-line-join: round;
+                        }
+                    }
+                    if !(root.kind == 1 && root.stage == 2): PluginLogo {
+                        look: root.look;
+                        size: parent.width;
+                    }
                 }
             }
-            Rectangle { height: 10px; }
+            Rectangle { height: root.kind == 1 && root.stage == 2 ? 12px : 10px; }
             Text {
-                text: root.title;
+                text: root.kind == 1 && root.stage >= 2 ? root.result-title : root.title;
                 wrap: word-wrap;
                 horizontal-alignment: center;
                 font-family: Theme.font-ui;
@@ -249,15 +356,17 @@ export component PluginAsk inherits Rectangle {
                 font-weight: 650;
                 color: PluginInk.text(root.look);
             }
-            if root.kind == 1 && (root.error-shown || root.sub != ""): Text {
-                text: root.error-shown ? root.error : root.sub;
+            // Under the title: a result's line, the checking line, the error (in red) or the sub.
+            if root.under != "": Text {
+                text: root.under;
                 horizontal-alignment: center;
+                wrap: root.stage >= 2 ? word-wrap : no-wrap;
                 font-family: Theme.font-ui;
                 font-size: 12.5px;
                 color: root.error-shown ? PluginInk.error(root.look) : PluginInk.dim(root.look);
                 overflow: elide;
             }
-            Rectangle { height: root.kind == 1 ? 14px : 12px; }
+            Rectangle { height: root.kind == 1 ? (root.stage >= 2 ? 8px : 14px) : 12px; }
             // A fill: the site's card.
             if root.kind == 0: Rectangle {
                 height: 54px;
@@ -310,8 +419,10 @@ export component PluginAsk inherits Rectangle {
             }
             // A secret: the masked field, its placeholder and the eye. With an error: a red edge and a red glow.
             fbox := Rectangle {
-                visible: root.kind == 1;
-                height: root.kind == 1 ? 42px : 0px;
+                visible: root.asking;
+                height: root.asking ? 42px : 0px;
+                // Checking: dimmed (the mockup's 0.6) and read-only.
+                opacity: root.stage == 1 ? 0.6 : 1;
                 border-radius: 8px;
                 background: PluginInk.field(root.look);
                 border-width: Px.hair();
@@ -342,6 +453,7 @@ export component PluginAsk inherits Rectangle {
                     width: parent.width - 48px;
                     height: parent.height;
                     enabled: root.kind == 1;
+                    read-only: root.stage == 1;
                     single-line: true;
                     input-type: root.reveal ? InputType.text : InputType.password;
                     font-family: Theme.font-ui;
@@ -382,6 +494,7 @@ export component PluginAsk inherits Rectangle {
                         stroke-line-join: round;
                     }
                     eta := TouchArea {
+                        enabled: root.stage == 0;
                         clicked => {
                             root.reveal = !root.reveal;
                             field.focus();
@@ -389,14 +502,16 @@ export component PluginAsk inherits Rectangle {
                     }
                 }
             }
-            Rectangle { height: root.kind == 1 ? 12px : 16px; }
+            Rectangle { height: root.kind == 1 ? (root.asking ? 12px : 0px) : 16px; }
             // A secret: the full-width button. A fill: Deny and Fill, side by side.
             ok-btn := AskButton {
-                visible: root.kind == 1;
-                height: root.kind == 1 ? 36px : 0px;
+                visible: root.asking;
+                height: root.asking ? 36px : 0px;
                 look: root.look;
                 label: root.button;
                 primary: true;
+                enabled: root.stage == 0;
+                busy: root.stage == 1;
                 clicked => { root.send-secret(); }
             }
             HorizontalLayout {
@@ -421,11 +536,11 @@ export component PluginAsk inherits Rectangle {
                     clicked => { root.fill-answer(1); }
                 }
             }
-            // A secret: Cancel as a link and Flare's "Asked by <plugin>" under it. A fill ends at its buttons.
-            Rectangle { height: root.kind == 1 ? 6px : 0px; }
+            // A secret: Cancel as a link, the last row (no line under it, 2026-11-16). A fill ends at its buttons.
+            Rectangle { height: root.asking ? 6px : 0px; }
             HorizontalLayout {
-                visible: root.kind == 1;
-                height: root.kind == 1 ? 36px : 0px;
+                visible: root.asking;
+                height: root.asking ? 36px : 0px;
                 alignment: center;
                 cancel-btn := AskButton {
                     width: self.min-width;
@@ -434,20 +549,6 @@ export component PluginAsk inherits Rectangle {
                     link: true;
                     clicked => { root.cancel(); }
                 }
-            }
-            // Small and dim, in Flare's own type and dim ink (Theme.dim, or BrandInk.dim on the fixed brand surface):
-            // never the plugin's colour, and its words come from Flare, not from the ask (rule 1266).
-            Rectangle { height: root.kind == 1 ? 2px : 0px; }
-            foot-txt := Text {
-                visible: root.kind == 1;
-                height: root.kind == 1 ? self.preferred-height : 0px;
-                text: root.kind == 1 ? root.foot : "";
-                wrap: word-wrap;
-                horizontal-alignment: center;
-                font-family: Theme.font-ui;
-                font-size: 11px;
-                font-weight: 400;
-                color: PluginInk.dim(root.look);
             }
         }
     }

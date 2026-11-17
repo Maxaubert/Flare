@@ -285,7 +285,6 @@ pub enum CtlOp {
     /// plugin only, never logged) or `{cancelled: true}`.
     SecretAsk {
         plugin: String,
-        plugin_name: String,
         title: String,
         label: String,
         /// The line under the title, the button's word and the error line (in the sub's place, in red); empty when
@@ -293,7 +292,19 @@ pub enum CtlOp {
         sub: String,
         button: String,
         error: String,
+        /// `verify`: the dialog stays open, checking, after the text is sent, until `secret.result` (rule 1274); and
+        /// the line it shows then (empty: Flare's words).
+        verify: bool,
+        checking: String,
         /// As for `BadgeSet`.
+        generation: u64,
+    },
+    /// `secret.result`: the plugin's word on the text of its `verify` ask `ask` (rule 1274). Answered at once for a
+    /// right answer or an end, and with the person's next try (or a cancel) for a wrong one.
+    SecretResult {
+        plugin: String,
+        ask: String,
+        verdict: flare_mods::fill::Verdict,
         generation: u64,
     },
     /// `notice.show` (rule 1275): the plugin's notice under the title bar, its text checked and cleaned on the call's
@@ -424,6 +435,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::FillPage { .. } => "CtlOp::FillPage",
             CtlOp::Fill { .. } => "CtlOp::Fill",
             CtlOp::SecretAsk { .. } => "CtlOp::SecretAsk",
+            CtlOp::SecretResult { .. } => "CtlOp::SecretResult",
             CtlOp::NoticeShow { .. } => "CtlOp::NoticeShow",
             CtlOp::RemoteOpen { .. } => "CtlOp::RemoteOpen",
             CtlOp::RemoteTabs => "CtlOp::RemoteTabs",
@@ -1475,21 +1487,39 @@ impl AppDispatcher {
         self.ask_by(op, Instant::now() + ASK_CALL_WAIT)
     }
 
-    /// `secret.ask {title, label, sub?, button?, error?}`: Flare's own masked field; the text comes back to this
-    /// plugin only.
+    /// `secret.ask {title, label, sub?, button?, error?, verify?, checking?}`: Flare's own masked field; the text comes
+    /// back to this plugin only. With `verify` the dialog stays open, checking, until `secret.result` (rule 1274).
     fn secret_ask(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
-        let (plugin, plugin_name, generation) = self.fill_caller(ctx, "asking for a secret")?;
+        let (plugin, _, generation) = self.fill_caller(ctx, "asking for a secret")?;
         let req = flare_mods::fill::parse_secret(params)?;
         self.hub()?.asks().admit(&plugin, Instant::now())?;
         self.ask_by(
             CtlOp::SecretAsk {
                 plugin,
-                plugin_name,
                 title: req.title,
                 label: req.label,
                 sub: req.sub,
                 button: req.button,
                 error: req.error,
+                verify: req.verify,
+                checking: req.checking,
+                generation,
+            },
+            Instant::now() + ASK_CALL_WAIT,
+        )
+    }
+
+    /// `secret.result {ask, ok, title?, line?, error?, done?}`: whether the text of a `verify` ask was right. Not one
+    /// more ask (it spends none of the six a minute): it goes on with the question the plugin already has open. A
+    /// wrong answer waits for the person's next try, so it gets the ask's time.
+    fn secret_result(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let (plugin, _, generation) = self.fill_caller(ctx, "answering a secret's check")?;
+        let r = flare_mods::fill::parse_secret_result(params)?;
+        self.ask_by(
+            CtlOp::SecretResult {
+                plugin,
+                ask: r.ask,
+                verdict: r.verdict,
                 generation,
             },
             Instant::now() + ASK_CALL_WAIT,
@@ -2942,6 +2972,7 @@ impl Dispatcher for AppDispatcher {
                 Method::BrowserFill,
                 Method::BrowserFillPage,
                 Method::SecretAsk,
+                Method::SecretResult,
                 Method::NoticeShow,
             ]);
         }
@@ -2949,6 +2980,38 @@ impl Dispatcher for AppDispatcher {
     }
 
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError> {
+        let r = self.call_inner(ctx, method, params);
+        if let (Err(e), Grant::Mod { id, .. }) = (&r, &ctx.grant) {
+            Self::note_refused(id, ctx.conn, method, e);
+        }
+        r
+    }
+
+    /// The pipe refused a plugin's request before it reached [`Dispatcher::call`] (its grant does not hold the method).
+    fn refused(&self, ctx: &CallContext, method: Method, e: &CtlError) {
+        if let Grant::Mod { id, .. } = &ctx.grant {
+            Self::note_refused(id, ctx.conn, method, e);
+        }
+    }
+}
+
+impl AppDispatcher {
+    /// A plugin call Flare refused leaves a `plugin-refused` crumb ([`crate::plugin_refused`]): a page's calls come with
+    /// `conn` 0, a helper's over the pipe. A call that ran out of time or was cancelled is no refusal.
+    fn note_refused(plugin: &str, conn: u64, method: Method, e: &CtlError) {
+        if e.code == code::TIMEOUT {
+            return;
+        }
+        let via = if conn == 0 { "page" } else { "pipe" };
+        crate::plugin_refused::note(plugin, method.name(), &e.code, via);
+    }
+
+    fn call_inner(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: Value,
+    ) -> Result<Value, CtlError> {
         // A plugin's connection (its helper, later) spends from the plugin's one budget, here on the worker before
         // anything is posted. A page's messages were spent as the window took them (`conn` 0).
         if ctx.conn != 0
@@ -3154,6 +3217,7 @@ impl Dispatcher for AppDispatcher {
             Method::BrowserFill => self.fill_call(ctx, &params),
             Method::BrowserFillPage => self.fill_page(ctx, &params),
             Method::SecretAsk => self.secret_ask(ctx, &params),
+            Method::SecretResult => self.secret_result(ctx, &params),
             Method::NoticeShow => self.notice_show(ctx, &params),
             Method::ViewHtml => self.view_html(ctx, &params),
             Method::ViewDiagram => self.view_diagram(ctx, &params),

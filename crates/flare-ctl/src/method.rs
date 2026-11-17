@@ -82,6 +82,9 @@ pub enum Method {
     /// A plugin asks the person for a secret (a master password) in Flare's own masked field (under `fill`); the
     /// text goes back to that plugin only and is never kept or logged.
     SecretAsk,
+    /// A plugin says whether the secret it asked for with `verify` was right (under `fill`): Flare shows a check, puts
+    /// the field back with an error line (and the call waits for the next answer), or ends the question (rule 1274).
+    SecretResult,
     /// A short notice from a plugin under the title bar (`notice.show`, 2026-11-17): one line, its logo, a close button,
     /// gone after 6 s. Under `actions`, never the agent's.
     NoticeShow,
@@ -249,7 +252,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 63] = [
+    pub const ALL: [Method; 64] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -289,6 +292,7 @@ impl Method {
         Method::BrowserFill,
         Method::BrowserFillPage,
         Method::SecretAsk,
+        Method::SecretResult,
         Method::NoticeShow,
         Method::ConvoState,
         Method::ToolsRespond,
@@ -357,6 +361,7 @@ impl Method {
             Method::BrowserFill => "browser.fill",
             Method::BrowserFillPage => "browser.fill.page",
             Method::SecretAsk => "secret.ask",
+            Method::SecretResult => "secret.result",
             Method::NoticeShow => "notice.show",
             Method::ConvoState => "convo.state",
             Method::ToolsRespond => "tools.respond",
@@ -422,7 +427,10 @@ impl Method {
             | Method::BrowserWait
             | Method::BrowserEval
             | Method::BrowserPoint => Namespace::Browser,
-            Method::BrowserFill | Method::BrowserFillPage | Method::SecretAsk => Namespace::Fill,
+            Method::BrowserFill
+            | Method::BrowserFillPage
+            | Method::SecretAsk
+            | Method::SecretResult => Namespace::Fill,
             Method::NoticeShow => Namespace::Notice,
             Method::ConvoState => Namespace::Convo,
             Method::ToolsRespond => Namespace::Tools,
@@ -559,13 +567,15 @@ mod tests {
     fn a_fill_waits_for_the_persons_answer_and_the_page_address_does_not() {
         assert_eq!(Method::BrowserFill.timeout(), FILL_TIMEOUT);
         assert_eq!(Method::SecretAsk.timeout(), FILL_TIMEOUT);
+        // A wrong answer's secret.result waits for the person's next try.
+        assert_eq!(Method::SecretResult.timeout(), FILL_TIMEOUT);
         assert_eq!(Method::BrowserFillPage.timeout(), DEFAULT_TIMEOUT);
         assert!(FILL_TIMEOUT > Duration::from_secs(60));
     }
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 63);
+        assert_eq!(Method::ALL.len(), 64);
         assert_eq!(Namespace::ALL.len(), 21);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");

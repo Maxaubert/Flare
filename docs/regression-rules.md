@@ -714,7 +714,7 @@ by `a_click_while_the_next_page_loads_names_the_page_the_text_came_from`, `an_an
 239. **A markdown page is written by Flare, tag by tag, and nothing in the file reaches it as markup.** A `.md` or `.markdown` file is untrusted: `flare_surfaces::mdview` takes pulldown-cmark's events (the crate pinned with no HTML writer) and writes every element itself, escaping every piece of text and every attribute. Raw HTML in the file shows as text, a picture shows its alt text (no `<img>`, nothing read from disk or the network), and a link has no `href` (its target is a `title` tooltip) unless it is a `#` jump to a heading or a footnote whose anchor Flare named. The page has no script at all and its policy is the first thing in it: `default-src 'none'; style-src 'unsafe-inline'; img-src data:` with `base-uri` and `form-action` off. It is served as a mini-app of its own (`app::write_app`, a host and folder from the shared `app::next_seq`), in the sealed mini-app browser with the network off. Depth (`DEPTH_MAX`) and size (`PAGE_MAX`) are capped, and a render on its worker stops when the generation moves on (rule 34), the naming of heading anchors included. Anchors of one name are numbered by a counter kept per name (`Names`, as GitHub's slugger), never by trying `-1`, `-2` and so on from 1 each time: a 4 MB file of `#` lines is two million headings named `section`, which took n squared steps and held its worker for good. Native: `crates/flare-surfaces/src/mdview.rs`, `PanelCtl::spawn_render`. Held by `raw_html_in_the_file_shows_as_text`, `a_link_has_no_address_and_shows_its_target_as_a_tooltip`, `a_jump_to_a_heading_flare_named_works_and_any_other_hash_does_not`, `a_picture_shows_its_alt_text`, `a_code_fence_language_cannot_break_out_of_its_attribute`, `the_policy_comes_first_and_lets_in_no_script_and_no_request`, `deep_nesting_writes_no_more_than_the_cap_of_boxes`, `a_render_stops_when_the_panel_moved_on`, `many_headings_of_one_name_get_their_anchors_in_a_time_that_grows_with_the_file`, `naming_the_headings_stops_when_the_panel_moved_on` and `a_markdown_file_opens_compiled_as_a_page_flare_wrote`. Source: `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, item 4.
 240. **A markdown file opens Compiled every time, its panel keeps its own view, and a page that cannot show falls back to Code.** Owner, 2026-11-10: "compiled by default", with no remembered global preference. `TabPanel.view` is None until the header's control picks a view; `TabPanels::show` (a click, `show_file`, a restore of another file) starts at None again. Only a picked view is written to `panels.json` (`"view"`), and a value this build does not know reads as None and is never written back (rule 40). When the render fails (a missing file, a write that failed, no worker) or the page's browser fails (no WebView2 runtime, a renderer that died), `PanelCtl::fallback` shows that file in Code until the person picks a view or another file shows: the panel is never left blank. A markdown page is not a web page: `web_target` stays None (the browser tools, fill and the address bar never see it), `page_target` is what the web controller shows, and a mini-app panel or a mod is never written to `panels.json` while a markdown panel is. Native: `PanelCtl::view_of`, `set_md_view`, `page_failed`, `AppCtl::md_page_fallback`. Held by `a_picked_view_stays_with_the_file_and_a_new_file_opens_at_the_default`, `a_markdown_panel_keeps_its_view_and_only_a_picked_one_is_written`, `an_unknown_view_reads_as_the_default_and_is_never_written_back`, `the_picked_view_is_written_and_comes_back_after_a_restart`, `a_file_shown_again_opens_compiled_again`, `a_page_that_cannot_be_shown_falls_back_to_code`, `a_page_whose_browser_fails_later_falls_back_to_code`, `a_render_that_fails_falls_back_to_code_and_says_why_there` and `the_header_control_switches_between_the_three_views`.
 241. **(CHANGED 2026-11-15 by rule 1268: the selection of a markdown page reaches the quiet context named by the file's path; nothing is typed and no path is sent with nothing selected.)** **"Ask agent" on a markdown page names the file, never the page's address.** The page is served from a `flare-app-<n>.local` address that means nothing to the agent: `AppSpec.source` carries the file, the web controller keeps it per tab, and `WebCtl::selection_answered` labels the frame with the file's name. With nothing selected, the file's path goes as it does from the Code view. Native: `web_ctl.rs`, `appctl/sessions_glue.rs`. Held by `ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_selected`.
-245. **A plugin fill's dialog has Deny and Fill and nothing under them.** The owner took out "Deny for this session" and the line "<Plugin> fills it into the page; the agent never sees it." (2026-11-10). Each Deny answers one fill, `browser.fill` never answers `for_session`, and the plugin's next fill asks again; Fill stays pointer-only and unarmed for its first 0.7 s, Enter and Space press Deny, and six asks a minute per plugin still holds. A secret's question keeps its Cancel link and Flare's line naming the plugin. Native: `ui/plugin_ask.slint`, `plugin_ask::fill_view`, `AppCtl::answer_fill`, `flare_mods::fill::Asks`. Held by `deny_says_no_and_the_next_fill_asks_again`, `the_fill_question_names_the_login_the_site_the_tab_and_the_plugin` (an empty foot) and the e2e `pluginFill`.
+245. **A plugin fill's dialog has Deny and Fill and nothing under them.** The owner took out "Deny for this session" and the line "<Plugin> fills it into the page; the agent never sees it." (2026-11-10). Each Deny answers one fill, `browser.fill` never answers `for_session`, and the plugin's next fill asks again; Fill stays pointer-only and unarmed for its first 0.7 s, Enter and Space press Deny, and six asks a minute per plugin still holds. A secret's question keeps its Cancel link, with no line under it (Max took the line naming the plugin out, 2026-11-16, rule 1266). Native: `ui/plugin_ask.slint`, `plugin_ask::fill_view`, `AppCtl::answer_fill`, `flare_mods::fill::Asks`. Held by `deny_says_no_and_the_next_fill_asks_again`, `the_fill_question_names_the_login_the_site_the_tab_and_the_plugin` and the e2e `pluginFill`.
 242. **A selection in the Text panel is held in Rust as places in the file's own lines, never in Slint.** The panel draws only the rows in view and recycles them, so a read-only `TextInput` per row cannot hold a selection across rows. `panel_sel::TextSel` keeps two `Pos` (a line and a character of the shaped line) and `RowMap` says which rows a line was wrapped into (`wrap_line` made again at the same columns as `panel_ctl::wrap_lines`), so the selection survives scrolling, wrapping on and off and a splitter drag that wraps again. Slint reports the pointer in the content's coordinates and paints each row's share from five properties (`panel-sel-*`); the rows between the ends are drawn whole and a line's end as half a column. The text is the shaped text the panel shows (tabs as four spaces, a long line cut), soft-wrapped rows of one line join with no break and only real line ends become `\n`. Columns count a wide character or an emoji as two, as the wrap does. The selection goes when the generation moves on in `PanelCtl::sync` (another file, a reload, another tab, a markdown page view) and when nothing shows. Native: `crates/flare/src/panel_sel.rs`, `PanelCtl::text_down`, `push_sel`, `TextView` in `ui/panel.slint`. Held by `panel_sel::tests` (`wrapped_rows_map_back_to_the_line_and_character_they_show`, `the_selection_is_kept_in_lines_so_wrapping_on_and_off_keeps_it`, `a_wide_character_takes_two_columns_and_an_emoji_too`, `soft_wrapped_rows_of_one_line_join_without_a_break`), `turning_the_wrap_on_and_off_keeps_the_selection_on_the_same_text`, `wide_characters_and_emoji_are_selected_by_the_columns_they_take`, `the_selection_goes_with_a_reload_another_file_or_another_tab` and `the_selection_is_drawn_on_its_rows_and_only_there`. Source: `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, item 3.
 243. **In the Text panel a mouse drag selects, the wheel still scrolls, and the panel's keys are its own.** The `Flickable` has `mouse-drag-pan-enabled: false` (a touch still pans); Slint 1.18's `Flickable::accepts_pan_event` takes a wheel whatever `interactive` and that property say, so the wheel, the keys and the scrollbar scroll as before. `panel.slint` holds no `Timer` (`the_panel_files_use_no_animation_and_no_timer`), so a drag held past an edge is scrolled from Rust: `panel_text_move` starts the `panel.sel-scroll` timer every `DRAG_SCROLL_MS`, `PanelCtl::drag_tick` scrolls by the terminal's `drag_scroll_amount` and extends to the text under the still pointer, and the release, a dropped selection or a pointer back inside stops it. Esc lets a selection go first and the panel keeps the keys; with nothing selected the keys go back to the terminal as before. While the panel has the keys the agent guard is off, so Ctrl+C there is a copy (on a worker, `COPY_MAX`, the "Copied" badge) and never the guard's; Shift with the arrows, Home and End, Ctrl+Shift+Home and End, and Ctrl+A are taken in `AppCtl::panel_text_key` before Slint, every other key still reaches the panel. Native: `appctl/text_sel_glue.rs`, `AppCtl::on_key`. Held by `a_drag_over_the_text_selects_and_never_scrolls_it_and_the_wheel_still_does`, `a_drag_held_below_the_view_scrolls_and_the_selection_follows`, `esc_lets_the_selection_go_first_and_gives_the_keys_back_only_with_nothing_selected`, `ctrl_c_in_the_panel_is_a_copy_even_where_the_agent_guard_would_take_it`, `shift_with_the_arrows_and_ctrl_a_select_from_the_keyboard` and `a_double_click_picks_a_word_a_triple_click_a_line_and_shift_click_extends`.
 244. **(REPLACED 2026-11-15 by rule 1268: a file's selection reaches the quiet context with the file's path and `lines A-B`, never typed.)** It said: **"Ask agent" with text selected in a file sends that text through `frame_selection` unchanged, labelled with the file and its lines.** `PanelCtl::selection_ask` gives `<name> lines A-B` (or `line A`, counted from 1; a triple click's span that ends at a line's start does not count that line) with the name the header shows, cut first with an ellipsis so the whole label fits the frame's 64 characters, and the shaped text. `AppCtl::panel_ask_agent` tries it before anything else, so the Code view of a markdown file works the same; a selection of blanks frames nothing and the path goes, as it does with nothing selected. The file's text is untrusted like a page's: `frame_selection` gates it and `deliver_ask` types it, never submitted. No ctl, MCP or plugin method reads or sends the selection. Native: `PanelCtl::selection_ask`, `panel_sel::label`, `appctl/sessions_glue.rs`. Held by `ask_agent_sends_the_selection_framed_with_the_file_and_its_lines_and_no_enter`, `hostile_file_text_cannot_end_the_paste_or_press_enter`, `the_code_view_of_a_markdown_file_selects_and_asks_like_any_text_file`, `the_label_names_the_lines_and_cuts_the_name_to_fit` and `a_file_panel_sends_its_path_quoted_for_the_shell_and_no_enter`.
@@ -4528,24 +4528,16 @@ whose last answer failed (a wrong master password) asks again with `error`, one 
 120 characters (`MAX_ERROR_CHARS`; a control or hidden formatting character, two lines or a non-text value is
 `bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
 in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
-the keys, and the button, Cancel and Flare's line under Cancel are as before. That line is a short grey
-`Asked by "<plugin>" · from <origin>`, the box's last row: `Asked by "Vault" · from example.com` for a plugin Settings
-installed from an address, `Asked by "Vault" · from a file` for one installed from a file or a folder put in place (no
-address), and `from an address` when the address has no host. The name is always in quotes and the origin is always
-Flare's, so a plugin named `Bitwarden (from bitwarden.com)` reads `Asked by "Bitwarden (from bitwarden.com)" · from a
-file`, never like the real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
-from `url::Url::parse(source)` and `host_str()` (the parser the download check uses; never a user name, password, port or
-path), is shown whole, and a host longer than 80 characters is cut from the LEFT, keeping its last labels
-(`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`; the name is cut at 40 characters, has
-control, bidi (U+061C, U+200E/F, U+202A to U+202E, U+2066 to U+2069) and zero-width characters (U+200B to U+200D, U+2060,
-U+FEFF) taken out (every name in the dialog loses them), and a quote mark in it becomes an apostrophe, so it cannot close
-its quotes early.
-It replaced "What you type goes to <Plugin> only. Flare does not keep it or show it.", which Max took out; a security
-review then found that with no line at all another plugin could dress as Bitwarden in the box, so Max chose this short
-line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller`) and install host
-(`hub().source_of`, through `plugin_of`), never from the ask: the plugin's `title`, `sub`, `label`, `button` and
-`error` cannot change it, and its `brand` cannot colour it. It is drawn small (11 px) in Flare's own type and dim ink,
-`PluginInk.dim` (`Theme.dim`, or `BrandInk.dim` on the fixed brand surface), never the plugin's colour. The look is Max's approved mockup C
+the keys, and the button and Cancel are as before. **No line under Cancel** (Max, 2026-11-16): Cancel is the box's
+last row, 16 px above its bottom edge, and nothing in the box names the plugin that asked or where it was installed
+from. Max took out first "What you type goes to <Plugin> only. Flare does not keep it or show it." (2026-11-15), then
+the short grey `Asked by "<plugin>" · from <origin>` line that replaced it (2026-11-16, "the text is still there"),
+with `AskView.foot`, `plugin_of`, `origin_of`, `host_shown`, `pask-foot` and `pask-foot-x/y/w/h`, `PluginAsk.foot`, the
+`plugin_name` of `CtlOp::SecretAsk`, `hub().source_of` and the `flare` crate's `url` dependency. Do not bring the line
+back without Max: the security reviews of 2026-11-15 and 2026-11-16 found that another plugin can dress as Bitwarden in
+the box, and Max chose a box without the line knowing that. Every name in the dialog still loses control, bidi
+(U+061C, U+200E/F, U+202A to U+202E, U+2066 to U+2069) and zero-width characters (U+200B to U+200D, U+2060, U+FEFF).
+The look is Max's approved mockup C
 (2026-11-15). The colours are theme tokens, no hex in the dialog: `BrandInk.error` and `error-edge` on a brand,
 `SettingsFixed.error-dark`, `error-light` and `error-edge` on Flare's theme, through `PluginInk.error` and
 `PluginInk.error-edge`. The error takes the sub's line, so a box with a sub keeps its height. Older plugins are unchanged: no
@@ -4554,14 +4546,10 @@ line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller
 sub), `pask-error` and `pask-error-shown` in `app.slint`, `PluginAsk.error` in `ui/plugin_ask.slint`. Held by
 `a_secret_ask_may_carry_an_error_line` (`fill.rs`), `an_error_is_kept_beside_the_sub_and_cleaned`
 (`plugin_ask.rs`), and in `ui_tests/secret_error.rs` `an_error_is_red_in_the_sub_place_and_the_field_gets_a_red_edge`
-and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. The "Asked by" line: `AskView.foot`,
-`pask-foot` and `pask-foot-x/y/w/h` in `app.slint`, `PluginAsk.foot` in `ui/plugin_ask.slint`, held by
-`a_plugin_installed_from_an_address_is_named_with_its_host`,
-`the_asked_by_line_names_the_real_plugin_whatever_the_ask_says`, `a_host_is_never_cut_from_the_right` and
-`a_name_cannot_pass_for_another_plugins_origin` (`plugin_ask.rs`),
-`secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (`plugin_fill.rs`),
-`the_asked_by_line_sits_under_cancel_small_and_dim` (`ui_tests/secret_error.rs`) and the e2e `brand` scenario
-(the probe's `foot` and `foot_box`). Source: Max, 2026-11-15.
+and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. No line under Cancel: held by
+`the_secret_names_no_plugin_under_cancel` and `names_from_a_plugin_are_cut_and_cleaned` (`plugin_ask.rs`),
+`the_secret_box_ends_at_cancel_with_no_line_under_it` (`ui_tests/secret_error.rs`, both looks, every scale) and the
+e2e `brand` scenario (the box ends 16 px under Cancel). Source: Max, 2026-11-15, and 2026-11-16 for the line's removal.
 
 1269. **The folder menu leaves out the folders of open tabs.** Max, 2026-11-15: the New tab button's folder menu (and
 the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
@@ -4615,6 +4603,57 @@ cleared). Held by `the_value_owns_a_com_string_that_its_drop_frees_once` and `th
 (`flare-win/src/window_app_id.rs`). The test process uses the classic heap, which does not always catch a double free,
 so the source check is the main guard. Source: Max, 2026-11-16; crash dumps `FlareStable.exe.34872.dmp` and
 `FlareStable.exe.70884.dmp`.
+
+1273. **A title a plugin's helper sets is what every tab's menu says, and a plugin call Flare refuses leaves a
+`plugin-refused` crumb.** Max, 2026-11-16: "still says unlock bitwarden, no feedback". Bitwarden 0.3.2's helper sets
+its tab-menu title over the pipe (`actions.set {key, title}`, no tab). Flare took that call all along: the helper path
+and the real pipe both pass. The real cause was in the plugin: while `bw unlock` ran (2 to 3 seconds, nothing on
+screen) the item still read "Unlock Bitwarden", a second click was queued, and the helper took it after the unlock
+and locked the vault again (its log: "unlock: ok" then "locked: Max asked"); fixed in the plugin's 0.3.3. What Flare
+lacked was any trace: `diag.jsonl` had nothing to tell a refused call from a call never made. Now every plugin call
+Flare refuses (in the page bridge, at the pipe's grant check through `Dispatcher::refused`, or in
+`AppDispatcher::call`) leaves `{"a":"plugin-refused","plugin","method","code","via":"page"|"pipe"}`, at most once a
+minute per plugin, method and code (`plugin_refused.rs`). Never the error's words or the params: they can carry what
+the plugin was given. A `timeout` is no refusal. Held by `a_title_the_plugins_helper_sets_is_what_the_tab_menu_says`
+and `a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says` (`appctl/tests/mods_tests/plugin_surfaces.rs`),
+`a_mod_token_gets_the_mod_grant` (`flare-ctl/src/session.rs`) and the throttle tests in `plugin_refused.rs`. Source:
+Max, 2026-11-16; `plugins-logs/bitwarden.log` of the Stable profile.
+
+1274. **A checked secret keeps its box open: `secret.ask` with `verify` shows checking, then a green check, the field
+back in place with the red line, or the plugin's end line, and never closes and reopens.** Max, 2026-11-16 (approved
+mockup "Unlock Bitwarden: the box stays open"): the Bitwarden unlock box closed on Unlock while `bw unlock` ran (about
+3 s) and, on a wrong password, opened again. Now a plugin may send `verify: true` (optional, default false) and
+`checking` (one clean line, at most 120, only with `verify`; `bad_params` without it). The button sends the text once:
+the plugin's `secret.ask` answers `{text, ask}` (the ask's id, `s<n>`) and the box stays up, checking: the field at 0.6
+opacity and read-only, keeping its dots; the button off (0.55) with a small turning spinner in place of its word; the
+checking line (`Checking...` by default) in the sub's place, never red; Cancel, Escape and a press outside still cancel.
+The plugin answers with `secret.result {ask, ok, title?, line?, error?, done?}` (Namespace `Fill`, the `fill`
+permission, never the agent's; not an ask, so it spends none of the 6 a minute; `FILL_TIMEOUT`). `ok: true`: a green
+check on a soft round tile (the theme token `PluginInk.ok`: `BrandInk.ok`, or `SettingsFixed.ok-dark` and `ok-light`),
+`title` (`Done` without it) and `line`, no field, button, Cancel or foot; it closes after 0.8 s (`RESULT_HOLD`) and
+answers `{shown: true}`. `ok: false`: the box goes back to the field in place, cleared, holding the keys, with `error`
+in red (`That was not right. Try again.` without it), and that call waits for the person's next try (`{text, ask}`, same
+id) or a cancel; a second waiting call is `busy`. `ok: false, done: true`: the plugin's logo, `title` (the ask's own
+without it) and its plain `line`, closed after 2.5 s (`END_HOLD`). No word in 60 s (`VERIFY_WAIT`) puts the field back
+with `The check took too long. Try again.`; a text sent then is held (a `Secret`) for the plugin's next `secret.result`
+(a late `ok: false` gets it at once and the box checks it). Cancel while checking, or a field left alone, closes the
+box, and the plugin's next `secret.result` for that ask answers `{cancelled: true}` (`timed_out` too for the timeout),
+once; any other id is `not_found`. Each stage's timer carries a round number, so a timer of an earlier stage ends
+nothing. With `verify` the button on an empty field sends nothing (the box would sit checking a text the plugin
+reads as a cancel). Without `verify` nothing changes (old plugins). Nothing in Flare runs before the box shows. Native:
+`flare_mods::fill::{parse_secret, parse_secret_result, Verdict}`, `Method::SecretResult`, `CtlOp::SecretResult`,
+`ask_glue.rs` (`Stage`, `Verify`, `answer_checked_secret`, `secret_result`, `plugin_ask_expired`),
+`plugin_ask::{checking_line, wrong_line, result_view}`, `pask-stage`, `pask-verify`, `pask-checking`,
+`pask-result-title`, `pask-result-line` in `app.slint`, `PluginAsk.stage` and `AskButton.busy` in `ui/plugin_ask.slint`,
+and the e2e probe's `ui_stage`, `checking_shown`, `result_shown`, `field_read_only`, `ok_enabled` and the controller's
+`stage` and `waiting`. Held by `verify_is_an_optional_flag_and_checking_goes_with_it` and
+`a_secret_result_is_right_wrong_or_done_and_nothing_else` (`fill.rs`),
+`a_checked_secret_has_flares_words_where_the_plugin_names_none` (`plugin_ask.rs`), the eight tests of
+`appctl/tests/mods_tests/plugin_secret_verify.rs` (right, wrong, done, cancel while checking, the timeout, the plugin
+turned off, refused params, an empty field), `secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (an ask
+without `verify`), and `ui_tests/secret_verify.rs` at every scale in both looks (checking with a turning spinner and a
+box that does not move, wrong in place and focused, the green check, the end line, no `verify`). Source: Max,
+2026-11-16.
 
 ## A plugin's notice under the title bar (2026-11-17)
 

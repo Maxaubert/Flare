@@ -264,7 +264,7 @@ impl AppCtl {
                 }
             }
             ModsMsg::Tick => self.plugins_tick(Instant::now()),
-            ModsMsg::AskExpired { seq } => self.plugin_ask_expired(seq),
+            ModsMsg::AskExpired { seq, round } => self.plugin_ask_expired(seq, round),
             ModsMsg::Rescan => {
                 if let Some(c) = self.mods.as_mut() {
                     c.start_scan();

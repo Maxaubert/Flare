@@ -158,7 +158,6 @@ fn a_fill_needs_the_logins_site_and_the_persons_allow_and_answers_kinds_of_field
         f.h.comp.get_pask_asker()
     );
     // No line under a fill (the owner took it out, 2026-11-10).
-    assert_eq!(f.h.comp.get_pask_foot(), "");
     assert!(!f.h.comp.get_pask_look().branded, "no brand: Flare's look");
     assert!(
         f.h.comp.get_overlay_open(),
@@ -256,7 +255,10 @@ fn one_question_at_a_time_six_asks_a_minute_and_an_unanswered_one_counts_as_deny
     let seq = f.ctl.borrow().plugin_ask_seq;
     f.ctl
         .borrow_mut()
-        .on_msg(UiMsg::Mods(ModsMsgBox(ModsMsg::AskExpired { seq })));
+        .on_msg(UiMsg::Mods(ModsMsgBox(ModsMsg::AskExpired {
+            seq,
+            round: 0,
+        })));
     assert_eq!(
         answer_of(&f, &rx).unwrap(),
         json!({"declined": true, "timed_out": true})
@@ -401,13 +403,10 @@ fn secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled() 
     assert_eq!(f.h.comp.get_pask_kind(), 1);
     assert_eq!(f.h.comp.get_pask_title(), "Unlock the vault");
     assert_eq!(f.h.comp.get_pask_button(), "OK");
-    // Flare's line under Cancel names the plugin that asked, from its own name, not from the ask's title.
-    // A folder plugin: its name in quotes, then Flare's origin (no address, so "from a file").
-    assert_eq!(
-        f.h.comp.get_pask_foot(),
-        "Asked by \"Vault vault\" \u{00B7} from a file"
-    );
     assert_eq!(f.h.comp.get_pask_label(), "Master password");
+    // An ask without `verify` (an older plugin) is today's: no checking state, no id, the dialog closes on OK.
+    assert_eq!(f.h.comp.get_pask_stage(), 0);
+    assert!(!f.h.comp.get_pask_verify());
     f.h.comp.invoke_pask_secret(true, PASS.into());
     assert_eq!(answer_of(&f, &rx).unwrap(), json!({"text": PASS}));
     assert!(!asking(&f));

@@ -128,8 +128,9 @@ pub enum ModsMsg {
     },
     /// A plugin's helper program started, ended and was started again, or stopped (its own threads).
     Helper(flare_mods::helper::Note),
-    /// The time of a plugin's question ran out (the `fill` permission): it counts as Deny, unless it was answered.
-    AskExpired { seq: u64 },
+    /// The time of a plugin's question ran out (the `fill` permission): it counts as Deny, unless it was answered. `round`
+    /// names the stage of a checked secret it was set for (rule 1274), so a timer of an earlier stage ends nothing.
+    AskExpired { seq: u64, round: u64 },
 }
 
 /// What Settings shows of the installs: one runs, and what the last one said.
@@ -697,7 +698,12 @@ impl ModCtl {
         method: &str,
         params: Value,
     ) -> Option<String> {
-        let refuse = |c: &str, m: &str| Some(bridge::reply_err(id, c, m));
+        let refuse = |c: &str, m: &str| {
+            // Only a method of the protocol is named: a page's own words never reach the log.
+            let named = Method::parse(method).map_or("(unknown)", Method::name);
+            crate::plugin_refused::note(mod_id, named, c, "page");
+            Some(bridge::reply_err(id, c, m))
+        };
         // The grant is the mod's live one: a mod that was turned off has none.
         let Some(grant) = self.hub.grant_of_mod(mod_id) else {
             return refuse(code::UNAUTHORIZED, "this mod is turned off");
