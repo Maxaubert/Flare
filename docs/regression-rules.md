@@ -4743,4 +4743,3 @@ line is "Flare's key file is not private" (`SshProblem::KeyNotPrivate`), not "No
 `an_old_key_others_may_read_is_made_private_again` (`pair_keys.rs`),
 `flares_key_is_made_private_before_ssh_runs_with_it` (`remote_link_tests.rs`) and
 `a_key_file_others_may_read_is_its_own_line` (`ssh_problem.rs`). Source: Max, 2026-11-17; ssh's own words on his PC.
-
