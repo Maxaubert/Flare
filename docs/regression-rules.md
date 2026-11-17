@@ -4791,4 +4791,3 @@ serves only the Add a machine dialog's drop-down. Held by
 `a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click` and
 `a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`).
 Source: Max, 2026-11-17; `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
-
