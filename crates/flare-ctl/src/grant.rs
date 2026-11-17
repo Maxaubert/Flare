@@ -33,7 +33,8 @@ pub enum Permission {
     Tabs,
     /// The plugin's own sections in the sidebar (`sidebar.*`).
     Sidebar,
-    /// The plugin's buttons and menu items, and their click events (`actions.*`).
+    /// The plugin's buttons and menu items, and their click events (`actions.*`), and its short notices under the title
+    /// bar (`notice.show`, the answer to a click).
     Actions,
     /// The plugin's strip under a tab's terminal (`bar.*`).
     Bar,
@@ -231,7 +232,9 @@ impl Grant {
                 | N::Input
                 | N::Storage
                 | N::Agents
-                | N::Fill => false,
+                | N::Fill
+                // A notice on the person's screen is a plugin's answer to its own button, never the agent's.
+                | N::Notice => false,
                 N::Hello | N::Tabs | N::Ui | N::Remote => unreachable!("handled above"),
             },
             Grant::Mod {
@@ -348,6 +351,8 @@ mod tests {
                 Method::BrowserFill,
                 Method::BrowserFillPage,
                 Method::SecretAsk,
+                Method::SecretResult,
+                Method::NoticeShow,
             ] {
                 let err = g.check(m).unwrap_err();
                 assert_eq!(err.code, code::FORBIDDEN, "{}", m.name());
@@ -607,7 +612,7 @@ mod tests {
                     Namespace::Tools => "tools",
                     Namespace::Decor => "decorate",
                     Namespace::Sidebar => "sidebar",
-                    Namespace::Actions => "actions",
+                    Namespace::Actions | Namespace::Notice => "actions",
                     Namespace::Bar => "bar",
                     Namespace::Agents => "agent-looks",
                     Namespace::Fill => "fill",
@@ -771,6 +776,7 @@ mod tests {
                 Namespace::Storage,
                 Namespace::Agents,
                 Namespace::Fill,
+                Namespace::Notice,
                 Namespace::Remote,
             ] {
                 assert!(!g.may_enter(ns), "{ns:?}");
@@ -828,6 +834,7 @@ mod tests {
             Method::BrowserFill,
             Method::BrowserFillPage,
             Method::SecretAsk,
+            Method::SecretResult,
         ] {
             assert_eq!(m.namespace(), Namespace::Fill);
             assert!(!mod_with(&rest).may_call(m), "{}", m.name());
@@ -837,6 +844,43 @@ mod tests {
         }
         assert!(!mod_with(&[P::Browser]).may_call(Method::BrowserFill));
         assert!(!Grant::agent().permission_names().contains(&"fill"));
+    }
+
+    /// Rule 1275: `actions` opens `notice.show` with `actions.set` and nothing else does; the agent never has it, with or
+    /// without the user's eval switch, and neither does a remote link or the bridge.
+    #[test]
+    fn actions_opens_the_notice_and_the_agent_never_has_it() {
+        let g = mod_with(&[P::Actions]);
+        for m in Method::ALL {
+            let want = matches!(
+                m.namespace(),
+                Namespace::Hello
+                    | Namespace::Tabs
+                    | Namespace::Storage
+                    | Namespace::Actions
+                    | Namespace::Notice
+            );
+            assert_eq!(g.may_call(m), want, "{}", m.name());
+        }
+        let rest: Vec<Permission> = Permission::ALL
+            .into_iter()
+            .filter(|p| *p != P::Actions)
+            .collect();
+        assert!(!mod_with(&rest).may_call(Method::NoticeShow));
+        for other in [
+            Grant::agent(),
+            Grant::Agent { eval: true },
+            Grant::Remote,
+            Grant::Bridge,
+        ] {
+            assert_eq!(
+                other.check(Method::NoticeShow).unwrap_err().code,
+                code::FORBIDDEN,
+                "{}",
+                other.kind()
+            );
+        }
+        assert!(Grant::Ui.may_call(Method::NoticeShow));
     }
 
     /// Rule 276: the remote grant reaches its own `remote.*` methods and nothing else. No shell input (neither

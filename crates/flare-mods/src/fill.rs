@@ -84,6 +84,9 @@ pub struct FillRequest {
 /// `secret.ask`'s params, checked. `sub` (a line under the title, such as the account), `button` (the word on the
 /// button) and `error` (why the last answer failed, such as "Wrong password. Try again.") are empty when the plugin
 /// leaves them out. An `error` takes the sub's place, drawn in the error colour, and gives the field a red edge.
+///
+/// `verify` (rule 1274, 2026-11-16) keeps the dialog open after the person sends: Flare answers the text with the
+/// ask's id and shows `checking` (or Flare's own words) with a spinner until the plugin calls `secret.result`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecretRequest {
     pub title: String,
@@ -91,6 +94,8 @@ pub struct SecretRequest {
     pub sub: String,
     pub button: String,
     pub error: String,
+    pub verify: bool,
+    pub checking: String,
 }
 
 /// The longest word `secret.ask` may put on its button.
@@ -98,7 +103,116 @@ pub const MAX_BUTTON_CHARS: usize = 24;
 /// The longest error line `secret.ask` may show.
 pub const MAX_ERROR_CHARS: usize = 120;
 /// The keys `secret.ask` takes.
-const SECRET_KEYS: [&str; 5] = ["title", "label", "sub", "button", "error"];
+const SECRET_KEYS: [&str; 7] = [
+    "title", "label", "sub", "button", "error", "verify", "checking",
+];
+
+/// How long a `verify` ask may show its checking state before Flare puts the field back with a plain error (the
+/// plugin never called `secret.result`).
+pub const VERIFY_WAIT: Duration = Duration::from_secs(60);
+/// How long a right answer's green check stays before the dialog closes.
+pub const RESULT_HOLD: Duration = Duration::from_millis(800);
+/// How long a plugin's end line stays before the dialog closes (long enough to read one line).
+pub const END_HOLD: Duration = Duration::from_millis(2500);
+/// The longest id of an ask (`secret.result`'s `ask`).
+pub const MAX_ASK_ID_CHARS: usize = 32;
+
+/// What the plugin says of the text it checked (`secret.result`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Right: a green check with `title` and `line` (Flare's words when empty), then the dialog closes.
+    Right { title: String, line: String },
+    /// Wrong: the field comes back in place with `error` in red (Flare's words when empty), and the call waits for
+    /// the person's next answer.
+    Wrong { error: String },
+    /// No more tries: the plugin's `line` under its logo and `title` (the ask's own title when empty), then the dialog
+    /// closes.
+    End { title: String, line: String },
+}
+
+/// `secret.result`'s params, checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretResult {
+    pub ask: String,
+    pub verdict: Verdict,
+}
+
+/// The keys `secret.result` takes.
+const RESULT_KEYS: [&str; 6] = ["ask", "ok", "title", "line", "error", "done"];
+
+/// An optional flag: true, false, or left out (false).
+fn flag(params: &Value, key: &str) -> Result<bool, CtlError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(bad(format!("{key} must be true or false"))),
+    }
+}
+
+/// An optional clean line where empty or blank is the same as left out.
+fn optional_line(params: &Value, key: &str, max: usize) -> Result<String, CtlError> {
+    match params.get(key) {
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(String::new()),
+        _ => clean_line(params, key, max, false),
+    }
+}
+
+/// Reads `secret.result`'s params: `{ask, ok: true, title?, line?}`, `{ask, ok: false, error?}` or
+/// `{ask, ok: false, done: true, title?, line?}`. A key that does not belong to the outcome is refused.
+pub fn parse_secret_result(params: &Value) -> Result<SecretResult, CtlError> {
+    let obj = params
+        .as_object()
+        .ok_or_else(|| bad("params must be an object"))?;
+    if let Some(k) = obj.keys().find(|k| !RESULT_KEYS.contains(&k.as_str())) {
+        return Err(bad(format!(
+            "unknown param \"{}\"; secret.result takes ask, ok, title, line, error and done",
+            k.chars().take(40).collect::<String>()
+        )));
+    }
+    let ask = match params.get("ask") {
+        Some(Value::String(s))
+            if !s.is_empty()
+                && s.chars().count() <= MAX_ASK_ID_CHARS
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') =>
+        {
+            s.clone()
+        }
+        _ => return Err(bad("ask is required: the id secret.ask answered with")),
+    };
+    let ok = match params.get("ok") {
+        Some(Value::Bool(b)) => *b,
+        _ => return Err(bad("ok is required: true or false")),
+    };
+    let done = flag(params, "done")?;
+    let has = |k: &str| params.get(k).is_some_and(|v| !v.is_null());
+    let verdict = if ok {
+        if has("error") || done {
+            return Err(bad("error and done go with ok: false"));
+        }
+        Verdict::Right {
+            title: optional_line(params, "title", MAX_TITLE_CHARS)?,
+            line: optional_line(params, "line", MAX_LABEL_CHARS)?,
+        }
+    } else if done {
+        if has("error") {
+            return Err(bad("an ask that is done takes title and line, not error"));
+        }
+        Verdict::End {
+            title: optional_line(params, "title", MAX_TITLE_CHARS)?,
+            line: optional_line(params, "line", MAX_LABEL_CHARS)?,
+        }
+    } else {
+        if has("title") || has("line") {
+            return Err(bad(
+                "a wrong answer takes error; title and line go with ok: true or done: true",
+            ));
+        }
+        Verdict::Wrong {
+            error: optional_line(params, "error", MAX_ERROR_CHARS)?,
+        }
+    };
+    Ok(SecretResult { ask, verdict })
+}
 
 fn bad(m: impl Into<String>) -> CtlError {
     CtlError::new(code::BAD_PARAMS, m.into())
@@ -220,9 +334,14 @@ pub fn parse_secret(params: &Value) -> Result<SecretRequest, CtlError> {
         .ok_or_else(|| bad("params must be an object"))?;
     if let Some(k) = obj.keys().find(|k| !SECRET_KEYS.contains(&k.as_str())) {
         return Err(bad(format!(
-            "unknown param \"{}\"; secret.ask takes title, label, sub, button and error",
+            "unknown param \"{}\"; secret.ask takes title, label, sub, button, error, verify and checking",
             k.chars().take(40).collect::<String>()
         )));
+    }
+    let verify = flag(params, "verify")?;
+    let checking = optional_line(params, "checking", MAX_LABEL_CHARS)?;
+    if !verify && !checking.is_empty() {
+        return Err(bad("checking goes with verify: true"));
     }
     Ok(SecretRequest {
         title: clean_line(params, "title", MAX_TITLE_CHARS, true)?,
@@ -230,10 +349,9 @@ pub fn parse_secret(params: &Value) -> Result<SecretRequest, CtlError> {
         sub: clean_line(params, "sub", MAX_LABEL_CHARS, false)?,
         button: clean_line(params, "button", MAX_BUTTON_CHARS, false)?,
         // An empty or blank error is no error: a plugin may always send the key and get today's look.
-        error: match params.get("error") {
-            Some(Value::String(s)) if s.trim().is_empty() => String::new(),
-            _ => clean_line(params, "error", MAX_ERROR_CHARS, false)?,
-        },
+        error: optional_line(params, "error", MAX_ERROR_CHARS)?,
+        verify,
+        checking,
     })
 }
 
@@ -725,6 +843,142 @@ mod tests {
         assert!(parse_secret(&json!({"title": "x", "label": "y", "error": "a\nb"})).is_err());
         assert!(parse_secret(&json!({"title": "x", "label": "y", "error": "a\u{202E}b"})).is_err());
         assert!(parse_secret(&json!({"title": "x", "label": "y", "error": true})).is_err());
+    }
+
+    #[test]
+    fn verify_is_an_optional_flag_and_checking_goes_with_it() {
+        // Left out, false or null: today's ask (rule 1274: older plugins are unchanged).
+        for v in [None, Some(json!(false)), Some(Value::Null)] {
+            let mut p = json!({"title": "x", "label": "y"});
+            if let Some(v) = v {
+                p["verify"] = v;
+            }
+            let r = parse_secret(&p).unwrap();
+            assert!(!r.verify);
+            assert_eq!(r.checking, "");
+        }
+        let r = parse_secret(&json!({"title": "Your vault is locked", "label": "Master password", "verify": true, "checking": " Checking the password... "}))
+            .unwrap();
+        assert!(r.verify);
+        assert_eq!(r.checking, "Checking the password...");
+        // A blank checking line is Flare's words.
+        let r =
+            parse_secret(&json!({"title": "x", "label": "y", "verify": true, "checking": "  "}))
+                .unwrap();
+        assert_eq!(r.checking, "");
+        for (extra, says) in [
+            (json!({"verify": "yes"}), "verify must be true or false"),
+            (json!({"verify": 1}), "verify must be true or false"),
+            (
+                json!({"checking": "Checking..."}),
+                "checking goes with verify",
+            ),
+            (json!({"verify": true, "checking": "a\nb"}), "control"),
+            (
+                json!({"verify": true, "checking": "c".repeat(MAX_LABEL_CHARS + 1)}),
+                "longer than",
+            ),
+        ] {
+            let mut p = json!({"title": "x", "label": "y"});
+            for (k, v) in extra.as_object().unwrap() {
+                p[k] = v.clone();
+            }
+            let e = parse_secret(&p).unwrap_err();
+            assert_eq!(e.code, code::BAD_PARAMS, "{extra}");
+            assert!(e.message.contains(says), "{extra}: {}", e.message);
+        }
+    }
+
+    #[test]
+    fn a_secret_result_is_right_wrong_or_done_and_nothing_else() {
+        let r = parse_secret_result(&json!({"ask": "s12", "ok": true})).unwrap();
+        assert_eq!(r.ask, "s12");
+        assert_eq!(
+            r.verdict,
+            Verdict::Right {
+                title: String::new(),
+                line: String::new()
+            }
+        );
+        let r = parse_secret_result(&json!({"ask": "s12", "ok": true, "title": "Vault unlocked", "line": "Bitwarden can fill logins now."}))
+            .unwrap();
+        assert_eq!(
+            r.verdict,
+            Verdict::Right {
+                title: "Vault unlocked".into(),
+                line: "Bitwarden can fill logins now.".into()
+            }
+        );
+        let r = parse_secret_result(
+            &json!({"ask": "s12", "ok": false, "error": "Wrong password, try again"}),
+        )
+        .unwrap();
+        assert_eq!(
+            r.verdict,
+            Verdict::Wrong {
+                error: "Wrong password, try again".into()
+            }
+        );
+        let r = parse_secret_result(&json!({"ask": "s12", "ok": false})).unwrap();
+        assert_eq!(
+            r.verdict,
+            Verdict::Wrong {
+                error: String::new()
+            }
+        );
+        let r = parse_secret_result(&json!({"ask": "s12", "ok": false, "done": true, "line": "Bitwarden did not unlock after 5 tries."}))
+            .unwrap();
+        assert_eq!(
+            r.verdict,
+            Verdict::End {
+                title: String::new(),
+                line: "Bitwarden did not unlock after 5 tries.".into()
+            }
+        );
+        for (p, says) in [
+            (json!({"ok": true}), "ask is required"),
+            (json!({"ask": "", "ok": true}), "ask is required"),
+            (json!({"ask": "s 1", "ok": true}), "ask is required"),
+            (
+                json!({"ask": "s".repeat(MAX_ASK_ID_CHARS + 1), "ok": true}),
+                "ask is required",
+            ),
+            (json!({"ask": "s1"}), "ok is required"),
+            (json!({"ask": "s1", "ok": "yes"}), "ok is required"),
+            (
+                json!({"ask": "s1", "ok": true, "error": "x"}),
+                "go with ok: false",
+            ),
+            (
+                json!({"ask": "s1", "ok": true, "done": true}),
+                "go with ok: false",
+            ),
+            (
+                json!({"ask": "s1", "ok": false, "title": "x"}),
+                "a wrong answer takes error",
+            ),
+            (
+                json!({"ask": "s1", "ok": false, "done": true, "error": "x"}),
+                "not error",
+            ),
+            (json!({"ask": "s1", "ok": false, "done": 1}), "done must be"),
+            (
+                json!({"ask": "s1", "ok": false, "error": "a\u{202E}b"}),
+                "hidden formatting",
+            ),
+            (
+                json!({"ask": "s1", "ok": true, "line": "l".repeat(MAX_LABEL_CHARS + 1)}),
+                "longer than",
+            ),
+            (
+                json!({"ask": "s1", "ok": true, "text": "x"}),
+                "unknown param",
+            ),
+        ] {
+            let e = parse_secret_result(&p).unwrap_err();
+            assert_eq!(e.code, code::BAD_PARAMS, "{p}");
+            assert!(e.message.contains(says), "{p}: {}", e.message);
+        }
     }
 
     #[test]
