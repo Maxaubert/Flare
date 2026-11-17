@@ -4739,4 +4739,3 @@ host's rules on any viewer, with no `~` for this machine's home (`tabs_ui::tab_f
 `a_remote_tabs_folder_line_reads_by_its_hosts_rules_on_any_viewer` (`tabs_ui.rs`) and
 `a_hosts_folder_reads_by_the_hosts_rules_on_any_viewer` (`flare-tabs/src/sidebar_rows.rs`). Source: Max, 2026-11-17;
 `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
-
