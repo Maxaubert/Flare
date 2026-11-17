@@ -26,6 +26,8 @@ pub const LINE_MAX: usize = 400;
 pub enum SshProblem {
     /// Refused, timed out, no route: nothing answers on ssh's port.
     NotAnswering,
+    /// This computer's ssh would not use Flare's key: others may read its file (rule 1277).
+    KeyNotPrivate,
     /// The host refused this computer's key.
     NotPaired,
     /// The host's key is not the one this computer trusts (changed, or none known with strict checking).
@@ -41,6 +43,7 @@ impl SshProblem {
     pub fn line(self) -> &'static str {
         match self {
             SshProblem::NotAnswering => "Not answering",
+            SshProblem::KeyNotPrivate => "Flare's key file is not private",
             SshProblem::NotPaired => "Not paired with this computer",
             SshProblem::IdentityChanged => "Its identity changed. Pair again",
             SshProblem::NotFound => "Can't find it on the network",
@@ -65,6 +68,12 @@ pub fn sort(said: &str) -> Option<SshProblem> {
         "has changed and you have requested strict checking",
     ]) {
         Some(SshProblem::IdentityChanged)
+    } else if any(&[
+        // ssh ignores a key file others may read, then the host refuses the login: the file is the reason.
+        "unprotected private key file",
+        ": bad permissions",
+    ]) {
+        Some(SshProblem::KeyNotPrivate)
     } else if any(&[
         // ssh lists the methods it tried: "Permission denied (publickey,...)".
         "permission denied (",
@@ -286,6 +295,10 @@ mod tests {
             ]
         );
         assert!(SshProblem::NoClient.line().contains("SSH client"));
+        assert_eq!(
+            SshProblem::KeyNotPrivate.line(),
+            "Flare's key file is not private"
+        );
         for p in [
             SshProblem::NotAnswering,
             SshProblem::NoClient,
@@ -310,6 +323,40 @@ mod tests {
             Some(SshProblem::NoClient)
         );
         assert_eq!(sort_down(&format!("x; {SAID}hello")), None);
+    }
+
+    /// Rule 1277: ssh ignoring Flare's key because others may read its file is its own line, not "Not paired", though
+    /// the host then refuses the login. Windows' OpenSSH and a Mac's say it in their own words.
+    #[test]
+    fn a_key_file_others_may_read_is_its_own_line() {
+        let windows = "Bad permissions. Try removing permissions for user: MAX\\\\CodexSandboxUsers (S-1-5-21-1-2-3-1008) \
+             on file C:/Users/Admin/AppData/Roaming/FlareStable/id_flare_ed25519.\n\
+             @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+             @         WARNING: UNPROTECTED PRIVATE KEY FILE!          @\n\
+             @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+             Permissions for 'C:\\\\Users\\\\Admin\\\\AppData\\\\Roaming\\\\FlareStable\\\\id_flare_ed25519' are too open.\n\
+             This private key will be ignored.\n\
+             Load key \"C:\\\\Users\\\\Admin\\\\AppData\\\\Roaming\\\\FlareStable\\\\id_flare_ed25519\": bad permissions\n\
+             max@192.168.0.120: Permission denied (publickey,password,keyboard-interactive).";
+        assert_eq!(sort(windows), Some(SshProblem::KeyNotPrivate));
+        let mac = "Permissions 0644 for '/Users/max/Library/Flare/id_flare_ed25519' are too open.\n\
+             Load key \"/Users/max/Library/Flare/id_flare_ed25519\": bad permissions\n\
+             max@pc: Permission denied (publickey).";
+        assert_eq!(sort(mac), Some(SshProblem::KeyNotPrivate));
+        assert_eq!(
+            sort_down(&format!("the link ended; {SAID}{windows}")),
+            Some(SshProblem::KeyNotPrivate)
+        );
+        // A host key problem still comes first, and a plain refusal is still "Not paired".
+        assert_eq!(
+            sort(&format!("Host key verification failed.\n{mac}")),
+            Some(SshProblem::IdentityChanged)
+        );
+        assert_eq!(
+            sort("max@pc: Permission denied (publickey)."),
+            Some(SshProblem::NotPaired)
+        );
+        assert!(!SshProblem::KeyNotPrivate.line().contains('\u{2014}'));
     }
 
     #[test]

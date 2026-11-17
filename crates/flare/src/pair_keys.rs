@@ -261,6 +261,7 @@ impl PairFiles {
             && let Ok(line) = std::fs::read_to_string(&public) // sync-ok: a pairing worker
             && let Some(k) = parse_public_key(line.trim(), &[ED25519])
         {
+            keep_key_private(&key);
             return Ok(k.line());
         }
         let mut seed = [0u8; 32];
@@ -288,24 +289,47 @@ impl PairFiles {
     }
 }
 
-/// Writes a private key readable by its owner only: mode 600 off Windows (ssh refuses a key others can read); on
-/// Windows the profile folder's own access (the user, SYSTEM, Administrators) is what ssh accepts.
+/// Writes a private key readable by its owner only, before any of it is written: mode 600 off Windows (ssh refuses a
+/// key others can read); on Windows a protected DACL with one ACE for the user (rule 1277). The profile folder's own
+/// ACEs are not enough there: a folder can let an extra group in, and Windows' OpenSSH then refuses the key.
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let _ = std::fs::remove_file(path); // sync-ok: a pairing worker
     #[cfg(unix)]
-    {
-        use std::io::Write as _;
+    let mut f = {
         use std::os::unix::fs::OpenOptionsExt as _;
-        let _ = std::fs::remove_file(path); // sync-ok: a pairing worker
-        let mut f = std::fs::OpenOptions::new() // sync-ok: a pairing worker
+        std::fs::OpenOptions::new() // sync-ok: a pairing worker
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(path)?; // sync-ok: a pairing worker
-        f.write_all(text.as_bytes())
-    }
+            .open(path)? // sync-ok: a pairing worker
+    };
     #[cfg(not(unix))]
-    {
-        std::fs::write(path, text) // sync-ok: a pairing worker
+    let mut f = {
+        let f = std::fs::OpenOptions::new() // sync-ok: a pairing worker
+            .write(true)
+            .create_new(true)
+            .open(path)?; // sync-ok: a pairing worker
+        // Empty still: the key goes in only once no one else may read it. The open handle keeps its write access.
+        flare_win::private_file::make_private(path)?;
+        f
+    };
+    f.write_all(text.as_bytes())
+}
+
+/// BLOCKING (one read of the file's access, one write when it is wrong): Flare's own key made private again before ssh
+/// reads it (rule 1277). A key made before this fix took its folder's ACEs, and Windows' OpenSSH refuses it when they
+/// let anyone else in ("UNPROTECTED PRIVATE KEY FILE"). Only Flare's own key file is touched; any other key, a missing
+/// file or a check that fails is left to ssh.
+pub fn keep_key_private(key: &Path) {
+    if key.file_name().and_then(|n| n.to_str()) != Some(KEY_FILE) {
+        return;
+    }
+    match flare_win::private_file::keep_private(key) {
+        Ok(true) => log::info!("pairing: Flare's key was readable by others; made private again"),
+        Ok(false) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("pairing: could not check that Flare's key is private: {e}"),
     }
 }
 
@@ -351,7 +375,7 @@ pub fn remove_user_key(home: &Path, key: &str) -> Result<bool, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Rule 1256: Flare's key is an OpenSSH ed25519 key with no passphrase, in the format ssh reads, and its public
@@ -397,6 +421,14 @@ mod tests {
         assert_eq!(files.ensure_key("other").unwrap(), first, "made once");
         let pubtext = std::fs::read_to_string(files.key_path().with_extension("pub")).unwrap();
         assert!(pubtext.trim_end().ends_with(" Max's-PC"));
+        // Rule 1277: the private half lets its owner alone in (mode 600; on Windows one ACE, nothing inherited).
+        assert!(flare_win::private_file::is_private(&files.key_path()).unwrap());
+        #[cfg(windows)]
+        {
+            let a = flare_win::private_file::access(&files.key_path()).unwrap();
+            let me = flare_win::private_file::current_user_sid().unwrap();
+            assert!(a.protected && !a.everyone && a.allowed == [me], "{a:?}");
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -405,6 +437,50 @@ mod tests {
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    /// Rule 1277: a key made before the fix, which others may read, is made private again when it is next used; a
+    /// file that is not Flare's key is never touched.
+    #[test]
+    fn an_old_key_others_may_read_is_made_private_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = PairFiles::new(dir.path());
+        let line = files.ensure_key("pc").unwrap();
+        let key = files.key_path();
+        let other = dir.path().join("id_ed25519");
+        std::fs::write(&other, "not flare's").unwrap();
+        loosen(&key);
+        loosen(&other);
+        assert!(!flare_win::private_file::is_private(&key).unwrap());
+        keep_key_private(&key);
+        assert!(flare_win::private_file::is_private(&key).unwrap());
+        assert!(
+            !flare_win::private_file::is_private(&other).unwrap(),
+            "not Flare's: left alone"
+        );
+        keep_key_private(&other);
+        assert!(!flare_win::private_file::is_private(&other).unwrap());
+        // A missing key is ssh's to report.
+        keep_key_private(&dir.path().join("gone").join(KEY_FILE));
+        // ensure_key on a key that exists checks it too.
+        loosen(&key);
+        assert_eq!(files.ensure_key("pc").unwrap(), line);
+        assert!(flare_win::private_file::is_private(&key).unwrap());
+    }
+
+    /// Lets the Users group read `path` too (mode 644 off Windows): what an inherited folder ACE did on Max's PC.
+    pub(crate) fn loosen(path: &Path) {
+        #[cfg(windows)]
+        {
+            let me = flare_win::private_file::current_user_sid().unwrap();
+            flare_win::private_file::set_dacl(path, &format!("D:P(A;;FA;;;{me})(A;;FR;;;BU)"))
+                .unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
     }
 

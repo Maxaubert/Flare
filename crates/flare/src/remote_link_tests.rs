@@ -806,6 +806,57 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
     assert_eq!(with(|m| m.known_hosts = Some("a\nb".into())), None);
 }
 
+/// Rule 1277: before ssh reads Flare's key, the key is made private again when others may read it (Windows' OpenSSH
+/// refuses it otherwise: "UNPROTECTED PRIVATE KEY FILE", then "Permission denied (publickey)"). A tab's link builds its
+/// argv through it, as does the check of Settings > Machines and the Preview tunnel; the e2e's loopback has no key.
+#[test]
+fn flares_key_is_made_private_before_ssh_runs_with_it() {
+    let profile = tempfile::tempdir().unwrap();
+    let files = crate::pair_keys::PairFiles::new(profile.path());
+    files.ensure_key("pc").unwrap();
+    let key = files.key_path();
+    let private = || flare_win::private_file::is_private(&key).unwrap();
+    let m = Machine {
+        id: "mac".into(),
+        name: "Mac".into(),
+        kind: Some(Os::Mac),
+        ssh: "192.168.0.120".into(),
+        flare: "flare".into(),
+        host: Some("192.168.0.120".into()),
+        key: Some(key.to_string_lossy().into_owned()),
+        ..Machine::default()
+    };
+    // The argv a check or a tunnel builds.
+    crate::pair_keys::tests::loosen(&key);
+    assert!(!private());
+    let argv = ssh_argv_ready("ssh", &m).unwrap();
+    assert!(argv.contains(&key.to_string_lossy().into_owned()));
+    assert!(private(), "made private before ssh runs");
+    // A tab's link: the connector reads machines.json and builds the same argv.
+    flare_settings::atomic::write_atomic(
+        &machines_file(profile.path()),
+        &crate::machines::machines_json(std::slice::from_ref(&m)),
+    )
+    .unwrap();
+    crate::pair_keys::tests::loosen(&key);
+    let real = SshConnector::new(profile.path(), None).argv("mac").unwrap();
+    assert_eq!(real[1..], argv[1..]);
+    assert!(private(), "a tab's link made it private too");
+    // The e2e's loopback runs no ssh and reads no key.
+    crate::pair_keys::tests::loosen(&key);
+    let loop_argv = vec!["flare".to_string(), "--serve-remote".to_string()];
+    let e2e = SshConnector::new(profile.path(), Some(loop_argv.clone()));
+    assert_eq!(e2e.argv("mac").unwrap(), loop_argv);
+    assert!(!private(), "the loopback leaves the key alone");
+    // The tunnel and the check call it before their ssh too.
+    let tunnel = include_str!("remote_tunnel.rs");
+    let open = &tunnel[tunnel.find("pub fn open_ssh(").unwrap()..];
+    assert!(
+        open.find("keep_key_private(&ask.machine)").unwrap() < open.find("tunnel_argv(").unwrap()
+    );
+    assert!(include_str!("machines_page.rs").contains("remote_link::ssh_argv_ready("));
+}
+
 /// Rule 1249: `machines.json` reads and writes the optional fields; a machine with an address needs no alias; a field
 /// that is there but not well formed leaves the machine out, never half used.
 #[test]

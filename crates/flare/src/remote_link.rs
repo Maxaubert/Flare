@@ -268,6 +268,22 @@ pub fn ssh_argv(ssh: &str, m: &Machine) -> Option<Vec<String>> {
     Some(argv)
 }
 
+/// BLOCKING (one read of a file's access, rule 1277): the machine's key, when it is Flare's own, made private again
+/// before ssh reads it; Windows' OpenSSH refuses a key that anyone else may read. Every real ssh a machine runs (a
+/// tab's link, Settings > Machines' check, a Preview tunnel) calls it first, on its worker; the e2e's loopback runs no
+/// ssh and skips it.
+pub fn keep_key_private(m: &Machine) {
+    if let Some(k) = &m.key {
+        crate::pair_keys::keep_key_private(Path::new(k));
+    }
+}
+
+/// BLOCKING: ssh's argv for a machine ([`ssh_argv`]), its key made private first ([`keep_key_private`]).
+pub fn ssh_argv_ready(ssh: &str, m: &Machine) -> Option<Vec<String>> {
+    keep_key_private(m);
+    ssh_argv(ssh, m)
+}
+
 /// How long `remote.hello` may take once the link is up: the host may start its Flare hidden first and wait up to
 /// `hidden_start::PIPE_WAIT` (60 s) for its channel (remote sessions PR 5), with time left for a slow login shell.
 pub const HELLO_WAIT: Duration = Duration::from_secs(90);
@@ -297,7 +313,7 @@ impl SshConnector {
             .ok_or_else(|| {
                 LinkError::Down(format!("no machine called {machine} in machines.json"))
             })?;
-        ssh_argv(&ssh_exe(), &m)
+        ssh_argv_ready(&ssh_exe(), &m)
             .ok_or_else(|| LinkError::Down(format!("cannot build the ssh command for {machine}")))
     }
 }

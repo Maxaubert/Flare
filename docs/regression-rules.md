@@ -4618,3 +4618,24 @@ the plugin was given. A `timeout` is no refusal. Held by `a_title_the_plugins_he
 and `a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says` (`appctl/tests/mods_tests/plugin_surfaces.rs`),
 `a_mod_token_gets_the_mod_grant` (`flare-ctl/src/session.rs`) and the throttle tests in `plugin_refused.rs`. Source:
 Max, 2026-11-16; `plugins-logs/bitwarden.log` of the Stable profile.
+
+1277. **Flare's pairing key lets its owner alone in, and is made so again before ssh reads it.** Max, 2026-11-17, a
+screenshot of Settings > Machines: the paired Mac said "Not linked" and "Not paired with this computer". The Mac took
+the key. Windows' OpenSSH would not use it: "Bad permissions. Try removing permissions for user: MAX\CodexSandboxUsers
+... UNPROTECTED PRIVATE KEY FILE", then "Permission denied (publickey)". The key file
+`%APPDATA%\FlareStable\id_flare_ed25519` took its folder's ACEs, and that folder lets an extra local group in. OpenSSH
+on Windows refuses a private key when an allow ACE names anyone but the user, SYSTEM or Administrators. Now
+`pair_keys::write_private` makes the file empty, sets a protected DACL with one ACE (full control for the user,
+nothing inherited; `flare_win::private_file::make_private`, `SetNamedSecurityInfoW`), and only then writes the key.
+Off Windows it stays mode 600. A key made before this fix is set again before every real ssh that uses it:
+`remote_link::keep_key_private` reads the file's DACL (mode off Windows) on the worker and sets it again only when
+someone else is let in. A tab's link (`SshConnector`), Settings > Machines' check (`ssh_argv_ready`) and the Preview
+tunnel (`open_ssh`) all call it, and so does `ensure_key` for a key that exists. Only a file named `id_flare_ed25519`
+is touched. A missing file or a failed check is left to ssh. The e2e's loopback runs no ssh and reads no key. When ssh
+still says the key file is too open ("UNPROTECTED PRIVATE KEY FILE", "Load key ...: bad permissions"), the machine's
+line is "Flare's key file is not private" (`SshProblem::KeyNotPrivate`), not "Not paired". Held by
+`a_file_that_lets_another_group_in_is_made_private` and `only_the_user_system_and_administrators_count_as_private`
+(`flare-win/src/private_file.rs`), `the_key_is_made_once_and_read_back_after` and
+`an_old_key_others_may_read_is_made_private_again` (`pair_keys.rs`),
+`flares_key_is_made_private_before_ssh_runs_with_it` (`remote_link_tests.rs`) and
+`a_key_file_others_may_read_is_its_own_line` (`ssh_problem.rs`). Source: Max, 2026-11-17; ssh's own words on his PC.

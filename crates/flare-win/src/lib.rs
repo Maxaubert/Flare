@@ -52,6 +52,7 @@ pub mod page_overlay;
 pub mod pasteboard;
 pub mod paths;
 pub mod pick;
+pub mod private_file;
 pub mod procs;
 pub mod scroll_phase;
 #[cfg(windows)]

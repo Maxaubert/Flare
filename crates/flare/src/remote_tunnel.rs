@@ -153,6 +153,8 @@ fn listens(port: u16) -> bool {
 pub fn open_ssh(ask: &TunnelAsk, wait: Duration) -> Result<Tunnel, String> {
     let name = &ask.machine.name;
     let local = free_port().map_err(|e| format!("no free port here for the tunnel: {e}"))?;
+    // Flare's key made private again before ssh reads it (rule 1277).
+    crate::remote_link::keep_key_private(&ask.machine);
     let argv = tunnel_argv(
         &crate::remote_link::ssh_exe(),
         &ask.machine,
