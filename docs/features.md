@@ -2987,3 +2987,23 @@ The last of three PRs (spec and mockup as in PR 1).
   this one is shown Linked while its entry is here; Flare does not read `administrators_authorized_keys` back (it
   needs admin rights) to see whether the key is still there. Pairing finds computers on the same network only
   (issue #233 is the outside-the-house case). Real runs: the new lines in `docs/remote-sessions-manual-checks.md`.
+
+## Plugins show a short notice under the title bar, 2026-11-17
+
+Max, 2026-11-17, on the Bitwarden plugin's Lock item: "jsut flip it immedeatly and trust it will work, if it doestn
+throw an error message on screen". The approved look is mockup A. Rule 1275; the contract is in
+`docs/surfaces/plugins.md` ("Notices") and `docs/surfaces/protocol.md` (`notice.show`).
+
+- **`notice.show {text, kind?}`.** A plugin's helper or page shows one line under the title bar at the top right, in the
+  "Build ready" toast's place, size and look: the plugin's logo, the line and an icon-only close button (tooltip
+  "Close"). `kind: "error"` adds a 3 px red left edge (`SettingsFixed.error-edge`). It goes after 6 s, and the time stands
+  still while the pointer is on it. One a plugin (a newer one replaces it); several plugins' notices stack under the
+  staged toast and the update notice, never over them. The text is at most 120 characters and is cleaned (controls,
+  line breaks and hidden formatting characters out). 3 in 10 seconds per plugin.
+- **The permission.** It rides on `actions` (its words now end "and show short notices"): a notice answers a click on
+  the plugin's own button or menu item, and a new permission would have made a plugin that asks for it fail to install
+  on every older Flare. The agent never has it.
+- **Code.** `flare_mods::notice` (the params and the limits), `Method::NoticeShow` in namespace `Notice`,
+  `AppDispatcher::notice_show`, `CtlOp::NoticeShow`, `crate::plugin_notice` (the list and its clock),
+  `appctl/notice_glue.rs`, `ui/plugin_notice.slint` (`PluginNotices`, `PluginNoticeToast`). Held by the tests in
+  `flare_mods::notice`, `crate::plugin_notice`, `appctl::tests::mods_tests::plugin_notice` and `ui_tests::plugin_notice`.

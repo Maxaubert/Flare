@@ -296,6 +296,16 @@ pub enum CtlOp {
         /// As for `BadgeSet`.
         generation: u64,
     },
+    /// `notice.show` (rule 1275): the plugin's notice under the title bar, its text checked and cleaned on the call's
+    /// thread. A newer one of the same plugin takes its place. Answered with `{shown: true}`.
+    NoticeShow {
+        plugin: String,
+        text: String,
+        /// `kind: "error"`: a red edge.
+        error: bool,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
     /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
     /// back through the hub.
@@ -414,6 +424,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::FillPage { .. } => "CtlOp::FillPage",
             CtlOp::Fill { .. } => "CtlOp::Fill",
             CtlOp::SecretAsk { .. } => "CtlOp::SecretAsk",
+            CtlOp::NoticeShow { .. } => "CtlOp::NoticeShow",
             CtlOp::RemoteOpen { .. } => "CtlOp::RemoteOpen",
             CtlOp::RemoteTabs => "CtlOp::RemoteTabs",
             CtlOp::RemoteAttach { .. } => "CtlOp::RemoteAttach",
@@ -862,6 +873,20 @@ impl AppDispatcher {
 
     /// One call spent from the bucket `name` (`rate` a second, as many at once), or `rate_limited` with `what`.
     fn spend_surface(&self, name: String, rate: f64, what: &str) -> Result<(), CtlError> {
+        self.spend_bucket(name, rate, rate, || {
+            format!("at most {rate} {what} a second")
+        })
+    }
+
+    /// One call from the bucket `name`, which refills `rate` a second up to `burst`; `rate_limited` with `why` when it
+    /// is empty.
+    fn spend_bucket(
+        &self,
+        name: String,
+        rate: f64,
+        burst: f64,
+        why: impl FnOnce() -> String,
+    ) -> Result<(), CtlError> {
         let now = (self.clock)();
         let mut map = self.surface_rate.lock().unwrap_or_else(|e| e.into_inner());
         if map.len() >= DECOR_BUCKETS_MAX && !map.contains_key(&name) {
@@ -869,15 +894,12 @@ impl AppDispatcher {
         }
         let ok = map
             .entry(name)
-            .or_insert_with(|| flare_ctl::session::Bucket::new(rate, rate, now))
+            .or_insert_with(|| flare_ctl::session::Bucket::new(rate, burst, now))
             .take(now);
         if ok {
             Ok(())
         } else {
-            Err(CtlError::new(
-                code::RATE_LIMITED,
-                format!("at most {rate} {what} a second"),
-            ))
+            Err(CtlError::new(code::RATE_LIMITED, why()))
         }
     }
 
@@ -1472,6 +1494,31 @@ impl AppDispatcher {
             },
             Instant::now() + ASK_CALL_WAIT,
         )
+    }
+
+    /// `notice.show {text, kind?}` (rule 1275): the plugin's short notice under the title bar. The params are checked and
+    /// the text cleaned here (`flare_mods::notice::parse_notice`), and the call is spent from the plugin's three in ten
+    /// seconds before the window is asked; the window shows it only while the plugin is on in the generation checked.
+    fn notice_show(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        use flare_mods::notice::{
+            NoticeKind, RATE_BURST, parse_notice, rate_message, rate_per_second,
+        };
+        let generation = self.generation_of(ctx);
+        let plugin = Self::plugin_caller(ctx, "a notice")?;
+        self.hub()?;
+        let req = parse_notice(params)?;
+        self.spend_bucket(
+            format!("notice:{plugin}"),
+            rate_per_second(),
+            RATE_BURST,
+            rate_message,
+        )?;
+        self.ask(CtlOp::NoticeShow {
+            plugin,
+            text: req.text,
+            error: req.kind == NoticeKind::Error,
+            generation,
+        })
     }
 
     /// `panel.open` kind `mod:<id>`: the mod's panel on the caller's tab (or, for a plugin that holds `tabs`, on a
@@ -2895,6 +2942,7 @@ impl Dispatcher for AppDispatcher {
                 Method::BrowserFill,
                 Method::BrowserFillPage,
                 Method::SecretAsk,
+                Method::NoticeShow,
             ]);
         }
         all
@@ -3106,6 +3154,7 @@ impl Dispatcher for AppDispatcher {
             Method::BrowserFill => self.fill_call(ctx, &params),
             Method::BrowserFillPage => self.fill_page(ctx, &params),
             Method::SecretAsk => self.secret_ask(ctx, &params),
+            Method::NoticeShow => self.notice_show(ctx, &params),
             Method::ViewHtml => self.view_html(ctx, &params),
             Method::ViewDiagram => self.view_diagram(ctx, &params),
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),

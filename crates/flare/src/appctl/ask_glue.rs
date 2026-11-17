@@ -117,7 +117,7 @@ impl AppCtl {
     }
 
     /// The plugin is on, in the generation the call was checked in.
-    fn plugin_live(&self, plugin: &str, generation: u64) -> bool {
+    pub(super) fn plugin_live(&self, plugin: &str, generation: u64) -> bool {
         self.mods.as_ref().is_some_and(|m| {
             m.hub().grant_of_mod(plugin).is_some() && m.hub().generation(plugin) == generation
         })
