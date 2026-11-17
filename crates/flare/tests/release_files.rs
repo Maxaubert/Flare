@@ -442,7 +442,7 @@ fn the_notices_and_the_readme_name_every_new_dependency() {
     for line in [
         "`libloading` 0.8.9",
         "`ureq` 3.4.2",
-        "`zip` 9.0.0",
+        "`zip` 9.0.5",
         "whisper.cpp",
         "Mermaid 11.17.2",
     ] {
@@ -452,7 +452,7 @@ fn the_notices_and_the_readme_name_every_new_dependency() {
     for entry in [
         "libloading 0.8.9",
         "ureq 3.4.2",
-        "zip 9.0.0",
+        "zip 9.0.5",
         "whisper.cpp engine b5130",
         "Mermaid 11.17.2",
     ] {
@@ -525,6 +525,10 @@ fn the_advisory_gate_runs_in_the_release_before_the_updater_can_be_built_in() {
         "RUSTSEC-2026-0368",
         "RUSTSEC-2026-0369",
         "RUSTSEC-2026-0429",
+        "RUSTSEC-2026-0545",
+        "RUSTSEC-2026-0546",
+        "RUSTSEC-2026-0547",
+        "RUSTSEC-2026-0548",
     ] {
         assert!(script.contains(id), "the gate must name {id}");
     }

@@ -31,6 +31,7 @@
 //!   the details sheet that shows them.
 //! - `fill`: a saved login filled into a web page and a secret asked of the person (the `fill` permission): the
 //!   params, the site rule, the asks a plugin may make and the script that types the values as JSON data.
+//! - `notice`: a plugin's short notice under the title bar (`notice.show`, under `actions`): the params and the limits.
 //!
 //! Every disk call here runs on the caller's thread, which is a worker in the app (rule 34). The
 //! store and the scan never touch the UI thread.
@@ -48,6 +49,7 @@ pub mod install;
 pub mod limit;
 pub mod manifest;
 pub mod migrate;
+pub mod notice;
 pub mod paths;
 pub mod serve;
 pub mod storage;

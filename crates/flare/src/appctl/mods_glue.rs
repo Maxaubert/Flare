@@ -264,7 +264,7 @@ impl AppCtl {
                 }
             }
             ModsMsg::Tick => self.plugins_tick(Instant::now()),
-            ModsMsg::AskExpired { seq } => self.plugin_ask_expired(seq),
+            ModsMsg::AskExpired { seq, round } => self.plugin_ask_expired(seq, round),
             ModsMsg::Rescan => {
                 if let Some(c) = self.mods.as_mut() {
                     c.start_scan();
@@ -380,6 +380,8 @@ impl AppCtl {
         self.stop_helper(id);
         // A question it asked goes with it, unanswered.
         self.plugin_ask_off(id);
+        // Its notice goes with it too (rule 1275).
+        self.plugin_notices_off(id);
         self.clear_plugin_decor(id);
         self.clear_plugin_surfaces(id);
         self.sessions_plugin_off(id);

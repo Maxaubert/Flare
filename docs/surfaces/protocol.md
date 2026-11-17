@@ -18,7 +18,8 @@ for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name an
 `tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
 plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
 `bar.hide` and `view.audio`; the 3D viewer (issue #36) adds `view.model`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`; the `fill` permission (2026-10-28) adds
-`browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper. Remote sessions PR 1
+`browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper (`secret.result` and `secret.ask`'s `verify`, 2026-11-16, rule 1274); the plugin notice (2026-11-17,
+rule 1275) adds `notice.show` under `actions`. Remote sessions PR 1
 (2026-11-12) adds the remote link in `flare-ctl` only: the stdio transport, the `remote` grant and `remote.hello` (section
 1 "Remote link", section 4, section 5 `remote.hello`); remote sessions PR 2 (2026-11-12) adds `flare --serve-remote` (the
 host's bridge), the `bridge` grant and `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`,
@@ -364,12 +365,13 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE_V1`); any tab with `tabs` too | yes |
 | `sidebar.set` | no | `sidebar` | yes |
 | `actions.set` | no | `actions` | yes |
+| `notice.show` | **no** | `actions` (the answer to the plugin's own click; its own namespace `Notice`) | yes |
 | `session.read` | **no** | `sessions` | yes |
 | `tabs.input` | **no** (rules 2 and 188) | `input` (a `mod.json` cannot ask for it) | yes |
 | `storage.get`, `storage.set` | **no** | (always, a protocol 2 plugin's own store; a protocol 1 mod is refused by the dispatcher) | yes |
 | `bar.show`, `bar.hide` | **no** | `bar` | yes |
 | `agents.motion.set`, `agents.motion.clear` | **no** | `agent-looks` (a `mod.json` cannot ask for it) | yes |
-| `browser.fill`, `browser.fill.page`, `secret.ask` | **no** (the values must never reach the agent) | `fill` (a `mod.json` cannot ask for it; `browser` does not open them) | yes |
+| `browser.fill`, `browser.fill.page`, `secret.ask`, `secret.result` | **no** (the values must never reach the agent) | `fill` (a `mod.json` cannot ask for it; `browser` does not open them) | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
@@ -543,7 +545,7 @@ picks with it. Each is 10 changes a second per plugin per agent (`rate_limited`)
 motion not on the list, `rainbow-flow` for another agent than agy, a field that is not one), `forbidden` (no
 permission, the agent, a protocol 1 mod), `rate_limited`, `unauthorized` (switched off since the call was checked).
 
-### browser.fill, browser.fill.page, secret.ask (the `fill` permission, 2026-10-28)
+### browser.fill, browser.fill.page, secret.ask, secret.result (the `fill` permission, 2026-10-28)
 
 Namespace `Fill` (permission `fill`); the agent never enters it and the dispatcher refuses any caller that is not a
 plugin (`forbidden`). Listed in `capabilities` when the run has a mods hub. A plugin's page calls them through
@@ -558,7 +560,22 @@ while that call waits for the plugin's answer (**tool scope**), else `forbidden`
 |---|---|---|
 | `browser.fill.page` | `tab?` | `{"tab": string, "url": string, "host": string \| null}`: the address of the tab's web page now |
 | `browser.fill` | `tab?`, `login_name` (one clean line, at most 120 characters), `login_uris` (1 to 32 strings, each at most 2048), `username?`, `password?`, `totp?` (each 1 to 1024 characters, no control character; at least one) | `{"filled": [kind], "missing": [kind]}` with kind `"username"`, `"password"` or `"totp"`; or `{"declined": true}`, `{"declined": true, "timed_out": true}` |
-| `secret.ask` | `title` (one clean line, at most 80), `label` (one clean line, at most 120), `sub?` (one clean line, at most 120: a line under the title, such as the account), `button?` (one clean line, at most 24: the button's word, `OK` without it), `error?` (one clean line, at most 120, plain text: why the last answer failed, such as `Wrong password. Try again.`; shown in red in the sub's place, and the field gets a red edge; empty or left out is today's look) | `{"text": string}` (what the person typed, to this caller only), or `{"cancelled": true}`, `{"cancelled": true, "timed_out": true}` |
+| `secret.ask` | `title` (one clean line, at most 80), `label` (one clean line, at most 120), `sub?` (one clean line, at most 120: a line under the title, such as the account), `button?` (one clean line, at most 24: the button's word, `OK` without it), `error?` (one clean line, at most 120, plain text: why the last answer failed, such as `Wrong password. Try again.`; shown in red in the sub's place, and the field gets a red edge; empty or left out is today's look), `verify?` (`true` or `false`, default `false`: keep the dialog open while the plugin checks the text, below), `checking?` (one clean line, at most 120, only with `verify`: the line shown while checking, such as `Checking the password...`; `Checking...` without it) | `{"text": string}` (what the person typed, to this caller only); with `verify`, `{"text": string, "ask": string}` (the ask's id for `secret.result`); or `{"cancelled": true}`, `{"cancelled": true, "timed_out": true}` |
+| `secret.result` | `ask` (the id from `secret.ask`), `ok` (`true` or `false`); with `ok: true`: `title?`, `line?` (one clean line each, at most 80 and 120); with `ok: false`: `error?` (one clean line, at most 120), or `done: true` with `title?`, `line?` | `ok: true` and `done: true`: `{"shown": true}` at once. `ok: false` alone: waits for the person's next try, then `{"text": string, "ask": string}`, or `{"cancelled": true}`, `{"cancelled": true, "timed_out": true}`. For an ask that ended while no call waited (Cancel or a timeout while checking): its cancel answer, once |
+
+**A checked secret (`verify`, rule 1274, 2026-11-16).** The person presses the button: the plugin's `secret.ask` gets
+`{text, ask}` and the dialog stays open, checking: the field dimmed and read-only (it keeps its dots), the button off
+with a small spinner, `checking` in the sub's place, Cancel still works. The plugin then calls `secret.result`:
+`ok: true` shows a green check with `title` (`Done` without it) and `line`, and Flare closes the dialog after 0.8 s
+(`RESULT_HOLD`); `ok: false` brings the field back in place, cleared and holding the keys, with `error` in red
+(`That was not right. Try again.` without it), and that call waits for the next try (another `{text, ask}` with the same
+id), so one dialog serves every try; `ok: false, done: true` ends it with the plugin's logo, `title` (the ask's own title
+without it) and the plain `line`, closed after 2.5 s (`END_HOLD`). A check with no word in 60 s (`VERIFY_WAIT`) puts the
+field back with `The check took too long. Try again.`; a text sent then waits for the plugin's next `secret.result` (a
+late `ok: false` gets it at once). Cancel while checking closes the dialog, and the plugin's next `secret.result` for
+that ask answers `{"cancelled": true}`. Each stage of the field waits at most 60 s. `secret.result` is not an ask (it
+spends none of the 6 a minute). With `verify`, the button on an empty field sends nothing, so the plugin always gets a
+text to check. A plugin that leaves `verify` out gets today's ask, closed on send.
 
 Any other key is `bad_params`, and no error names a value. **The site rule:** the page's address must be `http` or
 `https` with a host, and a site of one of `login_uris`: the login's host or a subdomain of it (a leading `www.` of the
@@ -569,12 +586,32 @@ Allow by the pointer only, and not in its first 0.7 s), one at a time across plu
 Allow, after the page's site is checked again, as one `ExecuteScript` that checks `location` (scheme, host, port) before
 it reads its values, which are one JSON text read with `JSON.parse`.
 
-Timeout: `FILL_TIMEOUT` (90 s) for `browser.fill` and `secret.ask`, the default 15 s for `browser.fill.page`. Errors:
+Timeout: `FILL_TIMEOUT` (90 s) for `browser.fill`, `secret.ask` and `secret.result`, the default 15 s for
+`browser.fill.page`. `secret.result` also answers `not_found` (no open question of this plugin with that id) and `busy`
+(a call already waits for the person's answer to it). Errors:
 `bad_params`, `forbidden` (no `fill`, the agent, a tab it may not name, another site), `no_tab`, `not_found` (no web page
 in the tab, a mini-app or a plugin's page, a page not up in a browser), `busy` (another plugin question is open),
 `rate_limited` (6 asks a minute per plugin, `browser.fill` and `secret.ask` together; a refused ask counts),
 `interrupted` (the page moved to another address before it was filled), `unavailable` (the page could not be filled),
 `timeout`, `unauthorized` (the plugin was turned off while asking).
+
+### notice.show (the plugin notice, 2026-11-17, rule 1275)
+
+Namespace `Notice`, opened by the `actions` permission (a notice is the plugin's answer to a click on its own button or
+menu item, and a new permission would make a plugin that asks for it fail to install on every older Flare). The agent
+never enters it, and the dispatcher refuses any caller that is not a plugin (`forbidden`). Listed in `capabilities`
+when the run has a mods hub. A plugin's page calls it through `window.flare.call`, a helper over the pipe. The look is in
+`plugins.md` ("Notices").
+
+| Method | Params | Result |
+|---|---|---|
+| `notice.show` | `text` (at most 120 characters as sent; every control, line break and hidden formatting character is taken out and white space runs become one space; blank after that is `bad_params`), `kind?` (`"error"`: a red left edge, or `"info"`, the default) | `{"shown": true}` |
+
+One notice a plugin: a newer one takes its place and starts its 6 s again. Any other key is `bad_params`. Limit: 3 in
+10 seconds per plugin (`rate_limited`, `at most 3 notices in 10 seconds for one plugin`; a refused call spends
+nothing). Errors: `bad_params`, `forbidden` (no `actions`, the agent), `rate_limited`, `unauthorized` (the plugin
+was turned off since the call was checked), `unavailable` (no mods hub). An older Flare answers `unknown_method`: a
+plugin that must run there treats that as "no notice".
 
 ### panel.open
 
@@ -1126,7 +1163,7 @@ agent: the agent grant has no `remote.*`, `shell.input` or `tabs.input`, and an 
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
 | `too_large` (a call) | a plugin's `storage.set` would pass 1 MB (plugins phase 5); nothing changed | no |
 | `host_not_ready` | `remote.hello` on a host where no Flare runs and none could be started hidden (remote sessions PR 5); one line says why | no |
-| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, the 6 asks a minute per plugin of `browser.fill` and `secret.ask`, or a plugin's 50 messages and 2 MB a second) | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `notice.show`'s 3 in 10 seconds per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, the 6 asks a minute per plugin of `browser.fill` and `secret.ask`, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be

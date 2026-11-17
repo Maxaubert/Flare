@@ -11,6 +11,7 @@ import { Dialog, DialogPreview } from "dialog.slint";
 import { PluginAsk } from "plugin_ask.slint";
 import { RemoteFolder } from "remote_folder.slint";
 import { PluginLook } from "plugin_look.slint";
+import { PluginNotices, PluginNoticeRow } from "plugin_notice.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection, PluginRow, PluginButton, RemoteFolderRow, RemoteCrumb } from "types.slint";
 import { PluginChip } from "decor.slint";
 import { PluginsDropdown } from "plugin_sections.slint";
@@ -580,7 +581,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.rfolder-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.machine-add-open || SettingsBridge.sharing-ask-open || SettingsBridge.pair-code-open || SettingsBridge.notice-open || SettingsBridge.sheet-open || SettingsBridge.keys-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.rfolder-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.plugin-notices.length > 0 || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.machine-add-open || SettingsBridge.sharing-ask-open || SettingsBridge.pair-code-open || SettingsBridge.notice-open || SettingsBridge.sheet-open || SettingsBridge.keys-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -710,6 +711,17 @@ export component AppWindow inherits Window {
     // A click installs the staged build (no menu since 2026-11-10).
     callback staged-chip-clicked();
     callback staged-toast-clicked();
+    // The plugins' notices under the title bar (`notice.show`, rule 1275): the glue pushes them, newest last.
+    in property <[PluginNoticeRow]> plugin-notices;
+    callback plugin-notice-closed(string);
+    callback plugin-notice-hover(string, bool);
+    out property <length> plugin-notice-x: pnotes.first-x;
+    out property <length> plugin-notice-y: pnotes.first-y;
+    out property <length> plugin-notice-w: pnotes.first-w;
+    out property <length> plugin-notice-h: pnotes.row-h;
+    out property <length> plugin-notice-pitch: pnotes.pitch;
+    out property <length> plugin-notice-close-x: pnotes.first-close-x;
+    out property <length> plugin-notice-close-y: pnotes.first-close-y;
     out property <length> staged-chip-x: root.side-mode ? side-staged.absolute-position.x : top-staged.absolute-position.x;
     out property <length> staged-chip-y: root.side-mode ? side-staged.absolute-position.y : top-staged.absolute-position.y;
     out property <length> staged-chip-w: root.side-mode ? side-staged.width : top-staged.width;
@@ -793,6 +805,13 @@ export component AppWindow inherits Window {
     out property <length> rfolder-open-y: rfolder.open-y;
     out property <length> rfolder-open-w: rfolder.open-w;
     out property <length> rfolder-open-h: rfolder.open-h;
+    // A secret ask with `verify` (rule 1274): 0 the field, 1 checking, 2 right (a green check), 3 ended by the plugin;
+    // the checking line, and a result's heading and line.
+    in property <int> pask-stage;
+    in property <bool> pask-verify;
+    in property <string> pask-checking;
+    in property <string> pask-result-title;
+    in property <string> pask-result-line;
     in property <bool> tip-visible;
     in property <string> tip-text;
     in property <length> tip-x;
@@ -897,6 +916,17 @@ export component AppWindow inherits Window {
     out property <length> pask-field-y: pask.field-y;
     out property <length> pask-field-w: pask.field-w;
     out property <length> pask-field-h: pask.field-h;
+    // A checked secret (rule 1274): checking (the field read-only, the button off with its spinner), a result, and
+    // where the mark above the title is (the logo, or the green check).
+    out property <bool> pask-checking-shown: pask.checking-shown;
+    out property <bool> pask-result-shown: pask.result-shown;
+    out property <bool> pask-field-read-only: pask.field-read-only;
+    out property <bool> pask-field-empty: pask.field-empty;
+    out property <bool> pask-ok-enabled: pask.ok-enabled;
+    out property <length> pask-mark-x: pask.mark-x;
+    out property <length> pask-mark-y: pask.mark-y;
+    out property <length> pask-mark-w: pask.mark-w;
+    out property <length> pask-mark-h: pask.mark-h;
     // The settings notice's box and its OK button (rule 1263; the tests press OK).
     out property <length> notice-box-w: notice.box-w;
     out property <length> notice-ok-x: notice.ok-x;
@@ -1667,6 +1697,20 @@ export component AppWindow inherits Window {
             x: root.grid-left + Px.snap((root.grid-w - self.width) / 2);
             y: root.grid-top + Px.snap(10px);
         }
+        // The plugins' notices (rule 1275): right-aligned as the staged toast, and under it and the update notice when
+        // they show, so they never cover either.
+        pnotes := PluginNotices {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            rows: root.plugin-notices;
+            right: root.staged-chip-shown ? root.staged-chip-x + root.staged-chip-w : root.width - Px.snap(10px);
+            top: Px.snap(max(max(root.staged-toast != "" ? stoast.y + stoast.height : (root.staged-chip-shown ? root.staged-chip-y + root.staged-chip-h : Theme.bar-height), root.update-notice != "" ? unote.y + unote.height : 0px), root.staged-chip-shown ? root.staged-chip-y + root.staged-chip-h : Theme.bar-height) + 8px);
+            closed(id) => { root.plugin-notice-closed(id); }
+            hover(id, on) => { root.plugin-notice-hover(id, on); }
+            tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+        }
         SelectMenu {
             x: 0px;
             y: 0px;
@@ -1985,6 +2029,11 @@ export component AppWindow inherits Window {
             asker: root.pask-asker;
             letter: root.pask-letter;
             look: root.pask-look;
+            stage: root.pask-stage;
+            verify: root.pask-verify;
+            checking: root.pask-checking;
+            result-title: root.pask-result-title;
+            result-line: root.pask-result-line;
             fill-answer(c) => { root.pask-fill(c); }
             secret-answer(ok, t) => { root.pask-secret(ok, t); }
         }

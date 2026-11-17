@@ -81,6 +81,16 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     v["field_focus"] = json!(a.get_pask_field_focus());
     v["allow_armed"] = json!(a.get_pask_allow_armed());
     v["overlay_open"] = json!(a.get_overlay_open());
+    // A checked secret (rule 1274): the dialog's stage (0 the field, 1 checking, 2 right, 3 an end), its checking
+    // line, a result's heading and line, and the checking state's read-only field and off button.
+    v["ui_stage"] = json!(a.get_pask_stage());
+    v["checking"] = json!(a.get_pask_checking().to_string());
+    v["checking_shown"] = json!(a.get_pask_checking_shown());
+    v["result_shown"] = json!(a.get_pask_result_shown());
+    v["result_title"] = json!(a.get_pask_result_title().to_string());
+    v["result_line"] = json!(a.get_pask_result_line().to_string());
+    v["field_read_only"] = json!(a.get_pask_field_read_only());
+    v["ok_enabled"] = json!(a.get_pask_ok_enabled());
     v["buttons"] = json!({
         "allow": rect(a.get_pask_allow_x(), a.get_pask_allow_y(), a.get_pask_allow_w(), a.get_pask_allow_h()),
         "deny": rect(a.get_pask_deny_x(), a.get_pask_deny_y(), a.get_pask_deny_w(), a.get_pask_deny_h()),

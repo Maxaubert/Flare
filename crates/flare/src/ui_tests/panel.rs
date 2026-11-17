@@ -732,6 +732,17 @@ fn set_overlay(c: &AppWindow, which: Overlay, on: bool) {
         Overlay::StagedToast => {
             c.set_staged_toast(if on { "Installed abc1234" } else { "" }.into())
         }
+        Overlay::PluginNotice => c.set_plugin_notices(if on {
+            slint::ModelRc::new(slint::VecModel::from(vec![crate::PluginNoticeRow {
+                id: "vault".into(),
+                name: "Vault".into(),
+                text: "Could not lock".into(),
+                error: true,
+                look: crate::plugin_look::look_of(None),
+            }]))
+        } else {
+            slint::ModelRc::default()
+        }),
         Overlay::Settings => c.set_front_kind(if on { 1 } else { 0 }),
         Overlay::SettingsSelect => c.global::<SettingsBridge>().set_select_open(on),
         Overlay::ThemeEditor => c.global::<SettingsBridge>().set_editor_open(on),
@@ -810,6 +821,7 @@ fn overlay_open_is_read_only_for_rust_and_computed_in_the_window_file() {
         "root.rfolder-open",
         "root.update-open",
         "root.update-notice",
+        "root.plugin-notices.length > 0",
         "root.front-kind == 1",
         "SettingsBridge.select-open",
         "SettingsBridge.editor-open",

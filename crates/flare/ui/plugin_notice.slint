@@ -1,0 +1,190 @@
+// A plugin's short notice under the title bar (`notice.show`, rule 1275, 2026-11-17, Max's approved mockup A): the
+// "Build ready" toast's surface, size and place, with the plugin's logo, one line of text and an icon-only close
+// button (it has a tooltip). A notice of kind "error" has a 3 px red left edge. One a plugin; several stack under the
+// staged toast and the update notice, newest last. The glue counts the 6 s and stops while the pointer is on one.
+// Every colour comes from the theme: no hex literal lives here.
+import { Theme, Px, SettingsFixed } from "theme.slint";
+import { Glyphs } from "glyphs.slint";
+import { PluginLook, PluginLogo } from "plugin_look.slint";
+
+// `id` the plugin's, `name` its name (for the screen reader), `error` the red edge, `look` its logo.
+export struct PluginNoticeRow { id: string, name: string, text: string, error: bool, look: PluginLook }
+
+// The widest the text gets; a longer line ends in an ellipsis (the screen reader has all of it).
+export global NoticeSize {
+    out property <length> pad-l: 10px;
+    out property <length> logo: 16px;
+    out property <length> gap: 9px;
+    out property <length> close: 16px;
+    out property <length> pad-r: 6px;
+    out property <length> text-max: 480px;
+    out property <length> edge: 3px;
+    out property <length> radius: 6px;
+}
+
+export component PluginNoticeToast inherits Rectangle {
+    in property <PluginNoticeRow> notice;
+    callback closed();
+    callback hover(bool);
+    callback tip(string, length, length, length, length);
+    out property <length> text-w: min(measure.preferred-width, NoticeSize.text-max);
+    out property <length> toast-w: Px.snap(NoticeSize.pad-l + NoticeSize.logo + NoticeSize.gap + root.text-w + NoticeSize.gap + NoticeSize.close + NoticeSize.pad-r + 2 * Px.hair());
+    out property <length> close-x: x-btn.x;
+    out property <length> close-y: x-btn.y;
+    width: root.toast-w;
+
+    measure := Text {
+        opacity: 0;
+        text: root.notice.text;
+        wrap: no-wrap;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+    }
+
+    // The surface and its shadow. A child, not the root: Slint drops a shadow set on a component's root element.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.side-flat;
+        border-radius: NoticeSize.radius;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: SettingsFixed.toast-shadow;
+    }
+    // An error's red left edge: the red shows in the card's own rounded corners, the face covers the rest of it.
+    if root.notice.error: Rectangle {
+        x: 0px;
+        width: NoticeSize.edge + NoticeSize.radius;
+        height: parent.height;
+        border-radius: NoticeSize.radius;
+        background: SettingsFixed.error-edge;
+    }
+    if root.notice.error: Rectangle {
+        x: NoticeSize.edge;
+        width: parent.width - NoticeSize.edge;
+        height: parent.height;
+        border-top-right-radius: NoticeSize.radius;
+        border-bottom-right-radius: NoticeSize.radius;
+        background: Theme.side-flat;
+    }
+    // The hairline around it all, as the staged toast has.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: NoticeSize.radius;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        background: transparent;
+    }
+
+    // Takes the pointer over the whole toast (a press never falls through to the bar beneath) and says when the pointer
+    // is on it, so the glue stops counting. The close button sits inside it, so the toast stays "hovered" over it.
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        changed has-hover => { root.hover(self.has-hover); }
+
+        PluginLogo {
+            x: Px.snap(NoticeSize.pad-l) + Px.hair();
+            y: Px.snap((root.height - NoticeSize.logo) / 2);
+            size: NoticeSize.logo;
+            look: root.notice.look;
+        }
+
+        body := Text {
+            x: Px.snap(NoticeSize.pad-l + NoticeSize.logo + NoticeSize.gap) + Px.hair();
+            y: Px.snap((root.height - self.preferred-height) / 2);
+            width: root.text-w;
+            text: root.notice.text;
+            wrap: no-wrap;
+            overflow: elide;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            color: Theme.text;
+        }
+
+        x-btn := Rectangle {
+            x: root.width - Px.snap(NoticeSize.pad-r) - Px.hair() - NoticeSize.close;
+            y: Px.snap((root.height - NoticeSize.close) / 2);
+            width: NoticeSize.close;
+            height: NoticeSize.close;
+            border-radius: 4px;
+            background: x-touch.has-hover ? Theme.hover-hi : transparent;
+            accessible-role: button;
+            accessible-label: "Close notice";
+            accessible-action-default => { root.closed(); }
+            // Slint fits the path into its box less the stroke, so the box is the 9 px icon grown by one stroke.
+            Path {
+                width: 9px + self.stroke-width;
+                height: 9px + self.stroke-width;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Glyphs.close;
+                fill: transparent;
+                stroke: x-touch.has-hover ? Theme.text : Theme.dim;
+                stroke-width: 1.4px;
+                stroke-line-cap: round;
+            }
+            x-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                    root.closed();
+                }
+                changed has-hover => {
+                    if self.has-hover {
+                        root.tip("Close", x-btn.absolute-position.x, x-btn.absolute-position.y, x-btn.width, x-btn.height);
+                    } else {
+                        root.tip("", 0px, 0px, 0px, 0px);
+                    }
+                }
+            }
+        }
+    }
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.notice.name + ": " + root.notice.text;
+}
+
+// Every plugin's notice, stacked down from `top` and right-aligned to `right`, newest last. It covers the window but
+// takes no pointer of its own: only the toasts do.
+export component PluginNotices inherits Rectangle {
+    in property <[PluginNoticeRow]> rows;
+    in property <length> right;
+    in property <length> top;
+    callback closed(string);
+    callback hover(string, bool);
+    callback tip(string, length, length, length, length);
+    // One line's toast, as the staged toast's: the line and 6 px above and below it, and the hairlines.
+    out property <length> row-h: Px.snap(max(line.preferred-height, NoticeSize.logo) + 12px + 2 * Px.hair());
+    out property <length> pitch: root.row-h + Px.snap(8px);
+    // The first notice's box (window coordinates), for the tests and the probe.
+    out property <length> first-w: root.rows.length > 0 ? first.toast-w : 0px;
+    out property <length> first-x: root.right - root.first-w;
+    out property <length> first-y: root.top;
+    out property <length> first-close-x: root.first-x + first.close-x;
+    out property <length> first-close-y: root.first-y + first.close-y;
+
+    line := Text {
+        opacity: 0;
+        text: "Ag";
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+    }
+    // Measures the first notice only; it draws nothing and takes no input.
+    first := PluginNoticeToast {
+        visible: false;
+        notice: root.rows.length > 0 ? root.rows[0] : { id: "", name: "", text: "", error: false };
+        height: root.row-h;
+    }
+
+    for n[i] in root.rows: PluginNoticeToast {
+        notice: n;
+        x: root.right - self.width;
+        y: root.top + i * root.pitch;
+        height: root.row-h;
+        closed => { root.closed(n.id); }
+        hover(on) => { root.hover(n.id, on); }
+        tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+    }
+}

@@ -128,8 +128,9 @@ pub enum ModsMsg {
     },
     /// A plugin's helper program started, ended and was started again, or stopped (its own threads).
     Helper(flare_mods::helper::Note),
-    /// The time of a plugin's question ran out (the `fill` permission): it counts as Deny, unless it was answered.
-    AskExpired { seq: u64 },
+    /// The time of a plugin's question ran out (the `fill` permission): it counts as Deny, unless it was answered. `round`
+    /// names the stage of a checked secret it was set for (rule 1274), so a timer of an earlier stage ends nothing.
+    AskExpired { seq: u64, round: u64 },
 }
 
 /// What Settings shows of the installs: one runs, and what the last one said.
