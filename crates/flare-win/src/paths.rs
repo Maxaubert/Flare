@@ -53,6 +53,13 @@ pub fn starter_folders() -> Vec<PathBuf> {
     .collect()
 }
 
+/// The user's Downloads folder, Windows' known folder (a moved Downloads is the one Explorer shows), where a plugin
+/// zip's picker opens by default (rule 1271). It does not look at the disk: the picker checks it on its worker.
+#[cfg(windows)]
+pub fn downloads_folder() -> Option<PathBuf> {
+    known_folder(&FOLDERID_Downloads)
+}
+
 /// Windows' answer for the LocalAppData known folder, or None when the call fails.
 #[cfg(windows)]
 fn known_local_app_data() -> Option<PathBuf> {
@@ -127,6 +134,12 @@ pub fn home() -> Option<PathBuf> {
 #[cfg(not(windows))]
 pub fn local_app_data() -> Option<PathBuf> {
     home().map(|h| h.join("Library").join("Application Support"))
+}
+
+/// The user's Downloads folder on macOS, `~/Downloads` (rule 1271). It does not look at the disk.
+#[cfg(not(windows))]
+pub fn downloads_folder() -> Option<PathBuf> {
+    home().map(|h| h.join("Downloads"))
 }
 
 /// Documents, Downloads, Desktop and the home folder, those that exist (macOS).
@@ -222,6 +235,13 @@ mod tests {
         assert!(got.iter().all(|p| p.is_dir()), "{got:?}");
         let home = known_folder(&FOLDERID_Profile).expect("Windows knows the user folder");
         assert_eq!(got.last(), Some(&home), "{got:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_downloads_folder_is_the_known_folder() {
+        let got = downloads_folder().expect("Windows knows the Downloads folder");
+        assert_eq!(Some(got), known_folder(&FOLDERID_Downloads));
     }
 
     #[test]
