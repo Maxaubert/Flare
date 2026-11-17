@@ -184,6 +184,9 @@ pub struct HostStatus {
     /// The host's own window sizes the tab now: someone typed there last (remote sessions PR 7, rule 282). This
     /// screen then shows the fitted conversation view instead of a terminal at the other window's size.
     pub host_sized: bool,
+    /// The tab's folder as the host's shell names it (`C:\Users\Admin`), once it is a safe path: the viewer's tab
+    /// takes it, so a tab opened in the host's home (`~`) shows its real folder (rule 1279).
+    pub folder: Option<String>,
 }
 
 /// What a remote tab has reached, shared by its link (which writes it) and the window (which saves it in `tabs.json`):

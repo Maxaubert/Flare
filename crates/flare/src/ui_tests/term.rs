@@ -3309,6 +3309,85 @@ mod flow {
         assert_eq!(io1.leaving(), Some(Leaving::Close));
     }
 
+    /// Rule 1279: a remote tab opened in the host's home (`~`) takes the folder the host's first status names (the
+    /// snapshot strips the first prompt's folder report, rule 289): its title is that folder's name and its folder
+    /// line reads by the host's rules on any viewer; the home joins the recent folders. A folder that is no safe path
+    /// changes nothing.
+    #[test]
+    fn a_remote_tab_opened_in_the_hosts_home_takes_the_folder_its_status_names() {
+        use flare_settings::recent_roots::remote_roots;
+        use flare_term::remote_pty::HostStatus;
+        let w = Wx::new(1.0);
+        let pc = crate::machines::Machine {
+            id: "pc".into(),
+            name: "home-pc".into(),
+            kind: Some(flare_tabs::tabs::Os::Pc),
+            ssh: "home-pc".into(),
+            user: None,
+            flare: "flare".into(),
+            ..Default::default()
+        };
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![pc]));
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("pc", crate::machines::HOST_HOME, None, true);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        let live = w
+            .ctl
+            .borrow()
+            .model()
+            .remote_live(&id)
+            .cloned()
+            .expect("a remote tab's live state");
+        let index = |w: &Wx| {
+            w.ctl
+                .borrow()
+                .model()
+                .state
+                .tabs
+                .iter()
+                .position(|t| t.id == id)
+                .unwrap()
+        };
+        let row = |w: &Wx| w.h.comp.get_tab_rows().row_data(index(w)).unwrap();
+        let cwd = |w: &Wx| w.ctl.borrow().model().state.tabs[index(w)].cwd.clone();
+        assert_eq!(cwd(&w), "~");
+        let status = |folder: &str| HostStatus {
+            state: "idle".into(),
+            folder: Some(folder.into()),
+            ..HostStatus::default()
+        };
+        // A folder that is no safe path is never taken (the link's own reading refuses it too).
+        live.set_status(status("\\\\evil\\share"));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert_eq!(cwd(&w), "~");
+        live.set_status(status("C:\\Users\\Admin\u{1b}]0;x\u{7}"));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert_eq!(cwd(&w), "~");
+        assert!(remote_roots(&w.prefs).is_empty(), "no home named yet");
+        // The first safe folder: the tab's own, on this viewer whatever it is.
+        live.set_status(status(r"C:\Users\Admin"));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        w.pump();
+        assert_eq!(cwd(&w), r"C:\Users\Admin");
+        assert_eq!(row(&w).label.as_str(), "Admin");
+        assert_eq!(row(&w).folder.as_str(), r"C:\Users");
+        assert_eq!(
+            remote_roots(&w.prefs)
+                .iter()
+                .map(|r| (r.machine.as_str(), r.path.as_str()))
+                .collect::<Vec<_>>(),
+            [("pc", r"C:\Users\Admin")]
+        );
+        // A later folder follows, with no prompt's report.
+        live.set_status(status(r"C:\Users\Admin\code\api"));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        w.pump();
+        assert_eq!(row(&w).label.as_str(), "api");
+        assert_eq!(row(&w).folder.as_str(), r"C:\Users\Admin\code");
+    }
+
     /// Rule 1193: while the host's window sizes a remote tab that has a Claude session, this screen shows the session's
     /// conversation fitted to its width (the link polls it only then); a key takes the live terminal back, sends this
     /// window's size again and goes on to the tab.

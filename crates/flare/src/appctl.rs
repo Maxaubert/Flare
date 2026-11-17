@@ -5710,7 +5710,9 @@ impl AppCtl {
         self.hub.on_host_events(&events);
         // A remote tab's link brought the host's status of it (remote sessions PR 4, rule 294), or its conversation
         // (PR 7's fitted view).
-        self.sync_remote_status();
+        if self.sync_remote_status() {
+            changed = true;
+        }
         if self.sync_remote_convo() {
             changed = true;
         }
