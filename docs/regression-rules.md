@@ -3665,7 +3665,7 @@ the Mac's `Flare.icns`, which `flare-cef`'s `macos::release` makes with `sips` a
 #199's Windows SVG on Windows) are choices of **Settings > Appearance > App icon**: twelve tiles under the row's
 words (placed by rule 1263), Original first; the tiles carry no words, so each has its name as tooltip and accessible label, the
 first saying "Original, the default". The pick is `flare.window.appIcon` in `settings.json` (`flare_settings::app_icon`):
-`original` until another is picked, and for any stored word that is not a choice. Held by
+`original` until another is picked, and for any stored word that is not a choice. On Windows a pick also reaches this profile's Start menu shortcut, and the original takes it back there (rule 1272). Held by
 `the_original_icon_is_the_shipped_app_icon_and_the_others_are_choices` (`crates/flare/tests/ship_text.rs`),
 `the_mac_app_icon_is_the_original_flare_icon` (`crates/flare-cef/src/macos/release.rs`), `tools/test_make_icon.py`,
 `flare_settings::app_icon`'s tests (`the_pick_round_trips_through_settings_json`,
@@ -3682,8 +3682,8 @@ resvg, set at start and on every pick, and cleared for the original so the bundl
 `NSWorkspace setIcon` on `Flare.app`, which would break its code signature, so Finder keeps the original (the row
 says so). Windows: the main window's big and small icons (`WM_SETICON`; the taskbar button follows them only through
 rule 1265's window id), drawn at the
-monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. Shortcuts,
-the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
+monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. This
+profile's Start menu shortcut wears the pick too (rule 1272); the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
 so the main window is the only one. Nothing is set at start while the original is picked. Code: `crates/flare/src/app_icon.rs`
 (`IconCtl`, `start`), `ship_ctl::set_window_icon` and `set_worn_icon`. Held by `the_default_is_the_original_and_needs_nothing_at_start`,
 `a_pick_is_worn_once_and_the_original_brings_the_shipped_icon_back`, `an_unknown_stored_icon_falls_back_to_the_original`
@@ -4365,7 +4365,7 @@ A press runs `ShellRestart::restart` on the `flare-shell-restart` worker and ans
 Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path, out of any job Flare
 runs in, checks that it shows within 5 s and starts it once more before it reports a failure
 (`flare_win::shell_restart`). A settings row's subtext never changes to report state (Max's
-standing rule), so the row always says "The taskbar and the window. Shortcuts keep the original." (its own fixed text
+standing rule), so the row always says "The taskbar, the window and the Start menu." (rule 1272; its own fixed text
 on a Mac, `APP_ICON_SUB`). A failure opens the settings notice instead (`SetNotice`, `ui/settings/notice.slint`):
 the Dialog look (scrim, a box of at most 380 px on the side-flat ground, hairline border, modal shadow) with one plain
 line, "Explorer did not restart." (`app_icon::RESTART_FAILED`), and an **OK** button
@@ -4582,7 +4582,7 @@ icons, at window creation and on every pick, live, with no restart (`wear_window
 changes (a DPI change writes nothing; a window made with the original writes nothing, the process id covers it), and
 a failed write is logged and tried again on the next call. The process id and toasts stay on the base id. While a
 custom icon is picked, a pinned Flare and its Jump List belong to the other id. macOS is unchanged. The Restart
-Explorer button stays. Held by `a_custom_pick_wears_one_icon_id_and_the_original_wears_the_shortcuts`,
+Explorer button stays. Rule 1272 gives the Start menu shortcut the pick as well; the window keeps this id. Held by `a_custom_pick_wears_one_icon_id_and_the_original_wears_the_shortcuts`,
 `the_window_id_is_written_only_when_it_changes_and_a_failure_retries`,
 `the_window_wears_the_pick_id_and_the_process_keeps_the_base_id` (`ship_ctl.rs`),
 `the_key_is_pkey_app_user_model_id` and `a_null_window_or_an_empty_id_is_refused_without_the_shell`
@@ -4603,6 +4603,42 @@ cleared). Held by `the_value_owns_a_com_string_that_its_drop_frees_once` and `th
 (`flare-win/src/window_app_id.rs`). The test process uses the classic heap, which does not always catch a double free,
 so the source check is the main guard. Source: Max, 2026-11-16; crash dumps `FlareStable.exe.34872.dmp` and
 `FlareStable.exe.70884.dmp`.
+
+## The Start menu wears the app icon (2026-11-16)
+
+1272. **On Windows the App icon pick also changes this profile's Start menu shortcut, found by its taskbar id.** Max,
+2026-11-16: the pick should also change the Start menu icon. Before, the pick changed the window and the taskbar
+(rule 1265) and the shortcut kept the original. Now `start_menu_icon` runs on its own worker, `flare-start-menu-icon`,
+never the UI thread: once at start and on every pick. It finds THIS profile's shortcut in the Start menu Programs
+folder (`FOLDERID_Programs`) by its `PKEY_AppUserModel_ID`, which must equal `ship_ctl::effective_aumid` (ASCII case
+ignored), never by its name (`Flare.lnk` for Dev and `Flare Stable.lnk` for Stable today). It touches only that one
+and never makes a shortcut. A custom pick is drawn from its SVG (`app_icon::render_ico`) as one `.ico` with a PNG
+image at 16, 24, 32, 48, 64, 128 and 256 px. It is written into the profile's data folder as
+`app-icon-<16 hex>.ico`, a hash of its bytes, so the shell's icon cache never shows an old picture under that path.
+The shortcut's icon is pointed at it with `IShellLinkW::SetIconLocation` (index 0) and `IPersistFile::Save`
+(`flare_win::shell_link`). Then the shell is told with `SHChangeNotify`: `SHCNE_UPDATEITEM` on the `.lnk` and
+`SHCNE_ASSOCCHANGED`, so the Start menu shows it without an Explorer restart. Older `app-icon-*.ico` files are deleted
+once the shortcut no longer names them. The original points the shortcut back at the exe's own icon (index 0) and
+deletes Flare's files, but only when the shortcut wears one of them: an icon the installer or the person set stays.
+In that case Flare's leftover files are deleted, but never one whose name the shortcut names.
+The same pick again writes nothing and tells nobody. A failed write is logged, keeps the old file and removes the
+file just written for it. The data folder is made absolute first, so a relative `--user-data-dir` never lands in
+the shortcut. No shortcut
+with this id means nothing is drawn, written or told. The run at start puts the pick back after an update rewrote
+the shortcut. Only an installed run does this (`Ship.packaged`, never under `--e2e`, never a dev build, whose exe is
+not the shortcut's). COM is opened per call in the apartment model and closed after every interface is released; a
+`PROPVARIANT` is only read, and its own drop frees COM's value once (rule 1270). The row's subtext on Windows is now
+"The taskbar, the window and the Start menu." (`APP_ICON_SUB`; the Mac text is unchanged). macOS is unchanged.
+The file and shell calls sit behind `IconFiles` and `LinkShell`, so tests use a temp folder and a fake shell and never
+touch the real Start menu. Held by `the_shortcut_is_matched_by_its_id_and_only_it_is_touched`,
+`a_new_pick_replaces_the_old_file_and_the_same_pick_is_a_no_op`, `the_original_restores_the_exes_icon_zero`,
+`the_original_leaves_an_icon_flare_did_not_set`, `a_rewritten_shortcut_gets_the_pick_again`, `no_shortcut_is_a_no_op`,
+`a_failed_set_keeps_the_old_file`, `the_original_on_a_rewritten_shortcut_clears_leftover_files`,
+`the_file_name_is_a_content_hash`,
+`the_shell_runs_on_the_worker_and_no_shortcut_is_made` (`start_menu_icon.rs`), `the_ico_holds_every_size_as_a_png`
+(`app_icon.rs`), `a_temp_shortcut_reads_its_id_and_takes_a_new_icon`, `a_missing_shortcut_reads_as_an_error`,
+`no_propvariant_is_built_here` (`flare-win/src/shell_link.rs`) and `the_app_icon_row_picks_the_original_until_another_is_chosen`
+(`page/appearance.rs`). Source: Max, 2026-11-16.
 
 1273. **A title a plugin's helper sets is what every tab's menu says, and a plugin call Flare refuses leaves a
 `plugin-refused` crumb.** Max, 2026-11-16: "still says unlock bitwarden, no feedback". Bitwarden 0.3.2's helper sets
