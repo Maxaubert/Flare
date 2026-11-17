@@ -70,9 +70,15 @@ pub struct Extras<'a> {
     /// `Contents/Frameworks` under the given name: the speech engine (rule 1138). Each Mach-O in one is signed as a
     /// library before the app, and `codesign --deep` checks each as code. A data file there breaks `--strict`.
     pub frameworks: Vec<(&'a Path, &'a str)>,
+    /// Plugin bundles (the Dock tile plugin, rule 1276) copied into `Contents/PlugIns` by their folder name; each is
+    /// signed as a library with `<identifier>.<its name>` before the app.
+    pub plugins: Vec<&'a Path>,
     /// More keys for the app's `Info.plist` (key, its XML value).
     pub keys: Vec<(&'static str, String)>,
 }
+
+/// The folder of plugin bundles in `Contents` (the name macOS looks for).
+pub const PLUGINS: &str = "PlugIns";
 
 /// The compiled asset catalog's name in `Contents/Resources` (the name macOS looks for).
 pub const ASSET_CATALOG: &str = "Assets.car";
@@ -292,6 +298,11 @@ pub fn build(spec: &BundleSpec<'_>) -> Result<PathBuf, String> {
     for (res, name) in &spec.extras.resources {
         copy_any(res, &contents.join("Resources").join(name))?;
     }
+    for plugin in &spec.extras.plugins {
+        let dir = contents.join(PLUGINS);
+        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        copy_any(plugin, &dir.join(file_name(plugin)?))?;
+    }
     let frameworks = contents.join("Frameworks");
     for (dir, name) in &spec.extras.frameworks {
         copy_any(dir, &frameworks.join(name))?;
@@ -319,8 +330,9 @@ fn under(p: &Path, dir: &Path) -> bool {
 
 /// Signs a bundle of this layout inside out, whoever made its parts (a Velopack package adds its update program
 /// to `Contents/MacOS`, rule 1043): any Mach-O outside the frameworks, the helpers and `Contents/MacOS`; each
-/// framework's own Mach-O files, then the framework; the five helpers; the other programs in `Contents/MacOS`
-/// (identifier `<identifier>.<file>`); the app. A helper app CEF does not know is refused.
+/// framework's own Mach-O files, then the framework; the five helpers; each plugin bundle in `Contents/PlugIns`
+/// (identifier `<identifier>.<its name>`, rule 1276); the other programs in `Contents/MacOS` (identifier
+/// `<identifier>.<file>`); the app. A helper app CEF does not know is refused.
 pub fn sign_bundle(
     app: &Path,
     name: &str,
@@ -360,11 +372,21 @@ pub fn sign_bundle(
         helpers.push((h.clone(), *suffix));
     }
     helpers.sort_by_key(|(_, sfx)| HELPER_SUFFIXES.iter().position(|x| x == sfx));
+    let mut plugins: Vec<PathBuf> = fs::read_dir(contents.join(PLUGINS))
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default();
+    plugins.sort();
     let all = sign::machos_in(app);
     for stray in all.iter().filter(|p| {
         !under(p, &macos)
             && !frameworks.iter().any(|f| under(p, f))
             && !helper_apps.iter().any(|h| under(p, h))
+            && !plugins.iter().any(|b| under(p, b))
     }) {
         sign::sign(stray, s, Role::Library, None, scratch)?;
     }
@@ -386,6 +408,11 @@ pub fn sign_bundle(
     for (h, suffix) in &helpers {
         let id = helper_id(identifier, suffix);
         sign::sign(h, s, Role::Helper(suffix), Some(id.as_str()), scratch)?;
+    }
+    for b in &plugins {
+        let stem = b.file_stem().and_then(|n| n.to_str()).unwrap_or_default();
+        let id = format!("{identifier}.{stem}");
+        sign::sign(b, s, Role::Library, Some(&id), scratch)?;
     }
     for t in all
         .iter()
