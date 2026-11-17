@@ -819,8 +819,8 @@ fn files_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
 }
 
 /// `remoteUi` (remote sessions PR 7): the + menu of Flare A lists the machine its `machines.json` links, with the
-/// machine's logo; picking it opens a shell tab on Flare B (the host, over the stdio loopback, no ssh) in B's home
-/// folder, and the tab wears the machine's logo. Its menu's "Hide here only" lets it go here and B's session goes on.
+/// machine's logo; picking it opens the folder browser at B's home (rule 1282, listed with `remote.ls` over the stdio
+/// loopback, no ssh), and its Open here opens a shell tab on Flare B (the host) there; the tab wears the machine's logo. Its menu's "Hide here only" lets it go here and B's session goes on.
 /// Both are offscreen on the hidden desktop, as every launch here.
 /// A probe's answer, Null when it fails (`tour::probe` is Windows-only).
 fn probe(app: &mut App, name: &str, arg: Value) -> Value {
@@ -913,7 +913,35 @@ fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
             idx + 1 == rows.len(),
             "the machine's row is the menu's last",
         );
+        ctx.ok(
+            rows[idx]["hint"] == json!("choose folder"),
+            "the machine's row says it chooses a folder",
+        );
         click_row(&mut a, idx, true)?;
+        // Rule 1282: the pick opens the folder browser at the host's home, listed over the loopback link.
+        let mut browser = Value::Null;
+        let listed = ctx.until("the folder browser's list", 20_000, &mut || {
+            browser = probe(&mut a, "app.state", Value::Null)["remote_folder"].clone();
+            browser["open"] == json!(true) && browser["loading"] == json!(false)
+        });
+        ctx.ok(listed, "the machine's row opens the folder browser");
+        ctx.ok(
+            browser["error"] == json!("")
+                && browser["path"].as_str().is_some_and(|p| !p.is_empty()),
+            format!("it lists the host's home ({})", browser["path"]),
+        );
+        ctx.ok(
+            browser["title"] == json!("Choose a folder on Loopback"),
+            "it names the machine",
+        );
+        let (x, y, w, h) = super::input_b::css(&probe(
+            &mut a,
+            "ui.rect",
+            json!({ "name": "remote-folder-open" }),
+        ))
+        .ok_or("no Open here button")?;
+        a.session
+            .click((x + w / 2.0) as f32, (y + h / 2.0) as f32)?;
         front_rows_until(
             ctx,
             &mut a,

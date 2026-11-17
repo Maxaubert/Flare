@@ -22,6 +22,7 @@ mod panel_wrap;
 mod plugin_bar;
 mod plugin_surfaces;
 mod remote_convo;
+mod remote_folder;
 mod scrollbar;
 mod secret_error;
 mod settings_about;

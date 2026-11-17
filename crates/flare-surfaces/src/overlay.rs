@@ -21,6 +21,8 @@ pub enum Overlay {
     Dialog,
     /// A plugin's question: a fill to approve or a secret to type (the `fill` permission).
     PluginAsk,
+    /// The remote folder browser: a machine's folders, from its row in the + menu (rule 1282).
+    RemoteFolder,
     /// The update window.
     UpdateWindow,
     /// The notice hung under the update chip.
@@ -65,12 +67,13 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 25] = [
+    pub const ALL: [Overlay; 26] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
         Overlay::Dialog,
         Overlay::PluginAsk,
+        Overlay::RemoteFolder,
         Overlay::UpdateWindow,
         Overlay::UpdateNotice,
         Overlay::StagedToast,

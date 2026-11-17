@@ -22,8 +22,9 @@ const APP: &str = include_str!("../../ui/app.slint");
 /// A plugin's question (`PluginAsk`, the `fill` permission) is a modal declared under the close question. A plugin's
 /// details sheet (`PluginSheet`, 2026-11-08) is a modal declared under it. The hover thumbnail (`ThumbBubble`, 2026-11-09)
 /// is a pop at the bottom: every menu or dialog hides it first. The Flare hotkeys sheet (`HotkeySheet`, rule 1262) is a
-/// modal declared after the plugin sheet.
-const RANKS: [(&str, u8, &str); 24] = [
+/// modal declared after the plugin sheet. The remote folder browser (`RemoteFolder`, rule 1282) is a modal declared
+/// after it, under a plugin's question and the close question.
+const RANKS: [(&str, u8, &str); 25] = [
     ("ThumbBubble", 1, "pop"),
     ("UpdateNotice", 1, "pop"),
     ("StagedToast", 1, "pop"),
@@ -42,6 +43,7 @@ const RANKS: [(&str, u8, &str); 24] = [
     ("UpdateWindow", 4, "modal"),
     ("PluginSheet", 4, "modal"),
     ("HotkeySheet", 4, "modal"),
+    ("RemoteFolder", 4, "modal"),
     ("PluginAsk", 4, "modal"),
     ("Dialog", 4, "modal"),
     ("CopiedBadge", 5, "toast"),

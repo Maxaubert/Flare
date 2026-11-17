@@ -964,9 +964,12 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   (`bad_params`), the viewer's id for this tab's open. The host remembers the last 64 ids for 10 minutes each; an
   `open_id` it remembers, whose tab is still open, is answered with that tab and its `session`, and no second tab
   opens. A host older than this refuses the param as unknown (`bad_params`), and the viewer opens without it.
-- `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home),
-  read on the worker: folders first, then by name, at most 500 entries, names with a control character left out.
-  Host paths only. `not_found` when it cannot be read. 60 s.
+- `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home; `~`
+  alone is the home too, as for `remote.open`, rule 1282; `~/x` is `bad_params`), read on the worker: folders first,
+  then by name, at most 500 entries, names with a control character left out. Host paths only, and `path` in the answer
+  is the folder's real path (the viewer's folder browser builds its crumbs from it). `not_found` when it cannot be
+  read. 60 s. The viewer's folder browser asks it over a short link of its own and asks the home with no `path`, so a
+  host from before rule 1282 answers it too. Never the agent's: no pipe grant reaches `remote.*`.
 - `remote.tabs {}` -> `{tabs: [{tab, cwd, title, state, session}]}`. `state` is `working`, `question`, `done`, `failed`
   or `idle`, as `tabs.list` tells a plugin.
 - `remote.attach {tab}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
