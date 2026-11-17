@@ -292,7 +292,19 @@ pub enum CtlOp {
         sub: String,
         button: String,
         error: String,
+        /// `verify`: the dialog stays open, checking, after the text is sent, until `secret.result` (rule 1274); and
+        /// the line it shows then (empty: Flare's words).
+        verify: bool,
+        checking: String,
         /// As for `BadgeSet`.
+        generation: u64,
+    },
+    /// `secret.result`: the plugin's word on the text of its `verify` ask `ask` (rule 1274). Answered at once for a
+    /// right answer or an end, and with the person's next try (or a cancel) for a wrong one.
+    SecretResult {
+        plugin: String,
+        ask: String,
+        verdict: flare_mods::fill::Verdict,
         generation: u64,
     },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
@@ -413,6 +425,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::FillPage { .. } => "CtlOp::FillPage",
             CtlOp::Fill { .. } => "CtlOp::Fill",
             CtlOp::SecretAsk { .. } => "CtlOp::SecretAsk",
+            CtlOp::SecretResult { .. } => "CtlOp::SecretResult",
             CtlOp::RemoteOpen { .. } => "CtlOp::RemoteOpen",
             CtlOp::RemoteTabs => "CtlOp::RemoteTabs",
             CtlOp::RemoteAttach { .. } => "CtlOp::RemoteAttach",
@@ -1452,8 +1465,8 @@ impl AppDispatcher {
         self.ask_by(op, Instant::now() + ASK_CALL_WAIT)
     }
 
-    /// `secret.ask {title, label, sub?, button?, error?}`: Flare's own masked field; the text comes back to this
-    /// plugin only.
+    /// `secret.ask {title, label, sub?, button?, error?, verify?, checking?}`: Flare's own masked field; the text comes
+    /// back to this plugin only. With `verify` the dialog stays open, checking, until `secret.result` (rule 1274).
     fn secret_ask(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let (plugin, _, generation) = self.fill_caller(ctx, "asking for a secret")?;
         let req = flare_mods::fill::parse_secret(params)?;
@@ -1466,6 +1479,25 @@ impl AppDispatcher {
                 sub: req.sub,
                 button: req.button,
                 error: req.error,
+                verify: req.verify,
+                checking: req.checking,
+                generation,
+            },
+            Instant::now() + ASK_CALL_WAIT,
+        )
+    }
+
+    /// `secret.result {ask, ok, title?, line?, error?, done?}`: whether the text of a `verify` ask was right. Not one
+    /// more ask (it spends none of the six a minute): it goes on with the question the plugin already has open. A
+    /// wrong answer waits for the person's next try, so it gets the ask's time.
+    fn secret_result(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let (plugin, _, generation) = self.fill_caller(ctx, "answering a secret's check")?;
+        let r = flare_mods::fill::parse_secret_result(params)?;
+        self.ask_by(
+            CtlOp::SecretResult {
+                plugin,
+                ask: r.ask,
+                verdict: r.verdict,
                 generation,
             },
             Instant::now() + ASK_CALL_WAIT,
@@ -2893,6 +2925,7 @@ impl Dispatcher for AppDispatcher {
                 Method::BrowserFill,
                 Method::BrowserFillPage,
                 Method::SecretAsk,
+                Method::SecretResult,
             ]);
         }
         all
@@ -3136,6 +3169,7 @@ impl AppDispatcher {
             Method::BrowserFill => self.fill_call(ctx, &params),
             Method::BrowserFillPage => self.fill_page(ctx, &params),
             Method::SecretAsk => self.secret_ask(ctx, &params),
+            Method::SecretResult => self.secret_result(ctx, &params),
             Method::ViewHtml => self.view_html(ctx, &params),
             Method::ViewDiagram => self.view_diagram(ctx, &params),
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),

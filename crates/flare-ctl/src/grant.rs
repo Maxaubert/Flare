@@ -348,6 +348,7 @@ mod tests {
                 Method::BrowserFill,
                 Method::BrowserFillPage,
                 Method::SecretAsk,
+                Method::SecretResult,
             ] {
                 let err = g.check(m).unwrap_err();
                 assert_eq!(err.code, code::FORBIDDEN, "{}", m.name());
@@ -828,6 +829,7 @@ mod tests {
             Method::BrowserFill,
             Method::BrowserFillPage,
             Method::SecretAsk,
+            Method::SecretResult,
         ] {
             assert_eq!(m.namespace(), Namespace::Fill);
             assert!(!mod_with(&rest).may_call(m), "{}", m.name());

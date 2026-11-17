@@ -771,6 +771,13 @@ export component AppWindow inherits Window {
     in property <string> pask-asker;
     in property <string> pask-letter;
     in property <PluginLook> pask-look;
+    // A secret ask with `verify` (rule 1274): 0 the field, 1 checking, 2 right (a green check), 3 ended by the plugin;
+    // the checking line, and a result's heading and line.
+    in property <int> pask-stage;
+    in property <bool> pask-verify;
+    in property <string> pask-checking;
+    in property <string> pask-result-title;
+    in property <string> pask-result-line;
     in property <bool> tip-visible;
     in property <string> tip-text;
     in property <length> tip-x;
@@ -875,6 +882,17 @@ export component AppWindow inherits Window {
     out property <length> pask-field-y: pask.field-y;
     out property <length> pask-field-w: pask.field-w;
     out property <length> pask-field-h: pask.field-h;
+    // A checked secret (rule 1274): checking (the field read-only, the button off with its spinner), a result, and
+    // where the mark above the title is (the logo, or the green check).
+    out property <bool> pask-checking-shown: pask.checking-shown;
+    out property <bool> pask-result-shown: pask.result-shown;
+    out property <bool> pask-field-read-only: pask.field-read-only;
+    out property <bool> pask-field-empty: pask.field-empty;
+    out property <bool> pask-ok-enabled: pask.ok-enabled;
+    out property <length> pask-mark-x: pask.mark-x;
+    out property <length> pask-mark-y: pask.mark-y;
+    out property <length> pask-mark-w: pask.mark-w;
+    out property <length> pask-mark-h: pask.mark-h;
     // The settings notice's box and its OK button (rule 1263; the tests press OK).
     out property <length> notice-box-w: notice.box-w;
     out property <length> notice-ok-x: notice.ok-x;
@@ -1928,6 +1946,11 @@ export component AppWindow inherits Window {
             asker: root.pask-asker;
             letter: root.pask-letter;
             look: root.pask-look;
+            stage: root.pask-stage;
+            verify: root.pask-verify;
+            checking: root.pask-checking;
+            result-title: root.pask-result-title;
+            result-line: root.pask-result-line;
             fill-answer(c) => { root.pask-fill(c); }
             secret-answer(ok, t) => { root.pask-secret(ok, t); }
         }
