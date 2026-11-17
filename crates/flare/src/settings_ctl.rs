@@ -669,7 +669,7 @@ pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, 
 /// in the UI font (machine pairing PR 1, rule 1251); the nearby computers first, each with its system's logo (PR 3).
 pub fn machine_choice_opts(
     nearby: &[flare_settings::page::machines::NearbyChoice],
-    hosts: &[String],
+    hosts: &[flare_settings::page::machines::SshHost],
     mono: &str,
 ) -> Vec<flare_settings::page::Opt> {
     flare_settings::page::machines::machine_choices(nearby, hosts)

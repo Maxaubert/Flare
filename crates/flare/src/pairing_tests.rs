@@ -629,6 +629,39 @@ fn no_free_pairing_port_says_so_once_and_announces_nothing() {
     assert!(p.net.port().is_some());
 }
 
+/// Rule 1276 (Max, 2026-11-17: "remove the duplicate mac"), on the page: an SSH host whose HostName is a nearby
+/// computer's announced address is left out of the Machine drop-down; the nearby entry and the other hosts stay.
+#[test]
+fn an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down() {
+    use flare_settings::page::machines::{SshHost, machine_choices};
+    let hub = Arc::new(Hub::default());
+    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    *view.io.named.lock().unwrap() = vec![
+        SshHost {
+            alias: "pc".into(),
+            host_name: "192.168.0.139".into(),
+        },
+        SshHost {
+            alias: "studio".into(),
+            host_name: "studio.lan".into(),
+        },
+    ];
+    *view.net.nearby.lock().unwrap() = vec![pc_nearby(1)];
+    view.page.page_shown();
+    view.page.open_form();
+    until(&mut [&mut view], "the hosts and the nearby computer", |p| {
+        let info = p[0].page.info();
+        !info.nearby.is_empty() && !info.ssh_hosts.is_empty()
+    });
+    let info = view.page.info();
+    assert_eq!(info.nearby[0].addrs, ["192.168.0.139"]);
+    let labels: Vec<String> = machine_choices(&info.nearby, &info.ssh_hosts)
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    assert_eq!(labels, ["Max's PC", "studio", "Type an address"]);
+}
+
 /// Rules 1256 to 1260, on two pages: the PC with Computer sharing on listens and is announced; the Mac's dialog finds
 /// it; picking it makes the PC show its code; a wrong code is "Wrong code"; the right one links; both list the other.
 #[test]

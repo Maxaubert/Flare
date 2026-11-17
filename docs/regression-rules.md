@@ -4618,3 +4618,17 @@ the plugin was given. A `timeout` is no refusal. Held by `a_title_the_plugins_he
 and `a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says` (`appctl/tests/mods_tests/plugin_surfaces.rs`),
 `a_mod_token_gets_the_mod_grant` (`flare-ctl/src/session.rs`) and the throttle tests in `plugin_refused.rs`. Source:
 Max, 2026-11-16; `plugins-logs/bitwarden.log` of the Stable profile.
+
+1276. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
+screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
+"mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
+read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
+first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
+left out when that name is the nearby computer's announced name or one of its announced addresses, without case, a
+trailing dot or `.local`, an IP in its usual text (`same_computer` in `flare-settings/src/page/machines.rs`). Nothing
+is looked up in DNS. The nearby entry stays (it has the logo and pairing); a host that matches nothing stays. Held by
+`an_ssh_host_is_a_nearby_computer_by_its_name_or_address` and
+`an_ssh_host_that_is_a_nearby_computer_is_left_out_of_the_drop_down` (`flare-settings`),
+`each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
+`an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
+2026-11-17.

@@ -190,13 +190,62 @@ pub struct MachineChoice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NearbyChoice {
     pub id: String,
+    /// The name it announces: its host name, a Mac's `.local` left off.
     pub name: String,
     pub os: Option<MachineOs>,
+    /// The addresses it announces, as text.
+    pub addrs: Vec<String>,
+}
+
+/// A host of `~/.ssh/config`: its name (what the drop-down shows and ssh is given) and the computer it reaches (its
+/// `HostName`, else its own name).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SshHost {
+    pub alias: String,
+    pub host_name: String,
+}
+
+impl SshHost {
+    /// A host with no `HostName`: it reaches its own name.
+    pub fn plain(alias: &str) -> Self {
+        Self {
+            alias: alias.to_string(),
+            host_name: alias.to_string(),
+        }
+    }
+}
+
+/// Pure: a host name or address as it is compared: no case, no space around it, no trailing dot and no `.local`
+/// (`Maxs-Mac-Mini.local.` is `maxs-mac-mini`); an address in its usual text (`::1`, not `0:0:...:1`).
+fn host_key(s: &str) -> String {
+    let s = s.trim();
+    let s = s
+        .strip_prefix('[')
+        .and_then(|r| r.strip_suffix(']'))
+        .unwrap_or(s);
+    if let Ok(ip) = s.parse::<std::net::IpAddr>() {
+        return ip.to_string();
+    }
+    let s = s.trim_end_matches('.').to_ascii_lowercase();
+    s.strip_suffix(".local")
+        .map(|r| r.trim_end_matches('.').to_string())
+        .unwrap_or(s)
+}
+
+/// Pure: whether an SSH host reaches this nearby computer (rule 1276): its `HostName` is the computer's announced name
+/// or one of its addresses, without case, a trailing dot or `.local`. Nothing is looked up.
+pub fn same_computer(host: &SshHost, near: &NearbyChoice) -> bool {
+    let key = host_key(&host.host_name);
+    !key.is_empty()
+        && std::iter::once(&near.name)
+            .chain(&near.addrs)
+            .any(|n| host_key(n) == key)
 }
 
 /// The Machine drop-down in the mockup's order: the computers found nearby (machine pairing PR 3) with their logo, then
-/// the SSH config hosts, then "Type an address".
-pub fn machine_choices(nearby: &[NearbyChoice], hosts: &[String]) -> Vec<MachineChoice> {
+/// the SSH config hosts, then "Type an address". An SSH host that reaches a computer listed nearby is left out: the
+/// nearby entry is the same computer, with its logo and pairing (rule 1276).
+pub fn machine_choices(nearby: &[NearbyChoice], hosts: &[SshHost]) -> Vec<MachineChoice> {
     let mut out: Vec<MachineChoice> = nearby
         .iter()
         .map(|n| MachineChoice {
@@ -206,12 +255,17 @@ pub fn machine_choices(nearby: &[NearbyChoice], hosts: &[String]) -> Vec<Machine
             os: n.os,
         })
         .collect();
-    out.extend(hosts.iter().map(|h| MachineChoice {
-        id: h.clone(),
-        label: h.clone(),
-        mono: true,
-        os: None,
-    }));
+    out.extend(
+        hosts
+            .iter()
+            .filter(|h| !nearby.iter().any(|n| same_computer(h, n)))
+            .map(|h| MachineChoice {
+                id: h.alias.clone(),
+                label: h.alias.clone(),
+                mono: true,
+                os: None,
+            }),
+    );
     out.push(MachineChoice {
         id: TYPE_ADDRESS.to_string(),
         label: "Type an address".to_string(),
@@ -233,8 +287,8 @@ pub struct SharingInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MachinesInfo {
     pub machines: Vec<MachineRow>,
-    /// The hosts `~/.ssh/config` names (no wildcard, no `Match`), for the dialog's drop-down.
-    pub ssh_hosts: Vec<String>,
+    /// The hosts `~/.ssh/config` names (no wildcard, no `Match`), each with its `HostName`, for the dialog's drop-down.
+    pub ssh_hosts: Vec<SshHost>,
     /// The computers with Computer sharing on found nearby while the dialog is open (machine pairing PR 3).
     pub nearby: Vec<NearbyChoice>,
     pub add: AddForm,
@@ -402,7 +456,7 @@ mod tests {
     fn an_open_dialog_leaves_the_page_as_it_is() {
         let info = MachinesInfo {
             machines: vec![mac()],
-            ssh_hosts: vec!["studio".into()],
+            ssh_hosts: vec![SshHost::plain("studio")],
             add: AddForm {
                 open: true,
                 pick: "studio".into(),
@@ -420,7 +474,7 @@ mod tests {
     /// address"; no host can take the last one's id.
     #[test]
     fn the_machine_drop_down_lists_nearby_then_ssh_hosts_then_type_an_address() {
-        let hosts = vec!["studio".to_string(), "nas".to_string()];
+        let hosts = vec![SshHost::plain("studio"), SshHost::plain("nas")];
         let words = |c: &[MachineChoice]| -> Vec<(String, bool)> {
             c.iter().map(|c| (c.label.clone(), c.mono)).collect()
         };
@@ -439,6 +493,7 @@ mod tests {
                 id: "a1".into(),
                 name: "Max's PC".into(),
                 os: Some(MachineOs::Pc),
+                addrs: vec!["192.168.0.10".into()],
             }],
             &hosts,
         );
@@ -456,6 +511,84 @@ mod tests {
         assert_eq!(
             words(&machine_choices(&[], &[])),
             [("Type an address".to_string(), false)]
+        );
+    }
+
+    fn near(name: &str, addrs: &[&str]) -> NearbyChoice {
+        NearbyChoice {
+            id: format!("{name}._flare-pair._tcp.local."),
+            name: name.into(),
+            os: Some(MachineOs::Mac),
+            addrs: addrs.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    fn host(alias: &str, host_name: &str) -> SshHost {
+        SshHost {
+            alias: alias.into(),
+            host_name: host_name.into(),
+        }
+    }
+
+    /// Rule 1276: an SSH host is the nearby computer when its HostName is the computer's name or one of its addresses,
+    /// without case, a trailing dot or `.local`; one that matches nothing is another computer.
+    #[test]
+    fn an_ssh_host_is_a_nearby_computer_by_its_name_or_address() {
+        let mac = near(
+            "Maxs-Mac-Mini",
+            &["192.168.0.120", "192.168.0.47", "fe80::1"],
+        );
+        for same in [
+            "192.168.0.120",
+            " 192.168.0.47 ",
+            "Maxs-Mac-Mini",
+            "maxs-mac-mini.local",
+            "MAXS-MAC-MINI.local.",
+            "Maxs-Mac-Mini.",
+            "fe80:0:0:0:0:0:0:1",
+            "[fe80::1]",
+        ] {
+            assert!(same_computer(&host("mac", same), &mac), "{same} is the Mac");
+        }
+        for other in [
+            "192.168.0.12",
+            "192.168.0.1200",
+            "maxs-mac-mini.example.com",
+            "studio",
+            "",
+            ".local",
+        ] {
+            assert!(
+                !same_computer(&host("mac", other), &mac),
+                "{other:?} is another computer"
+            );
+        }
+        // A host with no HostName reaches its own name.
+        assert!(same_computer(&SshHost::plain("Maxs-Mac-Mini.local"), &mac));
+    }
+
+    /// Rule 1276 (Max, 2026-11-17: "remove the duplicate mac"): the SSH host `mac` that reaches the nearby Mac is left
+    /// out of the drop-down; the nearby entry stays, and a host that matches nothing stays.
+    #[test]
+    fn an_ssh_host_that_is_a_nearby_computer_is_left_out_of_the_drop_down() {
+        let hosts = vec![
+            host("mac", "192.168.0.120"),
+            host("studio", "studio.lan"),
+            SshHost::plain("nas"),
+        ];
+        let labels =
+            |c: &[MachineChoice]| -> Vec<String> { c.iter().map(|c| c.label.clone()).collect() };
+        assert_eq!(
+            labels(&machine_choices(
+                &[near("Maxs-Mac-Mini", &["192.168.0.120"])],
+                &hosts
+            )),
+            ["Maxs-Mac-Mini", "studio", "nas", "Type an address"]
+        );
+        // Nothing nearby: every host is listed.
+        assert_eq!(
+            labels(&machine_choices(&[], &hosts)),
+            ["mac", "studio", "nas", "Type an address"]
         );
     }
 

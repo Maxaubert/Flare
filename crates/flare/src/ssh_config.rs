@@ -1,7 +1,8 @@
 //! The hosts `~/.ssh/config` names, for Settings > Machines (remote sessions PR 7): the SSH hosts of the Add a machine dialog's drop-down.
 //!
-//! Only `Host` lines are read, and only their plain names: a pattern (`*`, `?`, `!`) is no host one can pick, and the
-//! lines under a `Match` block belong to no host. `Include` is followed (relative names under `~/.ssh`, `~/` for the
+//! Only `Host` lines are listed, and only their plain names: a pattern (`*`, `?`, `!`) is no host one can pick, and the
+//! lines under a `Match` block belong to no host. Each host's `HostName` is read too (the first one met in a block that
+//! takes it, as ssh does), so the drop-down can leave out a host that is a computer already listed nearby (rule 1276). `Include` is followed (relative names under `~/.ssh`, `~/` for the
 //! home folder, `*` and `?` in the last part), at most [`INCLUDE_DEPTH`] deep, as ssh itself does. Keywords are matched
 //! without case, a value may be in double quotes, `Host=name` is the same as `Host name`, a CRLF ending is a line
 //! ending. A name that would not be one plain argv item for ssh (`machines::argv_word`) is left out, so nothing read
@@ -10,6 +11,8 @@
 //! The reads are a worker's (rule 34): `hosts_of_home` is BLOCKING.
 
 use std::path::{Path, PathBuf};
+
+pub use flare_settings::page::machines::SshHost;
 
 /// How deep `Include` is followed (ssh's own limit is 16).
 pub const INCLUDE_DEPTH: usize = 16;
@@ -63,14 +66,16 @@ fn read_text(text: &str) -> Vec<Item> {
             continue;
         };
         match key.as_str() {
-            "host" => {
-                for a in args {
-                    out.push(Item::Host(a));
-                }
-            }
+            "host" => out.push(Item::Host(args)),
             "include" => {
                 for a in args {
                     out.push(Item::Include(a));
+                }
+            }
+            "match" => out.push(Item::Match),
+            "hostname" => {
+                if let Some(a) = args.into_iter().next() {
+                    out.push(Item::HostName(a));
                 }
             }
             _ => {}
@@ -80,8 +85,12 @@ fn read_text(text: &str) -> Vec<Item> {
 }
 
 enum Item {
-    Host(String),
+    /// A `Host` line's patterns: a new block.
+    Host(Vec<String>),
     Include(String),
+    /// A `Match` line: the lines under it belong to no `Host` block.
+    Match,
+    HostName(String),
 }
 
 /// A name one can pick: no pattern, no negation, one plain argv word.
@@ -139,25 +148,30 @@ fn include_files(path: &Path, read_dir: &dyn Fn(&Path) -> Vec<String>) -> Vec<Pa
     names.into_iter().map(|n| dir.join(n)).collect()
 }
 
-/// The hosts the config at `path` names, following its `Include`s, with the reads given (a test gives its own).
-pub fn hosts_with(
+/// The hosts the config at `path` names, each with the computer it reaches (its `HostName`, else its own name), with
+/// the reads given (a test gives its own).
+pub fn named_hosts_with(
     path: &Path,
     home: &Path,
     read: &dyn Fn(&Path) -> Option<String>,
     read_dir: &dyn Fn(&Path) -> Vec<String>,
-) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    walk(path, home, read, read_dir, 0, &mut out);
-    out
+) -> Vec<SshHost> {
+    let mut items: Vec<Item> = Vec::new();
+    walk(path, home, read, read_dir, 0, &mut items);
+    named_hosts_of(&items)
 }
 
+/// The most lines kept from one config and its `Include`s (a file that includes itself twice would grow without end).
+const ITEMS_MAX: usize = 20_000;
+
+/// The file's lines that matter, its `Include`s followed in place.
 fn walk(
     path: &Path,
     home: &Path,
     read: &dyn Fn(&Path) -> Option<String>,
     read_dir: &dyn Fn(&Path) -> Vec<String>,
     depth: usize,
-    out: &mut Vec<String>,
+    out: &mut Vec<Item>,
 ) {
     if depth > INCLUDE_DEPTH {
         return;
@@ -166,26 +180,90 @@ fn walk(
         return;
     };
     for item in read_text(&text) {
-        if out.len() >= HOSTS_MAX {
+        if out.len() >= ITEMS_MAX {
             return;
         }
         match item {
-            Item::Host(h) => {
-                if pickable(&h) && !out.contains(&h) {
-                    out.push(h);
-                }
-            }
             Item::Include(arg) => {
                 for f in include_files(&include_path(&arg, home), read_dir) {
                     walk(&f, home, read, read_dir, depth + 1, out);
                 }
             }
+            other => out.push(other),
         }
     }
 }
 
+/// Whether a `Host` line's patterns take `alias`, as ssh reads them: one pattern fits and no `!` pattern does.
+fn block_fits(patterns: &[String], alias: &str) -> bool {
+    let alias = alias.to_ascii_lowercase();
+    let mut any = false;
+    for p in patterns {
+        let p = p.to_ascii_lowercase();
+        if let Some(neg) = p.strip_prefix('!') {
+            if glob_fits(neg, &alias) {
+                return false;
+            }
+        } else if glob_fits(&p, &alias) {
+            any = true;
+        }
+    }
+    any
+}
+
+/// Pure: the plain hosts in order (once each, at most [`HOSTS_MAX`]), each with its `HostName`: the first one met in a
+/// block that takes it, as ssh uses the first value it reads (`%h` is the host's own name, `%%` a `%`). The lines before
+/// the first `Host` take every host; the lines under a `Match` take none here.
+fn named_hosts_of(items: &[Item]) -> Vec<SshHost> {
+    let mut aliases: Vec<String> = Vec::new();
+    let mut names: Vec<(Vec<String>, String)> = Vec::new();
+    let mut block: Option<Vec<String>> = Some(vec!["*".to_string()]);
+    for item in items {
+        match item {
+            Item::Host(patterns) => {
+                for h in patterns {
+                    if aliases.len() < HOSTS_MAX && pickable(h) && !aliases.contains(h) {
+                        aliases.push(h.clone());
+                    }
+                }
+                block = Some(patterns.clone());
+            }
+            Item::Match => block = None,
+            Item::HostName(name) => {
+                if let Some(p) = &block {
+                    names.push((p.clone(), name.clone()));
+                }
+            }
+            Item::Include(_) => {}
+        }
+    }
+    aliases
+        .into_iter()
+        .map(|alias| {
+            let host_name = names
+                .iter()
+                .find(|(p, _)| block_fits(p, &alias))
+                .map(|(_, n)| {
+                    n.replace("%%", "\u{0}")
+                        .replace("%h", &alias)
+                        .replace('\u{0}', "%")
+                })
+                .unwrap_or_else(|| alias.clone());
+            SshHost { alias, host_name }
+        })
+        .collect()
+}
+
 /// BLOCKING (file reads): the hosts of `<home>/.ssh/config`. A worker's call.
 pub fn hosts_of_home(home: &Path) -> Vec<String> {
+    named_hosts_of_home(home)
+        .into_iter()
+        .map(|h| h.alias)
+        .collect()
+}
+
+/// BLOCKING (file reads): the hosts of `<home>/.ssh/config`, each with the computer it reaches. A worker's call.
+pub fn named_hosts_of_home(home: &Path) -> Vec<SshHost> {
     let read = |p: &Path| std::fs::read_to_string(p).ok(); // sync-ok: the Machines page's worker reads the ssh config
     let read_dir = |d: &Path| {
         std::fs::read_dir(d) // sync-ok: the Machines page's worker lists an Include folder
@@ -196,7 +274,7 @@ pub fn hosts_of_home(home: &Path) -> Vec<String> {
             })
             .unwrap_or_default()
     };
-    hosts_with(&home.join(".ssh").join("config"), home, &read, &read_dir)
+    named_hosts_with(&home.join(".ssh").join("config"), home, &read, &read_dir)
 }
 
 #[cfg(test)]
@@ -217,7 +295,10 @@ mod tests {
                 .map(|k| k.file_name().unwrap().to_string_lossy().into_owned())
                 .collect()
         };
-        hosts_with(&home.join(".ssh/config"), &home, &read, &read_dir)
+        named_hosts_with(&home.join(".ssh/config"), &home, &read, &read_dir)
+            .into_iter()
+            .map(|h| h.alias)
+            .collect()
     }
 
     #[test]
@@ -267,6 +348,57 @@ mod tests {
         let files = [(".ssh/config", "Include config\nHost once\n")];
         assert_eq!(hosts(&files), ["once"]);
         assert!(hosts(&[]).is_empty());
+    }
+
+    fn named(files: &[(&str, &str)]) -> Vec<(String, String)> {
+        let home = PathBuf::from("/home/max");
+        let map: HashMap<PathBuf, String> = files
+            .iter()
+            .map(|(p, t)| (home.join(p), t.to_string()))
+            .collect();
+        let read = |p: &Path| map.get(p).cloned();
+        let read_dir = |_: &Path| Vec::new();
+        named_hosts_with(&home.join(".ssh/config"), &home, &read, &read_dir)
+            .into_iter()
+            .map(|h| (h.alias, h.host_name))
+            .collect()
+    }
+
+    /// Rule 1276: each host comes with the computer it reaches, its first `HostName` as ssh reads it, else its name.
+    #[test]
+    fn each_host_has_its_first_host_name_else_its_own_name() {
+        let cfg = "Host mac\n  HostName 192.168.0.120\n  User max\n\
+                   Host a\nHost b\n  HostName b.example\n\
+                   Host *.lan\n  HostName %h.example\n\
+                   Host nas.lan\n  HostName never\n\
+                   Host plain !plain2 plain2\n\
+                   Match host plain\n  HostName from-match\n\
+                   Host *\n  HostName %%%h\n";
+        assert_eq!(
+            named(&[(".ssh/config", cfg)]),
+            [
+                ("mac".to_string(), "192.168.0.120".to_string()),
+                ("a".into(), "%a".into()),
+                ("b".into(), "b.example".into()),
+                ("nas.lan".into(), "nas.lan.example".into()),
+                ("plain".into(), "%plain".into()),
+                ("plain2".into(), "%plain2".into()),
+            ]
+        );
+        assert_eq!(
+            named(&[(
+                ".ssh/config",
+                "HostName first\nHost x\n  HostName second\nHost y\n"
+            )]),
+            [
+                ("x".to_string(), "first".to_string()),
+                ("y".into(), "first".into())
+            ]
+        );
+        assert_eq!(
+            named(&[(".ssh/config", "Host bare\n")]),
+            [("bare".to_string(), "bare".to_string())]
+        );
     }
 
     #[test]

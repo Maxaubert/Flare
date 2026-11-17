@@ -19,7 +19,7 @@ use std::sync::Arc;
 use flare_settings::kv::PrefStore;
 use flare_settings::page::machines::{
     AddForm, INCOMING_PREFIX, LinkStatus, MachineOs, MachineRow, MachinesInfo, NEARBY_PREFIX,
-    NearbyChoice,
+    NearbyChoice, SshHost,
 };
 use flare_tabs::tabs::Os;
 
@@ -48,6 +48,11 @@ pub trait MachinesIo: Send + Sync {
     fn save(&self, list: &[Machine]) -> Result<(), String>;
     /// The plain hosts of `~/.ssh/config`.
     fn ssh_hosts(&self) -> Vec<String>;
+    /// The plain hosts of `~/.ssh/config`, each with the computer it reaches (its `HostName`), so the drop-down can
+    /// leave out a host that is a computer listed nearby (rule 1276). A host with no `HostName` reaches its own name.
+    fn named_ssh_hosts(&self) -> Vec<SshHost> {
+        self.ssh_hosts().iter().map(|h| SshHost::plain(h)).collect()
+    }
     /// `remote.hello` over the machine's link.
     fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError>;
     /// The computers paired to reach this one (machine pairing PR 3, rule 1260).
@@ -103,6 +108,10 @@ impl MachinesIo for RealMachinesIo {
 
     fn ssh_hosts(&self) -> Vec<String> {
         crate::ssh_config::hosts_of_home(&self.home)
+    }
+
+    fn named_ssh_hosts(&self) -> Vec<SshHost> {
+        crate::ssh_config::named_hosts_of_home(&self.home)
     }
 
     fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError> {
@@ -171,7 +180,7 @@ pub enum MachinesMsg {
     Loaded {
         machines: Vec<Machine>,
         incoming: Vec<Incoming>,
-        hosts: Vec<String>,
+        hosts: Vec<SshHost>,
     },
     /// A computer that reaches this one was removed (its key with it): the new list, or the line that says what stays.
     RemovedIn(Result<Vec<Incoming>, String>),
@@ -197,7 +206,7 @@ pub struct MachinesPage {
     machines: Vec<Machine>,
     /// Each machine's last check in this run: its version and status.
     checks: HashMap<String, (String, LinkStatus)>,
-    hosts: Vec<String>,
+    hosts: Vec<SshHost>,
     add: AddForm,
     /// A read is on its way (the page shows what it had until then).
     loading: bool,
@@ -455,6 +464,7 @@ impl MachinesPage {
                     id: n.id.clone(),
                     name: n.name.clone(),
                     os: os_of(n.os),
+                    addrs: n.addrs.iter().map(|a| a.to_string()).collect(),
                 })
                 .collect(),
             add: self.add.clone(),
@@ -473,7 +483,7 @@ impl MachinesPage {
         worker("flare-machines-read", move || {
             let machines = io.list();
             let incoming = io.list_in();
-            let hosts = io.ssh_hosts();
+            let hosts = io.named_ssh_hosts();
             Self::say(
                 &post,
                 MachinesMsg::Loaded {
@@ -869,6 +879,8 @@ pub(crate) mod fake {
     pub(crate) struct FakeIo {
         pub list: Mutex<Vec<Machine>>,
         pub hosts: Vec<String>,
+        /// The hosts with their `HostName`s, when a test gives them (else `hosts`, each reaching its own name).
+        pub named: Mutex<Vec<SshHost>>,
         pub answers: HashMap<(String, String), Result<HelloFacts, (bool, String)>>,
         pub probes: Mutex<Vec<(String, String, Option<Os>)>>,
         /// The computers that reach this one (machine pairing PR 3).
@@ -885,6 +897,14 @@ pub(crate) mod fake {
         }
         fn ssh_hosts(&self) -> Vec<String> {
             self.hosts.clone()
+        }
+        fn named_ssh_hosts(&self) -> Vec<SshHost> {
+            let named = self.named.lock().unwrap().clone();
+            if named.is_empty() {
+                self.hosts.iter().map(|h| SshHost::plain(h)).collect()
+            } else {
+                named
+            }
         }
         fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError> {
             self.probes
@@ -1001,7 +1021,10 @@ mod tests {
         r.page.page_shown();
         r.settle();
         let info = r.page.info();
-        assert_eq!(info.ssh_hosts, ["mini", "studio"]);
+        assert_eq!(
+            info.ssh_hosts,
+            [SshHost::plain("mini"), SshHost::plain("studio")]
+        );
         assert_eq!(info.machines.len(), 1);
         assert_eq!(info.machines[0].status, LinkStatus::Linked);
         assert_eq!(info.machines[0].version, "0.2.0");
