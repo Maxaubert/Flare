@@ -32,6 +32,7 @@ mod headless;
 mod help_ctl;
 mod hidden_start;
 mod host;
+mod host_os;
 mod ime;
 mod keymap;
 mod link_bases;

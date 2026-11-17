@@ -56,11 +56,31 @@ pub const TYPE_ADDRESS: &str = " address";
 /// A computer found nearby is this prefix and its id (machine pairing PR 3).
 pub const NEARBY_PREFIX: &str = " nearby:";
 
-/// The system a machine runs: its logo on the page, on its tabs and in the + menu.
+/// The system a machine runs: its logo on the page, on its tabs and in the + menu. Linux is only ever found for an SSH
+/// host (rule 1278): a linked machine says Mac or PC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MachineOs {
     Mac,
     Pc,
+    Linux,
+}
+
+impl MachineOs {
+    /// The word the Slint logo draws by, and the one saved (`mac`, `pc`, `linux`).
+    pub fn word(self) -> &'static str {
+        match self {
+            MachineOs::Mac => "mac",
+            MachineOs::Pc => "pc",
+            MachineOs::Linux => "linux",
+        }
+    }
+
+    /// The system a saved word names; None for any other word.
+    pub fn from_word(word: &str) -> Option<Self> {
+        [MachineOs::Mac, MachineOs::Pc, MachineOs::Linux]
+            .into_iter()
+            .find(|o| o.word() == word)
+    }
 }
 
 /// What the last check of a machine's link found.
@@ -177,7 +197,7 @@ pub fn six_digits(typed: &str) -> bool {
 }
 
 /// One choice of the Machine drop-down: its id, its words, whether they are drawn in the code font (an SSH host), and
-/// its system's logo (a nearby computer).
+/// its system's logo (a nearby computer, or an SSH host whose system was found, rule 1278).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineChoice {
     pub id: String,
@@ -197,12 +217,14 @@ pub struct NearbyChoice {
     pub addrs: Vec<String>,
 }
 
-/// A host of `~/.ssh/config`: its name (what the drop-down shows and ssh is given) and the computer it reaches (its
-/// `HostName`, else its own name).
+/// A host of `~/.ssh/config`: its name (what the drop-down shows and ssh is given), the computer it reaches (its
+/// `HostName`, else its own name) and its `Port`, and the system it was found to run (rule 1278), None until found.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SshHost {
     pub alias: String,
     pub host_name: String,
+    pub port: Option<u16>,
+    pub os: Option<MachineOs>,
 }
 
 impl SshHost {
@@ -211,6 +233,7 @@ impl SshHost {
         Self {
             alias: alias.to_string(),
             host_name: alias.to_string(),
+            ..Self::default()
         }
     }
 }
@@ -244,7 +267,8 @@ pub fn same_computer(host: &SshHost, near: &NearbyChoice) -> bool {
 
 /// The Machine drop-down in the mockup's order: the computers found nearby (machine pairing PR 3) with their logo, then
 /// the SSH config hosts, then "Type an address". An SSH host that reaches a computer listed nearby is left out: the
-/// nearby entry is the same computer, with its logo and pairing (rule 1276).
+/// nearby entry is the same computer, with its logo and pairing (rule 1276). An SSH host carries the system found for it
+/// (rule 1278), so it draws its logo too; one not found yet draws none.
 pub fn machine_choices(nearby: &[NearbyChoice], hosts: &[SshHost]) -> Vec<MachineChoice> {
     let mut out: Vec<MachineChoice> = nearby
         .iter()
@@ -263,7 +287,7 @@ pub fn machine_choices(nearby: &[NearbyChoice], hosts: &[SshHost]) -> Vec<Machin
                 id: h.alias.clone(),
                 label: h.alias.clone(),
                 mono: true,
-                os: None,
+                os: h.os,
             }),
     );
     out.push(MachineChoice {
@@ -527,7 +551,44 @@ mod tests {
         SshHost {
             alias: alias.into(),
             host_name: host_name.into(),
+            ..SshHost::default()
         }
+    }
+
+    /// Rule 1278 (Max, 2026-11-17: "id like it to show either the windows, linux or mac icon automatically depending
+    /// on the device"): an SSH host's row carries the system found for it, in the code font; one not found yet carries
+    /// none. The words a system is saved by read back as that system.
+    #[test]
+    fn the_drop_down_rows_carry_the_system_of_an_ssh_host() {
+        let hosts = vec![
+            SshHost {
+                os: Some(MachineOs::Pc),
+                ..host("evo-x2", "192.168.0.139")
+            },
+            SshHost {
+                os: Some(MachineOs::Linux),
+                ..SshHost::plain("pi")
+            },
+            SshHost::plain("nas"),
+        ];
+        let rows: Vec<(String, bool, Option<MachineOs>)> = machine_choices(&[], &hosts)
+            .into_iter()
+            .map(|c| (c.label, c.mono, c.os))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("evo-x2".to_string(), true, Some(MachineOs::Pc)),
+                ("pi".into(), true, Some(MachineOs::Linux)),
+                ("nas".into(), true, None),
+                ("Type an address".into(), false, None),
+            ]
+        );
+        for os in [MachineOs::Mac, MachineOs::Pc, MachineOs::Linux] {
+            assert_eq!(MachineOs::from_word(os.word()), Some(os));
+        }
+        assert_eq!(MachineOs::from_word(""), None);
+        assert_eq!(MachineOs::from_word("Darwin"), None);
     }
 
     /// Rule 1276: an SSH host is the nearby computer when its HostName is the computer's name or one of its addresses,

@@ -78,6 +78,11 @@ fn read_text(text: &str) -> Vec<Item> {
                     out.push(Item::HostName(a));
                 }
             }
+            "port" => {
+                if let Some(p) = args.first().and_then(|a| a.parse::<u16>().ok()) {
+                    out.push(Item::Port(p));
+                }
+            }
             _ => {}
         }
     }
@@ -91,6 +96,8 @@ enum Item {
     /// A `Match` line: the lines under it belong to no `Host` block.
     Match,
     HostName(String),
+    /// A `Port` line (rule 1278: the system lookup reads the server's greeting there).
+    Port(u16),
 }
 
 /// A name one can pick: no pattern, no negation, one plain argv word.
@@ -211,12 +218,13 @@ fn block_fits(patterns: &[String], alias: &str) -> bool {
     any
 }
 
-/// Pure: the plain hosts in order (once each, at most [`HOSTS_MAX`]), each with its `HostName`: the first one met in a
+/// Pure: the plain hosts in order (once each, at most [`HOSTS_MAX`]), each with its `HostName` and `Port`: the first one met in a
 /// block that takes it, as ssh uses the first value it reads (`%h` is the host's own name, `%%` a `%`). The lines before
 /// the first `Host` take every host; the lines under a `Match` take none here.
 fn named_hosts_of(items: &[Item]) -> Vec<SshHost> {
     let mut aliases: Vec<String> = Vec::new();
     let mut names: Vec<(Vec<String>, String)> = Vec::new();
+    let mut ports: Vec<(Vec<String>, u16)> = Vec::new();
     let mut block: Option<Vec<String>> = Some(vec!["*".to_string()]);
     for item in items {
         match item {
@@ -234,6 +242,11 @@ fn named_hosts_of(items: &[Item]) -> Vec<SshHost> {
                     names.push((p.clone(), name.clone()));
                 }
             }
+            Item::Port(port) => {
+                if let Some(p) = &block {
+                    ports.push((p.clone(), *port));
+                }
+            }
             Item::Include(_) => {}
         }
     }
@@ -249,7 +262,16 @@ fn named_hosts_of(items: &[Item]) -> Vec<SshHost> {
                         .replace('\u{0}', "%")
                 })
                 .unwrap_or_else(|| alias.clone());
-            SshHost { alias, host_name }
+            let port = ports
+                .iter()
+                .find(|(p, _)| block_fits(p, &alias))
+                .map(|(_, n)| *n);
+            SshHost {
+                alias,
+                host_name,
+                port,
+                os: None,
+            }
         })
         .collect()
 }
@@ -398,6 +420,30 @@ mod tests {
         assert_eq!(
             named(&[(".ssh/config", "Host bare\n")]),
             [("bare".to_string(), "bare".to_string())]
+        );
+    }
+
+    /// Rule 1278: each host comes with its first `Port` as ssh reads it (the system lookup greets the server there);
+    /// none when no block that takes it names one, or the one named is no port.
+    #[test]
+    fn each_host_has_its_first_port() {
+        let home = PathBuf::from("/home/max");
+        let cfg = "Host evo-x2\n  HostName 192.168.0.139\n  Port 2222\n  Port 22\n\
+                   Host pi\n  Port nope\nHost nas\nHost *\n  Port 2200\n";
+        let text = cfg.to_string();
+        let read = |p: &Path| (p == home.join(".ssh/config")).then(|| text.clone());
+        let ports: Vec<(String, Option<u16>)> =
+            named_hosts_with(&home.join(".ssh/config"), &home, &read, &|_| Vec::new())
+                .into_iter()
+                .map(|h| (h.alias, h.port))
+                .collect();
+        assert_eq!(
+            ports,
+            [
+                ("evo-x2".to_string(), Some(2222)),
+                ("pi".into(), Some(2200)),
+                ("nas".into(), Some(2200)),
+            ]
         );
     }
 

@@ -1559,8 +1559,8 @@ pub fn run_window(
             }
             // Settings > Machines (remote sessions PR 7): the profile's machines, the ssh config's hosts, and link checks
             // over ssh (under --e2e over the scenario's loopback, never a real ssh).
-            let machines_io: Arc<dyn crate::machines_page::MachinesIo> =
-                Arc::new(crate::machines_page::RealMachinesIo::new(
+            let machines_io: Arc<dyn crate::machines_page::MachinesIo> = Arc::new(
+                crate::machines_page::RealMachinesIo::new(
                     &inst.profile.dir,
                     PathBuf::from(crate::app_facts::home()),
                     crate::remote_link::e2e_loopback(
@@ -1568,7 +1568,10 @@ pub fn run_window(
                             .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
                             .as_deref(),
                     ),
-                ));
+                )
+                // The SSH hosts' systems are looked up (rule 1278), never under --e2e.
+                .with_os_lookup(!e2e::global().on()),
+            );
             // The Computer sharing switch's OS calls (machine pairing PR 2): the real setup, except under --e2e, where
             // the switch sets nothing up.
             let sharing_os: Arc<dyn crate::sharing::SharingOs> = if e2e::global().on() {

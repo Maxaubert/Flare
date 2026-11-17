@@ -4632,3 +4632,27 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1278. **An SSH host in the Machine drop-down shows the logo of the system it runs, found by itself.** Max, 2026-11-17,
+on the same screenshot as rule 1276 (only the nearby Mac had a logo; "mac" and "evo-x2" had none): "id like it to
+show either the windows, linux or mac icon automatically depending on the device". Approved mockup: every row of the
+drop-down lines up after the logo's space; a host whose system is not known yet shows no logo. While the Add a machine
+dialog is open, each SSH host (not one that is a computer listed nearby) is looked up once a visit of the page, at
+most 8 at once, off the UI thread (`host_os.rs`): first its SSH server's greeting (a TCP connect to its `HostName` and
+`Port` from the ssh config, 3 s, the first `SSH-` line read, nothing sent): `OpenSSH_for_Windows` is a PC, a greeting
+that names a Linux distribution (Ubuntu, Debian, Raspbian, Fedora, ...) is Linux, a plain OpenSSH says nothing; then,
+only when it said nothing, `ssh -o BatchMode=yes -o ConnectTimeout=3 -o UpdateHostKeys=no -- <host> uname -s` (no
+console window, ended after 6 s): `Darwin` is a Mac, `Linux` is Linux. What is found is kept in the profile's
+`host_os.json` per host name and `HostName`, with when it was found, and shows at once the next time; a lookup that
+fails (a timeout, a VPN in the way) keeps what was found before, and a host never found shows no logo. Never under
+`--e2e`. A saved machine that never said its system draws the one found for its SSH host on the Machines page; the
+found system is never written into a machine's `kind` (that word says how its login shell is quoted, rules 1207 and
+1208). Rows with no logo get the `blank` vendor once any row has a logo (`settings_ctl::machine_choice_opts`), so the
+names line up; the trigger shows no empty space for it. Tux (`Glyphs.logo-linux`, even-odd so the eyes are holes)
+joins the Apple and Windows logos. Held by `a_greeting_names_windows_or_a_linux_or_nothing`,
+`uname_names_a_mac_a_linux_or_a_windows_shell`, `the_greeting_comes_first_and_ssh_only_when_it_says_nothing`,
+`the_cache_is_written_whole_and_read_back` (`host_os.rs`), `each_host_has_its_first_port` (`ssh_config.rs`),
+`the_dialog_finds_each_ssh_hosts_system_and_keeps_it` (`machines_page.rs`),
+`the_drop_down_rows_carry_the_system_of_an_ssh_host` (`flare-settings`),
+`an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`) and
+`glyph_paths_match_the_slint_file` (`menus_ui.rs`). Source: Max, 2026-11-17.

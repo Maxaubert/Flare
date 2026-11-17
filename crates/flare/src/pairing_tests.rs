@@ -640,10 +640,12 @@ fn an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down() {
         SshHost {
             alias: "pc".into(),
             host_name: "192.168.0.139".into(),
+            ..Default::default()
         },
         SshHost {
             alias: "studio".into(),
             host_name: "studio.lan".into(),
+            ..Default::default()
         },
     ];
     *view.net.nearby.lock().unwrap() = vec![pc_nearby(1)];
