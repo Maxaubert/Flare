@@ -697,7 +697,12 @@ impl ModCtl {
         method: &str,
         params: Value,
     ) -> Option<String> {
-        let refuse = |c: &str, m: &str| Some(bridge::reply_err(id, c, m));
+        let refuse = |c: &str, m: &str| {
+            // Only a method of the protocol is named: a page's own words never reach the log.
+            let named = Method::parse(method).map_or("(unknown)", Method::name);
+            crate::plugin_refused::note(mod_id, named, c, "page");
+            Some(bridge::reply_err(id, c, m))
+        };
         // The grant is the mod's live one: a mod that was turned off has none.
         let Some(grant) = self.hub.grant_of_mod(mod_id) else {
             return refuse(code::UNAUTHORIZED, "this mod is turned off");

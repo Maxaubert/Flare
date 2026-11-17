@@ -85,6 +85,10 @@ pub trait Dispatcher: Send + Sync + 'static {
 
     /// A connection ended (clean close, error or server stop).
     fn client_gone(&self, _ctx: &CallContext) {}
+
+    /// The server refused a request of a caller that said hello, before [`Dispatcher::call`]: its grant does not hold
+    /// the method. The app may note it (it never answers anything here).
+    fn refused(&self, _ctx: &CallContext, _method: Method, _e: &CtlError) {}
 }
 
 /// Raised when a call's client has gone (it closed its connection while the call ran), so a dispatcher that
@@ -995,13 +999,15 @@ fn answer(
     }
     // The ui namespace is closed to the pipe whatever the grant says (belt and braces for S3).
     if method.namespace() == Namespace::Ui {
-        return fail(
+        let e =
             h.ctx.grant.check(method).err().unwrap_or_else(|| {
                 CtlError::new(code::FORBIDDEN, "ui methods are not on the pipe")
-            }),
-        );
+            });
+        shared.dispatcher.refused(&h.ctx, method, &e);
+        return fail(e);
     }
     if let Err(e) = h.ctx.grant.check(method) {
+        shared.dispatcher.refused(&h.ctx, method, &e);
         return fail(e);
     }
     match call_with_timeout(shared, &h.ctx, method, req.params.clone(), alive) {
@@ -1044,6 +1050,8 @@ mod tests {
         pub bridge_agent: AtomicBool,
         /// The host has no running Flare and cannot start one: `remote_ready` refuses.
         pub not_ready: AtomicBool,
+        /// What `refused` heard: the grant's kind, the method and the code.
+        pub refusals: Mutex<Vec<(String, Method, String)>>,
     }
 
     impl Dispatcher for Fake {
@@ -1132,6 +1140,12 @@ mod tests {
         }
         fn client_gone(&self, _: &CallContext) {
             self.gone.fetch_add(1, Ordering::SeqCst);
+        }
+        fn refused(&self, ctx: &CallContext, m: Method, e: &CtlError) {
+            self.refusals
+                .lock()
+                .unwrap()
+                .push((ctx.grant.kind().into(), m, e.code.clone()));
         }
     }
 
@@ -1397,6 +1411,15 @@ mod tests {
         assert_eq!(v["result"]["ok"], "view.text");
         let v = r.ask(r#"{"id":2,"method":"panel.close"}"#);
         assert_eq!(code_of(&v), code::FORBIDDEN);
+        // The app hears of the refusal (rule 1273: a `plugin-refused` crumb), and of nothing it allowed.
+        assert_eq!(
+            *r.fake.refusals.lock().unwrap(),
+            [(
+                "mod".to_string(),
+                Method::PanelClose,
+                code::FORBIDDEN.to_string()
+            )]
+        );
         r.finish();
     }
 
