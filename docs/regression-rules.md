@@ -3680,7 +3680,7 @@ user can change their look").
 `NSApplication.applicationIconImage` (the Dock and the app switcher), the pick drawn at 512 px from its SVG with
 resvg, set at start and on every pick, and cleared for the original so the bundle's icon shows again; never
 `NSWorkspace setIcon` on `Flare.app`, which would break its code signature, so Finder keeps the original (the row
-says so). Windows: the main window's big and small icons (`WM_SETICON`; the taskbar button follows them only through
+says so). While Flare is closed, a pinned Dock tile and Huddle draw the shared picture instead (rule 1276). Windows: the main window's big and small icons (`WM_SETICON`; the taskbar button follows them only through
 rule 1265's window id), drawn at the
 monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. This
 profile's Start menu shortcut wears the pick too (rule 1272); the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
@@ -4738,6 +4738,26 @@ it. The text is never logged (the log line names the plugin and the kind). Nativ
 pointer, close and turn off, the rate) and `ui_tests::plugin_notice` (every scale, both plugin looks, both layouts: the
 place, the size, the red edge, stacking under the staged toast and the update notice, the close button's tooltip and the
 pointer). Source: Max, 2026-11-17.
+
+1276. **A Mac Flare that is closed still shows the picked icon in the Dock (when pinned) and in Huddle.** Max,
+2026-11-17: "when i clsoe flare it restes teh icno to the default icon not the one i picked" and "needs to work both in
+the dock if pepel pin it and in huddle". A Mac app bundle run (`Ship::bundled`, not an end-to-end run) puts the pick's
+picture, a 1024 px PNG drawn from its SVG (`app_icon::SHARED_PX`), at `~/Library/Application Support/Flare/app-icon.png`
+(`flare_settings::app_icon::SHARED_ICON_FILE`) on a worker, at start and on every pick; the original removes it. It is
+written beside and renamed over, and left alone when unchanged; after each change Flare posts the distributed
+notification `com.flare.terminal.appIconChanged` (`SHARED_ICON_NOTE`). The Dock tile plugin
+`Contents/PlugIns/FlareDockTile.docktileplugin` (source `crates/flare-cef/src/macos/FlareDockTile.m`, named by the
+app's `NSDockTilePlugIn` key, built by `release::build_dock_tile` with `xcrun clang`, signed as a library with
+`com.flare.terminal.FlareDockTile` before the app) is loaded by the Dock for a pinned Flare, also while Flare is closed:
+it draws the picture, or nothing (the bundle's icon) when there is none, and draws again on the notification. Huddle
+reads the same file for Flare's tile (Huddle repo). Rule 1231 holds: the signed bundle is never written to, so Finder,
+Spotlight and Launchpad keep the original. A dev or test run never touches the real Application Support folder.
+Verified on 2026-11-17 with a pinned test app whose plugin read the file from Application Support and redrew on the
+notification while the app was closed (the Dock loads a plugin only for an app that has run once). Held by
+`a_pick_is_shared_as_a_picture_and_the_original_removes_it` and
+`the_dock_tile_plugin_reads_the_shared_picture_and_hears_the_note` (`app_icon.rs`),
+`the_app_names_the_dock_tile_plugin_and_its_source_defines_its_class` and
+`the_dock_tile_plugin_builds_and_the_app_signs_with_it` (`release.rs`). Source: Max, 2026-11-17.
 
 1279. **A remote tab takes the folder the host's status names, and reads it by the host's path rules.** Max, 2026-11-17,
 from the Mac viewer: a tab opened on home-pc from the + menu showed `~` as its title and its folder line. The tab opens
