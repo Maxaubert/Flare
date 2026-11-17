@@ -4618,3 +4618,16 @@ the plugin was given. A `timeout` is no refusal. Held by `a_title_the_plugins_he
 and `a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says` (`appctl/tests/mods_tests/plugin_surfaces.rs`),
 `a_mod_token_gets_the_mod_grant` (`flare-ctl/src/session.rs`) and the throttle tests in `plugin_refused.rs`. Source:
 Max, 2026-11-16; `plugins-logs/bitwarden.log` of the Stable profile.
+
+1284. **The sidebar row's X takes the pointer where it is drawn, past any ring.** Max, 2026-11-17: "thres no hover
+effects on the clsoe button on tabs when tehre workign on other tabs thers a hover effect on the clsoe button". In the
+sidebar (the vertical layout) a working row (the Ring mark, `mark-kind` 1) slides its X in 20 px right of the ring on
+hover, but the X's TouchArea `xta` moved past the ring only for a loading row (`root.tab.loading`): on a working row it
+lay over the ring. Pointing at the X never lit it (no `Theme.hover-hi` square, no bright ink), a click on the X did
+not close, and a click on the ring did. When the Ring mark came in (2026-10-17) the drawn X was moved by `has-ring`
+and its TouchArea was not. Now `xta.x` uses `has-ring` too, so the hit box and the drawn X are one. The strip's
+`TabEnd` already put both in one box and was right. Held by
+`the_x_under_the_pointer_lights_up_and_closes_on_working_and_plain_rows` (`ui_tests/sidebar.rs`: working, loading and
+plain rows, active and not, hover square and click) and the strip guard
+`the_close_x_lights_up_under_the_pointer_on_working_and_plain_tabs_active_or_not` (`ui_tests/strip.rs`, also across
+row updates while hovered). Source: Max, 2026-11-17.
