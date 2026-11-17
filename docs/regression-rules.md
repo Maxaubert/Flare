@@ -4760,4 +4760,3 @@ joins the Apple and Windows logos. Held by `a_greeting_names_windows_or_a_linux_
 `the_drop_down_rows_carry_the_system_of_an_ssh_host` (`flare-settings`),
 `an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`) and
 `glyph_paths_match_the_slint_file` (`menus_ui.rs`). Source: Max, 2026-11-17.
-
