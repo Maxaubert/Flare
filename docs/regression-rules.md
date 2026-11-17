@@ -4768,4 +4768,3 @@ read, the crumbs on a PC and a Mac host, the browser's steps); `remote_ls_reads_
 (`ctl_app.rs`); `the_agent_never_lists_a_folder_on_another_machine` (`flare-ctl/src/grant.rs`); and the e2e
 `remoteUi` (it opens the browser and presses Open here). Source: Max, 2026-11-17;
 `research/flare/2026-11-17-remote-ui-issues-from-mac.md`, issue 2.
-
