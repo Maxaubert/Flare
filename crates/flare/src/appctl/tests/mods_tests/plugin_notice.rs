@@ -228,6 +228,30 @@ fn a_notice_goes_after_six_seconds_and_stands_still_while_the_pointer_is_on_it()
     assert!(shown(&f).is_empty(), "the rest of its time, then gone");
 }
 
+/// The pointer rests on the second notice and the first goes: the window builds the toasts anew and the second moves up
+/// from under the pointer, so it counts down again and does not stand still for good.
+#[test]
+fn a_notice_that_moves_from_under_the_pointer_still_goes() {
+    let (f, _a, _b) = two_tabs();
+    let _slot = with_fake(&f);
+    let w = world(&f, |r| {
+        notice_plugin(r, "vault", &["actions"]);
+        notice_plugin(r, "other", &["actions"]);
+    });
+    turn(&f, "vault", true);
+    turn(&f, "other", true);
+    show(&f, &w, "vault", json!({"text": "First"})).unwrap();
+    wait(&f, 1_000);
+    show(&f, &w, "other", json!({"text": "Second"})).unwrap();
+    f.h.comp.invoke_plugin_notice_hover("other".into(), true);
+    wait(&f, 5_000);
+    assert_eq!(shown(&f).len(), 1, "the first went at 6 s");
+    let v = f.ctl.borrow().e2e_plugin_notices();
+    assert_eq!(v["notices"][0]["hovered"], false, "{v}");
+    wait(&f, 6_000);
+    assert!(shown(&f).is_empty(), "the second went too");
+}
+
 #[test]
 fn the_close_button_and_turning_the_plugin_off_take_the_notice_away() {
     let (f, _a, _b) = two_tabs();

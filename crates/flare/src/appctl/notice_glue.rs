@@ -68,6 +68,9 @@ impl AppCtl {
 
     /// The window shows the notices as they stand; the tick runs while any shows.
     fn sync_plugin_notices(&mut self) {
+        // A new model makes the window build every toast anew, the pointer off each (rule 1275): a notice that moved up
+        // from under the pointer must not stand still for good. The pointer moving on one marks it again.
+        self.plugin_notices.unhover_all();
         let rows: Vec<PluginNoticeRow> = self
             .plugin_notices
             .list()

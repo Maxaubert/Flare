@@ -71,6 +71,15 @@ impl Notices {
         }
     }
 
+    /// The window built its toasts anew (a new list): each new toast starts with the pointer off it and reports a hover
+    /// only when the pointer moves onto it, so none counts as hovered until then. Without this, a toast that moved up
+    /// from under the pointer (the one above it went) or was rebuilt as the pointer left would stand still for good.
+    pub fn unhover_all(&mut self) {
+        for n in &mut self.list {
+            n.hovered = false;
+        }
+    }
+
     /// `ms` went by: each notice the pointer is not on loses them, and the ones out of time go. True when one went.
     pub fn tick(&mut self, ms: u64) -> bool {
         for n in self.list.iter_mut().filter(|n| !n.hovered) {
@@ -132,5 +141,18 @@ mod tests {
         assert_eq!(ids(&n), ["b", "d", "e"]);
         n.hover("zz", true);
         assert!(n.list().iter().all(|x| !x.hovered));
+    }
+
+    /// The window's toasts are built anew with each new list, the pointer off each: no notice stays hovered past that.
+    #[test]
+    fn a_new_list_counts_no_notice_as_hovered() {
+        let mut n = Notices::default();
+        n.show("a", "one", false);
+        n.show("b", "two", false);
+        n.hover("b", true);
+        n.unhover_all();
+        assert!(n.list().iter().all(|x| !x.hovered));
+        assert!(n.tick(show_ms()), "both run out");
+        assert!(n.is_empty());
     }
 }
