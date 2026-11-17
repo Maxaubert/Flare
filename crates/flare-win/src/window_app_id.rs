@@ -59,7 +59,7 @@ pub fn set(hwnd: isize, id: &str) -> Result<(), String> {
 /// string must come from `CoTaskMemAlloc`: a Rust buffer there is freed twice (once by Rust, once by the drop).
 /// That corrupted the heap and killed Flare at start while a custom app icon was picked (2026-11-16).
 #[cfg(windows)]
-fn lpwstr_value(
+pub(crate) fn lpwstr_value(
     text: &str,
 ) -> Result<windows::Win32::System::Com::StructuredStorage::PROPVARIANT, String> {
     use std::mem::ManuallyDrop;

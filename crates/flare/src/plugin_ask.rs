@@ -25,6 +25,50 @@ pub struct AskView {
     pub site: String,
     pub asker: String,
     pub letter: String,
+    /// A `verify` secret's line while it is checked (rule 1274): the plugin's `checking`, or [`DEFAULT_CHECKING`].
+    /// Empty for an ask without `verify`.
+    pub checking: String,
+}
+
+/// The checking line when the plugin names none.
+pub const DEFAULT_CHECKING: &str = "Checking...";
+/// A right answer's heading when the plugin names none.
+pub const DEFAULT_RIGHT_TITLE: &str = "Done";
+/// The red line of a wrong answer when the plugin names none.
+pub const DEFAULT_WRONG: &str = "That was not right. Try again.";
+/// The red line when the plugin did not say in time whether the answer was right ([`flare_mods::fill::VERIFY_WAIT`]).
+pub const TOOK_TOO_LONG: &str = "The check took too long. Try again.";
+
+/// A `verify` ask's checking line: the plugin's words, cleaned and cut, or [`DEFAULT_CHECKING`].
+pub fn checking_line(checking: &str) -> String {
+    let c = cut(checking.trim());
+    if c.trim().is_empty() {
+        DEFAULT_CHECKING.to_string()
+    } else {
+        c
+    }
+}
+
+/// A wrong answer's red line: the plugin's words, cleaned and cut, or [`DEFAULT_WRONG`].
+pub fn wrong_line(error: &str) -> String {
+    let e = cut(error.trim());
+    if e.trim().is_empty() {
+        DEFAULT_WRONG.to_string()
+    } else {
+        e
+    }
+}
+
+/// A result's heading and line, cleaned and cut. An empty heading is `fallback` (Flare's "Done" for a right answer,
+/// the ask's own title for an end).
+pub fn result_view(title: &str, line: &str, fallback: &str) -> (String, String) {
+    let t = cut(title.trim());
+    let t = if t.trim().is_empty() {
+        cut(fallback)
+    } else {
+        t
+    };
+    (t, cut(line.trim()))
 }
 
 /// The longest name or host the question prints (the rest is cut with an ellipsis).
@@ -161,6 +205,58 @@ mod tests {
         let shown = format!("{v:?}");
         assert!(!shown.contains("Asked by"), "{shown}");
         assert!(!shown.contains(" from "), "{shown}");
+    }
+
+    #[test]
+    fn a_checked_secret_has_flares_words_where_the_plugin_names_none() {
+        assert_eq!(checking_line(""), DEFAULT_CHECKING);
+        assert_eq!(checking_line("  \u{200B} "), DEFAULT_CHECKING);
+        assert_eq!(
+            checking_line(" Checking the password...\u{7} "),
+            "Checking the password..."
+        );
+        assert_eq!(wrong_line(""), DEFAULT_WRONG);
+        assert_eq!(
+            wrong_line("Wrong password, try again"),
+            "Wrong password, try again"
+        );
+        assert_eq!(
+            wrong_line(&"w".repeat(200)),
+            format!("{}...", "w".repeat(SHOWN_MAX))
+        );
+        assert_eq!(
+            result_view("", "", DEFAULT_RIGHT_TITLE),
+            ("Done".to_string(), String::new())
+        );
+        assert_eq!(
+            result_view(
+                "Vault unlocked",
+                "Bitwarden can fill logins now.",
+                DEFAULT_RIGHT_TITLE
+            ),
+            (
+                "Vault unlocked".to_string(),
+                "Bitwarden can fill logins now.".to_string()
+            )
+        );
+        // An end with no heading keeps the ask's own title.
+        assert_eq!(
+            result_view(
+                "",
+                "Bitwarden did not unlock after 5 tries.",
+                "Your vault is locked"
+            )
+            .0,
+            "Your vault is locked"
+        );
+        for s in [
+            DEFAULT_CHECKING,
+            DEFAULT_RIGHT_TITLE,
+            DEFAULT_WRONG,
+            TOOK_TOO_LONG,
+        ] {
+            assert!(!s.contains('\u{2014}'));
+        }
     }
 
     #[test]

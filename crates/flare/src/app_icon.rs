@@ -9,7 +9,9 @@
 //!   and on every pick. They show in the title bar and Alt+Tab. The taskbar button does not follow `WM_SETICON` while
 //!   the window's id is the Start menu shortcut's: it draws the shortcut's icon. So a custom pick also gives the window
 //!   its own taskbar id with no shortcut (`ship_ctl::window_aumid`, rule 1265), and the original gives it back the
-//!   shortcut's id. Shortcuts, the exe and the installer keep the original.
+//!   shortcut's id. This profile's Start menu shortcut wears the pick too: a worker points its icon at a `.ico` drawn
+//!   from the pick, and back at the exe's icon for the original (`start_menu_icon`, rule 1272). The exe and the
+//!   installer keep the original.
 //!
 //! The dictation widget is a tool window with no icon (off the taskbar, never in the Dock), and Settings is a tab of
 //! the main window, so the main window is the only one that wears the icon.
@@ -85,9 +87,40 @@ pub fn render_rgba(id: &str, px: u32) -> Option<Vec<u8>> {
 }
 
 /// An icon drawn at `px` by `px` as a PNG file's bytes (what AppKit's NSImage reads).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn render_png(id: &str, px: u32) -> Option<Vec<u8>> {
     render(id, px)?.encode_png().ok()
+}
+
+/// An icon as a Windows `.ico` file's bytes (rule 1272): one PNG image per size of
+/// `start_menu_icon::ICO_SIZES`, smallest first, each entry naming its size (0 means 256).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn render_ico(id: &str) -> Option<Vec<u8>> {
+    let sizes = crate::start_menu_icon::ICO_SIZES;
+    let images: Vec<(u32, Vec<u8>)> = sizes
+        .iter()
+        .map(|&px| render_png(id, px).map(|png| (px, png)))
+        .collect::<Option<_>>()?;
+    let count = u16::try_from(images.len()).ok()?;
+    let mut out = Vec::new();
+    // ICONDIR: reserved, type 1 (icon), count.
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    let mut offset = 6 + 16 * images.len();
+    for (px, png) in &images {
+        let side = if *px >= 256 { 0 } else { *px as u8 };
+        // ICONDIRENTRY: width, height, colours, reserved, planes, bits, size, offset.
+        out.extend_from_slice(&[side, side, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(png.len()).ok()?.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(offset).ok()?.to_le_bytes());
+        offset += png.len();
+    }
+    for (_, png) in images {
+        out.extend_from_slice(&png);
+    }
+    Some(out)
 }
 
 fn render(id: &str, px: u32) -> Option<resvg::tiny_skia::Pixmap> {
@@ -153,15 +186,26 @@ thread_local! {
 }
 
 /// Starts the app's icon on the UI thread: wears the pick in force now and after every change. The returned listener
-/// lives as long as the window.
-pub fn start(prefs: &PrefStore) -> Subscription {
+/// lives as long as the window. `start_menu` (Windows, an installed run) also puts the pick on this profile's Start
+/// menu shortcut, on its own worker, now and after every change (rule 1272).
+pub fn start(
+    prefs: &PrefStore,
+    start_menu: Option<crate::start_menu_icon::Worker>,
+) -> Subscription {
     CTL.with(|c| {
         let mut ctl = IconCtl::new(Rc::new(SystemIcon));
         ctl.sync(prefs);
         *c.borrow_mut() = Some(ctl);
     });
+    // At start too, so a shortcut an update rewrote wears the pick again.
+    if let Some(w) = &start_menu {
+        w.wear(app_icon(prefs).id);
+    }
     let store = prefs.clone();
     on_app_icon_change(prefs, move || {
+        if let Some(w) = &start_menu {
+            w.wear(app_icon(&store).id);
+        }
         let store = store.clone();
         // A change is heard on the thread that stored it; AppKit and the window are the UI thread's.
         let _ = slint::invoke_from_event_loop(move || {
@@ -321,6 +365,34 @@ mod tests {
         }
         let png = render_png("daybreak", 64).expect("a png");
         assert_eq!(&png[1..4], b"PNG");
+    }
+
+    /// Rule 1272: the Start menu's `.ico` holds every size from 16 to 256 as a PNG image, each entry naming its size
+    /// (0 for 256) and pointing at a whole PNG inside the file.
+    #[test]
+    fn the_ico_holds_every_size_as_a_png() {
+        let ico = render_ico("daybreak").expect("drawn");
+        let u16_at = |i: usize| u16::from_le_bytes([ico[i], ico[i + 1]]);
+        let u32_at = |i: usize| u32::from_le_bytes([ico[i], ico[i + 1], ico[i + 2], ico[i + 3]]);
+        assert_eq!((u16_at(0), u16_at(2)), (0, 1), "an icon file");
+        let sizes = crate::start_menu_icon::ICO_SIZES;
+        assert_eq!(sizes, [16, 24, 32, 48, 64, 128, 256]);
+        assert_eq!(usize::from(u16_at(4)), sizes.len());
+        for (n, px) in sizes.iter().enumerate() {
+            let e = 6 + 16 * n;
+            let side = if *px == 256 { 0 } else { *px as u8 };
+            assert_eq!((ico[e], ico[e + 1]), (side, side), "entry {n}");
+            assert_eq!((u16_at(e + 4), u16_at(e + 6)), (1, 32));
+            let (len, at) = (u32_at(e + 8) as usize, u32_at(e + 12) as usize);
+            let png = &ico[at..at + len];
+            assert_eq!(&png[1..4], b"PNG", "entry {n}");
+            // The PNG's IHDR width is the entry's size.
+            assert_eq!(
+                u32::from_be_bytes([png[16], png[17], png[18], png[19]]),
+                *px
+            );
+        }
+        assert_ne!(render_ico("daybreak"), render_ico(ORIGINAL));
     }
 
     /// Liquid Glass is the static vector of the Icon Composer icon on the Mac and #199's Windows icon elsewhere; an
