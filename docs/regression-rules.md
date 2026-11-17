@@ -4735,4 +4735,3 @@ and its TouchArea was not. Now `xta.x` uses `has-ring` too, so the hit box and t
 plain rows, active and not, hover square and click) and the strip guard
 `the_close_x_lights_up_under_the_pointer_on_working_and_plain_tabs_active_or_not` (`ui_tests/strip.rs`, also across
 row updates while hovered). Source: Max, 2026-11-17.
-
