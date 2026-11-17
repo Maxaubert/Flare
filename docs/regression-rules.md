@@ -4615,3 +4615,18 @@ cleared). Held by `the_value_owns_a_com_string_that_its_drop_frees_once` and `th
 (`flare-win/src/window_app_id.rs`). The test process uses the classic heap, which does not always catch a double free,
 so the source check is the main guard. Source: Max, 2026-11-16; crash dumps `FlareStable.exe.34872.dmp` and
 `FlareStable.exe.70884.dmp`.
+
+1273. **A title a plugin's helper sets is what every tab's menu says, and a plugin call Flare refuses leaves a
+`plugin-refused` crumb.** Max, 2026-11-16: "still says unlock bitwarden, no feedback". Bitwarden 0.3.2's helper sets
+its tab-menu title over the pipe (`actions.set {key, title}`, no tab). Flare took that call all along: the helper path
+and the real pipe both pass. The real cause was in the plugin: while `bw unlock` ran (2 to 3 seconds, nothing on
+screen) the item still read "Unlock Bitwarden", a second click was queued, and the helper took it after the unlock
+and locked the vault again (its log: "unlock: ok" then "locked: Max asked"); fixed in the plugin's 0.3.3. What Flare
+lacked was any trace: `diag.jsonl` had nothing to tell a refused call from a call never made. Now every plugin call
+Flare refuses (in the page bridge, at the pipe's grant check through `Dispatcher::refused`, or in
+`AppDispatcher::call`) leaves `{"a":"plugin-refused","plugin","method","code","via":"page"|"pipe"}`, at most once a
+minute per plugin, method and code (`plugin_refused.rs`). Never the error's words or the params: they can carry what
+the plugin was given. A `timeout` is no refusal. Held by `a_title_the_plugins_helper_sets_is_what_the_tab_menu_says`
+and `a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says` (`appctl/tests/mods_tests/plugin_surfaces.rs`),
+`a_mod_token_gets_the_mod_grant` (`flare-ctl/src/session.rs`) and the throttle tests in `plugin_refused.rs`. Source:
+Max, 2026-11-16; `plugins-logs/bitwarden.log` of the Stable profile.

@@ -2901,6 +2901,38 @@ impl Dispatcher for AppDispatcher {
     }
 
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError> {
+        let r = self.call_inner(ctx, method, params);
+        if let (Err(e), Grant::Mod { id, .. }) = (&r, &ctx.grant) {
+            Self::note_refused(id, ctx.conn, method, e);
+        }
+        r
+    }
+
+    /// The pipe refused a plugin's request before it reached [`Dispatcher::call`] (its grant does not hold the method).
+    fn refused(&self, ctx: &CallContext, method: Method, e: &CtlError) {
+        if let Grant::Mod { id, .. } = &ctx.grant {
+            Self::note_refused(id, ctx.conn, method, e);
+        }
+    }
+}
+
+impl AppDispatcher {
+    /// A plugin call Flare refused leaves a `plugin-refused` crumb ([`crate::plugin_refused`]): a page's calls come with
+    /// `conn` 0, a helper's over the pipe. A call that ran out of time or was cancelled is no refusal.
+    fn note_refused(plugin: &str, conn: u64, method: Method, e: &CtlError) {
+        if e.code == code::TIMEOUT {
+            return;
+        }
+        let via = if conn == 0 { "page" } else { "pipe" };
+        crate::plugin_refused::note(plugin, method.name(), &e.code, via);
+    }
+
+    fn call_inner(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: Value,
+    ) -> Result<Value, CtlError> {
         // A plugin's connection (its helper, later) spends from the plugin's one budget, here on the worker before
         // anything is posted. A page's messages were spent as the window took them (`conn` 0).
         if ctx.conn != 0

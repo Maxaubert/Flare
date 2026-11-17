@@ -314,8 +314,10 @@ starts with the plugin's name. Setting the same key replaces; a tab has one prog
   every 10 seconds (the bridge answers by itself); no answer in 10 seconds, or still loading 10 seconds after it began,
   counts as an end.
 - **Nothing on the UI thread:** every call is checked and answered off it, and the window applies what plugins changed
-  at most once a frame. Diagnostics: `plugin` lines in `diag.jsonl` (start, stop, crash, rate limit, refusals; no
-  content).
+  at most once a frame. Diagnostics: `plugin` lines in `diag.jsonl` (start, stop, crash, rate limit; no content). A
+  call Flare refuses, from a page or a helper, is a `plugin-refused` crumb: the plugin, the method, the error code and
+  `via` (`page` or `pipe`), at most once a minute for each plugin, method and code, never the error's words or the
+  params (rule 1273).
 
 ## Pages and the serving rule
 
