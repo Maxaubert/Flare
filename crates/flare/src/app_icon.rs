@@ -13,16 +13,24 @@
 //!   from the pick, and back at the exe's icon for the original (`start_menu_icon`, rule 1272). The exe and the
 //!   installer keep the original.
 //!
+//! - macOS, while Flare is closed (rule 1276): a pick is also put, as a PNG, at
+//!   `~/Library/Application Support/Flare/app-icon.png` (removed for the original), and a distributed notification
+//!   says so. The Dock tile plugin in `Flare.app/Contents/PlugIns` draws it on a pinned Flare, and Huddle draws it on
+//!   Flare's tile. Neither writes to the signed bundle.
+//!
 //! The dictation widget is a tool window with no icon (off the taskbar, never in the Dock), and Settings is a tab of
 //! the main window, so the main window is the only one that wears the icon.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 #[cfg(test)]
 use flare_settings::app_icon::APP_ICONS;
-use flare_settings::app_icon::{AppIcon, ORIGINAL, app_icon, on_app_icon_change};
+use flare_settings::app_icon::{
+    AppIcon, ORIGINAL, SHARED_ICON_FILE, app_icon, icon_of, on_app_icon_change,
+};
 use flare_settings::kv::{PrefStore, Subscription};
 
 /// The original Flare icon (the in-app mark is the same artwork).
@@ -185,12 +193,99 @@ thread_local! {
     static CTL: RefCell<Option<IconCtl>> = const { RefCell::new(None) };
 }
 
+/// The shared picture's side in pixels (rule 1276): the largest Dock tile at 2x; Huddle and the Dock scale it down.
+pub const SHARED_PX: u32 = 1024;
+
+/// Puts the picture of `id` at `<support>/Flare/app-icon.png`, or removes it for the original (rule 1276). It is
+/// written beside and renamed over, so a reader never sees half a file, and left alone when it already holds this
+/// picture. True when the file changed.
+pub fn share_in(support: &Path, id: &str) -> std::io::Result<bool> {
+    let file = support.join(SHARED_ICON_FILE);
+    if icon_of(id).id == ORIGINAL {
+        return match std::fs::remove_file(&file) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        };
+    }
+    let png = render_png(id, SHARED_PX).ok_or_else(|| std::io::Error::other("not drawn"))?;
+    if std::fs::read(&file).is_ok_and(|have| have == png) {
+        return Ok(false);
+    }
+    let dir = file
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no folder"))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(".app-icon.png.part");
+    std::fs::write(&tmp, &png)?;
+    std::fs::rename(&tmp, &file)?;
+    Ok(true)
+}
+
+/// The worker that shares the pick (rule 1276): one thread, the newest pick wins, the notification after each change.
+#[derive(Clone)]
+pub struct Sharer(std::sync::mpsc::Sender<&'static str>);
+
+impl Sharer {
+    /// A worker that shares into `support` and calls `changed` after each change of the file.
+    pub fn spawn(support: PathBuf, changed: fn()) -> Option<Sharer> {
+        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        std::thread::Builder::new()
+            .name("app-icon-share".into())
+            .spawn(move || {
+                while let Ok(mut id) = rx.recv() {
+                    while let Ok(newer) = rx.try_recv() {
+                        id = newer;
+                    }
+                    match share_in(&support, id) {
+                        Ok(true) => changed(),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("app icon {id}: not shared: {e}"),
+                    }
+                }
+            })
+            .map_err(|e| log::warn!("no app icon sharer: {e}"))
+            .ok()?;
+        Some(Sharer(tx))
+    }
+
+    pub fn share(&self, id: &'static str) {
+        let _ = self.0.send(id);
+    }
+}
+
+/// This run's sharer: a Mac app bundle that is not an end-to-end run (rule 1276); none elsewhere, so a dev or test
+/// run never touches the real Application Support folder.
+pub fn sharer_for_run(ship: &crate::ship_ctl::Ship) -> Option<Sharer> {
+    if !cfg!(target_os = "macos") || !ship.bundled || ship.e2e {
+        return None;
+    }
+    Sharer::spawn(flare_win::paths::local_app_data()?, post_shared_note)
+}
+
+/// Tells the Dock tile plugin and Huddle the shared picture changed (rule 1276).
+#[cfg(target_os = "macos")]
+fn post_shared_note() {
+    use objc2_foundation::{NSDistributedNotificationCenter, NSString};
+    let name = NSString::from_str(flare_settings::app_icon::SHARED_ICON_NOTE);
+    // SAFETY: Foundation's distributed center is safe to post to from any thread; no object, no user info.
+    unsafe {
+        NSDistributedNotificationCenter::defaultCenter()
+            .postNotificationName_object_userInfo_deliverImmediately(&name, None, None, true);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn post_shared_note() {}
+
 /// Starts the app's icon on the UI thread: wears the pick in force now and after every change. The returned listener
 /// lives as long as the window. `start_menu` (Windows, an installed run) also puts the pick on this profile's Start
-/// menu shortcut, on its own worker, now and after every change (rule 1272).
+/// menu shortcut, on its own worker, now and after every change (rule 1272). `share` (a Mac app bundle) puts its
+/// picture where the Dock tile plugin and Huddle read it, now and after every change (rule 1276).
 pub fn start(
     prefs: &PrefStore,
     start_menu: Option<crate::start_menu_icon::Worker>,
+    share: Option<Sharer>,
 ) -> Subscription {
     CTL.with(|c| {
         let mut ctl = IconCtl::new(Rc::new(SystemIcon));
@@ -201,10 +296,17 @@ pub fn start(
     if let Some(w) = &start_menu {
         w.wear(app_icon(prefs).id);
     }
+    // At start too: a pick made by another profile, or a file somebody removed, is put right.
+    if let Some(s) = &share {
+        s.share(app_icon(prefs).id);
+    }
     let store = prefs.clone();
     on_app_icon_change(prefs, move || {
         if let Some(w) = &start_menu {
             w.wear(app_icon(&store).id);
+        }
+        if let Some(s) = &share {
+            s.share(app_icon(&store).id);
         }
         let store = store.clone();
         // A change is heard on the thread that stored it; AppKit and the window are the UI thread's.
@@ -320,6 +422,45 @@ mod tests {
             ["daybreak", "liquid-glass", "original"],
             "each change worn once"
         );
+    }
+
+    /// Rule 1276: a pick's picture is put where the Dock tile plugin and Huddle read it, left alone when unchanged,
+    /// replaced by another pick, and removed for the original, so both show the bundle's icon again.
+    #[test]
+    fn a_pick_is_shared_as_a_picture_and_the_original_removes_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let file = dir.path().join(SHARED_ICON_FILE);
+        assert!(!share_in(dir.path(), ORIGINAL).expect("nothing to remove"));
+        assert!(share_in(dir.path(), "daybreak").expect("shared"));
+        let png = std::fs::read(&file).expect("the picture");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            u32::from_be_bytes(png[16..20].try_into().unwrap()),
+            SHARED_PX
+        );
+        assert!(
+            !share_in(dir.path(), "daybreak").expect("same"),
+            "the same pick is not written again"
+        );
+        assert!(share_in(dir.path(), "jade-glass").expect("another"));
+        assert_ne!(std::fs::read(&file).expect("the picture"), png);
+        assert!(share_in(dir.path(), ORIGINAL).expect("removed"));
+        assert!(!file.exists());
+        let left: Vec<_> = std::fs::read_dir(file.parent().unwrap()).unwrap().collect();
+        assert!(left.is_empty(), "no part file left: {left:?}");
+    }
+
+    /// Rule 1276: the Dock tile plugin reads the same file and hears the same notification Flare posts.
+    #[test]
+    fn the_dock_tile_plugin_reads_the_shared_picture_and_hears_the_note() {
+        let source = include_str!("../../flare-cef/src/macos/FlareDockTile.m");
+        assert!(source.contains(&format!(
+            "@\"Library/Application Support/{SHARED_ICON_FILE}\""
+        )));
+        assert!(source.contains(&format!(
+            "@\"{}\"",
+            flare_settings::app_icon::SHARED_ICON_NOTE
+        )));
     }
 
     /// An unknown stored word (an older or newer build's icon) wears the original.
