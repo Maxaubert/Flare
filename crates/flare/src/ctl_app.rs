@@ -285,7 +285,6 @@ pub enum CtlOp {
     /// plugin only, never logged) or `{cancelled: true}`.
     SecretAsk {
         plugin: String,
-        plugin_name: String,
         title: String,
         label: String,
         /// The line under the title, the button's word and the error line (in the sub's place, in red); empty when
@@ -1469,13 +1468,12 @@ impl AppDispatcher {
     /// `secret.ask {title, label, sub?, button?, error?, verify?, checking?}`: Flare's own masked field; the text comes
     /// back to this plugin only. With `verify` the dialog stays open, checking, until `secret.result` (rule 1274).
     fn secret_ask(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
-        let (plugin, plugin_name, generation) = self.fill_caller(ctx, "asking for a secret")?;
+        let (plugin, _, generation) = self.fill_caller(ctx, "asking for a secret")?;
         let req = flare_mods::fill::parse_secret(params)?;
         self.hub()?.asks().admit(&plugin, Instant::now())?;
         self.ask_by(
             CtlOp::SecretAsk {
                 plugin,
-                plugin_name,
                 title: req.title,
                 label: req.label,
                 sub: req.sub,
@@ -2934,6 +2932,38 @@ impl Dispatcher for AppDispatcher {
     }
 
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError> {
+        let r = self.call_inner(ctx, method, params);
+        if let (Err(e), Grant::Mod { id, .. }) = (&r, &ctx.grant) {
+            Self::note_refused(id, ctx.conn, method, e);
+        }
+        r
+    }
+
+    /// The pipe refused a plugin's request before it reached [`Dispatcher::call`] (its grant does not hold the method).
+    fn refused(&self, ctx: &CallContext, method: Method, e: &CtlError) {
+        if let Grant::Mod { id, .. } = &ctx.grant {
+            Self::note_refused(id, ctx.conn, method, e);
+        }
+    }
+}
+
+impl AppDispatcher {
+    /// A plugin call Flare refused leaves a `plugin-refused` crumb ([`crate::plugin_refused`]): a page's calls come with
+    /// `conn` 0, a helper's over the pipe. A call that ran out of time or was cancelled is no refusal.
+    fn note_refused(plugin: &str, conn: u64, method: Method, e: &CtlError) {
+        if e.code == code::TIMEOUT {
+            return;
+        }
+        let via = if conn == 0 { "page" } else { "pipe" };
+        crate::plugin_refused::note(plugin, method.name(), &e.code, via);
+    }
+
+    fn call_inner(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: Value,
+    ) -> Result<Value, CtlError> {
         // A plugin's connection (its helper, later) spends from the plugin's one budget, here on the worker before
         // anything is posted. A page's messages were spent as the window took them (`conn` 0).
         if ctx.conn != 0

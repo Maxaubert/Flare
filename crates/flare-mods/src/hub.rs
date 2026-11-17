@@ -1007,11 +1007,6 @@ impl Hub {
         self.lock().on.contains(id)
     }
 
-    /// The `https` address the plugin was installed from by Settings; None for a file or a folder put there by hand.
-    pub fn source_of(&self, id: &str) -> Option<String> {
-        self.lock().installed.get(id).and_then(|i| i.source.clone())
-    }
-
     /// What the person held back of the plugin's permissions (the details sheet). The default for a plugin with no
     /// choice made.
     pub fn choices_of(&self, id: &str) -> Choices {

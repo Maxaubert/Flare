@@ -230,7 +230,6 @@ fn right_shows_a_green_check_with_its_heading_and_no_field() {
             assert!(c.get_pask_result_shown(), "{at}");
             assert!(green_in_mark(&h, &f, s) > 20, "the green check at {at}");
             assert_eq!(c.get_pask_field_h(), 0.0, "no field at {at}");
-            assert_eq!(c.get_pask_foot_h(), 0.0, "no Cancel and no foot at {at}");
             assert!(c.get_pask_box_h() < box_before, "{at}");
             // The heading and the line are drawn under the check.
             let (bx, by, bw) = (c.get_pask_box_x(), c.get_pask_box_y(), c.get_pask_box_w());

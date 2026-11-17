@@ -291,7 +291,6 @@ impl AppCtl {
             }
             CtlOp::SecretAsk {
                 plugin,
-                plugin_name,
                 title,
                 label,
                 sub,
@@ -308,20 +307,8 @@ impl AppCtl {
                     )));
                     return;
                 }
-                let source = self
-                    .mods
-                    .as_ref()
-                    .and_then(|m| m.hub().source_of(&plugin))
-                    .unwrap_or_default();
-                let mut view = crate::plugin_ask::secret_view(
-                    &plugin_name,
-                    &source,
-                    &title,
-                    &label,
-                    &sub,
-                    &button,
-                    &error,
-                );
+                let mut view =
+                    crate::plugin_ask::secret_view(&title, &label, &sub, &button, &error);
                 if verify {
                     view.checking = crate::plugin_ask::checking_line(&checking);
                 }
@@ -379,7 +366,6 @@ impl AppCtl {
             app.set_pask_site(v.site.as_str().into());
             app.set_pask_asker(v.asker.as_str().into());
             app.set_pask_letter(v.letter.as_str().into());
-            app.set_pask_foot(v.foot.as_str().into());
             app.set_pask_look(crate::plugin_look::look_of(brand.as_ref()));
             app.set_pask_stage(0);
             app.set_pask_verify(verify);
