@@ -683,14 +683,21 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   with no restart button, since the Dock already shows a pick at once and restarting it may drop that icon.
   How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
   at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
-  the window's big and small icons (`WM_SETICON`), at start, on a DPI change and on every pick; shortcuts, the exe
-  and the installer keep the original.
+  the window's big and small icons (`WM_SETICON`), at start, on a DPI change and on every pick; the exe and the
+  installer keep the original (the Start menu shortcut follows the pick, rule 1272 below).
   2026-11-15 (Max: "it doesnt change wheni picka differnt icon thoguh, not before or after restart explorer"),
   rule 1265: the taskbar drew the Start menu shortcut's icon, since the window's id was the shortcut's. While a
   custom icon is picked, the main window now has its own taskbar id, the profile's id plus `.icon`, which has no
   shortcut, so the button shows the pick at once. The original gives the window the shortcut's id back. Note: while
   a custom icon is picked, a pinned Flare and its Jump List belong to the other id, so the running window shows as
   its own button beside the pin. Toasts keep the base id.
+  2026-11-16 (Max: the pick should also change the Start menu icon), rule 1272: an installed Flare on Windows also
+  puts the pick on this profile's Start menu shortcut, found by its taskbar id, never by its name. A worker draws the
+  pick as a multi-size `.ico` (16 to 256 px) into the profile's data folder under a content-hash name, points the
+  shortcut's icon at it, tells the shell so the Start menu updates without an Explorer restart, and deletes older
+  icon files. The original points the shortcut back at the exe's own icon, but only when Flare had changed it. No
+  shortcut means nothing is done; Flare never makes one. It runs at start too, so a shortcut an update rewrote gets
+  the pick again. The row now says "The taskbar, the window and the Start menu." on Windows. macOS is unchanged.
 - **Taskbar identity per profile.** 2026-10-22 (owner: the stable copy showed the installed Flare's old icon on
   the taskbar): a run with its own `--user-data-dir` has its own taskbar identity,
   `com.flare.terminal.p<16 hex>`, the FNV-1a 64 hash of the lowercased profile path (`/` as `\`, trailing
@@ -2123,9 +2130,13 @@ Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitw
 
 - **The `fill` permission.** "Fill logins into your web panel", with the warning "Can type passwords into pages, after
   you approve each one." (and, with `network`, that it can send the passwords you type for it to the internet). Its
-  namespace holds `browser.fill`, `browser.fill.page` and `secret.ask`; the agent never has it and `browser` does not open
+  namespace holds `browser.fill`, `browser.fill.page`, `secret.ask` and `secret.result`; the agent never has it and `browser` does not open
   it. Held by `fill_opens_only_the_fill_methods_and_never_for_the_agent` (`flare-ctl`) and the hub's words and warnings
   tests.
+- **A checked secret (rule 1274, 2026-11-16).** `secret.ask` with `verify` keeps the box open after the button:
+  checking (field read-only, a spinner in the button, Cancel still works), then a green check that closes by itself, the
+  field back in place with the red line for a wrong try, or the plugin's plain end line; `secret.result` says which.
+  The Bitwarden plugin unlocks this way.
 - **`browser.fill`.** Only into the tab's web page, only when its site is the login's (host or subdomain, `https` unless
   the login says `http`; no public suffix list), and only after Allow in Flare's own dialog ("Fill <login> into <host>?",
   Deny and Fill and nothing under them; Fill by the pointer only and not in its first 0.7 s, Enter presses Deny). The
@@ -2987,3 +2998,23 @@ The last of three PRs (spec and mockup as in PR 1).
   this one is shown Linked while its entry is here; Flare does not read `administrators_authorized_keys` back (it
   needs admin rights) to see whether the key is still there. Pairing finds computers on the same network only
   (issue #233 is the outside-the-house case). Real runs: the new lines in `docs/remote-sessions-manual-checks.md`.
+
+## Plugins show a short notice under the title bar, 2026-11-17
+
+Max, 2026-11-17, on the Bitwarden plugin's Lock item: "jsut flip it immedeatly and trust it will work, if it doestn
+throw an error message on screen". The approved look is mockup A. Rule 1275; the contract is in
+`docs/surfaces/plugins.md` ("Notices") and `docs/surfaces/protocol.md` (`notice.show`).
+
+- **`notice.show {text, kind?}`.** A plugin's helper or page shows one line under the title bar at the top right, in the
+  "Build ready" toast's place, size and look: the plugin's logo, the line and an icon-only close button (tooltip
+  "Close"). `kind: "error"` adds a 3 px red left edge (`SettingsFixed.error-edge`). It goes after 6 s, and the time stands
+  still while the pointer is on it. One a plugin (a newer one replaces it); several plugins' notices stack under the
+  staged toast and the update notice, never over them. The text is at most 120 characters and is cleaned (controls,
+  line breaks and hidden formatting characters out). 3 in 10 seconds per plugin.
+- **The permission.** It rides on `actions` (its words now end "and show short notices"): a notice answers a click on
+  the plugin's own button or menu item, and a new permission would have made a plugin that asks for it fail to install
+  on every older Flare. The agent never has it.
+- **Code.** `flare_mods::notice` (the params and the limits), `Method::NoticeShow` in namespace `Notice`,
+  `AppDispatcher::notice_show`, `CtlOp::NoticeShow`, `crate::plugin_notice` (the list and its clock),
+  `appctl/notice_glue.rs`, `ui/plugin_notice.slint` (`PluginNotices`, `PluginNoticeToast`). Held by the tests in
+  `flare_mods::notice`, `crate::plugin_notice`, `appctl::tests::mods_tests::plugin_notice` and `ui_tests::plugin_notice`.
