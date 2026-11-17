@@ -14,6 +14,8 @@
 //!   Frameworks/whisper                          the speech engine, code only (rule 1138): whisper-server,
 //!                                               parakeet-cli and their libraries (`tools/build-whisper-macos.sh`)
 //!   Frameworks/Flare Helper*.app                five helpers running `flare-cef-helper`
+//!   PlugIns/FlareDockTile.docktileplugin        the Dock tile plugin: a pinned Flare keeps the picked icon while
+//!                                               closed (rule 1276; `FlareDockTile.m`, built by `build_dock_tile`)
 //!   Resources/Flare.icns                        the original Flare icon, from build/icon-source.png (tools/make-icon.py's
 //!                                               1024 px render of assets/icon/flare-color.svg; rule 1230)
 //!   Resources/claude-plugin                     the Claude Code plugin template (found there by flare_agent)
@@ -95,7 +97,60 @@ pub fn app_keys(year: &str) -> Vec<(&'static str, String)> {
             "NSHumanReadableCopyright",
             format!("<string>Copyright {year} Max Aubert</string>"),
         ),
+        // Rule 1276: the Dock loads this plugin for a pinned Flare, also while Flare is closed.
+        (
+            "NSDockTilePlugIn",
+            format!("<string>{DOCK_TILE}.docktileplugin</string>"),
+        ),
     ]
+}
+
+/// The Dock tile plugin's name (rule 1276): its bundle `<name>.docktileplugin` in `Contents/PlugIns`, its executable
+/// and the last part of its id.
+pub const DOCK_TILE: &str = "FlareDockTile";
+
+/// The plugin's principal class, the one `FlareDockTile.m` defines (unique, as the Dock's helper may hold several).
+pub const DOCK_TILE_CLASS: &str = "FlareDockTilePlugIn_com_flare_terminal";
+
+/// The plugin's source, from the repository root.
+pub const DOCK_TILE_SOURCE: &str = "crates/flare-cef/src/macos/FlareDockTile.m";
+
+/// The plugin bundle's `Info.plist` text.
+pub fn dock_tile_plist(version: &str) -> String {
+    bundle::plist_doc(&format!(
+        "  <key>CFBundleDevelopmentRegion</key>\n  <string>en</string>\n\
+           <key>CFBundleExecutable</key>\n  <string>{DOCK_TILE}</string>\n\
+           <key>CFBundleIdentifier</key>\n  <string>{BUNDLE_ID}.{DOCK_TILE}</string>\n\
+           <key>CFBundleInfoDictionaryVersion</key>\n  <string>6.0</string>\n\
+           <key>CFBundleName</key>\n  <string>{DOCK_TILE}</string>\n\
+           <key>CFBundlePackageType</key>\n  <string>BNDL</string>\n\
+           <key>CFBundleShortVersionString</key>\n  <string>{version}</string>\n\
+           <key>CFBundleVersion</key>\n  <string>{version}</string>\n\
+           <key>LSMinimumSystemVersion</key>\n  <string>{MIN_MACOS}</string>\n\
+           <key>NSPrincipalClass</key>\n  <string>{DOCK_TILE_CLASS}</string>\n"
+    ))
+}
+
+/// Builds the Dock tile plugin bundle from `source` under `<out_dir>/dock-tile` with `xcrun clang` (arm64, macOS 15+,
+/// headless); its path. Unsigned: the app's signing signs it.
+pub fn build_dock_tile(source: &Path, out_dir: &Path, version: &str) -> Result<PathBuf, String> {
+    let plugin = out_dir
+        .join("dock-tile")
+        .join(format!("{DOCK_TILE}.docktileplugin"));
+    if plugin.exists() {
+        fs::remove_dir_all(&plugin).map_err(|e| format!("{}: {e}", plugin.display()))?;
+    }
+    let macos = plugin.join("Contents/MacOS");
+    fs::create_dir_all(&macos).map_err(|e| format!("{}: {e}", macos.display()))?;
+    fs::write(plugin.join("Contents/Info.plist"), dock_tile_plist(version))
+        .map_err(|e| format!("{}: {e}", plugin.display()))?;
+    run(Command::new("/usr/bin/xcrun")
+        .args(["clang", "-bundle", "-fobjc-arc", "-O2", "-arch", "arm64"])
+        .arg(format!("-mmacosx-version-min={MIN_MACOS}"))
+        .args(["-framework", "AppKit", "-o"])
+        .arg(macos.join(DOCK_TILE))
+        .arg(source))?;
+    Ok(plugin)
 }
 
 /// The shipped Mac app icon's source, from the repository root: the original Flare icon, tools/make-icon.py's 1024 px
@@ -367,6 +422,7 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
     let icon_src = need(i.root.join(APP_ICON_SOURCE))?;
     fs::create_dir_all(i.out_dir).map_err(|e| format!("{}: {e}", i.out_dir.display()))?;
     let icns = make_icns(&icon_src, i.out_dir)?;
+    let dock_tile = build_dock_tile(&need(i.root.join(DOCK_TILE_SOURCE))?, i.out_dir, i.version)?;
     let engine = engine_code(i.engine_dir, &i.out_dir.join("engine"))?;
     let spec = BundleSpec {
         name: APP_NAME,
@@ -390,6 +446,7 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
                 (&engine_license, ENGINE_LICENSE),
             ],
             frameworks: vec![(&engine, ENGINE_FOLDER)],
+            plugins: vec![&dock_tile],
             keys: app_keys(i.year),
         },
     };
@@ -523,6 +580,114 @@ mod tests {
             assert!(engine.contains(&format!("\"{p}\"")), "{p}");
         }
         assert!(engine.contains(".join(\"Frameworks\")"));
+    }
+
+    /// Rule 1276: the app names the Dock tile plugin, and the plugin's source defines the class its plist names.
+    #[test]
+    fn the_app_names_the_dock_tile_plugin_and_its_source_defines_its_class() {
+        let keys = app_keys("2026");
+        let (_, v) = keys
+            .iter()
+            .find(|(k, _)| *k == "NSDockTilePlugIn")
+            .expect("the app names its Dock tile plugin");
+        assert_eq!(v, "<string>FlareDockTile.docktileplugin</string>");
+        let plist = dock_tile_plist("1.2.3");
+        for want in [
+            "<string>BNDL</string>",
+            "<string>com.flare.terminal.FlareDockTile</string>",
+            "<string>FlareDockTilePlugIn_com_flare_terminal</string>",
+            "<string>1.2.3</string>",
+            "<string>15.0</string>",
+        ] {
+            assert!(plist.contains(want), "{want} in {plist}");
+        }
+        let source = include_str!("FlareDockTile.m");
+        assert!(source.contains(&format!("@implementation {DOCK_TILE_CLASS}")));
+    }
+
+    /// Rule 1276: clang builds the plugin into a bundle macOS reads (arm64, its plist valid), and a bundle carrying it
+    /// signs inside out and verifies. Skipped where Xcode's clang cannot run.
+    #[test]
+    fn the_dock_tile_plugin_builds_and_the_app_signs_with_it() {
+        if !Command::new("/usr/bin/xcrun")
+            .args(["clang", "--version"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            eprintln!("no clang here: skipped");
+            return;
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tmp = std::env::temp_dir().join(format!("flare-docktile-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let plugin = build_dock_tile(&root.join(DOCK_TILE_SOURCE), &tmp, "1.0").expect("built");
+        let exe = plugin.join("Contents/MacOS").join(DOCK_TILE);
+        assert!(crate::macos::sign::is_macho(&exe));
+        let lint = Command::new("/usr/bin/plutil")
+            .arg("-lint")
+            .arg(plugin.join("Contents/Info.plist"))
+            .output()
+            .expect("plutil");
+        assert!(lint.status.success(), "{lint:?}");
+        let syms = Command::new("/usr/bin/nm")
+            .arg("-gU")
+            .arg(&exe)
+            .output()
+            .expect("nm");
+        let syms = String::from_utf8_lossy(&syms.stdout);
+        assert!(
+            syms.contains(&format!("_OBJC_CLASS_$_{DOCK_TILE_CLASS}")),
+            "{syms}"
+        );
+
+        let app = tmp.join("Flare.app");
+        let contents = app.join("Contents");
+        fs::create_dir_all(contents.join("MacOS")).expect("dir");
+        fs::write(
+            contents.join("Info.plist"),
+            bundle::info_plist(
+                "Flare",
+                "dev.flare.t",
+                "1.0",
+                false,
+                false,
+                &app_keys("2026"),
+            ),
+        )
+        .expect("plist");
+        fs::copy("/usr/bin/true", contents.join("MacOS/Flare")).expect("exe");
+        fs::create_dir_all(contents.join(bundle::PLUGINS)).expect("dir");
+        copy_dir(
+            &plugin,
+            &contents
+                .join(bundle::PLUGINS)
+                .join(format!("{DOCK_TILE}.docktileplugin")),
+        )
+        .expect("copied");
+        bundle::sign_bundle(
+            &app,
+            "Flare",
+            "dev.flare.t",
+            &Signing::AdHoc,
+            &tmp.join("ent"),
+        )
+        .expect("signs");
+        bundle::verify(&app).expect("the seal holds with the plugin");
+        let out = Command::new("/usr/bin/codesign")
+            .arg("-dv")
+            .arg(
+                contents
+                    .join(bundle::PLUGINS)
+                    .join(format!("{DOCK_TILE}.docktileplugin")),
+            )
+            .output()
+            .expect("codesign");
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            text.contains("Identifier=dev.flare.t.FlareDockTile"),
+            "{text}"
+        );
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
