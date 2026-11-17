@@ -28,6 +28,10 @@ export global PluginInk {
         return l.branded ? BrandInk.error : (Theme.light ? SettingsFixed.error-light : SettingsFixed.error-dark);
     }
     pure public function error-edge(l: PluginLook) -> color { return l.branded ? BrandInk.error-edge : SettingsFixed.error-edge; }
+    // A checked secret's success: the green check (readable on a light theme too).
+    pure public function ok(l: PluginLook) -> color {
+        return l.branded ? BrandInk.ok : (Theme.light ? SettingsFixed.ok-light : SettingsFixed.ok-dark);
+    }
     // A tone (0 plain, 1 the brand's usual, 2 amber) as text on the surface.
     pure public function tone(l: PluginLook, t: int) -> color {
         return t == 2 ? PluginInk.warn(l) : (t == 1 ? PluginInk.accent-hi(l) : PluginInk.text(l));

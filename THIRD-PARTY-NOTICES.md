@@ -7629,7 +7629,7 @@ THE SOFTWARE.
 Used by:
 - tracing-core 0.1.36
 - zip 8.6.0
-- zip 9.0.0
+- zip 9.0.5
 
 ```text
 The MIT License (MIT)

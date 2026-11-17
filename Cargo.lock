@@ -1916,7 +1916,7 @@ dependencies = [
  "velopack",
  "wgpu",
  "windows-sys 0.61.2",
- "zip 9.0.0",
+ "zip 9.0.5",
 ]
 
 [[package]]
@@ -2006,7 +2006,7 @@ dependencies = [
  "ureq",
  "windows",
  "windows-sys 0.61.2",
- "zip 9.0.0",
+ "zip 9.0.5",
 ]
 
 [[package]]
@@ -2086,7 +2086,7 @@ dependencies = [
  "ureq",
  "url",
  "windows-sys 0.61.2",
- "zip 9.0.0",
+ "zip 9.0.5",
 ]
 
 [[package]]
@@ -7863,14 +7863,15 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.0.0"
+version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "711e8c9646791c49b7eb799a19c4ae70a9b8372ddc6a1fa4778defd1e2aa5d5e"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "crc32fast",
  "flate2",
  "indexmap",
  "memchr",
+ "nix 0.31.3",
  "typed-path",
  "zopfli",
 ]
