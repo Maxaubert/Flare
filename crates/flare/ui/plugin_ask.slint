@@ -5,8 +5,7 @@
 // label as its placeholder and an eye to show it, a full-width button with the plugin's word, Cancel as a link).
 // A secret ask with an `error` (2026-11-15, the approved mockup C) shows that line in the sub's place in the error
 // colour, and the field gets a red edge with a soft red glow; it is empty and has the keys as always.
-// The short grey line under a secret's Cancel, "Asked by <plugin>", says whose question it is: Flare writes it from
-// the plugin's resolved name (and install host), never from the ask, in Flare's own dim ink (rule 1266, 2026-11-15).
+// A secret ends at Cancel: Max took the short grey "Asked by <plugin>" line under it out (rule 1266, 2026-11-16).
 // Fill is pressed by the pointer only: no key presses it (Enter and Space press Deny, which holds the keys),
 // so a key sent at the window cannot approve a fill. Escape and a press outside the box are Deny (or Cancel).
 // Fill takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
@@ -85,8 +84,6 @@ export component PluginAsk inherits Rectangle {
     in property <string> site;
     in property <string> asker;
     in property <string> letter;
-    // A secret's line saying whose question it is, from Flare (a fill shows none).
-    in property <string> foot;
     in property <PluginLook> look;
     // A fill's answer: 0 Deny, 1 Fill.
     callback fill-answer(int);
@@ -124,11 +121,6 @@ export component PluginAsk inherits Rectangle {
     out property <length> ok-h: ok-btn.height;
     out property <length> eye-x: eye.absolute-position.x;
     out property <length> eye-y: eye.absolute-position.y;
-    // Where a secret's "Asked by" line is, for the UI tests (it sits under Cancel).
-    out property <length> foot-x: foot-txt.absolute-position.x;
-    out property <length> foot-y: foot-txt.absolute-position.y;
-    out property <length> foot-w: foot-txt.width;
-    out property <length> foot-h: foot-txt.height;
     out property <length> box-x: box.x;
     out property <length> box-y: box.y;
     out property <length> box-w: box.width;
@@ -421,7 +413,7 @@ export component PluginAsk inherits Rectangle {
                     clicked => { root.fill-answer(1); }
                 }
             }
-            // A secret: Cancel as a link and Flare's "Asked by <plugin>" under it. A fill ends at its buttons.
+            // A secret: Cancel as a link, the last row (no line under it, 2026-11-16). A fill ends at its buttons.
             Rectangle { height: root.kind == 1 ? 6px : 0px; }
             HorizontalLayout {
                 visible: root.kind == 1;
@@ -434,20 +426,6 @@ export component PluginAsk inherits Rectangle {
                     link: true;
                     clicked => { root.cancel(); }
                 }
-            }
-            // Small and dim, in Flare's own type and dim ink (Theme.dim, or BrandInk.dim on the fixed brand surface):
-            // never the plugin's colour, and its words come from Flare, not from the ask (rule 1266).
-            Rectangle { height: root.kind == 1 ? 2px : 0px; }
-            foot-txt := Text {
-                visible: root.kind == 1;
-                height: root.kind == 1 ? self.preferred-height : 0px;
-                text: root.kind == 1 ? root.foot : "";
-                wrap: word-wrap;
-                horizontal-alignment: center;
-                font-family: Theme.font-ui;
-                font-size: 11px;
-                font-weight: 400;
-                color: PluginInk.dim(root.look);
             }
         }
     }

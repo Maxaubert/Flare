@@ -1913,7 +1913,6 @@ dependencies = [
  "slint-build",
  "spake2",
  "tempfile",
- "url",
  "velopack",
  "wgpu",
  "windows-sys 0.61.2",
