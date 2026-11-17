@@ -55,7 +55,7 @@ pub fn permission_words(p: Permission) -> &'static str {
         Permission::Decorate => "Put badges and progress on tabs",
         Permission::Tabs => "See all your tabs and what their agents are doing",
         Permission::Sidebar => "Add a section to the sidebar",
-        Permission::Actions => "Add buttons to tabs and menus",
+        Permission::Actions => "Add buttons to tabs and menus, and show short notices",
         Permission::Bar => "Show a bar under the terminal",
         Permission::Sessions => "Read what you and Claude say in sessions",
         Permission::Input => "Type and run commands in your terminals (full control)",

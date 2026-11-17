@@ -5,7 +5,8 @@ param(
     [string]$Deny = (Join-Path $PSScriptRoot '..\..\deny.toml'),
     [switch]$Live
 )
-$ids = 'RUSTSEC-2026-0367', 'RUSTSEC-2026-0368', 'RUSTSEC-2026-0369', 'RUSTSEC-2026-0429'
+$ids = 'RUSTSEC-2026-0367', 'RUSTSEC-2026-0368', 'RUSTSEC-2026-0369', 'RUSTSEC-2026-0429',
+    'RUSTSEC-2026-0545', 'RUSTSEC-2026-0546', 'RUSTSEC-2026-0547', 'RUSTSEC-2026-0548'
 $text = Get-Content -Raw -LiteralPath $Deny
 $left = @($ids | Where-Object { $text -match [regex]::Escape($_) })
 if ($left.Count -gt 0 -and $Live) {

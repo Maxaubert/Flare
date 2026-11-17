@@ -2,8 +2,8 @@
 //! switcher, the taskbar and the window wear. Key `flare.window.appIcon`; `original`, the shipped Flare icon, until
 //! somebody picks another, and for any stored word that is not one of the choices.
 //!
-//! Only the running app changes: the bundle and the exe keep the original (Finder, shortcuts, the installer), so the
-//! signed app is never written to.
+//! The bundle and the exe keep the original (Finder, the installer), so the signed app is never written to. On
+//! Windows this profile's Start menu shortcut wears the pick too (rule 1272).
 
 use crate::kv::{EnumPref, PrefStore, Subscription};
 

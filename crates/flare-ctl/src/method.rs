@@ -82,6 +82,12 @@ pub enum Method {
     /// A plugin asks the person for a secret (a master password) in Flare's own masked field (under `fill`); the
     /// text goes back to that plugin only and is never kept or logged.
     SecretAsk,
+    /// A plugin says whether the secret it asked for with `verify` was right (under `fill`): Flare shows a check, puts
+    /// the field back with an error line (and the call waits for the next answer), or ends the question (rule 1274).
+    SecretResult,
+    /// A short notice from a plugin under the title bar (`notice.show`, 2026-11-17): one line, its logo, a close button,
+    /// gone after 6 s. Under `actions`, never the agent's.
+    NoticeShow,
     /// Reserved: what Flare knows about the conversation of the tab.
     ConvoState,
     /// Reserved, UI only: a mod answers a tool call the agent made.
@@ -175,6 +181,9 @@ pub enum Namespace {
     /// A login filled into a web page and a secret asked of the person (`browser.fill`, `browser.fill.page`,
     /// `secret.ask`), under `fill`. Never the agent's.
     Fill,
+    /// A plugin's short notice under the title bar (`notice.show`), under `actions`: the answer to what the person
+    /// clicked. Never the agent's.
+    Notice,
     /// A remote link's methods (`remote.*`, remote sessions): only the remote grant, which only the serve stdio path
     /// issues, enters it. No permission opens it, so no mod or plugin can ask for it.
     Remote,
@@ -185,7 +194,7 @@ pub enum Namespace {
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 20] = [
+    pub const ALL: [Namespace; 21] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -204,6 +213,7 @@ impl Namespace {
         Namespace::Storage,
         Namespace::Agents,
         Namespace::Fill,
+        Namespace::Notice,
         Namespace::Remote,
         Namespace::Open,
     ];
@@ -233,13 +243,16 @@ impl Namespace {
             Namespace::Input => Some(Permission::Input),
             Namespace::Agents => Some(Permission::AgentLooks),
             Namespace::Fill => Some(Permission::Fill),
+            // A notice is the answer to a plugin's own button or menu item, so it rides on `actions` (2026-11-17): a
+            // new permission would make a plugin that asks for it fail to install on every older Flare.
+            Namespace::Notice => Some(Permission::Actions),
         }
     }
 }
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 62] = [
+    pub const ALL: [Method; 64] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -279,6 +292,8 @@ impl Method {
         Method::BrowserFill,
         Method::BrowserFillPage,
         Method::SecretAsk,
+        Method::SecretResult,
+        Method::NoticeShow,
         Method::ConvoState,
         Method::ToolsRespond,
         Method::ShellInput,
@@ -346,6 +361,8 @@ impl Method {
             Method::BrowserFill => "browser.fill",
             Method::BrowserFillPage => "browser.fill.page",
             Method::SecretAsk => "secret.ask",
+            Method::SecretResult => "secret.result",
+            Method::NoticeShow => "notice.show",
             Method::ConvoState => "convo.state",
             Method::ToolsRespond => "tools.respond",
             Method::ShellInput => "shell.input",
@@ -410,7 +427,11 @@ impl Method {
             | Method::BrowserWait
             | Method::BrowserEval
             | Method::BrowserPoint => Namespace::Browser,
-            Method::BrowserFill | Method::BrowserFillPage | Method::SecretAsk => Namespace::Fill,
+            Method::BrowserFill
+            | Method::BrowserFillPage
+            | Method::SecretAsk
+            | Method::SecretResult => Namespace::Fill,
+            Method::NoticeShow => Namespace::Notice,
             Method::ConvoState => Namespace::Convo,
             Method::ToolsRespond => Namespace::Tools,
             Method::ModsTools | Method::ModsCall => Namespace::AgentTools,
@@ -506,6 +527,7 @@ mod tests {
                 Namespace::Storage => prefix == "storage",
                 Namespace::Agents => prefix == "agents",
                 Namespace::Fill => matches!(prefix, "browser" | "secret"),
+                Namespace::Notice => prefix == "notice",
                 Namespace::Remote => prefix == "remote",
                 Namespace::Open => prefix == "open",
             };
@@ -545,14 +567,16 @@ mod tests {
     fn a_fill_waits_for_the_persons_answer_and_the_page_address_does_not() {
         assert_eq!(Method::BrowserFill.timeout(), FILL_TIMEOUT);
         assert_eq!(Method::SecretAsk.timeout(), FILL_TIMEOUT);
+        // A wrong answer's secret.result waits for the person's next try.
+        assert_eq!(Method::SecretResult.timeout(), FILL_TIMEOUT);
         assert_eq!(Method::BrowserFillPage.timeout(), DEFAULT_TIMEOUT);
         assert!(FILL_TIMEOUT > Duration::from_secs(60));
     }
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 62);
-        assert_eq!(Namespace::ALL.len(), 20);
+        assert_eq!(Method::ALL.len(), 64);
+        assert_eq!(Namespace::ALL.len(), 21);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
         }
@@ -606,6 +630,17 @@ mod tests {
         assert_eq!(Method::OpenRemoteSession.namespace(), Namespace::Open);
         assert_eq!(Method::OpenRemoteSession.timeout(), DEFAULT_TIMEOUT);
         assert_eq!(Namespace::Open.permission(), None);
+    }
+
+    /// `notice.show` (2026-11-17) is a short call of its own namespace, opened by `actions`.
+    #[test]
+    fn notice_show_is_a_short_call_under_actions() {
+        assert_eq!(Method::parse("notice.show"), Some(Method::NoticeShow));
+        assert_eq!(Method::NoticeShow.namespace(), Namespace::Notice);
+        assert_eq!(Method::NoticeShow.timeout(), DEFAULT_TIMEOUT);
+        assert_eq!(Namespace::Notice.permission(), Some(Permission::Actions));
+        assert_eq!(Method::parse("notice"), None);
+        assert_eq!(Method::parse("notice.hide"), None);
     }
 
     #[test]

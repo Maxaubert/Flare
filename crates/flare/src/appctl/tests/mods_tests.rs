@@ -2202,6 +2202,8 @@ mod plugin_bar;
 mod plugin_fill;
 mod plugin_install;
 mod plugin_motion;
+mod plugin_notice;
 mod plugin_samples;
+mod plugin_secret_verify;
 mod plugin_sessions;
 mod plugin_surfaces;
