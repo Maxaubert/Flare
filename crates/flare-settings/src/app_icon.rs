@@ -114,6 +114,15 @@ pub fn on_app_icon_change(s: &PrefStore, cb: impl Fn() + Send + Sync + 'static) 
     s.on_change(PREF.key, cb)
 }
 
+/// macOS (rule 1276, Max 2026-11-17): the pick's picture, a PNG under `~/Library/Application Support`, for what draws
+/// Flare while it is closed: the Dock tile plugin in `Flare.app/Contents/PlugIns` (a pinned Flare) and Huddle. It is
+/// absent while the original is picked, so both show the bundle's icon. The plugin's source names the same path.
+pub const SHARED_ICON_FILE: &str = "Flare/app-icon.png";
+
+/// The distributed notification Flare posts after the shared picture changed (rule 1276); the Dock tile plugin and
+/// Huddle read the file again when they hear it.
+pub const SHARED_ICON_NOTE: &str = "com.flare.terminal.appIconChanged";
+
 /// The App icon row's button on Windows (rule 1263, 2026-11-14): it restarts Explorer, so the taskbar shows the
 /// picked icon at once. It stands where the picked icon's name stood. A Mac has no such button (rule 1264).
 pub const RESTART_BUTTON: &str = "restart-shell";

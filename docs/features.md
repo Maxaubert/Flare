@@ -682,7 +682,10 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   OK; the row's subtext never changes. 2026-11-15 (owner's decision), rule 1264: on a Mac the row's right is empty,
   with no restart button, since the Dock already shows a pick at once and restarting it may drop that icon.
   How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
-  at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
+  at start and on every pick; Finder keeps the original, since the signed bundle is never written to. While Flare is
+  closed (rule 1276), a pinned Dock tile and Huddle keep the pick: Flare saves it as
+  `~/Library/Application Support/Flare/app-icon.png`, which the Dock tile plugin in `Contents/PlugIns` and Huddle
+  draw. On Windows,
   the window's big and small icons (`WM_SETICON`), at start, on a DPI change and on every pick; the exe and the
   installer keep the original (the Start menu shortcut follows the pick, rule 1272 below).
   2026-11-15 (Max: "it doesnt change wheni picka differnt icon thoguh, not before or after restart explorer"),
