@@ -21,6 +21,21 @@ ignore = [
     { id = "RUSTSEC-2026-0369", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
     { id = "RUSTSEC-2026-0429", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). Patched >= 9.0.0, so flare-dictation's zip 9.0.0 is clean (2026-11-10)" },
     { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained notice via velopack 1.2.161; not a vulnerability" },
+    # 2026-11-17: four more zip advisories, the first three on 8.6.0 ONLY (patched >= 9.0.0), the fourth on 8.6.0 and
+    # 9.0.0 (patched >= 9.0.5). Flare's own zip is now =9.0.5, so these ignores cover velopack's 8.6.0 copy alone.
+    # velopack 1.2.161 needs zip ^8.6 (no [patch] can lift it to 9); the only velopack on zip ^9 is the 1.3.39
+    # pre-release, which would also move vpk in both release workflows. None of the four reaches velopack's use:
+    # it builds zip with `deflate` only (no `aes-crypto`, no `legacy-zip`) and reads with ZipArchive::by_index, never
+    # ZipArchive::extract and never ZipStreamReader. The advisory gate (tools/release/check-advisory-gate.ps1) holds
+    # them like the four above.
+    { id = "RUSTSEC-2026-0545", reason = "zip 8.6.0 ONLY, via velopack 1.2.161: AES entries; needs the aes-crypto feature, not built (2026-11-17)" },
+    { id = "RUSTSEC-2026-0546", reason = "zip 8.6.0 ONLY, via velopack 1.2.161: ZipArchive::extract symlinks; velopack never calls extract (2026-11-17)" },
+    { id = "RUSTSEC-2026-0547", reason = "zip 8.6.0 ONLY, via velopack 1.2.161: legacy Shrink/Reduce/Implode; needs the legacy-zip feature, not built (2026-11-17)" },
+    { id = "RUSTSEC-2026-0548", reason = "zip 8.6.0 ONLY, via velopack 1.2.161: ZipStreamReader names; velopack reads with ZipArchive only. Flare's zip is 9.0.5, patched (2026-11-17)" },
+    # chrono is unmaintained (no patched release, not a vulnerability). It reaches us only through Slint's i-slint-core
+    # (1.18.1, and 1.19.0 of 2026-11-16 still requires chrono ^0.4); Flare has no direct use. Drop this when Slint
+    # moves off chrono (check on each Slint bump). Added 2026-11-17.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, pulled by slint 1.18.1 via i-slint-core; no safe upgrade, not a vulnerability" },
     # pin-utils was archived upstream on 2026-10-01 (unmaintained notice, no patched release). It reaches us only through
     # spin_on 0.1.1 <- slint-build / slint-macros 1.18.1, at build time. Drop this when Slint moves off spin_on
     # (check on each Slint bump). Added 2026-11-10.
