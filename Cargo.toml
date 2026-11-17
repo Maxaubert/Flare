@@ -111,12 +111,14 @@ webview2-com = "=0.39.1"
 # The GPU pack's unzip (M8 D5). 9.0.0 (2026-10-09) is the OLDEST release patched for RUSTSEC-2026-0367/0368/0369
 # (every one says patched >= 9.0.0; 9.0.0-pre3 is NOT). No fixed release is 14 days old yet (9.0.0 is 10 days old on
 # 2026-10-19), so the age rule gives way to the advisory rule. Never 8.6 (velopack's; ignored in deny.toml for it only).
+# 2026-11-17: 9.0.5 (2026-10-17, 31 days old) is the OLDEST release patched for RUSTSEC-2026-0548 (>= 9.0.5). Flare
+# reads only through ZipArchive (central-directory names), never ZipStreamReader, so it was not affected; bumped anyway.
 # Markdown views (2026-11-10): the compiled page's parser, with no HTML writer of its own (Flare escapes every tag itself).
 # 0.13.4 was already in the lockfile through Slint (MIT). 0.13.6 (2026-10-30) is the OLDEST release patched for both
 # RUSTSEC-2026-0414 (>= 0.13.5) and RUSTSEC-2026-0433 (>= 0.13.6); it is 11 days old on 2026-11-10, so the age rule
 # gives way to the advisory rule, as for zip below. Slint's i-slint-common shares this copy.
 pulldown-cmark = { version = "=0.13.6", default-features = false }
-zip = { version = "=9.0.0", default-features = false, features = ["deflate"] }
+zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
 # Machine pairing PR 3 (2026-11-14): the 6-digit code is a SPAKE2 password (RFC 9382; RustCrypto PAKEs, the crate Magic
 # Wormhole uses; 0.4.0 is from 2023-07), the confirmed key is split with HKDF and checked with HMAC (SHA-256, the sha2
 # above), and the channel after it is ChaCha20-Poly1305. All are the 2022-2023 releases on sha2 0.10, the generation

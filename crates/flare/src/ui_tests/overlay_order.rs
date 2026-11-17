@@ -22,11 +22,13 @@ const APP: &str = include_str!("../../ui/app.slint");
 /// A plugin's question (`PluginAsk`, the `fill` permission) is a modal declared under the close question. A plugin's
 /// details sheet (`PluginSheet`, 2026-11-08) is a modal declared under it. The hover thumbnail (`ThumbBubble`, 2026-11-09)
 /// is a pop at the bottom: every menu or dialog hides it first. The Flare hotkeys sheet (`HotkeySheet`, rule 1262) is a
-/// modal declared after the plugin sheet.
-const RANKS: [(&str, u8, &str); 24] = [
+/// modal declared after the plugin sheet. The plugins' notices (`PluginNotices`, rule 1275) are a pop with the staged
+/// toast they stack under.
+const RANKS: [(&str, u8, &str); 25] = [
     ("ThumbBubble", 1, "pop"),
     ("UpdateNotice", 1, "pop"),
     ("StagedToast", 1, "pop"),
+    ("PluginNotices", 1, "pop"),
     ("SelectMenu", 1, "pop"),
     ("PluginsDropdown", 1, "pop"),
     ("ContextMenu", 2, "menu"),

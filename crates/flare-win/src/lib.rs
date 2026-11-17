@@ -59,6 +59,7 @@ pub mod session_end;
 #[cfg(not(windows))]
 #[path = "macos/session_end.rs"]
 pub mod session_end;
+pub mod shell_link;
 pub mod shell_open;
 pub mod shell_restart;
 pub mod single_instance;

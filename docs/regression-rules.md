@@ -3665,7 +3665,7 @@ the Mac's `Flare.icns`, which `flare-cef`'s `macos::release` makes with `sips` a
 #199's Windows SVG on Windows) are choices of **Settings > Appearance > App icon**: twelve tiles under the row's
 words (placed by rule 1263), Original first; the tiles carry no words, so each has its name as tooltip and accessible label, the
 first saying "Original, the default". The pick is `flare.window.appIcon` in `settings.json` (`flare_settings::app_icon`):
-`original` until another is picked, and for any stored word that is not a choice. Held by
+`original` until another is picked, and for any stored word that is not a choice. On Windows a pick also reaches this profile's Start menu shortcut, and the original takes it back there (rule 1272). Held by
 `the_original_icon_is_the_shipped_app_icon_and_the_others_are_choices` (`crates/flare/tests/ship_text.rs`),
 `the_mac_app_icon_is_the_original_flare_icon` (`crates/flare-cef/src/macos/release.rs`), `tools/test_make_icon.py`,
 `flare_settings::app_icon`'s tests (`the_pick_round_trips_through_settings_json`,
@@ -3682,8 +3682,8 @@ resvg, set at start and on every pick, and cleared for the original so the bundl
 `NSWorkspace setIcon` on `Flare.app`, which would break its code signature, so Finder keeps the original (the row
 says so). Windows: the main window's big and small icons (`WM_SETICON`; the taskbar button follows them only through
 rule 1265's window id), drawn at the
-monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. Shortcuts,
-the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
+monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. This
+profile's Start menu shortcut wears the pick too (rule 1272); the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
 so the main window is the only one. Nothing is set at start while the original is picked. Code: `crates/flare/src/app_icon.rs`
 (`IconCtl`, `start`), `ship_ctl::set_window_icon` and `set_worn_icon`. Held by `the_default_is_the_original_and_needs_nothing_at_start`,
 `a_pick_is_worn_once_and_the_original_brings_the_shipped_icon_back`, `an_unknown_stored_icon_falls_back_to_the_original`
@@ -4365,7 +4365,7 @@ A press runs `ShellRestart::restart` on the `flare-shell-restart` worker and ans
 Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path, out of any job Flare
 runs in, checks that it shows within 5 s and starts it once more before it reports a failure
 (`flare_win::shell_restart`). A settings row's subtext never changes to report state (Max's
-standing rule), so the row always says "The taskbar and the window. Shortcuts keep the original." (its own fixed text
+standing rule), so the row always says "The taskbar, the window and the Start menu." (rule 1272; its own fixed text
 on a Mac, `APP_ICON_SUB`). A failure opens the settings notice instead (`SetNotice`, `ui/settings/notice.slint`):
 the Dialog look (scrim, a box of at most 380 px on the side-flat ground, hairline border, modal shadow) with one plain
 line, "Explorer did not restart." (`app_icon::RESTART_FAILED`), and an **OK** button
@@ -4582,7 +4582,7 @@ icons, at window creation and on every pick, live, with no restart (`wear_window
 changes (a DPI change writes nothing; a window made with the original writes nothing, the process id covers it), and
 a failed write is logged and tried again on the next call. The process id and toasts stay on the base id. While a
 custom icon is picked, a pinned Flare and its Jump List belong to the other id. macOS is unchanged. The Restart
-Explorer button stays. Held by `a_custom_pick_wears_one_icon_id_and_the_original_wears_the_shortcuts`,
+Explorer button stays. Rule 1272 gives the Start menu shortcut the pick as well; the window keeps this id. Held by `a_custom_pick_wears_one_icon_id_and_the_original_wears_the_shortcuts`,
 `the_window_id_is_written_only_when_it_changes_and_a_failure_retries`,
 `the_window_wears_the_pick_id_and_the_process_keeps_the_base_id` (`ship_ctl.rs`),
 `the_key_is_pkey_app_user_model_id` and `a_null_window_or_an_empty_id_is_refused_without_the_shell`
@@ -4604,6 +4604,42 @@ cleared). Held by `the_value_owns_a_com_string_that_its_drop_frees_once` and `th
 so the source check is the main guard. Source: Max, 2026-11-16; crash dumps `FlareStable.exe.34872.dmp` and
 `FlareStable.exe.70884.dmp`.
 
+## The Start menu wears the app icon (2026-11-16)
+
+1272. **On Windows the App icon pick also changes this profile's Start menu shortcut, found by its taskbar id.** Max,
+2026-11-16: the pick should also change the Start menu icon. Before, the pick changed the window and the taskbar
+(rule 1265) and the shortcut kept the original. Now `start_menu_icon` runs on its own worker, `flare-start-menu-icon`,
+never the UI thread: once at start and on every pick. It finds THIS profile's shortcut in the Start menu Programs
+folder (`FOLDERID_Programs`) by its `PKEY_AppUserModel_ID`, which must equal `ship_ctl::effective_aumid` (ASCII case
+ignored), never by its name (`Flare.lnk` for Dev and `Flare Stable.lnk` for Stable today). It touches only that one
+and never makes a shortcut. A custom pick is drawn from its SVG (`app_icon::render_ico`) as one `.ico` with a PNG
+image at 16, 24, 32, 48, 64, 128 and 256 px. It is written into the profile's data folder as
+`app-icon-<16 hex>.ico`, a hash of its bytes, so the shell's icon cache never shows an old picture under that path.
+The shortcut's icon is pointed at it with `IShellLinkW::SetIconLocation` (index 0) and `IPersistFile::Save`
+(`flare_win::shell_link`). Then the shell is told with `SHChangeNotify`: `SHCNE_UPDATEITEM` on the `.lnk` and
+`SHCNE_ASSOCCHANGED`, so the Start menu shows it without an Explorer restart. Older `app-icon-*.ico` files are deleted
+once the shortcut no longer names them. The original points the shortcut back at the exe's own icon (index 0) and
+deletes Flare's files, but only when the shortcut wears one of them: an icon the installer or the person set stays.
+In that case Flare's leftover files are deleted, but never one whose name the shortcut names.
+The same pick again writes nothing and tells nobody. A failed write is logged, keeps the old file and removes the
+file just written for it. The data folder is made absolute first, so a relative `--user-data-dir` never lands in
+the shortcut. No shortcut
+with this id means nothing is drawn, written or told. The run at start puts the pick back after an update rewrote
+the shortcut. Only an installed run does this (`Ship.packaged`, never under `--e2e`, never a dev build, whose exe is
+not the shortcut's). COM is opened per call in the apartment model and closed after every interface is released; a
+`PROPVARIANT` is only read, and its own drop frees COM's value once (rule 1270). The row's subtext on Windows is now
+"The taskbar, the window and the Start menu." (`APP_ICON_SUB`; the Mac text is unchanged). macOS is unchanged.
+The file and shell calls sit behind `IconFiles` and `LinkShell`, so tests use a temp folder and a fake shell and never
+touch the real Start menu. Held by `the_shortcut_is_matched_by_its_id_and_only_it_is_touched`,
+`a_new_pick_replaces_the_old_file_and_the_same_pick_is_a_no_op`, `the_original_restores_the_exes_icon_zero`,
+`the_original_leaves_an_icon_flare_did_not_set`, `a_rewritten_shortcut_gets_the_pick_again`, `no_shortcut_is_a_no_op`,
+`a_failed_set_keeps_the_old_file`, `the_original_on_a_rewritten_shortcut_clears_leftover_files`,
+`the_file_name_is_a_content_hash`,
+`the_shell_runs_on_the_worker_and_no_shortcut_is_made` (`start_menu_icon.rs`), `the_ico_holds_every_size_as_a_png`
+(`app_icon.rs`), `a_temp_shortcut_reads_its_id_and_takes_a_new_icon`, `a_missing_shortcut_reads_as_an_error`,
+`no_propvariant_is_built_here` (`flare-win/src/shell_link.rs`) and `the_app_icon_row_picks_the_original_until_another_is_chosen`
+(`page/appearance.rs`). Source: Max, 2026-11-16.
+
 1273. **A title a plugin's helper sets is what every tab's menu says, and a plugin call Flare refuses leaves a
 `plugin-refused` crumb.** Max, 2026-11-16: "still says unlock bitwarden, no feedback". Bitwarden 0.3.2's helper sets
 its tab-menu title over the pipe (`actions.set {key, title}`, no tab). Flare took that call all along: the helper path
@@ -4618,6 +4654,74 @@ the plugin was given. A `timeout` is no refusal. Held by `a_title_the_plugins_he
 and `a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says` (`appctl/tests/mods_tests/plugin_surfaces.rs`),
 `a_mod_token_gets_the_mod_grant` (`flare-ctl/src/session.rs`) and the throttle tests in `plugin_refused.rs`. Source:
 Max, 2026-11-16; `plugins-logs/bitwarden.log` of the Stable profile.
+
+1274. **A checked secret keeps its box open: `secret.ask` with `verify` shows checking, then a green check, the field
+back in place with the red line, or the plugin's end line, and never closes and reopens.** Max, 2026-11-16 (approved
+mockup "Unlock Bitwarden: the box stays open"): the Bitwarden unlock box closed on Unlock while `bw unlock` ran (about
+3 s) and, on a wrong password, opened again. Now a plugin may send `verify: true` (optional, default false) and
+`checking` (one clean line, at most 120, only with `verify`; `bad_params` without it). The button sends the text once:
+the plugin's `secret.ask` answers `{text, ask}` (the ask's id, `s<n>`) and the box stays up, checking: the field at 0.6
+opacity and read-only, keeping its dots; the button off (0.55) with a small turning spinner in place of its word; the
+checking line (`Checking...` by default) in the sub's place, never red; Cancel, Escape and a press outside still cancel.
+The plugin answers with `secret.result {ask, ok, title?, line?, error?, done?}` (Namespace `Fill`, the `fill`
+permission, never the agent's; not an ask, so it spends none of the 6 a minute; `FILL_TIMEOUT`). `ok: true`: a green
+check on a soft round tile (the theme token `PluginInk.ok`: `BrandInk.ok`, or `SettingsFixed.ok-dark` and `ok-light`),
+`title` (`Done` without it) and `line`, no field, button, Cancel or foot; it closes after 0.8 s (`RESULT_HOLD`) and
+answers `{shown: true}`. `ok: false`: the box goes back to the field in place, cleared, holding the keys, with `error`
+in red (`That was not right. Try again.` without it), and that call waits for the person's next try (`{text, ask}`, same
+id) or a cancel; a second waiting call is `busy`. `ok: false, done: true`: the plugin's logo, `title` (the ask's own
+without it) and its plain `line`, closed after 2.5 s (`END_HOLD`). No word in 60 s (`VERIFY_WAIT`) puts the field back
+with `The check took too long. Try again.`; a text sent then is held (a `Secret`) for the plugin's next `secret.result`
+(a late `ok: false` gets it at once and the box checks it). Cancel while checking, or a field left alone, closes the
+box, and the plugin's next `secret.result` for that ask answers `{cancelled: true}` (`timed_out` too for the timeout),
+once; any other id is `not_found`. Each stage's timer carries a round number, so a timer of an earlier stage ends
+nothing. With `verify` the button on an empty field sends nothing (the box would sit checking a text the plugin
+reads as a cancel). Without `verify` nothing changes (old plugins). Nothing in Flare runs before the box shows. Native:
+`flare_mods::fill::{parse_secret, parse_secret_result, Verdict}`, `Method::SecretResult`, `CtlOp::SecretResult`,
+`ask_glue.rs` (`Stage`, `Verify`, `answer_checked_secret`, `secret_result`, `plugin_ask_expired`),
+`plugin_ask::{checking_line, wrong_line, result_view}`, `pask-stage`, `pask-verify`, `pask-checking`,
+`pask-result-title`, `pask-result-line` in `app.slint`, `PluginAsk.stage` and `AskButton.busy` in `ui/plugin_ask.slint`,
+and the e2e probe's `ui_stage`, `checking_shown`, `result_shown`, `field_read_only`, `ok_enabled` and the controller's
+`stage` and `waiting`. Held by `verify_is_an_optional_flag_and_checking_goes_with_it` and
+`a_secret_result_is_right_wrong_or_done_and_nothing_else` (`fill.rs`),
+`a_checked_secret_has_flares_words_where_the_plugin_names_none` (`plugin_ask.rs`), the eight tests of
+`appctl/tests/mods_tests/plugin_secret_verify.rs` (right, wrong, done, cancel while checking, the timeout, the plugin
+turned off, refused params, an empty field), `secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (an ask
+without `verify`), and `ui_tests/secret_verify.rs` at every scale in both looks (checking with a turning spinner and a
+box that does not move, wrong in place and focused, the green check, the end line, no `verify`). Source: Max,
+2026-11-16.
+
+## A plugin's notice under the title bar (2026-11-17)
+
+1275. **`notice.show` puts one short line from a plugin under the title bar, never more, never the agent's.** Max,
+2026-11-17, on the Bitwarden plugin's Lock item: "jsut flip it immedeatly and trust it will work, if it doestn throw an
+error message on screen". A plugin that holds `actions` calls `notice.show {text, kind?}` (namespace `Notice`, opened by
+`actions` only: a notice answers a click on the plugin's own button or menu item, and a new permission would make a
+plugin that asks for it fail to install on every older Flare). The agent never enters it, with or without its eval
+switch, and the dispatcher refuses any caller that is not a plugin. `text` is at most 120 characters as sent
+(`MAX_TEXT_CHARS`); every control, line break and hidden formatting character (zero-width, bidi, the BOM, tag
+characters: `manifest::is_format_char` and `flare_ctl::text::invisible`) is taken out and white space runs become one
+space; a blank result, a longer text, a `kind` other than `"error"` or `"info"` and any other key are `bad_params`. A
+plugin shows at most 3 in 10 seconds (`rate_limited`, `at most 3 notices in 10 seconds for one plugin`; a refused call
+spends nothing). The window shows it only while the plugin is on in the generation the call was checked in
+(`unauthorized`), and a plugin turned off takes its notice with it. The look is Max's approved mockup A: the "Build
+ready" toast's place, size and surface (right-aligned to it, under the title bar), the plugin's logo (`PluginLogo`, its
+brand's or Flare's chip), the line in Flare's own type and ink (an ellipsis past 480 px), and an icon-only close button
+with the tooltip "Close"; `kind: "error"` adds a 3 px red left edge (`SettingsFixed.error-edge`), info has none. Theme
+tokens only, no hex in `ui/plugin_notice.slint`. It goes after 6 s (`flare_mods::notice::SHOW_FOR`), counted in 100 ms
+ticks that only run while a notice shows and skip a notice the pointer is on (the close button sits inside the
+toast's hover area, so moving onto it does not restart the clock). One notice a plugin: a newer one takes its place and
+starts its 6 s again; at most 4 show, the oldest goes. Several stack, newest last, under the staged toast and the update
+notice when they show, so they never cover either. It counts in `overlay-open`, so a web panel shows its still under
+it. The text is never logged (the log line names the plugin and the kind). Native: `flare_mods::notice`,
+`Method::NoticeShow`, `Namespace::Notice`, `AppDispatcher::notice_show` and `spend_bucket`, `CtlOp::NoticeShow`,
+`crate::plugin_notice`, `appctl/notice_glue.rs`, `plugin-notices` and `plugin-notice-*` in `app.slint`,
+`ui/plugin_notice.slint`, `Overlay::PluginNotice`. Held by `notice_show_is_a_short_call_under_actions` (`method.rs`),
+`actions_opens_the_notice_and_the_agent_never_has_it` (`grant.rs`), the four tests of `flare_mods::notice`, the three of
+`crate::plugin_notice`, `appctl::tests::mods_tests::plugin_notice` (permission, cleaning, replace, the 6 s and the
+pointer, close and turn off, the rate) and `ui_tests::plugin_notice` (every scale, both plugin looks, both layouts: the
+place, the size, the red edge, stacking under the staged toast and the update notice, the close button's tooltip and the
+pointer). Source: Max, 2026-11-17.
 
 1276. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
 screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
@@ -4687,3 +4791,4 @@ serves only the Add a machine dialog's drop-down. Held by
 `a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click` and
 `a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`).
 Source: Max, 2026-11-17; `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
+

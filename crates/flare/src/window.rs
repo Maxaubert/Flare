@@ -1655,7 +1655,11 @@ pub fn run_window(
         // A font setting changed: the controller's own look listener (`LookChanged`) has the grid
         // wear the new face and size, Settings open or not.
         // The app icon picker's choice (rule 1230): the Dock or the window wears it now and after every pick.
-        _app_icon_sub = Some(crate::app_icon::start(&prefs));
+        // An installed Windows run also puts it on this profile's Start menu shortcut, on a worker (rule 1272).
+        _app_icon_sub = Some(crate::app_icon::start(
+            &prefs,
+            crate::start_menu_icon::for_run(&ship, &inst.profile.dir),
+        ));
         stores = Some((tabs_store, window_store, prefs, panels_store));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each

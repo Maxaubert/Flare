@@ -143,12 +143,12 @@ fn colour_row(id: &str, picked: Option<String>, from_theme: &str, range: AlphaRa
     }
 }
 
-/// What the app icon row says under its label: where the pick shows, and that the app's file keeps the original
-/// (rule 1230: the signed bundle and the exe are never written to).
+/// What the app icon row says under its label: where the pick shows. On a Mac, Finder keeps the original (rule 1231:
+/// the signed bundle is never written to); on Windows the Start menu shortcut wears the pick too (rule 1272).
 pub const APP_ICON_SUB: &str = if cfg!(target_os = "macos") {
     "The Dock and the app switcher. Finder keeps the original."
 } else {
-    "The taskbar and the window. Shortcuts keep the original."
+    "The taskbar, the window and the Start menu."
 };
 
 /// The App icon row's buttons on `host`: on Windows one labelled Restart Explorer button (rule 1263), on a Mac none
@@ -423,7 +423,12 @@ mod tests {
         let r = row(&page(&prefs, &look, GlassSupport::Ok), "app-icon").clone();
         assert_eq!(r.label, "App icon");
         assert_eq!(r.sub, APP_ICON_SUB);
-        assert!(r.sub.contains("keep the original") || r.sub.contains("keeps the original"));
+        if cfg!(target_os = "macos") {
+            assert!(r.sub.contains("Finder keeps the original"));
+        } else {
+            // Rule 1272: the Start menu shortcut wears the pick too.
+            assert_eq!(r.sub, "The taskbar, the window and the Start menu.");
+        }
         let diag = crate::verb::FakeDiag::new("C:/diag", false);
         let pending = std::cell::RefCell::new(None);
         let ctx = crate::actions::Ctx {
