@@ -102,6 +102,12 @@ fn same_path(a: &str, b: &Path) -> bool {
     norm(a) == norm(&b.to_string_lossy())
 }
 
+/// The file name of a path a shortcut names. A shortcut holds a Windows path, so `\` ends a folder on every
+/// platform (`Path::file_name` on macOS would take the whole text, and the tests run there too).
+fn link_file_name(path: &str) -> &str {
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
+}
+
 /// The icon is one of Flare's files in the data folder.
 fn is_ours(icon: &str, data: &Path) -> bool {
     let p = Path::new(icon);
@@ -131,12 +137,11 @@ pub fn apply(
         if !is_ours(&facts.icon, &places.data) {
             // The installer's icon, or one the person set by hand: it stays. Flare's leftover files (an update
             // rewrote the shortcut while a pick was worn) go, but never the file the shortcut names.
-            let worn_name = Path::new(&facts.icon).file_name();
+            let worn_name = link_file_name(&facts.icon);
             for old in files.icons(&places.data) {
-                let named = old.file_name().zip(worn_name).is_some_and(|(a, b)| {
-                    a.to_string_lossy()
-                        .eq_ignore_ascii_case(&b.to_string_lossy())
-                });
+                let named = old
+                    .file_name()
+                    .is_some_and(|a| a.to_string_lossy().eq_ignore_ascii_case(worn_name));
                 if !named {
                     files.remove(&old);
                 }
@@ -570,6 +575,17 @@ mod tests {
         assert!(!places.data.join(ico_name(b"ico of daybreak")).exists());
         assert!(places.data.join("app-icon-mine.ico").exists());
         assert_eq!(shell.sets.lock().unwrap().len(), 1);
+    }
+
+    /// A shortcut's icon path is a Windows path on every platform: `\` and `/` both end a folder.
+    #[test]
+    fn a_links_icon_name_is_read_after_either_slash() {
+        assert_eq!(
+            link_file_name(r"D:\Elsewhere\APP-ICON-MINE.ICO"),
+            "APP-ICON-MINE.ICO"
+        );
+        assert_eq!(link_file_name("C:/a/b.ico"), "b.ico");
+        assert_eq!(link_file_name("b.ico"), "b.ico");
     }
 
     #[test]
