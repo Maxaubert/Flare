@@ -46,6 +46,25 @@ pub fn make_private(path: &Path) -> io::Result<()> {
     }
 }
 
+/// BLOCKING: a new file at `path`, open for writing, that its owner alone may read from the moment it exists: mode 600
+/// off Windows; on Windows it is made with a protected DACL with one ACE, full control for the user, so no other
+/// account can ever open it (rule 1277). Fails when the file exists already.
+pub fn create_private_new(path: &Path) -> io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        win::create_private_new(path)
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new() // sync-ok: a worker's call
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    }
+}
+
 /// BLOCKING: whether `path` lets in only its owner (and, on Windows, SYSTEM and Administrators).
 pub fn is_private(path: &Path) -> io::Result<bool> {
     #[cfg(windows)]
@@ -219,8 +238,43 @@ mod win {
         set_dacl(path, &super::owner_only_sddl(&current_user_sid()?))
     }
 
-    /// `path`'s DACL set from SDDL, protected (nothing inherited from its folder).
-    pub fn set_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+    /// A new file made with the owner-only protected DACL by one call (CREATE_NEW), so it never exists with its
+    /// folder's ACEs. Opened for writing and shared with no one while the handle is open.
+    pub fn create_private_new(path: &Path) -> io::Result<std::fs::File> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
+        };
+        let sd = descriptor(&super::owner_only_sddl(&current_user_sid()?))?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: 0,
+        };
+        let name = wide(path);
+        // SAFETY: `name` is NUL-terminated; `attributes` and the descriptor it points to outlive the call.
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a valid file handle that this function alone owns; the File closes it.
+        Ok(unsafe { std::fs::File::from_raw_handle(handle) })
+    }
+
+    /// A security descriptor built from SDDL, freed on drop.
+    fn descriptor(sddl: &str) -> io::Result<Descriptor> {
         let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: `sddl` is NUL-terminated and outlives the call; `sd` receives the descriptor.
@@ -235,7 +289,12 @@ mod win {
         if ok == 0 || sd.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let sd = Descriptor(sd);
+        Ok(Descriptor(sd))
+    }
+
+    /// `path`'s DACL set from SDDL, protected (nothing inherited from its folder).
+    pub fn set_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+        let sd = descriptor(sddl)?;
         let mut present = 0;
         let mut defaulted = 0;
         let mut dacl: *mut ACL = std::ptr::null_mut();
@@ -299,6 +358,55 @@ mod tests {
         none.everyone = true;
         assert!(!only_trusted(&none, me));
         assert_eq!(owner_only_sddl(me), format!("D:P(A;;FA;;;{me})"));
+    }
+
+    /// Rule 1277: a new private file lets its owner alone in from the moment it exists, before anything is written,
+    /// even in a folder whose ACEs its files would inherit; it is still writable through its handle, and an existing
+    /// file is not replaced.
+    #[test]
+    fn a_new_private_file_is_private_before_any_write() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("id_flare_ed25519");
+        #[cfg(windows)]
+        let me = {
+            let me = current_user_sid().unwrap();
+            set_dacl(
+                dir.path(),
+                &format!("D:P(A;OICI;FA;;;{me})(A;OICI;FR;;;BU)"),
+            )
+            .unwrap();
+            me
+        };
+        let mut f = create_private_new(&key).unwrap();
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().len(),
+            0,
+            "nothing written yet"
+        );
+        assert!(is_private(&key).unwrap());
+        #[cfg(windows)]
+        assert_eq!(
+            access(&key).unwrap(),
+            Access {
+                protected: true,
+                everyone: false,
+                allowed: vec![me]
+            }
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&key).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        f.write_all(b"secret").unwrap();
+        drop(f);
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "secret");
+        assert_eq!(
+            create_private_new(&key).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
     }
 
     /// Rule 1277: a key written into a folder that lets an extra group in ends with its owner alone, nothing

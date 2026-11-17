@@ -295,25 +295,8 @@ impl PairFiles {
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let _ = std::fs::remove_file(path); // sync-ok: a pairing worker
-    #[cfg(unix)]
-    let mut f = {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new() // sync-ok: a pairing worker
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)? // sync-ok: a pairing worker
-    };
-    #[cfg(not(unix))]
-    let mut f = {
-        let f = std::fs::OpenOptions::new() // sync-ok: a pairing worker
-            .write(true)
-            .create_new(true)
-            .open(path)?; // sync-ok: a pairing worker
-        // Empty still: the key goes in only once no one else may read it. The open handle keeps its write access.
-        flare_win::private_file::make_private(path)?;
-        f
-    };
+    // Made private by the same call that makes it, so no other account can open it before the key goes in.
+    let mut f = flare_win::private_file::create_private_new(path)?; // sync-ok: a pairing worker
     f.write_all(text.as_bytes())
 }
 
