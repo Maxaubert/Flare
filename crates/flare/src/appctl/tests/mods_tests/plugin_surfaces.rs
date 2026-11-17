@@ -443,7 +443,7 @@ fn a_title_the_plugins_helper_sets_is_what_the_tab_menu_says() {
 
 /// The same over the real channel: the app's own server on a fresh pipe, and a client that does what a plugin's
 /// helper does (hello with the plugin's token and no events, its store, then `actions.set` with no tab).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
 fn a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says() {
     use crate::ctl_app::{AppsCfg, CtlServer, MERMAID};
