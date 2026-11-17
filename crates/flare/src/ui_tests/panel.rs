@@ -733,6 +733,7 @@ fn set_overlay(c: &AppWindow, which: Overlay, on: bool) {
         }
         Overlay::Settings => c.set_front_kind(if on { 1 } else { 0 }),
         Overlay::SettingsSelect => c.global::<SettingsBridge>().set_select_open(on),
+        Overlay::SettingsRowMenu => c.global::<SettingsBridge>().set_row_menu_open(on),
         Overlay::ThemeEditor => c.global::<SettingsBridge>().set_editor_open(on),
         Overlay::SettingsAsk => c.global::<SettingsBridge>().set_ask_open(on),
         Overlay::DictationAsk => c.global::<SettingsBridge>().set_dict_ask_open(on),
@@ -810,6 +811,7 @@ fn overlay_open_is_read_only_for_rust_and_computed_in_the_window_file() {
         "root.update-notice",
         "root.front-kind == 1",
         "SettingsBridge.select-open",
+        "SettingsBridge.row-menu-open",
         "SettingsBridge.editor-open",
         "SettingsBridge.ask-open",
         "SettingsBridge.dict-ask-open",

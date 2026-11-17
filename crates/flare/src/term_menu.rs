@@ -156,6 +156,7 @@ pub fn to_menu_row(r: &TermMenuRow) -> MenuRowData {
         hint: r.hint.clone(),
         icon: r.icon,
         filled_icon: false,
+        logo_icon: false,
         disabled: false,
         trailing_icon: None,
         trailing_filled: false,

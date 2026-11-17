@@ -135,6 +135,7 @@ fn rows() -> ModelRc<MenuRow> {
         hint: "".into(),
         icon: "".into(),
         filled_icon: false,
+        logo_icon: false,
         disabled: false,
         trailing_icon: "".into(),
         trailing_filled: false,

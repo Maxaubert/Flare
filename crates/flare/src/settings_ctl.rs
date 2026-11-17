@@ -218,6 +218,8 @@ pub struct SettingsCtl {
     stale: bool,
     ask_open: bool,
     select_row: String,
+    /// The open row action menu (Settings > Machines' ⋯ menu, rule 1281): its row and each menu row's choice.
+    row_menu: Option<(String, Vec<&'static str>)>,
     home: String,
     dirty: Arc<AtomicBool>,
     _subs: Vec<Subscription>,
@@ -893,6 +895,7 @@ impl SettingsCtl {
             stale: true,
             ask_open: false,
             select_row: String::new(),
+            row_menu: None,
             home: crate::app_facts::home().to_string(),
             dirty,
             _subs: subs,
@@ -1058,6 +1061,16 @@ impl SettingsCtl {
         on!(app, rc, on_select_chosen, |c, id: SharedString| c
             .select_chosen(&id));
         on!(app, rc, on_select_dismissed, |c| c.close_select());
+        on!(
+            app,
+            rc,
+            on_row_menu_request,
+            |c, id: SharedString, x: f32, y: f32, w: f32, h: f32| c
+                .row_menu_open(&id, [x, y, w, h].map(f64::from))
+        );
+        on!(app, rc, on_row_menu_picked, |c, i: i32| c
+            .row_menu_picked(i));
+        on!(app, rc, on_row_menu_dismissed, |c| c.close_row_menu());
         on!(app, rc, on_select_key, |c, k: SharedString| {
             if k == "Escape" {
                 c.close_select();
@@ -1173,6 +1186,7 @@ impl SettingsCtl {
         // A key field that waits, a microphone test and an open question end with the page.
         crate::dictation_ctl::page_left();
         self.close_select();
+        self.close_row_menu();
         self.close_sheet();
         self.close_keys();
         self.picker_do(|p, _| p.hide_for_tab_switch());
@@ -1212,6 +1226,7 @@ impl SettingsCtl {
         self.close_sheet();
         self.close_keys();
         self.close_notice();
+        self.close_row_menu();
         self.picker_do(|p, _| p.outside());
         if let Some(app) = self.weak.upgrade() {
             let b = app.global::<SettingsBridge>();
@@ -1509,6 +1524,10 @@ impl SettingsCtl {
         }
         if b.get_select_open() {
             self.close_select();
+            return true;
+        }
+        if b.get_row_menu_open() {
+            self.close_row_menu();
             return true;
         }
         if b.get_machine_add_open() {
@@ -2273,40 +2292,83 @@ impl SettingsCtl {
         self.rebuild();
     }
 
-    /// What the Select menu offers for a row of the Machines page: the dialog's Machine drop-down (the SSH hosts in the
-    /// code font, then "Type an address"), or a machine's ⋯ menu (Test, Remove). None for any other row.
+    /// What the Select menu offers for the Machines page's dialog: its Machine drop-down (the SSH hosts in the code font,
+    /// then "Type an address"). None for any other row (a machine's ⋯ menu is a row action menu, rule 1281).
     fn machines_select(&self, row: &str) -> Option<(String, Vec<flare_settings::page::Opt>)> {
-        use flare_settings::page::machines::{ADD_ROW, MACHINE_PREFIX, REMOVE_CHOICE, TEST_CHOICE};
-        use flare_settings::page::opts as opts_of;
+        use flare_settings::page::machines::ADD_ROW;
         let m = self.machines.as_ref()?;
-        if row == ADD_ROW {
-            let info = m.info();
-            let mono = self
-                .weak
-                .upgrade()
-                .map(|a| {
-                    a.global::<crate::SettingsFixed>()
-                        .get_font_mono()
-                        .to_string()
-                })
-                .unwrap_or_default();
-            return Some((
-                info.add.pick.clone(),
-                machine_choice_opts(&info.nearby, &info.ssh_hosts, &mono),
-            ));
+        if row != ADD_ROW {
+            return None;
         }
-        let id = row.strip_prefix(MACHINE_PREFIX)?;
-        // A computer that reaches this one has no link to test from here: Remove only (rule 1260).
-        if id.starts_with(flare_settings::page::machines::INCOMING_PREFIX) {
-            return Some((String::new(), opts_of(&[(REMOVE_CHOICE, "Remove")])));
-        }
+        let info = m.info();
+        let mono = self
+            .weak
+            .upgrade()
+            .map(|a| {
+                a.global::<crate::SettingsFixed>()
+                    .get_font_mono()
+                    .to_string()
+            })
+            .unwrap_or_default();
         Some((
-            String::new(),
-            opts_of(&[(TEST_CHOICE, "Test"), (REMOVE_CHOICE, "Remove")]),
+            info.add.pick.clone(),
+            machine_choice_opts(&info.nearby, &info.ssh_hosts, &mono),
         ))
     }
 
-    /// A pick in the Machines page's Select menu: true when it was one.
+    // ---- a row's action menu (rule 1281) ---------------------------------------------------------------
+
+    /// Opens a machine's ⋯ menu: the shared ContextMenu dropped from the button (`anchor`: its x, y, width and
+    /// height), its right edge on the button's, Test then Remove; a computer that reaches this one has no link to test
+    /// from here, so Remove alone (rule 1260). Any other row opens nothing.
+    fn row_menu_open(&mut self, row: &str, anchor: [f64; 4]) {
+        use flare_settings::page::machines::{INCOMING_PREFIX, MACHINE_PREFIX};
+        let Some(id) = row.strip_prefix(MACHINE_PREFIX) else {
+            return;
+        };
+        if self.machines.is_none() {
+            return;
+        }
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        self.close_select();
+        let rows = crate::menus_ui::machine_action_rows(id.starts_with(INCOMING_PREFIX));
+        let b = app.global::<SettingsBridge>();
+        let model: Vec<crate::MenuRow> = rows
+            .iter()
+            .map(|(r, _)| crate::appctl::menu_row(r))
+            .collect();
+        b.set_row_menu_rows(slint::ModelRc::new(slint::VecModel::from(model)));
+        b.set_row_menu_row(row.into());
+        b.set_row_menu_x((anchor[0] + anchor[2]) as f32);
+        b.set_row_menu_y(anchor[1] as f32);
+        b.set_row_menu_foot((anchor[1] + anchor[3]) as f32);
+        b.set_row_menu_open(true);
+        self.row_menu = Some((row.to_string(), rows.into_iter().map(|(_, c)| c).collect()));
+    }
+
+    /// A pick in a row's action menu: the choice of the row picked, handed to the Machines page.
+    fn row_menu_picked(&mut self, index: i32) {
+        let Some((row, choices)) = self.row_menu.take() else {
+            return;
+        };
+        self.close_row_menu();
+        if let Some(choice) = usize::try_from(index).ok().and_then(|i| choices.get(i)) {
+            self.machines_chosen(&row, choice);
+        }
+    }
+
+    fn close_row_menu(&mut self) {
+        self.row_menu = None;
+        if let Some(app) = self.weak.upgrade() {
+            let b = app.global::<SettingsBridge>();
+            b.set_row_menu_open(false);
+            b.set_row_menu_row("".into());
+        }
+    }
+
+    /// A pick in the Machines page's Select menu or a machine's ⋯ menu: true when it was one.
     fn machines_chosen(&mut self, row: &str, id: &str) -> bool {
         use flare_settings::page::machines::{ADD_ROW, MACHINE_PREFIX, REMOVE_CHOICE, TEST_CHOICE};
         let Some(m) = self.machines.as_mut() else {
@@ -2520,6 +2582,7 @@ impl SettingsCtl {
             return;
         }
         self.close_select();
+        self.close_row_menu();
         // The keys are the popover's now: the pencil stops waiting for them (rule 1195).
         self.drop_pencil_wait();
         self.picker_do(|p, ctx| p.open(id, in_editor, rect, ctx));
@@ -2614,6 +2677,7 @@ impl SettingsCtl {
         let Some(app) = self.weak.upgrade() else {
             return;
         };
+        self.close_row_menu();
         let mine = self.machines_select(row);
         let Some(built) = self.built.as_ref() else {
             return;

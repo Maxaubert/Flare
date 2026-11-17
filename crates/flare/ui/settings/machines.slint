@@ -63,6 +63,7 @@ export component SetMachineHead inherits Rectangle {
 export component SetMachineRow inherits Rectangle {
     in property <SetRow> data;
     in property <bool> menu-open;
+    // The ⋯ button's box in window coordinates: x, y, width, height.
     callback menu-request(length, length, length, length);
     property <length> band: root.data.sub != "" ? root.height - 18px : root.height;
 
@@ -161,7 +162,7 @@ export component SetMachineRow inherits Rectangle {
         vertical-alignment: center;
         overflow: elide;
     }
-    // The ⋯ menu: Test and Remove (the Select menu, opened under the button).
+    // The ⋯ menu: Test and Remove (rule 1281: the shared ContextMenu, its right edge on the button's, opened under it).
     more := Rectangle {
         x: root.width - MachineCols.menu-w + 4px;
         y: Px.snap((root.band - 30px) / 2);
@@ -171,7 +172,7 @@ export component SetMachineRow inherits Rectangle {
         background: mta.has-hover || root.menu-open ? Theme.hover : transparent;
         accessible-role: AccessibleRole.button;
         accessible-label: "More for " + root.data.label;
-        accessible-action-default => { root.menu-request(more.absolute-position.x - 120px + more.width, more.absolute-position.y, 120px, more.height); }
+        accessible-action-default => { root.menu-request(more.absolute-position.x, more.absolute-position.y, more.width, more.height); }
         for i in 3: Rectangle {
             x: Px.snap(more.width / 2 - 1.6px + (i - 1) * 6px);
             y: Px.snap(more.height / 2 - 1.6px);
@@ -181,7 +182,7 @@ export component SetMachineRow inherits Rectangle {
             background: Theme.text-soft;
         }
         mta := TouchArea {
-            clicked => { root.menu-request(more.absolute-position.x - 120px + more.width, more.absolute-position.y, 120px, more.height); }
+            clicked => { root.menu-request(more.absolute-position.x, more.absolute-position.y, more.width, more.height); }
         }
     }
 }
@@ -773,6 +774,11 @@ export component MachinesPreview inherits Window {
     preferred-height: 220px;
     in property <SetRow> machine;
     out property <int> menus: 0;
+    // The box the last menu request named (the ⋯ button's).
+    out property <length> req-x;
+    out property <length> req-y;
+    out property <length> req-w;
+    out property <length> req-h;
     background: Theme.ground;
     SetMachineHead { x: 0px; y: 0px; width: root.width; height: 34px; first: true; }
     // The machine's `h` when the test sets one (68 for a Not linked machine with its reason line), else 50.
@@ -782,7 +788,13 @@ export component MachinesPreview inherits Window {
         width: root.width;
         height: root.machine.h > 0px ? root.machine.h : 50px;
         data: root.machine;
-        menu-request(x, y, w, h) => { root.menus += 1; }
+        menu-request(x, y, w, h) => {
+            root.menus += 1;
+            root.req-x = x;
+            root.req-y = y;
+            root.req-w = w;
+            root.req-h = h;
+        }
     }
 }
 

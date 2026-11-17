@@ -61,7 +61,24 @@ component MenuItem inherits Rectangle {
                 look: { branded: true, accent: root.item.logo-fill, accent-hi: root.item.logo-fill, logo: root.item.logo, plate: true };
             }
         }
-        if root.item.icon != "" && root.item.logo == "": Rectangle {
+        // A machine's system logo (rule 1280): filled in the label's ink, as the stroked icons are, in the 13 px box
+        // itself (a fill has no stroke to make room for).
+        if root.item.icon != "" && root.item.logo == "" && root.item.logo-icon: Rectangle {
+            width: 13px;
+            Path {
+                width: 13px;
+                height: 13px;
+                x: (parent.width - 13px) / 2;
+                y: (parent.height - 13px) / 2;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: root.item.icon;
+                fill: root.lit ? Theme.text : Theme.text-soft;
+                fill-rule: evenodd;
+                opacity: 0.8;
+            }
+        }
+        if root.item.icon != "" && root.item.logo == "" && !root.item.logo-icon: Rectangle {
             width: 13px;
             // Slint fits the path into its box less the stroke: the box is grown by one stroke and moved back by half.
             Path {
@@ -160,6 +177,9 @@ export component ContextMenu inherits Rectangle {
     // Either way the window's edges cap it.
     in property <bool> drop;
     in property <length> at-foot;
+    // A dropdown that opens downward first (Settings > Machines' ⋯ menu, rule 1281): 4 px under the foot, and above the
+    // button only when there is no room below.
+    in property <bool> below;
     callback picked(int);
     callback trailing(int);
     callback dismissed();
@@ -265,6 +285,7 @@ export component ContextMenu inherits Rectangle {
             ? max(8px, min(root.at-x - self.width, root.width - self.width - 8px))
             : min(root.at-x, root.width - self.width - 8px));
         y: Px.snap(!root.drop ? min(root.at-y, root.height - self.height - 8px)
+            : root.below && root.at-foot + 4px + self.height <= root.height - 8px ? root.at-foot + 4px
             : root.at-y - self.height - 4px >= 8px ? root.at-y - self.height - 4px
             : root.at-foot + 4px + self.height <= root.height - 8px ? root.at-foot + 4px
             : 8px);
@@ -626,6 +647,7 @@ export component MenusPreview inherits Window {
     in-out property <length> menu-y;
     in-out property <bool> menu-drop;
     in-out property <length> menu-foot;
+    in-out property <bool> menu-below;
     in-out property <int> picked-index: -1;
     in-out property <int> trailing-index: -1;
     in-out property <int> menu-dismissed;
@@ -689,6 +711,7 @@ export component MenusPreview inherits Window {
         at-y: root.menu-y;
         drop: root.menu-drop;
         at-foot: root.menu-foot;
+        below: root.menu-below;
         picked(i) => { root.picked-index = i; }
         trailing(i) => { root.trailing-index = i; }
         dismissed => { root.menu-dismissed += 1; root.menu-open = false; }
@@ -716,5 +739,29 @@ export component MenusPreview inherits Window {
         at-y: 20px;
         visible-tip: root.tip-visible;
         side: root.tip-side;
+    }
+}
+
+// A system logo alone (rule 1280), filled in the text ink on the ground the way the sidebar, the tab row, the + menu and
+// Settings draw it: size square at (at-x, at-y), so a test can render it at any size and sub-pixel offset. The test
+// passes the path, so it can measure the logo it replaced the same way.
+export component LogoPreview inherits Window {
+    preferred-width: 64px;
+    preferred-height: 64px;
+    background: Theme.ground;
+    in property <string> commands;
+    in property <length> size: 13px;
+    in property <length> at-x: 8px;
+    in property <length> at-y: 8px;
+    Path {
+        x: root.at-x;
+        y: root.at-y;
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.commands;
+        fill: Theme.text;
+        fill-rule: evenodd;
     }
 }

@@ -4656,3 +4656,34 @@ joins the Apple and Windows logos. Held by `a_greeting_names_windows_or_a_linux_
 `the_drop_down_rows_carry_the_system_of_an_ssh_host` (`flare-settings`),
 `an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`) and
 `glyph_paths_match_the_slint_file` (`menus_ui.rs`). Source: Max, 2026-11-17.
+
+1280. **The Windows logo keeps its cross open at the sizes Flare draws it.** Max, 2026-11-17, from the Mac viewer to
+home-pc: the PC logo read as a solid square (a lime block in the + menu). The simple-icons path filled the whole
+24-unit box with a 1.25-unit gap, which blurred shut at 11 to 15 px. Approved mockup, option B: `Glyphs.logo-pc` (and
+its copy `GLYPH_LOGO_PC` in `menus_ui.rs`, kept equal by `glyph_paths_match_the_slint_file`) is four 7.5-unit panes
+inset 3 to 21 with a 3-unit cross between them. In the + menu a machine's logo row (`MenuRowData::logo_icon`, the
+`logo-icon` field of `MenuRow`) fills in the label's ink, `Theme.text-soft` (`Theme.text` while lit) at the stroked
+icons' 0.8, in its 13 px box with no room grown for a stroke; never `Theme.tree-folder`, which stays the folder rows'
+fill. Held by `the_windows_logo_is_inset_with_a_three_unit_cross` (`menus_ui.rs`),
+`the_windows_logos_cross_stays_open_at_11_to_15_px_at_1x_and_2x` (at 11, 12, 13 and 15 px, 1x and 2x, every
+sub-pixel offset: the cross holds no more ink than its width allows and a whole pixel of ground at 2x, while the old
+path measured the same way closes) and `a_machines_logo_in_the_menu_wears_the_label_ink_not_the_folder_colour`
+(`ui_tests/machine_logo.rs`), and `a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo`
+(`ui_tests/term.rs`). Source: Max, 2026-11-17; `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
+
+1281. **Settings > Machines' ⋯ menu is the shared menu with icons.** Max, 2026-11-17: the menu was the Settings value
+picker (grey words, no icons, a fixed 120 px panel). Approved mockup, option A: the ⋯ button opens the shared
+`ContextMenu` (`menus.slint`, the tab menu's look) through `SettingsBridge.row-menu-*`, drawn by `AppWindow` over the
+page. It drops from the button with its right edge on the button's, 4 px under it (`ContextMenu.below`; above it only
+when there is no room), sized to its rows and at least 156 px. Test has the pulse glyph (`Glyphs.menu-test`), Remove
+the Plugins page's trash (`Glyphs.menu-trash`, equal to `flare-settings` `BUTTON_ICONS` "trash") in a group of its own,
+both in the label's ink (no red). A computer that reaches this one shows Remove alone. Picks carry the page's
+choices (`menus_ui::machine_action_rows`) to `machines_chosen`; a press outside, Escape, a tab switch and closing the
+Settings tab close it; while open it counts in `overlay-open` (`Overlay::SettingsRowMenu`). The Select menu now
+serves only the Add a machine dialog's drop-down. Held by
+`a_machines_menu_is_test_then_remove_in_its_own_group` and `the_remove_rows_trash_is_the_plugins_pages_trash`
+(`menus_ui.rs`), `a_below_first_dropdown_hangs_under_its_button_and_goes_above_only_without_room`
+(`ui_tests/menus.rs`), `the_menu_offers_test_and_remove_and_remove_tells_the_window`,
+`a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click` and
+`a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`).
+Source: Max, 2026-11-17; `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.

@@ -13,6 +13,7 @@ fn row(label: &str) -> MenuRow {
         hint: "".into(),
         icon: "".into(),
         filled_icon: false,
+        logo_icon: false,
         disabled: false,
         trailing_icon: "".into(),
         trailing_filled: false,
@@ -152,6 +153,35 @@ fn a_dropdown_drops_below_when_there_is_no_room_above_and_stays_in_the_window() 
             (h.comp.get_panel_y() - 8.0).abs() <= px1,
             "top {} at {scale}",
             h.comp.get_panel_y()
+        );
+    }
+}
+
+/// Rule 1281: a dropdown that opens downward first (Settings > Machines' ⋯ menu) hangs 4 px under its button's foot,
+/// its right edge on the button's, and goes above the button only when the rows do not fit below.
+#[test]
+fn a_below_first_dropdown_hangs_under_its_button_and_goes_above_only_without_room() {
+    for scale in SCALES {
+        let px1 = 1.0 / scale;
+        let h = harness(scale);
+        h.comp.set_menu_below(true);
+        open_drop(&h, vec![row("Test"), row("Remove")], 292.0, 120.0, 150.0);
+        let (px, py, pw) = (
+            h.comp.get_panel_x(),
+            h.comp.get_panel_y(),
+            h.comp.get_panel_w(),
+        );
+        assert!((py - 154.0).abs() <= px1, "top {py} at {scale}");
+        assert!((px + pw - 292.0).abs() <= px1, "right edge at {scale}");
+        // Near the window's foot: no room below, so it opens upward, 4 px clear of the button.
+        let h = harness(scale);
+        h.comp.set_menu_below(true);
+        open_drop(&h, vec![row("Test"), row("Remove")], 292.0, 240.0, 270.0);
+        let (py, ph) = (h.comp.get_panel_y(), h.comp.get_panel_h());
+        assert!(
+            (py + ph - 236.0).abs() <= px1,
+            "bottom {} at {scale}",
+            py + ph
         );
     }
 }

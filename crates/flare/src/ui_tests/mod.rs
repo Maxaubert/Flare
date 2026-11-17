@@ -13,6 +13,7 @@ mod flows;
 mod icons_misc;
 mod icons_side;
 mod icons_tabs;
+mod machine_logo;
 mod marks;
 mod menus;
 mod motion;

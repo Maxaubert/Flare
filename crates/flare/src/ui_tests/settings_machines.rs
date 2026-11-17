@@ -314,26 +314,23 @@ fn the_menu_offers_test_and_remove_and_remove_tells_the_window() {
         "",
         "the reason is a line, not a tooltip"
     );
+    // Rule 1281: the ⋯ menu is a row action menu (the shared ContextMenu), not the Select menu.
     f.b()
-        .invoke_select_open_request("machine:mac".into(), 600.0, 200.0, 120.0, 30.0);
-    assert!(f.b().get_select_open());
-    let names: Vec<String> = f
-        .b()
-        .get_select_options()
-        .iter()
-        .map(|o| o.name.to_string())
-        .collect();
-    assert_eq!(names, ["Test", "Remove"]);
+        .invoke_row_menu_request("machine:mac".into(), 600.0, 200.0, 30.0, 30.0);
+    assert!(f.b().get_row_menu_open() && !f.b().get_select_open());
+    assert_eq!(f.b().get_row_menu_row().as_str(), "machine:mac");
+    assert_eq!(f.menu_labels(), ["Test", "Remove"]);
     let probes = f.io.probes.lock().unwrap().len();
-    f.b().invoke_select_chosen("test".into());
+    f.b().invoke_row_menu_picked(0);
+    assert!(!f.b().get_row_menu_open(), "a pick closes the menu");
     f.settle("the second check", |f| {
         f.io.probes.lock().unwrap().len() > probes
             && f.row("machine:mac")
                 .is_some_and(|r| r.state.as_str() == "failed")
     });
     f.b()
-        .invoke_select_open_request("machine:mac".into(), 600.0, 200.0, 120.0, 30.0);
-    f.b().invoke_select_chosen("remove".into());
+        .invoke_row_menu_request("machine:mac".into(), 600.0, 200.0, 30.0, 30.0);
+    f.b().invoke_row_menu_picked(1);
     f.settle("the remove", |f| f.row("machine:mac").is_none());
     assert!(f.io.list().is_empty());
     assert_eq!(*f.sent.borrow(), vec![Vec::<Machine>::new()]);
@@ -341,6 +338,15 @@ fn the_menu_offers_test_and_remove_and_remove_tells_the_window() {
 }
 
 impl Fx {
+    /// The labels of the open row action menu (rule 1281).
+    fn menu_labels(&self) -> Vec<String> {
+        self.b()
+            .get_row_menu_rows()
+            .iter()
+            .map(|r| r.label.to_string())
+            .collect()
+    }
+
     fn look(&self) -> crate::MachineAddLook {
         self.b().get_machine_add()
     }
@@ -697,9 +703,22 @@ fn a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click() {
         let none = lit(&h);
         assert!(mac > 20, "{s}: the Apple logo draws ({mac} lit)");
         assert_eq!(none, 0, "{s}: no system, no logo");
-        // The menu button sits at the row's right end.
+        // The menu button sits at the row's right end, and names its own 30 px box (rule 1281: the menu's right edge
+        // goes on the button's).
         h.click(760.0 - 21.0, 34.0 + 25.0);
         assert_eq!(h.comp.get_menus(), 1, "{s}");
+        let (x, y, w, bh) = (
+            h.comp.get_req_x(),
+            h.comp.get_req_y(),
+            h.comp.get_req_w(),
+            h.comp.get_req_h(),
+        );
+        assert!(
+            (w - 30.0).abs() < 0.01 && (bh - 30.0).abs() < 0.01,
+            "{s}: {w} by {bh}"
+        );
+        assert!(x <= 739.0 && 739.0 < x + w, "{s}: the button's box ({x})");
+        assert!(y >= 34.0 && y + bh <= 84.0, "{s}: inside the row ({y})");
     }
 }
 
@@ -1378,6 +1397,162 @@ fn an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// A look written into the window's Theme the way the app writes it (rule 1281's menu tests).
+fn paint_app(h: &Harness<AppWindow>, id: &str) {
+    use flare_theme::edges::DEFAULT_WINDOW_EDGES;
+    use flare_theme::look::{LookInput, apply_look};
+    let l = apply_look(&LookInput {
+        theme_id: id,
+        custom: None,
+        draft: None,
+        background: None,
+        accent: None,
+        secondary: None,
+        edges: DEFAULT_WINDOW_EDGES,
+        see_through: 0,
+        glass_possible: false,
+    });
+    crate::chrome_apply::apply_chrome(&h.comp, &l);
+    h.advance(0);
+}
+
+/// Rule 1281 (Max picked option A of the 2026-11-17 mockup): a machine's ⋯ menu is the shared ContextMenu, not the
+/// Select menu: its right edge on the button's, 4 px under it, at least 156 px wide, Test with the pulse glyph, then a
+/// 9 px group gap with its rule, then Remove with the Plugins page's trash, both 13 px glyphs in the label's ink (no
+/// red). A pick acts through the page (Remove removes the machine); a press outside and Escape close it. A computer
+/// that reaches this one gets Remove alone. At every scale, in a dark and a light look.
+#[test]
+fn a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_looks() {
+    use super::icons_tabs::{Ink, blend, expected_extent_px, ink_edges};
+    use crate::menus_ui::{GLYPH_TEST, GLYPH_TRASH, glyph_path};
+    use crate::ui_harness::SCALES;
+    let rgb = |c: slint::Color| {
+        [
+            f32::from(c.red()),
+            f32::from(c.green()),
+            f32::from(c.blue()),
+        ]
+    };
+    for look in ["pt-default", "paper"] {
+        for s in SCALES {
+            let mut io = FakeIo::default();
+            *io.list.get_mut().unwrap() = vec![mac()];
+            let f = fx_at(s, io);
+            paint_app(&f.h, look);
+            f.page();
+            let what = format!("{look} at {s}");
+            let c = &f.h.comp;
+            let open = |id: &str| {
+                f.b()
+                    .invoke_row_menu_request(id.into(), 900.0, 100.0, 30.0, 30.0);
+                f.h.advance(0);
+                f.h.render();
+                f.h.advance(0);
+            };
+            // The button: 30 px square, its right edge at 930, its foot at 130.
+            open("machine:mac");
+            assert!(!f.b().get_select_open(), "{what}: not the Select menu");
+            assert_eq!(f.menu_labels(), ["Test", "Remove"], "{what}");
+            let frame = f.h.render();
+            let (px, py, pw, ph) = (
+                c.get_row_menu_panel_x(),
+                c.get_row_menu_panel_y(),
+                c.get_row_menu_panel_w(),
+                c.get_row_menu_panel_h(),
+            );
+            let dev = 1.0 / s + 0.01;
+            let hair = s.floor().max(1.0) / s;
+            let snap = |v: f32| (v * s).round() / s;
+            assert!(
+                (px + pw - 930.0).abs() <= dev,
+                "{what}: the right edge on the button's ({})",
+                px + pw
+            );
+            assert!((py - 134.0).abs() <= dev, "{what}: 4 px under it ({py})");
+            assert!(pw >= 156.0 - 0.01, "{what}: at least 156 px ({pw})");
+            let want_h = 2.0 * hair + 28.0 + snap(9.0) + 28.0;
+            assert!(
+                (ph - want_h).abs() <= dev,
+                "{what}: two rows and a group gap ({ph}, want {want_h})"
+            );
+            let theme = c.global::<crate::Theme>();
+            let soft = rgb(theme.get_text_soft());
+            let k = |v: f32| (v * s).round() as u32;
+            let tops = [py + hair, py + hair + 28.0 + snap(9.0)];
+            // The group's rule: a divider line in the middle of the gap, the panel's colour above and below it.
+            let gap_mid = tops[0] + 28.0 + snap(4.0);
+            let above = frame.px(k(px + 40.0), k(tops[0] + 28.0 + 1.0));
+            let rule = frame.px(k(px + 40.0), k(gap_mid) + (hair * s / 2.0) as u32);
+            assert_ne!(above, rule, "{what}: Remove starts a group with its rule");
+            for (i, glyph) in [GLYPH_TEST, GLYPH_TRASH].into_iter().enumerate() {
+                let top = tops[i];
+                let bg = frame.px(k(px + hair + 4.0), k(top + 14.0));
+                let want = blend(bg, soft, 0.8);
+                let ink = Ink::new(bg, want);
+                let region = (
+                    k(px + hair + 8.0),
+                    k(top + 3.0),
+                    k(px + hair + 28.0),
+                    k(top + 25.0),
+                );
+                let got = ink_edges(&frame, region, &ink)
+                    .unwrap_or_else(|| panic!("{what}: row {i}'s glyph draws"));
+                let size = expected_extent_px(glyph_path(glyph), 13.0, 24.0, 1.7 * 13.0 / 24.0, s);
+                let (w, hh) = (got.2 - got.0, got.3 - got.1);
+                // The round caps of a stroke about one device pixel wide fade below the ink floor at their tips, so the
+                // read can fall up to two device pixels short (the pulse's two flat ends at 1x).
+                let fits = |got: f32, want: f32| got <= want + 1.0 && got >= want - 2.0;
+                assert!(
+                    fits(w, size.0) && fits(hh, size.1),
+                    "{what}: row {i}'s glyph is {w} by {hh} px, want {} by {}",
+                    size.0,
+                    size.1
+                );
+                // Every pixel of the glyph lies between the panel and the label's ink: no other hue (no red).
+                for y in region.1..region.3 {
+                    for x in region.0..region.2 {
+                        let p = frame.px(x, y);
+                        let cv = ink.cov(p);
+                        let on_line = blend(bg, want, cv);
+                        let off = (0..3)
+                            .map(|ch| (f32::from(p[ch]) - on_line[ch]).abs())
+                            .fold(0.0, f32::max);
+                        assert!(
+                            off <= 24.0,
+                            "{what}: row {i}'s glyph pixel {p:?} is off the label's ink ({want:?})"
+                        );
+                    }
+                }
+            }
+            // A press outside closes it; so does Escape.
+            f.h.click(100.0, 500.0);
+            assert!(!f.b().get_row_menu_open(), "{what}: a press outside closes");
+            open("machine:mac");
+            f.h.key_text(&char::from(slint::platform::Key::Escape).to_string());
+            assert!(!f.b().get_row_menu_open(), "{what}: Escape closes");
+            // A computer that reaches this one: Remove alone, no group gap.
+            open(&format!(
+                "machine:{}mini",
+                flare_settings::page::machines::INCOMING_PREFIX
+            ));
+            assert_eq!(f.menu_labels(), ["Remove"], "{what}");
+            let ph = c.get_row_menu_panel_h();
+            assert!(
+                (ph - (2.0 * hair + 28.0)).abs() <= dev,
+                "{what}: one row ({ph})"
+            );
+            f.h.key_text(&char::from(slint::platform::Key::Escape).to_string());
+            // A click on Remove removes the machine.
+            open("machine:mac");
+            let remove_y = c.get_row_menu_panel_y() + hair + 28.0 + snap(9.0) + 14.0;
+            f.h.click(c.get_row_menu_panel_x() + 60.0, remove_y);
+            assert!(!f.b().get_row_menu_open(), "{what}: a pick closes");
+            f.settle("the remove", |f| f.row("machine:mac").is_none());
+            assert!(f.io.list().is_empty(), "{what}");
         }
     }
 }

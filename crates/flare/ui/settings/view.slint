@@ -6,6 +6,8 @@
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
 import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook, SharingAskLook, PairCodeLook, KeySheetRow } from "types.slint";
 import { PluginLook } from "../plugin_look.slint";
+import { MenuRow } from "../types.slint";
+import { ContextMenu } from "../menus.slint";
 import { PluginSheet } from "plugin_sheet.slint";
 import { HotkeySheet } from "hotkey_sheet.slint";
 import { SetFrame } from "frame.slint";
@@ -70,6 +72,14 @@ export global SettingsBridge {
     in-out property <length> select-y;
     in-out property <length> select-w;
     in-out property <length> select-h;
+    // A row's action menu (Settings > Machines' ⋯ menu, rule 1281): the shared ContextMenu, dropped from the row's
+    // button. row-menu-x is the button's right edge, row-menu-y its top and row-menu-foot its foot.
+    in-out property <bool> row-menu-open;
+    in-out property <string> row-menu-row;
+    in-out property <[MenuRow]> row-menu-rows;
+    in-out property <length> row-menu-x;
+    in-out property <length> row-menu-y;
+    in-out property <length> row-menu-foot;
     in-out property <bool> picker-open;
     // Escape closed the popover opened from the row with this label: that row's swatch takes the focus back.
     in-out property <string> swatch-back;
@@ -157,6 +167,9 @@ export global SettingsBridge {
     callback select-chosen(string);
     callback select-dismissed();
     callback select-key(string);
+    callback row-menu-request(string, length, length, length, length);
+    callback row-menu-picked(int);
+    callback row-menu-dismissed();
     callback save-clicked(string);
     callback wall-pick(string);
     callback wall-edit(string);
@@ -626,8 +639,8 @@ export component SettingsView inherits Rectangle {
                         width: parent.width;
                         height: parent.height;
                         data: row;
-                        menu-open: SettingsBridge.select-open && SettingsBridge.select-row == row.id;
-                        menu-request(x, y, w, h) => { SettingsBridge.select-open-request(row.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
+                        menu-open: SettingsBridge.row-menu-open && SettingsBridge.row-menu-row == row.id;
+                        menu-request(x, y, w, h) => { SettingsBridge.row-menu-request(row.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
                     }
                     if row.block == BlockKind.wall: SetBlockFrame {
                         width: parent.width;
@@ -833,6 +846,19 @@ export component SettingsPreview inherits Window {
         chosen(id) => { SettingsBridge.select-chosen(id); }
         dismissed => { SettingsBridge.select-dismissed(); }
         key(k) => { SettingsBridge.select-key(k); }
+    }
+    ContextMenu {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.row-menu-open;
+        rows: SettingsBridge.row-menu-rows;
+        at-x: SettingsBridge.row-menu-x;
+        at-y: SettingsBridge.row-menu-y;
+        at-foot: SettingsBridge.row-menu-foot;
+        drop: true;
+        below: true;
+        picked(i) => { SettingsBridge.row-menu-picked(i); }
+        dismissed => { SettingsBridge.row-menu-dismissed(); }
     }
     ColourPopover {
         width: parent.width;

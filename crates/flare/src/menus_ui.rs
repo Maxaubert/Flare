@@ -41,6 +41,9 @@ pub const GLYPH_BADGE_BOLT: &str = "badge-bolt";
 pub const GLYPH_BADGE_STAR: &str = "badge-star";
 pub const GLYPH_BADGE_PLUS: &str = "badge-plus";
 pub const GLYPH_BADGE_PIN: &str = "badge-pin";
+/// Settings > Machines' ⋯ menu (rule 1281): Test (a pulse line) and Remove (the Plugins page's trash).
+pub const GLYPH_TEST: &str = "menu-test";
+pub const GLYPH_TRASH: &str = "menu-trash";
 /// A remote machine's system (remote sessions PR 7): filled logos on the 24-unit box.
 pub const GLYPH_LOGO_MAC: &str = "logo-mac";
 pub const GLYPH_LOGO_PC: &str = "logo-pc";
@@ -109,12 +112,14 @@ pub fn glyph_path(name: &str) -> &'static str {
         }
         GLYPH_BADGE_PLUS => "M12 5v14M5 12h14",
         GLYPH_BADGE_PIN => "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z",
+        GLYPH_TEST => "M3 12h4l2.5-6 5 12 2.5-6h4",
+        GLYPH_TRASH => {
+            "M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"
+        }
         GLYPH_LOGO_MAC => {
             "M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"
         }
-        GLYPH_LOGO_PC => {
-            "M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z"
-        }
+        GLYPH_LOGO_PC => "M3 3h7.5v7.5H3zm10.5 0H21v7.5h-7.5zM3 13.5h7.5V21H3zm10.5 0H21V21h-7.5z",
         GLYPH_LOGO_LINUX => {
             "M12 2c-2.2 0-3.5 1.9-3.5 4.4 0 1.2.2 2-.4 3-.9 1.4-2.6 3.5-2.6 6 0 .9.3 1.6.6 2-.8.4-1.6 1-1.6 1.8 0 1.3 2 1.3 3.4 1.8 1 .4 1.6 1 2.6 1s1.4-.6 1.5-.6h1c.1 0 .5.6 1.5.6s1.6-.6 2.6-1c1.4-.5 3.4-.5 3.4-1.8 0-.8-.8-1.4-1.6-1.8.3-.4.6-1.1.6-2 0-2.5-1.7-4.6-2.6-6-.6-1-.4-1.8-.4-3C15.5 3.9 14.2 2 12 2zm-1.5 4.2c.4 0 .7.5.7 1.1 0 .6-.3 1.1-.7 1.1s-.7-.5-.7-1.1c0-.6.3-1.1.7-1.1zm3 0c.4 0 .7.5.7 1.1 0 .6-.3 1.1-.7 1.1s-.7-.5-.7-1.1c0-.6.3-1.1.7-1.1z"
         }
@@ -129,6 +134,9 @@ pub struct MenuRowData {
     /// A glyph name (see [`glyph_path`]); "" for none.
     pub icon: &'static str,
     pub filled_icon: bool,
+    /// A machine's system logo (rule 1280): filled in the label's ink (text-soft, text while lit), in the 13 px box
+    /// itself, never in the folder colour of `filled_icon`.
+    pub logo_icon: bool,
     pub disabled: bool,
     pub trailing_icon: Option<&'static str>,
     pub trailing_filled: bool,
@@ -154,6 +162,7 @@ impl MenuRowData {
             hint: String::new(),
             icon: "",
             filled_icon: false,
+            logo_icon: false,
             disabled: false,
             trailing_icon: None,
             trailing_filled: false,
@@ -210,6 +219,24 @@ pub fn machine_menu_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowD
     rows
 }
 
+/// Settings > Machines' ⋯ menu of one machine (rule 1281), each row with the choice it makes: Test (a pulse line),
+/// then Remove (the trash) in a group of its own, in the same ink. A computer that reaches this one (`incoming`) has no
+/// link to test from here: Remove alone.
+pub fn machine_action_rows(incoming: bool) -> Vec<(MenuRowData, &'static str)> {
+    use flare_settings::page::machines::{REMOVE_CHOICE, TEST_CHOICE};
+    let mut rows = Vec::new();
+    if !incoming {
+        let mut test = MenuRowData::plain("Test");
+        test.icon = GLYPH_TEST;
+        rows.push((test, TEST_CHOICE));
+    }
+    let mut remove = MenuRowData::plain("Remove");
+    remove.icon = GLYPH_TRASH;
+    remove.group = !rows.is_empty();
+    rows.push((remove, REMOVE_CHOICE));
+    rows
+}
+
 /// The folder menu's first row: the folder picker, then a tab there (2026-10-27).
 pub const CHOOSE_FOLDER: &str = "Choose a folder\u{2026}";
 
@@ -240,7 +267,7 @@ fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, Stri
             let mut row = MenuRowData::plain(&m.name);
             if let Some(g) = machine_logo(m.kind) {
                 row.icon_cmd = glyph_path(g).to_string();
-                row.filled_icon = true;
+                row.logo_icon = true;
             } else {
                 row.icon = GLYPH_LINK;
             }
@@ -286,7 +313,7 @@ fn remote_folder_rows(
             let mut row = MenuRowData::plain(&l.label);
             if let Some(g) = machine_logo(m.kind) {
                 row.icon_cmd = glyph_path(g).to_string();
-                row.filled_icon = true;
+                row.logo_icon = true;
             } else {
                 row.icon = GLYPH_LINK;
             }
@@ -665,7 +692,13 @@ mod tests {
         let (mac, path) = &rows[2];
         assert_eq!(machine_of_row(path), Some("mac"));
         assert_eq!(mac.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
-        assert!(mac.filled_icon && mac.group && mac.trailing_icon.is_none() && !mac.flyout);
+        assert!(
+            mac.logo_icon
+                && !mac.filled_icon
+                && mac.group
+                && mac.trailing_icon.is_none()
+                && !mac.flyout
+        );
         assert_eq!(rows[3].0.icon_cmd, glyph_path(GLYPH_LOGO_PC));
         assert!(!rows[3].0.group);
         // A system not known draws no logo of either.
@@ -710,7 +743,7 @@ mod tests {
         assert_eq!(remote_folder_of_row(path), Some(("mac", "/Users/max/proj")));
         assert_eq!(machine_of_row(path), None);
         assert_eq!(row.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
-        assert!(row.filled_icon && row.group && row.trailing_icon.is_none());
+        assert!(row.logo_icon && !row.filled_icon && row.group && row.trailing_icon.is_none());
         assert_eq!(row.hint, "Mac Mini");
         assert_eq!(remote_folder_of_row(r"C:\w\a"), None);
         // A remote folder's row has no pin to toggle.
@@ -954,6 +987,8 @@ mod tests {
             GLYPH_BADGE_STAR,
             GLYPH_BADGE_PLUS,
             GLYPH_BADGE_PIN,
+            GLYPH_TEST,
+            GLYPH_TRASH,
             GLYPH_LOGO_MAC,
             GLYPH_LOGO_PC,
             GLYPH_LOGO_LINUX,
@@ -964,6 +999,55 @@ mod tests {
                 "glyph {name} differs from glyphs.slint"
             );
         }
+    }
+
+    /// Rule 1281: Remove draws the Plugins page's trash, the very path its button uses.
+    #[test]
+    fn the_remove_rows_trash_is_the_plugins_pages_trash() {
+        let trash = flare_settings::icons::BUTTON_ICONS
+            .iter()
+            .find(|(n, _)| *n == "trash")
+            .map(|(_, p)| *p);
+        assert_eq!(trash, Some(glyph_path(GLYPH_TRASH)));
+    }
+
+    /// Rule 1280: the Windows logo sits inset like the other glyphs (3 to 21) with a 3-unit cross between its panes.
+    #[test]
+    fn the_windows_logo_is_inset_with_a_three_unit_cross() {
+        assert_eq!(
+            glyph_path(GLYPH_LOGO_PC),
+            "M3 3h7.5v7.5H3zm10.5 0H21v7.5h-7.5zM3 13.5h7.5V21H3zm10.5 0H21V21h-7.5z"
+        );
+    }
+
+    /// Rule 1281: a machine's ⋯ menu is Test (the pulse) then Remove (the trash) in a group of its own, each carrying
+    /// its choice; a computer that reaches this one gets Remove alone, with no rule above it. Neither is a logo or a
+    /// filled icon, so both draw in the label's ink.
+    #[test]
+    fn a_machines_menu_is_test_then_remove_in_its_own_group() {
+        use flare_settings::page::machines::{REMOVE_CHOICE, TEST_CHOICE};
+        let rows = machine_action_rows(false);
+        let got: Vec<(&str, &str, bool, &str)> = rows
+            .iter()
+            .map(|(r, c)| (r.label.as_str(), r.icon, r.group, *c))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("Test", GLYPH_TEST, false, TEST_CHOICE),
+                ("Remove", GLYPH_TRASH, true, REMOVE_CHOICE)
+            ]
+        );
+        assert!(
+            rows.iter()
+                .all(|(r, _)| !r.filled_icon && !r.logo_icon && !r.disabled)
+        );
+        let incoming = machine_action_rows(true);
+        let got: Vec<(&str, bool, &str)> = incoming
+            .iter()
+            .map(|(r, c)| (r.label.as_str(), r.group, *c))
+            .collect();
+        assert_eq!(got, [("Remove", false, REMOVE_CHOICE)]);
     }
 
     #[test]
