@@ -178,7 +178,7 @@ else, and nothing after it is turned off.
 | `tabs` | See every tab (title, folder, agent, state, Claude session, panel) and act on any tab, not only its own. | See all your tabs and what their agents are doing | with `network`: can send what your tabs show to the internet |
 | `decorate` | Badges and progress on tabs (`tabs.badge.*`, `tabs.progress.*`). | Put badges and progress on tabs | |
 | `sidebar` | Its sidebar sections (`sidebar.set`). | Add a section to the sidebar | |
-| `actions` | Its buttons and menu items (`actions.set`) and their clicks. | Add buttons to tabs and menus | |
+| `actions` | Its buttons and menu items (`actions.set`) and their clicks, and its short notices under the title bar (`notice.show`). | Add buttons to tabs and menus, and show short notices | |
 | `bar` | Its strip under a terminal (`bar.show`, `bar.hide`). | Show a bar under the terminal | |
 | `sessions` | What you and Claude say in sessions (`session.read`, the `session` event). | Read what you and Claude say in sessions | with `input`: can read and steer Claude; with `network`: can send what you and Claude say to the internet |
 | `input` | Typing into a tab's shell (`tabs.input`). | Type and run commands in your terminals (full control) | Full control |
@@ -280,6 +280,7 @@ worker, and every limit spent there, before the window hears of it.
 | Decor (`decorate`) | `tabs.badge.set {tab?, key, icon, tip?, tone?}`, `tabs.badge.clear {tab?, key}`, `tabs.progress.set {tab?, key, value?, label?}`, `tabs.progress.clear {tab?, key}` | 10 changes a second per tab, 30 per plugin across tabs; 4 badge keys per tab, 200 in all |
 | Sidebar (`sidebar`) | `sidebar.set {key, items}` | 5 a second per section; 50 items |
 | Actions (`actions`) | `actions.set {key, tab?, enabled?, checked?, title?}` | 20 a second per plugin |
+| Notice (`actions`) | `notice.show {text, kind?}` | 3 in 10 seconds per plugin; one notice a plugin |
 | Bar (`bar`) | `bar.show {tab?}`, `bar.hide {tab?}` | once a second per tab; one bar a tab (`busy`) |
 | Agents (`agent-looks`) | `agents.motion.set {agent, motion}`, `agents.motion.clear {agent}` | 10 a second per plugin per agent |
 | Session (`sessions`) | `session.read {tab?}` | once a second per tab; the last 200 entries |
@@ -374,6 +375,17 @@ Sample: `../../sample-plugins/todo/`.
   small button in Flare's outlined chip on a hovered tab (named tabs of 110 px or more, and sidebar rows), never over
   the agent's ring. `top-bar`: a button left of the window buttons. `session-bar`: a chip at the right end of the
   plugin's own bar (at most 4). An action without an icon shows its title's first letter.
+- **Notices** (2026-11-17, rule 1275). `notice.show {text, kind?}` puts one short line under the title bar, at the top
+  right, where Flare's "Build ready" toast sits and in its look and size: the plugin's logo (its brand's, or Flare's chip),
+  the line in Flare's own type and ink, and a close button (×, its tooltip "Close"). `kind: "error"` adds a 3 px red left
+  edge; `"info"` (the default) has none. It goes after 6 s; the time stands still while the pointer is on it. One notice a
+  plugin: a newer one takes its place and starts its time again. Several plugins' notices stack, newest last, under the
+  staged toast and the update notice when those show, so they never cover them. `text` is at most 120 characters as
+  sent; controls, line breaks and hidden formatting characters (zero-width, bidi, the BOM, tag characters) are taken out
+  and white space runs become one space; a longer line ends in an ellipsis on screen. It is meant for the answer to a
+  click, such as "Bitwarden could not lock the vault. It is still unlocked." after the menu flipped at once. It needs
+  `actions`, so a plugin with no action cannot show one; the agent never can. 3 in 10 seconds per plugin
+  (`rate_limited`). A plugin turned off takes its notice with it. An older Flare answers `unknown_method`.
 
 ## Sessions, typing and storage
 

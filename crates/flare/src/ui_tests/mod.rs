@@ -20,6 +20,7 @@ mod overlay_order;
 mod panel;
 mod panel_wrap;
 mod plugin_bar;
+mod plugin_notice;
 mod plugin_surfaces;
 mod remote_convo;
 mod scrollbar;

@@ -18,7 +18,8 @@ for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name an
 `tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
 plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
 `bar.hide` and `view.audio`; the 3D viewer (issue #36) adds `view.model`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`; the `fill` permission (2026-10-28) adds
-`browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper (`secret.result` and `secret.ask`'s `verify`, 2026-11-16, rule 1274). Remote sessions PR 1
+`browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper (`secret.result` and `secret.ask`'s `verify`, 2026-11-16, rule 1274); the plugin notice (2026-11-17,
+rule 1275) adds `notice.show` under `actions`. Remote sessions PR 1
 (2026-11-12) adds the remote link in `flare-ctl` only: the stdio transport, the `remote` grant and `remote.hello` (section
 1 "Remote link", section 4, section 5 `remote.hello`); remote sessions PR 2 (2026-11-12) adds `flare --serve-remote` (the
 host's bridge), the `bridge` grant and `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`,
@@ -364,6 +365,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE_V1`); any tab with `tabs` too | yes |
 | `sidebar.set` | no | `sidebar` | yes |
 | `actions.set` | no | `actions` | yes |
+| `notice.show` | **no** | `actions` (the answer to the plugin's own click; its own namespace `Notice`) | yes |
 | `session.read` | **no** | `sessions` | yes |
 | `tabs.input` | **no** (rules 2 and 188) | `input` (a `mod.json` cannot ask for it) | yes |
 | `storage.get`, `storage.set` | **no** | (always, a protocol 2 plugin's own store; a protocol 1 mod is refused by the dispatcher) | yes |
@@ -592,6 +594,24 @@ in the tab, a mini-app or a plugin's page, a page not up in a browser), `busy` (
 `rate_limited` (6 asks a minute per plugin, `browser.fill` and `secret.ask` together; a refused ask counts),
 `interrupted` (the page moved to another address before it was filled), `unavailable` (the page could not be filled),
 `timeout`, `unauthorized` (the plugin was turned off while asking).
+
+### notice.show (the plugin notice, 2026-11-17, rule 1275)
+
+Namespace `Notice`, opened by the `actions` permission (a notice is the plugin's answer to a click on its own button or
+menu item, and a new permission would make a plugin that asks for it fail to install on every older Flare). The agent
+never enters it, and the dispatcher refuses any caller that is not a plugin (`forbidden`). Listed in `capabilities`
+when the run has a mods hub. A plugin's page calls it through `window.flare.call`, a helper over the pipe. The look is in
+`plugins.md` ("Notices").
+
+| Method | Params | Result |
+|---|---|---|
+| `notice.show` | `text` (at most 120 characters as sent; every control, line break and hidden formatting character is taken out and white space runs become one space; blank after that is `bad_params`), `kind?` (`"error"`: a red left edge, or `"info"`, the default) | `{"shown": true}` |
+
+One notice a plugin: a newer one takes its place and starts its 6 s again. Any other key is `bad_params`. Limit: 3 in
+10 seconds per plugin (`rate_limited`, `at most 3 notices in 10 seconds for one plugin`; a refused call spends
+nothing). Errors: `bad_params`, `forbidden` (no `actions`, the agent), `rate_limited`, `unauthorized` (the plugin
+was turned off since the call was checked), `unavailable` (no mods hub). An older Flare answers `unknown_method`: a
+plugin that must run there treats that as "no notice".
 
 ### panel.open
 
@@ -1137,7 +1157,7 @@ agent: the agent grant has no `remote.*`, `shell.input` or `tabs.input`, and an 
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
 | `too_large` (a call) | a plugin's `storage.set` would pass 1 MB (plugins phase 5); nothing changed | no |
 | `host_not_ready` | `remote.hello` on a host where no Flare runs and none could be started hidden (remote sessions PR 5); one line says why | no |
-| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, the 6 asks a minute per plugin of `browser.fill` and `secret.ask`, or a plugin's 50 messages and 2 MB a second) | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `notice.show`'s 3 in 10 seconds per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, the 6 asks a minute per plugin of `browser.fill` and `secret.ask`, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be

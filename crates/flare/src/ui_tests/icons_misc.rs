@@ -514,6 +514,32 @@ fn draw_spinner(s: f32) -> Drawn {
     )
 }
 
+// --- A plugin's notice (rule 1275): the close button's cross, 9 px in a 16 px button (plugin_notice.slint). ---
+
+fn draw_notice_close(s: f32) -> Drawn {
+    let h = Harness::new(s, 1000, 300, || {
+        AppWindow::new().expect("the window builds")
+    });
+    h.advance(0);
+    h.comp
+        .set_plugin_notices(ModelRc::new(VecModel::from(vec![crate::PluginNoticeRow {
+            id: "vault".into(),
+            name: "Vault".into(),
+            text: "Could not lock".into(),
+            error: false,
+            look: crate::plugin_look::look_of(None),
+        }])));
+    h.advance(0);
+    let f = h.render();
+    let cx = h.comp.get_plugin_notice_close_x() + 8.0;
+    let cy = h.comp.get_plugin_notice_close_y() + 8.0;
+    let r = region_around(&f, cx * s, cy * s, 7.0 * s);
+    (
+        drawn(&f, r, ICON),
+        expected_extent_px(CLOSE, 9.0, 24.0, 1.4, s),
+    )
+}
+
 #[test]
 fn the_checked_secrets_check_and_spinner_draw_at_full_size_at_every_scale() {
     for s in SCALES {
@@ -530,12 +556,19 @@ fn the_checked_secrets_check_and_spinner_draw_at_full_size_at_every_scale() {
     }
 }
 
+#[test]
+fn the_plugin_notices_close_cross_draws_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("notice close", s, draw_notice_close(s));
+    }
+}
+
 // --- The scan: every stroked path in the top-level ui files is either a hairline rule or a glyph with a size test. ---
 
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 15] = [
+const SIZED: [(&str, usize); 16] = [
     // `the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale`, and the check and the spinner:
     // `the_checked_secrets_check_and_spinner_draw_at_full_size_at_every_scale`.
     ("plugin_ask.slint", 3),
@@ -555,6 +588,8 @@ const SIZED: [(&str, usize); 15] = [
     ("panel.slint", 2),
     // The badge glyph (plugins phase 1): `ui_tests::decor::every_badge_glyph_draws_at_full_size_at_every_scale`.
     ("decor.slint", 1),
+    // The notice's close cross (rule 1275): `the_plugin_notices_close_cross_draws_at_full_size_at_every_scale`.
+    ("plugin_notice.slint", 1),
 ];
 
 /// The hairline rules: straight rules or the sidebar's corner arcs, not glyphs, with no size test.

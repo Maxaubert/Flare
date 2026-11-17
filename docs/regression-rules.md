@@ -4654,3 +4654,35 @@ turned off, refused params, an empty field), `secret_ask_hands_the_typed_text_to
 without `verify`), and `ui_tests/secret_verify.rs` at every scale in both looks (checking with a turning spinner and a
 box that does not move, wrong in place and focused, the green check, the end line, no `verify`). Source: Max,
 2026-11-16.
+
+## A plugin's notice under the title bar (2026-11-17)
+
+1275. **`notice.show` puts one short line from a plugin under the title bar, never more, never the agent's.** Max,
+2026-11-17, on the Bitwarden plugin's Lock item: "jsut flip it immedeatly and trust it will work, if it doestn throw an
+error message on screen". A plugin that holds `actions` calls `notice.show {text, kind?}` (namespace `Notice`, opened by
+`actions` only: a notice answers a click on the plugin's own button or menu item, and a new permission would make a
+plugin that asks for it fail to install on every older Flare). The agent never enters it, with or without its eval
+switch, and the dispatcher refuses any caller that is not a plugin. `text` is at most 120 characters as sent
+(`MAX_TEXT_CHARS`); every control, line break and hidden formatting character (zero-width, bidi, the BOM, tag
+characters: `manifest::is_format_char` and `flare_ctl::text::invisible`) is taken out and white space runs become one
+space; a blank result, a longer text, a `kind` other than `"error"` or `"info"` and any other key are `bad_params`. A
+plugin shows at most 3 in 10 seconds (`rate_limited`, `at most 3 notices in 10 seconds for one plugin`; a refused call
+spends nothing). The window shows it only while the plugin is on in the generation the call was checked in
+(`unauthorized`), and a plugin turned off takes its notice with it. The look is Max's approved mockup A: the "Build
+ready" toast's place, size and surface (right-aligned to it, under the title bar), the plugin's logo (`PluginLogo`, its
+brand's or Flare's chip), the line in Flare's own type and ink (an ellipsis past 480 px), and an icon-only close button
+with the tooltip "Close"; `kind: "error"` adds a 3 px red left edge (`SettingsFixed.error-edge`), info has none. Theme
+tokens only, no hex in `ui/plugin_notice.slint`. It goes after 6 s (`flare_mods::notice::SHOW_FOR`), counted in 100 ms
+ticks that only run while a notice shows and skip a notice the pointer is on (the close button sits inside the
+toast's hover area, so moving onto it does not restart the clock). One notice a plugin: a newer one takes its place and
+starts its 6 s again; at most 4 show, the oldest goes. Several stack, newest last, under the staged toast and the update
+notice when they show, so they never cover either. It counts in `overlay-open`, so a web panel shows its still under
+it. The text is never logged (the log line names the plugin and the kind). Native: `flare_mods::notice`,
+`Method::NoticeShow`, `Namespace::Notice`, `AppDispatcher::notice_show` and `spend_bucket`, `CtlOp::NoticeShow`,
+`crate::plugin_notice`, `appctl/notice_glue.rs`, `plugin-notices` and `plugin-notice-*` in `app.slint`,
+`ui/plugin_notice.slint`, `Overlay::PluginNotice`. Held by `notice_show_is_a_short_call_under_actions` (`method.rs`),
+`actions_opens_the_notice_and_the_agent_never_has_it` (`grant.rs`), the four tests of `flare_mods::notice`, the three of
+`crate::plugin_notice`, `appctl::tests::mods_tests::plugin_notice` (permission, cleaning, replace, the 6 s and the
+pointer, close and turn off, the rate) and `ui_tests::plugin_notice` (every scale, both plugin looks, both layouts: the
+place, the size, the red edge, stacking under the staged toast and the update notice, the close button's tooltip and the
+pointer). Source: Max, 2026-11-17.

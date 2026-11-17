@@ -202,6 +202,7 @@ mod ask_glue;
 mod bar_glue;
 mod install_glue;
 mod mods_glue;
+mod notice_glue;
 mod plugins_glue;
 mod quiet_glue;
 mod remote_files_glue;
@@ -676,6 +677,8 @@ pub struct AppCtl {
     /// The last checked secret that ended while its plugin had no call waiting (a cancel or a timeout while checking):
     /// the plugin, the ask's id and the answer its next `secret.result` gets (rule 1274).
     plugin_ask_ended: Option<(String, String, serde_json::Value)>,
+    /// The plugins' notices under the title bar (`notice.show`, rule 1275): one a plugin, newest last.
+    plugin_notices: crate::plugin_notice::Notices,
     /// The prompt hook's `panel.state` calls that wait for a page's selection (rule 1268), by the read's id.
     quiet_reads: quiet_glue::QuietReads,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
@@ -1182,6 +1185,7 @@ impl AppCtl {
             plugin_ask: None,
             plugin_ask_seq: 0,
             plugin_ask_ended: None,
+            plugin_notices: crate::plugin_notice::Notices::default(),
             quiet_reads: quiet_glue::QuietReads::default(),
             panel_focus_seen: false,
             key_from_page: false,
@@ -1480,6 +1484,14 @@ impl AppCtl {
         bind!(app, rc, on_staged_chip_clicked, |c| c.staged_chip_clicked());
         bind!(app, rc, on_staged_toast_clicked, |c| c
             .staged_toast_clicked());
+        bind!(app, rc, on_plugin_notice_closed, |c, id: SharedString| c
+            .plugin_notice_closed(&id));
+        bind!(
+            app,
+            rc,
+            on_plugin_notice_hover,
+            |c, id: SharedString, on: bool| c.plugin_notice_hover(&id, on)
+        );
         bind!(app, rc, on_menu_trailing, |c, i: i32| c.menu_trailing(i));
         bind!(app, rc, on_menu_dismissed, |c| c.close_menu());
         bind!(app, rc, on_menu_outside_right, |c, x: f32, y: f32| c
@@ -4369,6 +4381,13 @@ impl AppCtl {
                 generation,
             } => self.ctl_motion_set(plugin, agent, motion, generation),
             CtlOp::MotionClear { plugin, agent } => self.ctl_motion_clear(plugin, agent),
+            // A plugin's notice (rule 1275): checked on the worker, shown in `notice_glue`.
+            CtlOp::NoticeShow {
+                plugin,
+                text,
+                error,
+                generation,
+            } => self.ctl_notice_show(&plugin, &text, error, generation),
             // The address of a page to fill (the `fill` permission), applied in `ask_glue`.
             CtlOp::FillPage { tab } => self.ctl_fill_page(&tab),
             // Remote sessions (PR 2): checked on the worker, applied in `remote_glue`.
