@@ -877,6 +877,9 @@ fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
             .to_string(),
     )
     .map_err(|e| e.to_string())?;
+    // The import (rule 1294, on by default) would add B's own tab as a row here: this scenario counts A's tabs, so it
+    // keeps the import off. `remoteImport` works it.
+    crate::world::store_setting(&world.profile, IMPORT_KEY, "0")?;
     let exe = ctx.exe.clone();
     let mut a = ctx.launch_in(
         &world,
@@ -1001,6 +1004,130 @@ fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
         ctx.ok(
             host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs + 1,
             "the host's session goes on",
+        );
+        Ok(())
+    })();
+    let quit = a.close();
+    r?;
+    ctx.ok(quit, "the viewer quits");
+    Ok(())
+}
+
+// ---- import remote sessions PR 3: `remoteImport` ----
+
+/// The import switch's key (rule 1294; on by default).
+const IMPORT_KEY: &str = "flare.machines.importRemote";
+
+/// The viewer's tabs as `app.state` lists them.
+fn tab_list(app: &mut App) -> Vec<Value> {
+    probe(app, "app.state", Value::Null)["tabs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// `remoteImport`: Flare B (the host) runs a tab of its own; Flare A (the viewer) names machine `loop` in
+/// `machines.json`, its links a loopback `flare --serve-remote` of B's profile (never ssh), with the import on (its
+/// default). The watch link (`--no-start`) brings B's tab to A as a row behind A's front tab, and B gains no tab; a
+/// click attaches it and shows B's prompt; Hide here only takes it from A, the next polls do not bring it back, and B's
+/// tab goes on. Both are offscreen on the hidden desktop, as every launch here.
+pub fn remote_import(ctx: &mut Ctx) -> Result<(), String> {
+    let alpha = ctx.ensure_world().alpha.clone();
+    let mut host = ctx.launch(Launch {
+        folders: vec![alpha.clone()],
+        ..Launch::default()
+    })?;
+    let r = import_on(ctx, &mut host, &alpha);
+    let left = host.close();
+    ctx.ok(left, "the host quits by itself");
+    r
+}
+
+fn import_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
+    prompt(host)?;
+    let host_tabs = host.session.state()?.tabs.len();
+    let world = ctx.new_world();
+    std::fs::create_dir_all(&world.profile).map_err(|e| e.to_string())?;
+    std::fs::write(
+        world.profile.join("machines.json"),
+        json!({"machines": [{"id": "loop", "name": "Loopback", "kind": "pc", "ssh": "loop"}]})
+            .to_string(),
+    )
+    .map_err(|e| e.to_string())?;
+    let exe = ctx.exe.clone();
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env: viewer_env(&exe, &host.profile, alpha, false),
+            folders: vec![world.alpha.clone()],
+            // The rows are clicked by their strip boxes.
+            tabs_along_the_top: true,
+            ..Launch::default()
+        },
+    )?;
+    let r = (|| -> Result<(), String> {
+        prompt(&mut a)?;
+        let local = a.session.state()?.tabs.len();
+        let mut tabs = Vec::new();
+        let came = ctx.until("B's tabs imported", 30_000, &mut || {
+            tabs = tab_list(&mut a);
+            tabs.len() == local + host_tabs
+        });
+        ctx.ok(
+            came,
+            format!("B's own tabs show on A as rows ({} of {local} + {host_tabs})", tabs.len()),
+        );
+        let row = tabs.last().cloned().ok_or("no imported row")?;
+        ctx.ok(row["machine"] == json!("pc"), "the row wears the machine's logo");
+        ctx.ok(
+            tabs.iter()
+                .find(|t| t["front"] == json!(true))
+                .is_some_and(|t| t["machine"].is_null()),
+            "the import never changes the front tab",
+        );
+        ctx.ok(
+            host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs,
+            "the import opened nothing on the host",
+        );
+        let rect = super::input_b::css(&row["rect"]).ok_or("no row rectangle")?;
+        a.session
+            .click((rect.0 + rect.2 / 2.0) as f32, (rect.1 + rect.3 / 2.0) as f32)?;
+        front_rows_until(ctx, &mut a, "B's prompt in the clicked row", |t| {
+            t.contains("PS ")
+        })?;
+        ctx.ok(
+            host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs,
+            "the attach opened no tab on the host",
+        );
+        // Hide here only: gone from A, still open on B, and the next polls do not bring it back.
+        let front = tab_list(&mut a)
+            .into_iter()
+            .find(|t| t["front"] == json!(true))
+            .ok_or("no front tab")?;
+        let rect = super::input_b::css(&front["rect"]).ok_or("no tab rectangle")?;
+        a.session
+            .right_click((rect.0 + rect.2 / 2.0) as f32, (rect.1 + rect.3 / 2.0) as f32)?;
+        let rows = open_menu_labels(ctx, &mut a);
+        let hide = rows
+            .iter()
+            .position(|r| r["label"] == json!("Hide here only"))
+            .ok_or("no Hide here only on the imported row's menu")?;
+        click_row(&mut a, hide, false)?;
+        let mut left = 0;
+        ctx.until("the row gone from A", 10_000, &mut || {
+            left = a.session.state().map_or(usize::MAX, |s| s.tabs.len());
+            left == local + host_tabs - 1
+        });
+        ctx.ok(left == local + host_tabs - 1, "Hide here only takes the row from A");
+        // Two polls and more (the watch asks every 3 s).
+        pass(ctx, 7_000);
+        ctx.ok(
+            a.session.state().map_or(usize::MAX, |s| s.tabs.len()) == local + host_tabs - 1,
+            "the hidden row does not come back",
+        );
+        ctx.ok(
+            host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs,
+            "B's tab goes on",
         );
         Ok(())
     })();

@@ -387,7 +387,15 @@ does, and A with tabs along the top, a folder of its own and `machines.json` nam
 kind `pc`) that `FLARE_E2E_REMOTE_COMMAND` joins to B. A right-click on A's + lists "Loopback" as the menu's last row
 with the Windows logo; a click on it opens a tab on B (one more tab there) whose prompt shows in A, and A's new tab
 wears the PC logo (`app.state`'s `machine`) and a tooltip that starts with "Loopback: ". A right-click on that tab and
-"Hide here only" take it from A while B keeps its session (rule 1192). Nothing is typed into either shell.
+"Hide here only" take it from A while B keeps its session (rule 1192). Nothing is typed into either shell. It stores
+`flare.machines.importRemote` = `0` in A's profile: it counts A's tabs, and the import would add B's own tab.
+
+`remoteImport` (`tools/e2e/src/scenarios/remote.rs`, import remote sessions PR 3, Windows only for now) runs B with a
+tab of its own, and A with tabs along the top, a folder of its own and `machines.json` naming `loop`, the import on (its
+default). A's watch link (the loopback with `--no-start` at its end, rule 1291) brings B's tabs to A as rows behind A's
+front tab, and B gains no tab. A click on the row shows B's prompt in it (B still gains no tab); a right-click and
+"Hide here only" take it from A; after 7 s (two polls and more) it has not come back, and B's tab goes on (rules 1292,
+1293). Nothing is typed into either shell.
 
 ## Agent browser scenarios (Surfaces stage 4)
 

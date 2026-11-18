@@ -639,6 +639,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 300,
     },
     Scenario {
+        name: "remoteImport",
+        group: "ctl",
+        run: remote::remote_import,
+        limit_secs: 300,
+    },
+    Scenario {
         name: "webPanel",
         group: "web",
         run: web::web_panel,
