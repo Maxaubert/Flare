@@ -545,6 +545,7 @@ impl WatchWorker {
                 }
                 Err(e) => log::info!("watch link to {}: {e}", self.machine),
             }
+            // sync-ok: the watch link's own worker waits out its back-off
             if !self.shared.wait(backoff, false) {
                 break;
             }
@@ -573,6 +574,7 @@ impl WatchWorker {
                 return;
             };
             self.tell(heard);
+            // sync-ok: the watch link's own worker waits for its next poll
             if !self.shared.wait(self.t.every, true) {
                 return;
             }
