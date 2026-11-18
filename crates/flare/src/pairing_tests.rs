@@ -425,7 +425,8 @@ fn a_computer_found_twice_after_a_name_conflict_shows_once() {
         ]
     );
     let shown: Vec<String> = list[0].addrs.iter().map(ToString::to_string).collect();
-    assert_eq!(shown, ["192.168.50.242", "192.168.50.76", "fe80::1"]);
+    // Its own addresses first (as announced), the renamed copy's after: a copy is never tried first.
+    assert_eq!(shown, ["fe80::1", "192.168.50.76", "192.168.50.242"]);
 
     // Not the same computer: another port, another system, or a suffix that is not a number.
     let apart = merge_nearby(vec![

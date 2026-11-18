@@ -170,7 +170,7 @@ fn base_instance(id: &str) -> &str {
 /// Pure: one entry per computer (rule 1297). A computer on two networks at once (Ethernet and WiFi) hears its own
 /// announcement on the other one, takes it for another computer and renames itself `<name> (2)` there, so it is found
 /// twice. Entries with the same instance name once the " (N)" goes, the same TXT name, system and port are one
-/// computer: the one without the suffix (else the first by id) stays, with the addresses of both, IPv4 first.
+/// computer: the one without the suffix (else the first by id) stays, its own addresses first, then the other's.
 pub fn merge_nearby(mut list: Vec<Nearby>) -> Vec<Nearby> {
     list.sort_by(|a, b| a.id.len().cmp(&b.id.len()).then(a.id.cmp(&b.id)));
     let mut out: Vec<Nearby> = Vec::new();
@@ -182,13 +182,14 @@ pub fn merge_nearby(mut list: Vec<Nearby>) -> Vec<Nearby> {
                 && o.port == n.port
         });
         match same {
+            // The kept entry's own addresses stay first: an announcement's TXT is not proof, so a renamed copy's
+            // addresses are only tried after them.
             Some(o) => {
                 for a in n.addrs {
                     if !o.addrs.contains(&a) {
                         o.addrs.push(a);
                     }
                 }
-                o.addrs.sort_by_key(|a| (a.is_ipv6(), a.to_string()));
             }
             None => out.push(n),
         }

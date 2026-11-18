@@ -4913,7 +4913,7 @@ screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" twice
 router update put the Mac on Ethernet and WiFi at once: "fix the duplicate issue". The Mac's Flare heard its own
 announcement on the other network, took it for another computer and renamed itself `Maxs-Mac-Mini (2)` there (mdns-sd
 conflict handling), so the browse found two instances. Entries whose instance names match once a trailing " (N)" goes,
-with the same TXT name, system and port, are one computer: the one without the suffix stays, with the addresses of both,
-IPv4 first (`merge_nearby` in `flare/src/pairing.rs`). Another port, another system or a suffix that is not a number
+with the same TXT name, system and port, are one computer: the one without the suffix stays, its own addresses first and the other's after (an announcement is not
+proof, so a copy is never tried first) (`merge_nearby` in `flare/src/pairing.rs`). Another port, another system or a suffix that is not a number
 stays apart. Held by `a_computer_found_twice_after_a_name_conflict_shows_once` (`flare/src/pairing_tests.rs`). Source:
 Max, 2026-11-18.
