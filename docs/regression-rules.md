@@ -4907,3 +4907,13 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1297. **A computer found twice after an mDNS name conflict shows once in the Machine drop-down.** Max, 2026-11-18, a
+screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" twice, both with the Apple logo, after a
+router update put the Mac on Ethernet and WiFi at once: "fix the duplicate issue". The Mac's Flare heard its own
+announcement on the other network, took it for another computer and renamed itself `Maxs-Mac-Mini (2)` there (mdns-sd
+conflict handling), so the browse found two instances. Entries whose instance names match once a trailing " (N)" goes,
+with the same TXT name, system and port, are one computer: the one without the suffix stays, with the addresses of both,
+IPv4 first (`merge_nearby` in `flare/src/pairing.rs`). Another port, another system or a suffix that is not a number
+stays apart. Held by `a_computer_found_twice_after_a_name_conflict_shows_once` (`flare/src/pairing_tests.rs`). Source:
+Max, 2026-11-18.
