@@ -443,6 +443,78 @@ fn a_click_on_the_x_closes_and_never_starts_a_carry() {
     assert_eq!(*pressed.borrow(), 0);
 }
 
+/// Five rows, `active` in front: rows 1 and 2 working (a mark ring, state 1), row 3 coming back (the loading
+/// ring), rows 0 and 4 plain.
+fn close_rows(active: usize) -> Vec<TabRow> {
+    let mut out = rows(active);
+    out.truncate(5);
+    for (i, r) in out.iter_mut().enumerate() {
+        if i == 1 || i == 2 {
+            r.mark_kind = 1;
+            r.mark_state = 1;
+        }
+        r.loading = i == 3;
+    }
+    out
+}
+
+fn gray(p: [u8; 4]) -> i32 {
+    (i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2])) / 3
+}
+
+/// Rule 1284: on every row, working, coming back or plain, active or not, the X the pointer is on lights up and
+/// a click on it closes that row; a click on the ring beside it closes nothing. Row i's card is css y
+/// 50 + 50i, 46 tall; its X box (the ring, when there is one, slides out left of it) is x 186..204, 14 down.
+#[test]
+fn the_x_under_the_pointer_lights_up_and_closes_on_working_and_plain_rows() {
+    for (active, i) in [(0usize, 0usize), (1, 1), (0, 2), (0, 3), (0, 4)] {
+        let h = Harness::new(1.0, 700, 500, || {
+            TabSidebarPreview::new().expect("the preview builds")
+        });
+        h.comp
+            .set_rows(ModelRc::new(VecModel::from(close_rows(active))));
+        h.advance(0);
+        let closed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let c = closed.clone();
+            h.comp
+                .on_closed(move |id| c.borrow_mut().push(id.to_string()));
+        }
+        let top = 50.0 + 50.0 * i as f32;
+        let mid = top + 23.0;
+        let probe = (188, (top + 16.0) as u32);
+        // Onto the card's body, then in small steps onto the X, the slide given time to finish.
+        for k in 0..=4 {
+            h.move_to(60.0 + k as f32 * 10.0, mid);
+            h.advance(16);
+        }
+        h.advance(400);
+        let body = gray(h.render().px(probe.0, probe.1));
+        for k in 0..=9 {
+            h.move_to(100.0 + k as f32 * 10.0, mid);
+            h.advance(16);
+        }
+        h.move_to(195.0, mid);
+        h.advance(400);
+        let on_x = gray(h.render().px(probe.0, probe.1));
+        assert!(
+            on_x >= body + 8,
+            "row {i} (active {}): the X box is {on_x} under the pointer, {body} off it",
+            active == i
+        );
+        // A click on a ring closes nothing; a click on the X closes the row.
+        if i != 0 && i != 4 {
+            h.click(176.0, mid);
+            assert!(
+                closed.borrow().is_empty(),
+                "row {i}: a click on the ring closed"
+            );
+        }
+        h.click(195.0, mid);
+        assert_eq!(closed.borrow().as_slice(), [format!("t{i}")], "row {i}");
+    }
+}
+
 #[test]
 fn the_grip_drags_the_width_and_shows_its_line_only_on_hover() {
     for scale in SCALES {

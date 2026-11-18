@@ -524,3 +524,82 @@ fn reduced_motion_completes_the_hover_fill_and_the_slide_in_the_first_frame() {
         .unwrap();
     assert_eq!(left, 150, "the slide is finished in the first frame");
 }
+
+/// Five named tabs of 150 css px, `active` in front: tabs 1 and 2 working (a mark ring, state 1), tabs 0 and 3
+/// plain, tab 4 coming back (the loading ring).
+fn close_rows(active: usize) -> Vec<TabRow> {
+    (0..5)
+        .map(|i| TabRow {
+            id: format!("t{i}").into(),
+            label: format!("tab {i}").into(),
+            active: i == active,
+            mode: 0,
+            x: i as i32 * 150,
+            w: 150,
+            prog: -1.0,
+            mark_kind: if i == 1 || i == 2 { 1 } else { 0 },
+            mark_state: if i == 1 || i == 2 { 1 } else { 0 },
+            loading: i == 4,
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn gray(p: [u8; 4]) -> i32 {
+    (i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2])) / 3
+}
+
+/// Tab `i`'s X box is 16 px at 124..140 of the tab and 10..26 down (a ring, when there is one, is left of
+/// it). The probe is a pixel inside the box clear of the glyph.
+fn close_probe(i: usize) -> (u32, u32) {
+    (i as u32 * 150 + 126, 12)
+}
+
+/// The pointer comes onto tab `i`'s body, then walks onto its close X in small steps, the slide given time
+/// to finish: the probe's grey with the pointer on the body, then on the X.
+fn close_hover_lift(r: &Rig, i: usize) -> (i32, i32) {
+    let tx = i as f32 * 150.0;
+    let (px, py) = close_probe(i);
+    for k in 0..=4 {
+        r.h.move_to(tx + 20.0 + k as f32 * 10.0, 18.0);
+        r.h.advance(16);
+    }
+    r.h.advance(400);
+    let body = gray(r.h.render().px(px, py));
+    for k in 0..=8 {
+        r.h.move_to(tx + 60.0 + k as f32 * 9.0, 18.0);
+        r.h.advance(16);
+    }
+    r.h.advance(400);
+    (body, gray(r.h.render().px(px, py)))
+}
+
+#[test]
+fn the_close_x_lights_up_under_the_pointer_on_working_and_plain_tabs_active_or_not() {
+    // (the active tab, the tab hovered): active plain, active working, inactive working, inactive plain,
+    // inactive loading.
+    for (active, i) in [(0usize, 0usize), (1, 1), (0, 2), (0, 3), (0, 4)] {
+        let r = rig(1.0, 800, 0.0, close_rows(active), StripGeom::default());
+        r.h.advance(0);
+        let (body, on_x) = close_hover_lift(&r, i);
+        assert!(
+            on_x >= body + 8,
+            "tab {i} (active {}): the X box is {on_x} under the pointer, {body} off it",
+            active == i
+        );
+        // The row is set again while the pointer rests on the X (a working tab's row changes often): the
+        // square stays.
+        for _ in 0..3 {
+            let mut row = r.model.row_data(i).unwrap();
+            row.motion = (row.motion + 1) % 7;
+            r.model.set_row_data(i, row);
+            r.h.advance(16);
+        }
+        let (px, py) = close_probe(i);
+        let after = gray(r.h.render().px(px, py));
+        assert!(
+            after >= body + 8,
+            "tab {i}: after a row update the X box is {after}, {body} off it"
+        );
+    }
+}

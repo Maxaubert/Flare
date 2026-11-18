@@ -250,9 +250,10 @@ component SideRow inherits Rectangle {
                 }
             }
         }
-        // Above the row's own TouchArea, so a press on the X never starts a carry.
+        // Above the row's own TouchArea, so a press on the X never starts a carry. It lies on the drawn X: past
+        // the ring for every ring, the mark ring too (rule 1284), never over the ring.
         xta := TouchArea {
-            x: end.x + (root.tab.loading ? 20px : 0px);
+            x: end.x + (root.has-ring ? 20px : 0px);
             y: end.y;
             width: root.has-ring ? root.x-w : 18px;
             height: 18px;

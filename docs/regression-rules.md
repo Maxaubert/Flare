@@ -4800,6 +4800,19 @@ host's rules on any viewer, with no `~` for this machine's home (`tabs_ui::tab_f
 `a_hosts_folder_reads_by_the_hosts_rules_on_any_viewer` (`flare-tabs/src/sidebar_rows.rs`). Source: Max, 2026-11-17;
 `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
 
+1284. **The sidebar row's X takes the pointer where it is drawn, past any ring.** Max, 2026-11-17: "thres no hover
+effects on the clsoe button on tabs when tehre workign on other tabs thers a hover effect on the clsoe button". In the
+sidebar (the vertical layout) a working row (the Ring mark, `mark-kind` 1) slides its X in 20 px right of the ring on
+hover, but the X's TouchArea `xta` moved past the ring only for a loading row (`root.tab.loading`): on a working row it
+lay over the ring. Pointing at the X never lit it (no `Theme.hover-hi` square, no bright ink), a click on the X did
+not close, and a click on the ring did. When the Ring mark came in (2026-10-17) the drawn X was moved by `has-ring`
+and its TouchArea was not. Now `xta.x` uses `has-ring` too, so the hit box and the drawn X are one. The strip's
+`TabEnd` already put both in one box and was right. Held by
+`the_x_under_the_pointer_lights_up_and_closes_on_working_and_plain_rows` (`ui_tests/sidebar.rs`: working, loading and
+plain rows, active and not, hover square and click) and the strip guard
+`the_close_x_lights_up_under_the_pointer_on_working_and_plain_tabs_active_or_not` (`ui_tests/strip.rs`, also across
+row updates while hovered). Source: Max, 2026-11-17.
+
 1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
 screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
 "mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
