@@ -1271,6 +1271,8 @@ mod tests {
                     folder: "/Users/max/proj".into(),
                     resume: None,
                     live: flare_term::remote_pty::RemoteLive::default(),
+                    host_sized_start: false,
+                    ring_both: false,
                 },
             );
             self.hub.on_spawned(id, "/Users/max/proj", None);

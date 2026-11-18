@@ -197,11 +197,14 @@ pub enum UiMsg {
     Reopen(app_keys_glue::Reopen),
     /// A worker listed a folder on a machine for the remote folder browser (rule 1282), or said why not.
     RemoteFolder(crate::remote_folder::FolderMsg),
+    /// A machine's watch link heard its `remote.status` (import remote sessions, rule 1291).
+    Import(crate::remote_import::WatchAnswer),
 }
 
 mod app_keys_glue;
 mod ask_glue;
 mod bar_glue;
+mod import_glue;
 mod install_glue;
 mod mods_glue;
 mod notice_glue;
@@ -552,6 +555,8 @@ pub struct AppCtl {
     rconvo: remote_glue::RemoteConvoView,
     /// The host's own fitted view of a tab a remote viewer sizes (rule 1211).
     hconvo: remote_glue::HostConvoView,
+    /// Import remote sessions (rules 1291 to 1295): the watch links, the hidden and closing lists.
+    imports: import_glue::Imports,
     source_id: Option<String>,
     last_saved: Option<SavedTabs>,
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
@@ -1133,6 +1138,7 @@ impl AppCtl {
             rfolder_lister: Arc::new(crate::remote_folder::NoLister),
             rconvo: remote_glue::RemoteConvoView::default(),
             hconvo: remote_glue::HostConvoView::default(),
+            imports: import_glue::Imports::default(),
             source_id: None,
             last_saved: None,
             working: HashMap::new(),
@@ -1319,7 +1325,11 @@ impl AppCtl {
                     .tabs
                     .iter()
                     .enumerate()
-                    .find(|(_, t)| t.kind == TabKind::Shell && self.agent_present(&t.id))
+                    .find(|(_, t)| {
+                        t.kind == TabKind::Shell
+                            && self.agent_present(&t.id)
+                            && !self.unattached(&t.id)
+                    })
                     .map(|(i, t)| Ask {
                         target: crate::startup::AskTarget::Window,
                         label: labels.get(i).cloned().unwrap_or_default(),
@@ -1819,6 +1829,9 @@ impl AppCtl {
 
     /// build_view, then push every property; a changed tab report goes to `tabs_store`.
     pub fn refresh(&mut self) {
+        // Rule 1292: an unattached row that came to the front, by any way, attaches (before the early return, so the
+        // headless tests reach it).
+        self.attach_front_import();
         let Some(app) = self.app() else { return };
         // The tab in front shows its fitted conversation view or its terminal (remote sessions PR 7).
         self.push_remote_convo();
@@ -2358,6 +2371,7 @@ impl AppCtl {
     pub fn on_prefs_changed(&mut self) {
         self.prefs_dirty.store(false, Ordering::SeqCst);
         self.dev_settings_changed();
+        self.sync_import_setting();
         self.refresh();
     }
 
@@ -2510,7 +2524,10 @@ impl AppCtl {
 
     /// The tabs as the dictation send rules see them: the hub's, each named by its folder.
     pub(crate) fn dictation_tabs(&self) -> Vec<flare_dictation::route::SendTab> {
-        self.hub.send_tabs()
+        // Rule 1295: an unattached row runs no shell here: dictation never sends to it.
+        let mut tabs = self.hub.send_tabs();
+        tabs.retain(|t| !self.unattached(&t.id));
+        tabs
     }
 
     /// The live terminal of a tab (dictation pastes through it; window flow tests send keys through it).
@@ -2659,6 +2676,8 @@ impl AppCtl {
                 folder: folder.to_string(),
                 resume: resume.map(str::to_string),
                 live,
+                host_sized_start: false,
+                ring_both: false,
             },
         );
         // Rule 1213: the folder joins the recent folders with its machine; the host's home folder does once the host's
@@ -2850,12 +2869,16 @@ impl AppCtl {
     pub(crate) fn close_now(&mut self, id: &str) {
         // Before anything forgets it: Ctrl+Shift+T can open it again (rule 1236).
         self.remember_closed(id);
+        // Rule 1293: the host tab stays out of the import while its host asks; an unattached row closes over the watch.
+        let unattached = self.unattached(id);
+        self.closing_remote(id);
         self.note_close(id);
         self.deps.host.kill(id);
         self.working.remove(id);
         self.model.close(id);
         self.term.tab_closed(id);
         self.forget_tab_surfaces(id);
+        self.closed_import(id, unattached);
         self.refresh();
     }
 
@@ -4997,6 +5020,7 @@ impl AppCtl {
     fn blur(&mut self) {
         crate::dictation_ctl::on_blur();
         self.model.commit_walk();
+        self.end_stepping();
         self.clear_tip();
         self.term.hide_thumb();
         self.close_menu();
@@ -5298,7 +5322,10 @@ impl AppCtl {
             .tabs
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.kind == TabKind::Shell && self.agent_present(&t.id))
+            // Rule 1295: an unattached row runs no shell here and its quit detaches nothing: it holds no close.
+            .filter(|(_, t)| {
+                t.kind == TabKind::Shell && self.agent_present(&t.id) && !self.unattached(&t.id)
+            })
             .filter_map(|(i, t)| {
                 let for_ms = self.working_for_ms(&t.id)?;
                 Some((
@@ -5562,6 +5589,7 @@ impl AppCtl {
             UiMsg::RemoteFolder(m) => self.rfolder_answered(m),
             UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::Machines(list) => self.set_machines(list),
+            UiMsg::Import(a) => self.on_import(a),
             UiMsg::HostConvo(read) => self.on_host_convo(read),
             UiMsg::FolderResolved(dir) => {
                 self.open_folder(&dir);
@@ -5775,7 +5803,7 @@ impl AppCtl {
         if self.hub.take_changed() {
             self.sync_model_agents();
             self.close_flow
-                .set_busy(holds_window_close(self.hub.working_count()));
+                .set_busy(holds_window_close(self.working_here()));
             changed = true;
         }
         if self.clear_agent_decor() {
@@ -5890,10 +5918,13 @@ impl ChordTarget for Target<'_> {
 
     fn commit_walk(&mut self) {
         self.0.model.commit_walk();
+        // Rule 1292: the row the keys landed on attaches now; the rows passed over did not.
+        self.0.end_stepping();
     }
 
     fn next_tab(&mut self, dir: i32) {
         let switch = tab_switch(&self.0.prefs);
+        self.0.imports.stepping = true;
         self.0.model.step(dir, switch);
         self.0.refresh();
     }

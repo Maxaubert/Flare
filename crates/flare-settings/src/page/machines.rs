@@ -26,6 +26,8 @@ use crate::rows::row;
 
 /// The Computer sharing switch's row id (its dialog's buttons answer to it too).
 pub const SHARING_ROW: &str = "machines-sharing";
+/// The import switch's row (rule 1294).
+pub const IMPORT_ROW: &str = "machines-import";
 /// The sharing dialog's two buttons, as `row-button` names them: the left one (Cancel, Keep it) and the primary one.
 pub const SHARING_CANCEL: &str = "cancel";
 pub const SHARING_PRIMARY: &str = "primary";
@@ -328,6 +330,12 @@ fn sharing_row(s: SharingInfo) -> RowModel {
     }
 }
 
+/// The import switch (rule 1294): tabs opened in Flare on a linked machine show here. On by default.
+fn import_row(on: bool) -> RowModel {
+    let def = row(IMPORT_ROW).expect("machines-import is a row");
+    switch_row(def, on)
+}
+
 /// The "+ Add a machine" row: its plus, its label and no subtext (owner pick); a press anywhere opens the dialog.
 fn add_row() -> RowModel {
     let def = row(ADD_ROW).expect("machines-add is a row");
@@ -356,7 +364,12 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
         sections: vec![
             section(
                 "this-computer",
-                vec![BlockModel::Row(sharing_row(info.sharing))],
+                vec![
+                    BlockModel::Row(sharing_row(info.sharing)),
+                    BlockModel::Row(import_row(
+                        crate::machine_prefs::import_remote_on(env.prefs),
+                    )),
+                ],
             ),
             section("machines", blocks),
         ],
@@ -445,7 +458,7 @@ mod tests {
                 let page = build(env);
                 assert_eq!(page.sections[0].id, "this-computer");
                 assert_eq!(page.sections[0].title, "This computer");
-                assert_eq!(page.sections[0].blocks.len(), 1);
+                assert_eq!(page.sections[0].blocks.len(), 2, "sharing, then import");
                 let BlockModel::Row(r) = &page.sections[0].blocks[0] else {
                     panic!("the sharing row");
                 };
@@ -473,6 +486,40 @@ mod tests {
         for r in [&on, &busy] {
             assert_eq!(r.sub, off.sub, "the subtext never reports state");
         }
+    }
+
+    /// Rule 1294: This computer draws the sharing switch, then the import switch: its words, its key's state, on by
+    /// default.
+    #[test]
+    fn the_machines_page_draws_sharing_then_import_in_this_computer() {
+        let rows = |prefs_on: Option<bool>| {
+            with_env_machines(MachinesInfo::default(), |env| {
+                if let Some(on) = prefs_on {
+                    crate::machine_prefs::set_import_remote_on(env.prefs, on);
+                }
+                let page = build(env);
+                page.sections[0]
+                    .blocks
+                    .iter()
+                    .map(|b| match b {
+                        BlockModel::Row(r) => r.clone(),
+                        _ => panic!("rows only"),
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let by_default = rows(None);
+        assert_eq!(
+            by_default.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            [SHARING_ROW, IMPORT_ROW]
+        );
+        let import = &by_default[1];
+        assert_eq!(import.label, "Import sessions started on other machines");
+        assert_eq!(import.sub, "Show tabs opened on your linked machines.");
+        assert_eq!(import.control, Control::Switch { on: true }, "on by default");
+        assert!(import.tap && !import.off);
+        assert!(import.row_tip.is_empty(), "a labelled row has no tooltip");
+        assert_eq!(rows(Some(false))[1].control, Control::Switch { on: false });
     }
 
     /// Rule 1251: the dialog is drawn over the page; an open one leaves the add row in its place.

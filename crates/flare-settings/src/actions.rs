@@ -207,6 +207,8 @@ fn switch(ctx: &Ctx, row: &str, on: bool) -> Vec<Effect> {
         "app-network" => term_prefs::set_app_network(p, on),
         "dev-preview" => term_prefs::set_dev_preview(p, on),
         "notify-ask" => agent_prefs::set_notify_ask_on(p, on),
+        // Import remote sessions (rule 1294): the window hears the key change and starts or stops its watch links.
+        "machines-import" => crate::machine_prefs::set_import_remote_on(p, on),
         "help-enabled" => help_prefs::set_help_enabled(p, on),
         "term-caret-blink" => ctx.look.set_caret_blink(on),
         _ => {}

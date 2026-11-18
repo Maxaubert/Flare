@@ -204,7 +204,7 @@ impl AppCtl {
 
     /// An agent in some tab is working.
     fn staged_working(&self) -> bool {
-        !self.busy_agents().is_empty() || self.hub.working_count() > 0
+        !self.busy_agents().is_empty() || self.working_here() > 0
     }
 
     /// The chip was clicked: install now. No menu (rule 258).

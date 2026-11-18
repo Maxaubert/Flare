@@ -920,6 +920,33 @@ fn the_sharing_switch_stays_on_across_restarts() {
     assert_eq!(*os.announced.lock().unwrap(), [true]);
 }
 
+/// Rule 1294: This computer draws the import switch after Computer sharing, on by default with its fixed words and no
+/// tooltip; a flip saves at once (no setup runs), and a restart over the same settings shows it off.
+#[test]
+fn the_import_switch_is_on_by_default_and_kept_across_a_restart() {
+    use crate::sharing::Platform;
+    use crate::sharing::fake::FakeOs;
+    let prefs = PrefStore::memory();
+    let os = Arc::new(FakeOs::new(Platform::Windows));
+    let f = fx_with(1.0, FakeIo::default(), os.clone(), prefs.clone());
+    f.page();
+    f.settle("the read", |f| f.row("machines-import").is_some());
+    let row = f.row("machines-import").unwrap();
+    assert_eq!(row.label.as_str(), "Import sessions started on other machines");
+    assert_eq!(row.sub.as_str(), "Show tabs opened on your linked machines.");
+    assert_eq!(row.row_tip.as_str(), "", "a labelled row has no tooltip");
+    assert!(row.on && !row.off && row.tap, "on by default");
+    f.b().invoke_row_switch("machines-import".into(), false);
+    f.settle("off", |f| f.row("machines-import").is_some_and(|r| !r.on));
+    assert!(!flare_settings::machine_prefs::import_remote_on(&prefs));
+    assert!(os.scripts.lock().unwrap().is_empty(), "no setup runs");
+    drop(f);
+    let again = fx_with(1.0, FakeIo::default(), os, prefs);
+    again.page();
+    again.settle("the read", |f| f.row("machines-import").is_some());
+    assert!(!again.row("machines-import").unwrap().on, "kept across a restart");
+}
+
 /// Rule 1254: when macOS refuses, the Flare dialog "Turn on Remote Login" draws over the Machines page with Cancel and
 /// Open System Settings; Open System Settings opens Sharing and the dialog waits; it closes by itself once Remote Login
 /// is on, and the switch is on. It draws only over the Machines page while Settings is in front.

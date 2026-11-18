@@ -1114,6 +1114,8 @@ mod tests {
                 folder: "/Users/max/proj".into(),
                 resume: None,
                 live: crate::remote_pty::RemoteLive::default(),
+                host_sized_start: false,
+                ring_both: false,
             }),
             ..start_opts()
         });

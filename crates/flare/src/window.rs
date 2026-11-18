@@ -1612,6 +1612,20 @@ pub fn run_window(
                     crate::pairing::Me::this_computer(),
                 ),
             );
+            // Import remote sessions (rule 1291): one watch link per machine while the setting is on, each running
+            // `--serve-remote --no-start`. Under --e2e the scenario's loopback stands in for ssh, with the same word.
+            rc.borrow_mut()
+                .set_watch_port(Arc::new(crate::remote_import::LinkWatchPort::new(
+                    Arc::new(crate::remote_link::SshConnector::watching(
+                        &inst.profile.dir,
+                        crate::remote_link::e2e_loopback(
+                            e2e::global()
+                                .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
+                                .as_deref(),
+                        ),
+                    )),
+                    crate::remote_import::WatchTiming::default(),
+                )));
             // The + menu and the remote tabs' logos need the machines from the start: read once on a worker.
             let p = Arc::clone(&post);
             let started = std::thread::Builder::new()

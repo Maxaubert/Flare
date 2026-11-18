@@ -442,8 +442,11 @@ impl AppCtl {
     /// Remote sessions PR 7: the machines as `machines.json` holds them now (read at start, or saved by Settings >
     /// Machines). The + menu lists them, and every remote tab takes its machine's name and system (its logo).
     pub(crate) fn set_machines(&mut self, list: Vec<crate::machines::Machine>) {
+        let before: Vec<String> = self.machines.iter().map(|m| m.id.clone()).collect();
         self.machines = list;
         self.tag_remote_tabs();
+        // Rule 1291: each machine is watched while the setting is on; a removed one's rows and lists go.
+        self.machines_changed(&before);
         self.refresh();
     }
 
@@ -510,12 +513,16 @@ impl AppCtl {
         if self.model.remote_of(id).is_none() {
             return;
         }
+        // Rule 1293: its host tab, read before the row goes, stays hidden here (an import would bring it back).
+        let unattached = self.unattached(id);
+        self.hiding_remote(id);
         self.note_close(id);
         self.deps.host.leave(id);
         self.working.remove(id);
         self.model.close(id);
         self.term.tab_closed(id);
         self.forget_tab_surfaces(id);
+        self.closed_import(id, unattached);
         self.refresh();
     }
 

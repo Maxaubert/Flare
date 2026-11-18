@@ -3001,6 +3001,9 @@ mod flow {
         );
     }
 
+    // Import remote sessions PR 3 (rules 1291 to 1295): the window's side, over a fake watch and the fake remote.
+    mod import_flows;
+
     fn mac_mini() -> crate::machines::Machine {
         crate::machines::Machine {
             id: "mac".into(),

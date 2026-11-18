@@ -628,6 +628,8 @@ mod tests {
                 folder: "/Users/max/proj".into(),
                 resume: None,
                 live: flare_term::remote_pty::RemoteLive::default(),
+                host_sized_start: false,
+                ring_both: false,
             },
         );
         wait_until("the remote pty", || remote.made().len() == 1);

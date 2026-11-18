@@ -58,6 +58,11 @@ struct HostState {
     /// Rule 1215: the files put with `exec` (where they went), and an older host that refuses `exec`.
     runnable: Vec<String>,
     no_exec: bool,
+    /// Rule 1295: every attach's params as sent, and a host from before rule 1289 that refuses `ring`.
+    attaches: Vec<Value>,
+    no_ring: bool,
+    /// Every call in order, with its params (the order of a size and the typing, rule 1292).
+    log: Vec<(String, Value)>,
 }
 
 #[derive(Clone, Default)]
@@ -79,6 +84,7 @@ impl FakeHost {
     fn answer(&self, conn: u64, m: Method, p: &Value) -> Result<Value, CtlError> {
         let mut st = lk(self);
         st.calls.push(m.name().to_string());
+        st.log.push((m.name().to_string(), p.clone()));
         let tab = p["tab"].as_str().unwrap_or_default().to_string();
         match m {
             Method::RemoteOpen => {
@@ -102,6 +108,13 @@ impl FakeHost {
                 Ok(json!({"tab": id}))
             }
             Method::RemoteAttach => {
+                st.attaches.push(p.clone());
+                if p.get("ring").is_some() && st.no_ring {
+                    return Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        "ring is not a field of remote.attach",
+                    ));
+                }
                 if st.attach_not_yet > 0 {
                     st.attach_not_yet -= 1;
                     return Err(CtlError::new(
@@ -363,6 +376,17 @@ fn rig_with(host: FakeHost, host_tab: Option<&str>) -> Rig {
 }
 
 fn rig_timed(host: FakeHost, host_tab: Option<&str>, timing: Timing) -> Rig {
+    rig_flags(host, host_tab, timing, false, false)
+}
+
+/// A rig whose spec is an imported row's: `host_sized_start` (rule 1292) and `ring_both` (rule 1295).
+fn rig_flags(
+    host: FakeHost,
+    host_tab: Option<&str>,
+    timing: Timing,
+    host_sized_start: bool,
+    ring_both: bool,
+) -> Rig {
     let live = flare_term::remote_pty::RemoteLive::new(host_tab.map(str::to_string), 0);
     let sp = RemoteSpawner::new(
         Arc::new(FakeConnector {
@@ -383,6 +407,8 @@ fn rig_timed(host: FakeHost, host_tab: Option<&str>, timing: Timing) -> Rig {
             folder: "/Users/max/proj".into(),
             resume: None,
             live: live.clone(),
+            host_sized_start,
+            ring_both,
         }),
     };
     let mut pty = sp.spawn(&spec).unwrap();
@@ -733,6 +759,58 @@ fn the_ssh_command_is_argv_items_quoted_for_the_hosts_shell() {
     }
 }
 
+/// Rule 1291: the watch link's ssh is a tab link's with one fixed word more, `--no-start` after `--serve-remote`, so a
+/// poll never starts Flare on the host; a path refused for a tab link is refused for it too, and the e2e's loopback
+/// gets the same word at its end.
+#[test]
+fn the_watch_link_runs_serve_remote_no_start_and_nothing_else_new() {
+    let m = |kind, flare: &str| Machine {
+        id: "m".into(),
+        name: "M".into(),
+        kind,
+        ssh: "mac-mini".into(),
+        user: Some("max".into()),
+        flare: flare.into(),
+        ..Default::default()
+    };
+    for (kind, flare) in [
+        (Some(Os::Mac), "/Applications/Fl are.app/flare"),
+        (Some(Os::Pc), r"C:\Program Files\Flare\flare.exe"),
+        (None, "it's/flare"),
+    ] {
+        let tab = ssh_argv("ssh", &m(kind, flare)).unwrap();
+        let watch = ssh_argv_watch("ssh", &m(kind, flare)).unwrap();
+        assert_eq!(watch.len(), tab.len(), "{flare}");
+        assert_eq!(watch[..tab.len() - 1], tab[..tab.len() - 1], "{flare}");
+        assert_eq!(
+            watch.last().unwrap(),
+            &format!("{} --no-start", tab.last().unwrap()),
+            "{flare}"
+        );
+        assert!(!tab.last().unwrap().contains("--no-start"), "a tab's link may start Flare");
+    }
+    assert_eq!(
+        watch_command(Some(Os::Pc), r"C:\Flare\flare.exe").as_deref(),
+        Some(r#"cmd /c "C:\Flare\flare.exe" --serve-remote --no-start"#)
+    );
+    assert_eq!(watch_command(Some(Os::Pc), r#"C:\a"b\flare.exe"#), None);
+    assert_eq!(ssh_argv_watch("ssh", &m(Some(Os::Mac), "fla\nre")), None);
+    let profile = tempfile::tempdir().unwrap();
+    let loop_argv = vec!["flare".to_string(), "--serve-remote".to_string()];
+    assert_eq!(
+        SshConnector::watching(profile.path(), Some(loop_argv.clone()))
+            .argv("mac")
+            .unwrap(),
+        ["flare", "--serve-remote", "--no-start"]
+    );
+    assert_eq!(
+        SshConnector::new(profile.path(), Some(loop_argv.clone()))
+            .argv("mac")
+            .unwrap(),
+        loop_argv
+    );
+}
+
 /// Rule 1249: a machine with an address, a port, Flare's key and Flare's known-hosts file runs ssh at that address with
 /// that key only and that file only (strict checking, no question), each value one argv item; a path with a space is
 /// quoted inside its option's value; a field that could be an option, or break ssh's parsing, refuses the command.
@@ -1040,6 +1118,8 @@ fn the_hosts_status_of_the_tab_reaches_the_window_on_change_and_wakes_it() {
             folder: "/Users/max/proj".into(),
             resume: None,
             live: live.clone(),
+            host_sized_start: false,
+            ring_both: false,
         }),
     };
     let _pty = sp.spawn(&spec).unwrap();
@@ -1802,4 +1882,121 @@ fn the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole() {
     k.keep(vec![text("gone")], &[t0], t0, age);
     k.clear();
     assert_eq!(k.take(t0, age), (vec![], false));
+}
+
+// ---- import remote sessions PR 3 (rules 1292, 1295) ----
+
+/// A host with one tab of its own, `tab`, as a linked machine's Flare lists it.
+fn host_with(tab: &str) -> FakeHost {
+    let host = FakeHost::default();
+    lk(&host).tabs.insert(tab.into(), HostTab::default());
+    host
+}
+
+/// The sizes the host's tab was sent, in order.
+fn sizes(host: &FakeHost, tab: &str) -> Vec<(u64, u64)> {
+    lk(host).tabs.get(tab).map(|t| t.sizes.clone()).unwrap_or_default()
+}
+
+/// Lets the worker run a few polls, so a call it should not make had its chance.
+fn settle() {
+    std::thread::sleep(Duration::from_millis(120)); // sync-ok: test code only, never the app
+}
+
+/// Breaks every link once, and waits for the tab to attach again.
+fn reconnect(r: &Rig) {
+    let attaches = r.host.calls("remote.attach");
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() != LinkState::Live);
+    lk(&r.host).refuse = false;
+    wait_for("the attach again", || r.host.calls("remote.attach") > attaches);
+    r.live_on();
+}
+
+/// Rules 1292 and 1193: an imported row attaches to its host tab (no `remote.open`, no resume) and, while the host's
+/// window sizes it, sends no size on attach, a refit, a tab switch or a reconnect. The first key here ends the hold: the
+/// newest size goes first, then the key.
+#[test]
+fn an_imported_claude_tab_sends_no_size_on_attach_refit_switch_or_reconnect_and_one_before_the_first_key() {
+    let mut r = rig_flags(host_with("h7"), Some("h7"), fast(), true, true);
+    r.live_on();
+    assert_eq!(r.host.calls("remote.open"), 0, "an import never opens");
+    assert!(lk(&r.host).opens.is_empty(), "nor resumes");
+    r.pty.resize(100, 30).unwrap();
+    settle();
+    assert!(sizes(&r.host, "h7").is_empty(), "no size on attach or a refit");
+    reconnect(&r);
+    r.pty.resize(110, 32).unwrap();
+    settle();
+    assert!(sizes(&r.host, "h7").is_empty(), "none on a reconnect either");
+    r.writer.write_all(b"x").unwrap();
+    wait_for("the key", || !r.host.typed("h7").is_empty());
+    assert_eq!(sizes(&r.host, "h7"), [(110, 32)], "the newest size, once");
+    let log = lk(&r.host).log.clone();
+    let at = |m: &str| log.iter().position(|(n, _)| n == m).unwrap();
+    assert!(at("remote.resize") < at("remote.input"), "the size goes before the key");
+    // From then on the tab sizes as any followed tab does.
+    r.pty.resize(90, 20).unwrap();
+    wait_for("the next size", || sizes(&r.host, "h7").last() == Some(&(90, 20)));
+}
+
+/// Rule 1292: a click on the fitted view (a retake) ends the hold too, and sends the size it kept.
+#[test]
+fn a_retake_ends_an_imported_tabs_size_hold() {
+    let r = rig_flags(host_with("h7"), Some("h7"), fast(), true, false);
+    r.live_on();
+    settle();
+    assert!(sizes(&r.host, "h7").is_empty());
+    r.live.retake_size();
+    wait_for("the size", || sizes(&r.host, "h7") == [(80, 24)]);
+}
+
+/// Rule 1292: an imported plain shell (no session, so no fitted view) sends its size on attach as a followed tab does.
+#[test]
+fn an_imported_plain_shell_sends_its_size_on_attach_as_a_followed_tab_does() {
+    let r = rig_flags(host_with("h7"), Some("h7"), fast(), false, true);
+    r.live_on();
+    wait_for("the size", || sizes(&r.host, "h7") == [(80, 24)]);
+    assert_eq!(r.host.calls("remote.open"), 0);
+}
+
+/// Rule 1295: every attach of an imported row asks `ring: "both"`, reconnects too; a tab opened from here never does.
+#[test]
+fn an_imported_rows_attach_sends_ring_both_and_a_tab_opened_from_here_does_not() {
+    let r = rig_flags(host_with("h7"), Some("h7"), fast(), true, true);
+    r.live_on();
+    reconnect(&r);
+    let attaches = lk(&r.host).attaches.clone();
+    assert_eq!(attaches.len(), 2);
+    for a in &attaches {
+        assert_eq!(a, &json!({"tab": "h7", "ring": "both"}));
+    }
+    let opened = rig();
+    opened.live_on();
+    reconnect(&opened);
+    for a in lk(&opened.host).attaches.iter() {
+        assert_eq!(a, &json!({"tab": "h1"}), "rule 295 as before");
+    }
+}
+
+/// Rule 1295: a host from before rule 1289 refuses `ring`; the attach goes again without it on the same link, and the
+/// reconnects leave it out.
+#[test]
+fn an_older_host_that_refuses_ring_is_attached_without_it() {
+    let host = host_with("h7");
+    lk(&host).no_ring = true;
+    let r = rig_flags(host, Some("h7"), fast(), false, true);
+    r.live_on();
+    assert_eq!(lk(&r.host).connects, 1, "on the same link");
+    reconnect(&r);
+    let attaches = lk(&r.host).attaches.clone();
+    assert_eq!(
+        attaches,
+        [
+            json!({"tab": "h7", "ring": "both"}),
+            json!({"tab": "h7"}),
+            json!({"tab": "h7"}),
+        ]
+    );
 }

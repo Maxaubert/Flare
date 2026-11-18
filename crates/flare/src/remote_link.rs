@@ -174,6 +174,15 @@ pub fn remote_command(kind: Option<Os>, flare: &str) -> Option<String> {
     }
 }
 
+/// The fixed word the watch link adds after `--serve-remote` (rule 1291): the host's serve process never starts a Flare
+/// to answer it, and with none running every relayed call is `unavailable`.
+pub const NO_START: &str = "--no-start";
+
+/// Pure (rule 1291): the watch link's command, [`remote_command`] and the fixed word [`NO_START`], nothing else new.
+pub fn watch_command(kind: Option<Os>, flare: &str) -> Option<String> {
+    remote_command(kind, flare).map(|c| format!("{c} {NO_START}"))
+}
+
 /// This machine's ssh: by its absolute path (rule 1).
 pub(crate) fn ssh_exe() -> String {
     #[cfg(windows)]
@@ -259,12 +268,25 @@ pub fn machine_dest(m: &Machine) -> Vec<String> {
 /// Pure: ssh's argv for a machine, every part an item of its own: no shell on this side, no option smuggled in a
 /// host name, no prompt (`BatchMode`), no terminal (`-T`), and the machine's own options (`machine_opts`).
 pub fn ssh_argv(ssh: &str, m: &Machine) -> Option<Vec<String>> {
+    ssh_argv_of(ssh, m, false)
+}
+
+/// Pure (rule 1291): the watch link's argv, [`ssh_argv`] with `--no-start` after `--serve-remote`.
+pub fn ssh_argv_watch(ssh: &str, m: &Machine) -> Option<Vec<String>> {
+    ssh_argv_of(ssh, m, true)
+}
+
+fn ssh_argv_of(ssh: &str, m: &Machine, no_start: bool) -> Option<Vec<String>> {
     let opts = machine_opts(m)?;
     let mut argv = vec![ssh.to_string(), "-o".into(), "BatchMode=yes".into()];
     argv.extend(opts);
     argv.push("-T".into());
     argv.extend(machine_dest(m));
-    argv.push(remote_command(m.kind, &m.flare)?);
+    argv.push(if no_start {
+        watch_command(m.kind, &m.flare)?
+    } else {
+        remote_command(m.kind, &m.flare)?
+    });
     Some(argv)
 }
 
@@ -293,6 +315,8 @@ pub const HELLO_WAIT: Duration = Duration::from_secs(90);
 pub struct SshConnector {
     machines: PathBuf,
     loopback: Option<Vec<String>>,
+    /// The watch link's connector (rule 1291): `--no-start` after `--serve-remote`, the loopback's too.
+    no_start: bool,
 }
 
 impl SshConnector {
@@ -300,12 +324,26 @@ impl SshConnector {
         Self {
             machines: machines_file(profile),
             loopback,
+            no_start: false,
+        }
+    }
+
+    /// The watch links' connector (rule 1291): every link it starts runs `--serve-remote --no-start`, so a poll never
+    /// starts Flare on the host. Under `--e2e` the loopback argv gets the same word at its end.
+    pub fn watching(profile: &Path, loopback: Option<Vec<String>>) -> Self {
+        Self {
+            no_start: true,
+            ..Self::new(profile, loopback)
         }
     }
 
     fn argv(&self, machine: &str) -> Result<Vec<String>, LinkError> {
         if let Some(l) = &self.loopback {
-            return Ok(l.clone());
+            let mut l = l.clone();
+            if self.no_start {
+                l.push(NO_START.into());
+            }
+            return Ok(l);
         }
         let m = read_machines(&self.machines)
             .into_iter()
@@ -313,7 +351,8 @@ impl SshConnector {
             .ok_or_else(|| {
                 LinkError::Down(format!("no machine called {machine} in machines.json"))
             })?;
-        ssh_argv_ready(&ssh_exe(), &m)
+        keep_key_private(&m);
+        ssh_argv_of(&ssh_exe(), &m, self.no_start)
             .ok_or_else(|| LinkError::Down(format!("cannot build the ssh command for {machine}")))
     }
 }
@@ -894,6 +933,7 @@ impl PtySpawner for RemoteSpawner {
     /// Never waits for the other machine: the worker connects.
     fn spawn(&self, spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String> {
         let remote = spec.remote.clone().ok_or("not a remote tab")?;
+        let size_held = remote.host_sized_start;
         let io = RemoteIo::new();
         let pty = RemotePty::new(Arc::clone(&io));
         let worker = Worker {
@@ -914,6 +954,8 @@ impl PtySpawner for RemoteSpawner {
             open_id_on: true,
             kept: KeptTyping::default(),
             styled_on: true,
+            ring_on: true,
+            size_held,
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -958,6 +1000,12 @@ struct Worker {
     kept: KeptTyping,
     /// Whether the host takes `remote.snapshot {styled}` (rule 1213; an older host refuses the param).
     styled_on: bool,
+    /// Whether the host takes `remote.attach {ring}` (rule 1295; a host from before rule 1289 refuses the param).
+    ring_on: bool,
+    /// Rule 1292: an imported Claude tab the host's window sizes sends no size, on attach, a refit, a tab switch or a
+    /// reconnect, until the first click (a retake) or the first typed thing here; the size then goes before the typing.
+    /// The newest size asked meanwhile is kept in `size`.
+    size_held: bool,
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -999,6 +1047,15 @@ pub fn open_params(spec: &RemoteSpec, open_id: Option<&str>) -> Value {
     }
     if let Some(o) = open_id {
         p["open_id"] = json!(o);
+    }
+    p
+}
+
+/// Pure: `remote.attach`'s params: the tab, and `ring: "both"` for an imported row whose host takes it (rule 1295).
+pub fn attach_params(tab: &str, ring_both: bool) -> Value {
+    let mut p = json!({"tab": tab});
+    if ring_both {
+        p["ring"] = json!(flare_ctl::remote::RING_BOTH);
     }
     p
 }
@@ -1072,6 +1129,11 @@ impl KeptTyping {
             .collect();
         *self = Self::default();
         (typed, lost)
+    }
+
+    /// Nothing is kept.
+    pub fn is_empty(&self) -> bool {
+        self.typed.is_empty()
     }
 
     /// The tab's host session is gone: nothing kept is ever typed into another tab.
@@ -1232,7 +1294,12 @@ impl Worker {
             Instant::now(),
             self.t.typing_kept,
         );
-        if let Some((cols, rows)) = self.size
+        // Rule 1292: typing kept for the host, or a click that took the terminal, ends the hold: the size goes first.
+        if self.size_held && (!self.kept.is_empty() || self.spec.live.take_retake()) {
+            self.size_held = false;
+        }
+        if !self.size_held
+            && let Some((cols, rows)) = self.size
             && let Err(e) = link.call(
                 Method::RemoteResize,
                 json!({"tab": tab, "cols": cols, "rows": rows}),
@@ -1302,8 +1369,17 @@ impl Worker {
     fn attach(&mut self, link: &mut dyn Link, tab: &str) -> Option<Step> {
         let end = Instant::now() + self.t.attach_patience;
         loop {
-            match link.call(Method::RemoteAttach, json!({"tab": tab}), self.t.call) {
+            let ring = self.spec.ring_both && self.ring_on;
+            match link.call(Method::RemoteAttach, attach_params(tab, ring), self.t.call) {
                 Ok(_) => return None,
+                // Rule 1295: a host from before rule 1289 refuses the unknown param; the attach goes again without
+                // it, on this link, and later attaches of this tab leave it out (its question then rings only here).
+                Err(LinkError::Refused(e))
+                    if ring && e.code == code::BAD_PARAMS && e.message.contains("ring") =>
+                {
+                    log::info!("remote.attach: an older host without ring, attaching without it");
+                    self.ring_on = false;
+                }
                 Err(LinkError::Refused(e)) if e.code == code::NO_TAB => {
                     // The host's tab is gone (closed there, or the host started again): the tab ends as a shell that
                     // exits, and what was typed meanwhile is never typed into another tab.
@@ -1580,15 +1656,30 @@ impl Worker {
                 return Step::Ended;
             }
             let mut busy = false;
-            if let Some((cols, rows)) = out.size {
-                self.size = Some((cols, rows));
-                if let Err(e) = link.call(
+            if let Some(s) = out.size {
+                self.size = Some(s);
+            }
+            // Rule 1292: while the host's window sizes an imported tab, a refit or a tab switch here sends nothing; the
+            // first typed thing ends the hold, and the size goes before the typing.
+            let send_size = if self.size_held {
+                if out.intents.is_empty() {
+                    false
+                } else {
+                    self.size_held = false;
+                    true
+                }
+            } else {
+                out.size.is_some()
+            };
+            if send_size
+                && let Some((cols, rows)) = self.size
+                && let Err(e) = link.call(
                     Method::RemoteResize,
                     json!({"tab": tab, "cols": cols, "rows": rows}),
                     self.t.call,
-                ) {
-                    return self.failed(e);
-                }
+                )
+            {
+                return self.failed(e);
             }
             for batch in input_batches(&out.intents) {
                 busy = true;
@@ -1643,7 +1734,12 @@ impl Worker {
             }
             // A click or a key took the live terminal back on this screen (remote sessions PR 7): this tab's size goes
             // again, so the host's refits leave it to this window (rule 282, the last typist sets the size).
-            if self.spec.live.take_retake()
+            // Rule 1292: a click that took the terminal ends the hold of an imported tab the same way.
+            let retake = self.spec.live.take_retake();
+            if retake {
+                self.size_held = false;
+            }
+            if retake
                 && let Some((cols, rows)) = self.size
                 && let Err(e) = link.call(
                     Method::RemoteResize,

@@ -2887,6 +2887,8 @@ mod remote_tests {
             folder: "/Users/max/proj".into(),
             resume: None,
             live: RemoteLive::default(),
+            host_sized_start: false,
+            ring_both: false,
         }
     }
 

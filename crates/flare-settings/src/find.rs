@@ -295,12 +295,19 @@ mod tests {
             assert_eq!(first.page, "machines");
             assert_eq!(first.section, "Linked machines");
         }
-        // The page's name finds both its rows, in the page's order.
+        // The page's name finds all its rows: the import row first (its label holds the word), then the page's order.
         let ids: Vec<&str> = search_settings(&index, "machines", &names)
             .iter()
             .map(|e| e.id.as_str())
             .collect();
-        assert_eq!(ids, ["machines-sharing", "machines-add"]);
+        assert_eq!(ids, ["machines-import", "machines-sharing", "machines-add"]);
+        // Rule 1294: the import switch is found by its own words, under This computer.
+        for q in ["import", "import sessions", "linked tabs"] {
+            let found = search_settings(&index, q, &names);
+            let first = found.first().unwrap_or_else(|| panic!("{q} found nothing"));
+            assert_eq!(first.id, "machines-import", "{q}");
+            assert_eq!(first.section, "This computer");
+        }
     }
 
     /// Rule 1252: the Computer sharing switch is found by its words, under This computer.

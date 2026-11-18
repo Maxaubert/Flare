@@ -335,6 +335,11 @@ pub struct RemoteSpec {
     pub resume: Option<String>,
     /// The tab's live state (the host's id of the tab, the output reached).
     pub live: RemoteLive,
+    /// An imported Claude tab the host's window sizes (rule 1292): no size is sent, on attach, a refit, a tab switch or
+    /// a reconnect, until the first click or key here takes the terminal; then the size goes first.
+    pub host_sized_start: bool,
+    /// An imported row (rule 1295): every `remote.attach` asks `ring: "both"`, so the host keeps ringing its questions.
+    pub ring_both: bool,
 }
 
 /// How a remote tab lets go of its host session.

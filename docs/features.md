@@ -3062,3 +3062,26 @@ the window calls this until PR 3 wires the watcher.
 - **The prefs.** `flare.machines.importRemote` (on by default) and `flare.machines.importHidden` (JSON, capped, bad
   JSON reads as nothing hidden).
 - Rule 1290. Tests in `remote_import.rs`, `flare-tabs` `model.rs` and `machine_prefs.rs`.
+
+## Import remote sessions, PR 3: the watch, the rows, attach on show, the switch, 2026-11-18
+
+Spec: `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`. The feature turns on here: tabs opened in
+Flare on a linked machine show as remote tab rows on this one.
+
+- **The switch.** Settings > Machines, This computer: "Import sessions started on other machines" (on by default).
+  Off removes every imported row by a detach, never a close, and keeps the tabs the person opened.
+- **The watch.** One light link per linked machine while the switch is on: `ssh ... --serve-remote --no-start`, so a
+  poll never starts Flare there. It asks `remote.status` every 3 s and backs off to 60 s while the machine is away.
+- **The rows.** A host's own tab shows as a row at the end of the strip, behind the front tab, with the host's marks
+  and folder. It costs no session link until it is shown.
+- **Attach on show.** A row attaches when it comes to the front by any way (a click, Ctrl+1..9, a notification, a close
+  that fronts it). Ctrl+Tab attaches only the row it lands on, when Control is let go. It never opens or resumes on the
+  host. A Claude tab the host's window sizes keeps the host's size until the first click or key here.
+- **Close and Hide here only.** Close ends the session on the host with its usual ask; the row does not come back while
+  the host asks. Hide here only leaves it running and remembers it, so the next polls do not bring it back. This also
+  holds for a tab opened from here.
+- **Questions.** A question in an imported row rings here once and on the host once, attached or not.
+- **No shell here.** An unattached row takes no dictation and no plugin input, and holds no window close or install.
+- **Code.** `remote_import.rs` (`LinkWatchPort`, `WatchTiming`), `appctl/import_glue.rs`, `remote_link.rs`
+  (`watch_command`, `ssh_argv_watch`, `SshConnector::watching`, `attach_params`, the size hold),
+  `flare-term` `RemoteSpec::{host_sized_start, ring_both}`, `flare-settings` (`machines-import`). Rules 1291 to 1295.

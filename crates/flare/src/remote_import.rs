@@ -11,18 +11,18 @@
 //! row closed here out while the host still asks about the close (rule 48), until the host drops the tab or for
 //! [`CLOSING_FOR`].
 
-// Nothing in the binary calls this until import remote sessions PR 3 wires the watcher; PR 3 removes this line.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use flare_ctl::Method;
 use flare_ctl::remote::ORIGIN_HERE;
 use flare_settings::machine_prefs::IMPORT_HIDDEN_MAX;
 use flare_tabs::tabs::ImportHow;
 use flare_term::remote_pty::HostStatus;
-use serde_json::Value;
+use serde_json::{Value, json};
 
+use crate::remote_link::{Connector, Link, LinkError, next_backoff};
 use crate::remote_status::status_from;
 
 /// How long a row closed here stays out of the import while the host has not dropped its tab (builder's call 12).
@@ -101,6 +101,7 @@ pub struct ImportRow {
     /// The host's folder, or `~` when the host names no safe one (rule 1279).
     pub folder: String,
     /// The host's title, words only, for the agent's list (a `Tab` has no title: labels come from the folder).
+    #[allow(dead_code)] // the agent's list reads it (import remote sessions PR 4)
     pub title: String,
     /// The marks the row shows before it attaches.
     pub status: HostStatus,
@@ -259,6 +260,7 @@ impl HiddenList {
     }
 
     /// Takes `tab` off the list (an agent's adopt, PR 4). False when it was not hidden.
+    #[allow(dead_code)] // the agent's adopt calls it (import remote sessions PR 4)
     pub fn unhide(&mut self, machine: &str, tab: &str) -> bool {
         self.forget(machine, &[tab.to_string()])
     }
@@ -331,6 +333,244 @@ impl ClosingList {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+// ---- the watch links (rule 1291) ----
+
+/// What one poll of a machine heard, owned: the window's message.
+#[derive(Clone)]
+pub enum Heard {
+    Listed(Value),
+    Unavailable,
+    Refused,
+}
+
+impl Heard {
+    pub fn answer(&self) -> Answer<'_> {
+        match self {
+            Heard::Listed(v) => Answer::Listed(v),
+            Heard::Unavailable => Answer::Unavailable,
+            Heard::Refused => Answer::Refused,
+        }
+    }
+}
+
+/// A watch link's answer for the window: the machine and what its poll heard.
+pub struct WatchAnswer {
+    pub machine: String,
+    pub heard: Heard,
+}
+
+impl std::fmt::Debug for WatchAnswer {
+    /// Its kind only: a listing carries the host's titles, question words and session ids.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WatchAnswer")
+    }
+}
+
+/// Where a watch link hands its answers (the window's post, a test's list).
+pub type WatchPost = Arc<dyn Fn(WatchAnswer) + Send + Sync>;
+
+/// One machine's watch while it lives. Dropping it stops the link (rule 1291: no watch while the setting is off).
+pub trait Watch {
+    /// Close on an unattached row (rule 1293): `remote.close {tab}` over this link, now or once it is up again.
+    fn close(&self, host_tab: &str);
+}
+
+/// Starts watch links (the window's; a test gives a fake).
+pub trait WatchPort {
+    fn watch(&self, machine: &str, post: WatchPost) -> Box<dyn Watch>;
+}
+
+/// The waits of a watch link (rule 1291).
+#[derive(Clone, Copy, Debug)]
+pub struct WatchTiming {
+    /// Between two `remote.status` polls.
+    pub every: Duration,
+    /// The first wait after the link failed; each next one doubles, up to `backoff_max`.
+    pub backoff_min: Duration,
+    pub backoff_max: Duration,
+    /// One call's time.
+    pub call: Duration,
+}
+
+impl Default for WatchTiming {
+    fn default() -> Self {
+        Self {
+            every: Duration::from_secs(3),
+            backoff_min: Duration::from_secs(3),
+            backoff_max: Duration::from_secs(60),
+            call: Duration::from_secs(15),
+        }
+    }
+}
+
+/// The watch links over a connector whose links run `--serve-remote --no-start` (`SshConnector::watching`).
+pub struct LinkWatchPort {
+    connector: Arc<dyn Connector>,
+    timing: WatchTiming,
+}
+
+impl LinkWatchPort {
+    pub fn new(connector: Arc<dyn Connector>, timing: WatchTiming) -> Self {
+        Self { connector, timing }
+    }
+}
+
+#[derive(Default)]
+struct WatchState {
+    stop: bool,
+    /// Host tabs to close (rule 1293), sent in order once the link is up.
+    closes: Vec<String>,
+}
+
+#[derive(Default)]
+struct WatchShared {
+    state: Mutex<WatchState>,
+    cv: Condvar,
+}
+
+impl WatchShared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, WatchState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn stopped(&self) -> bool {
+        self.lock().stop
+    }
+
+    /// Waits `d`, or until the watch stops, or (`for_close`) a close is asked. False once stopped.
+    fn wait(&self, d: Duration, for_close: bool) -> bool {
+        let end = Instant::now() + d;
+        let mut st = self.lock();
+        loop {
+            if st.stop {
+                return false;
+            }
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() || (for_close && !st.closes.is_empty()) {
+                return true;
+            }
+            st = self
+                .cv
+                .wait_timeout(st, left) // sync-ok: a watch link's worker waits for its next poll, never the UI thread
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+struct LinkWatch(Arc<WatchShared>);
+
+impl Watch for LinkWatch {
+    fn close(&self, host_tab: &str) {
+        self.0.lock().closes.push(host_tab.to_string());
+        self.0.cv.notify_all();
+    }
+}
+
+impl Drop for LinkWatch {
+    fn drop(&mut self) {
+        self.0.lock().stop = true;
+        self.0.cv.notify_all();
+    }
+}
+
+impl WatchPort for LinkWatchPort {
+    fn watch(&self, machine: &str, post: WatchPost) -> Box<dyn Watch> {
+        let shared = Arc::new(WatchShared::default());
+        let worker = WatchWorker {
+            machine: machine.to_string(),
+            connector: Arc::clone(&self.connector),
+            t: self.timing,
+            shared: Arc::clone(&shared),
+            post,
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("flare-watch-link".into())
+            .spawn(move || worker.run())
+        {
+            log::warn!("could not start the watch link of {machine}: {e}");
+        }
+        Box::new(LinkWatch(shared))
+    }
+}
+
+/// Pure (rule 1291): what a watch link's `remote.status` call came to. `unavailable` is a host with no Flare running
+/// (`--no-start`); any other refusal is passing. None for a broken link.
+pub fn heard_of(r: Result<Value, LinkError>) -> Option<Heard> {
+    match r {
+        Ok(v) => Some(Heard::Listed(v)),
+        Err(LinkError::Refused(e)) if e.code == flare_ctl::code::UNAVAILABLE => {
+            Some(Heard::Unavailable)
+        }
+        Err(LinkError::Refused(e)) => {
+            log::info!("remote.status refused on the watch link: {}", e.code);
+            Some(Heard::Refused)
+        }
+        Err(LinkError::Down(_)) => None,
+    }
+}
+
+struct WatchWorker {
+    machine: String,
+    connector: Arc<dyn Connector>,
+    t: WatchTiming,
+    shared: Arc<WatchShared>,
+    post: WatchPost,
+}
+
+impl WatchWorker {
+    fn tell(&self, heard: Heard) {
+        if !self.shared.stopped() {
+            (self.post)(WatchAnswer {
+                machine: self.machine.clone(),
+                heard,
+            });
+        }
+    }
+
+    /// BLOCKING (ssh, the polls): the watch's own thread until the window drops it.
+    fn run(self) {
+        let mut backoff = self.t.backoff_min;
+        while !self.shared.stopped() {
+            match self.connector.connect(&self.machine) {
+                Ok(mut link) => {
+                    backoff = self.t.backoff_min;
+                    self.polls(&mut *link);
+                }
+                Err(e) => log::info!("watch link to {}: {e}", self.machine),
+            }
+            if !self.shared.wait(backoff, false) {
+                break;
+            }
+            backoff = next_backoff(backoff, self.t.backoff_max);
+        }
+    }
+
+    /// The polls of one link: the closes asked, then `remote.status`, every `every`, until the link breaks or stops.
+    fn polls(&self, link: &mut dyn Link) {
+        loop {
+            let closes = std::mem::take(&mut self.shared.lock().closes);
+            for (n, tab) in closes.iter().enumerate() {
+                if let Err(LinkError::Down(_)) =
+                    link.call(Method::RemoteClose, json!({"tab": tab}), self.t.call)
+                {
+                    // Tried again once the link is back (the spec's `close_without_a_link`).
+                    self.shared.lock().closes.splice(0..0, closes[n..].iter().cloned());
+                    return;
+                }
+            }
+            let Some(heard) = heard_of(link.call(Method::RemoteStatus, json!({}), self.t.call))
+            else {
+                return;
+            };
+            self.tell(heard);
+            if !self.shared.wait(self.t.every, true) {
+                return;
+            }
+        }
     }
 }
 
@@ -739,5 +979,170 @@ mod tests {
         assert!(h.drop_machine("pc"));
         assert!(!h.drop_machine("pc"));
         assert!(h.as_map().is_empty());
+    }
+
+    // ---- the watch links (rule 1291) ----
+
+    use flare_ctl::{CtlError, code};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    /// A machine for the watch: whether it answers at all, what `remote.status` answers, and every call it got.
+    #[derive(Default)]
+    struct FakeMachine {
+        down: AtomicBool,
+        /// Some: the code `remote.status` is refused with (`unavailable`: no Flare runs there).
+        refuse: Mutex<Option<&'static str>>,
+        connects: AtomicU32,
+        calls: Mutex<Vec<(Method, Value)>>,
+    }
+
+    struct FakeLink(Arc<FakeMachine>);
+
+    impl Link for FakeLink {
+        fn call(&mut self, m: Method, p: Value, _t: Duration) -> Result<Value, LinkError> {
+            if self.0.down.load(Ordering::SeqCst) {
+                return Err(LinkError::Down("the link broke".into()));
+            }
+            self.0.calls.lock().unwrap().push((m, p));
+            if let Some(c) = *self.0.refuse.lock().unwrap() {
+                return Err(LinkError::Refused(CtlError::new(c, "not now")));
+            }
+            Ok(listing(&["t1-1"]))
+        }
+    }
+
+    struct FakeConnector(Arc<FakeMachine>);
+
+    impl Connector for FakeConnector {
+        fn connect(&self, _machine: &str) -> Result<Box<dyn Link>, LinkError> {
+            self.0.connects.fetch_add(1, Ordering::SeqCst);
+            if self.0.down.load(Ordering::SeqCst) {
+                return Err(LinkError::Down("no route to host".into()));
+            }
+            Ok(Box::new(FakeLink(Arc::clone(&self.0))))
+        }
+    }
+
+    fn quick() -> WatchTiming {
+        WatchTiming {
+            every: Duration::from_millis(10),
+            backoff_min: Duration::from_millis(10),
+            backoff_max: Duration::from_millis(40),
+            call: Duration::from_secs(1),
+        }
+    }
+
+    fn wait_for(what: &str, f: impl Fn() -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !f() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(5)); // sync-ok: test code only
+        }
+    }
+
+    type Heards = Arc<Mutex<Vec<(String, &'static str)>>>;
+
+    fn watched(m: &Arc<FakeMachine>) -> (Box<dyn Watch>, Heards) {
+        let heard: Heards = Arc::default();
+        let h2 = Arc::clone(&heard);
+        let port = LinkWatchPort::new(Arc::new(FakeConnector(Arc::clone(m))), quick());
+        let w = port.watch(
+            "mac",
+            Arc::new(move |a: WatchAnswer| {
+                let kind = match a.heard {
+                    Heard::Listed(_) => "listed",
+                    Heard::Unavailable => "unavailable",
+                    Heard::Refused => "refused",
+                };
+                h2.lock().unwrap().push((a.machine, kind));
+            }),
+        );
+        (w, heard)
+    }
+
+    fn statuses(m: &FakeMachine) -> usize {
+        m.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(c, _)| *c == Method::RemoteStatus)
+            .count()
+    }
+
+    /// Rule 1291: the default watch polls every 3 s and, while the machine does not answer, waits 3, 6, 12, 24, 48 s and
+    /// then 60 s at most between tries.
+    #[test]
+    fn the_watch_backs_off_from_three_seconds_to_a_minute() {
+        let t = WatchTiming::default();
+        assert_eq!(t.every, Duration::from_secs(3));
+        let mut d = t.backoff_min;
+        let mut seen = vec![d.as_secs()];
+        for _ in 0..6 {
+            d = next_backoff(d, t.backoff_max);
+            seen.push(d.as_secs());
+        }
+        assert_eq!(seen, [3, 6, 12, 24, 48, 60, 60]);
+    }
+
+    /// Rule 1291: the watch asks `remote.status` again and again and hands each answer on; a machine that is down is
+    /// tried again; `unavailable` (no Flare runs there) and a passing refusal are handed on as such; once the window drops
+    /// the watch (the setting off), no call is made any more.
+    #[test]
+    fn the_watcher_polls_status_backs_off_when_down_and_stops_when_off() {
+        let m = Arc::new(FakeMachine::default());
+        let (w, heard) = watched(&m);
+        wait_for("three polls", || statuses(&m) >= 3);
+        assert!(heard.lock().unwrap().iter().all(|(mm, k)| mm == "mac" && *k == "listed"));
+        m.down.store(true, Ordering::SeqCst);
+        let connects = m.connects.load(Ordering::SeqCst);
+        wait_for("tries while down", || m.connects.load(Ordering::SeqCst) >= connects + 3);
+        let n = heard.lock().unwrap().len();
+        std::thread::sleep(Duration::from_millis(60)); // sync-ok: test code only
+        assert_eq!(heard.lock().unwrap().len(), n, "a machine that is down tells nothing");
+        m.down.store(false, Ordering::SeqCst);
+        *m.refuse.lock().unwrap() = Some(code::UNAVAILABLE);
+        wait_for("unavailable", || heard.lock().unwrap().iter().any(|(_, k)| *k == "unavailable"));
+        *m.refuse.lock().unwrap() = Some(code::BUSY);
+        wait_for("a refusal", || heard.lock().unwrap().iter().any(|(_, k)| *k == "refused"));
+        drop(w);
+        std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only
+        let (calls, connects) = (statuses(&m), m.connects.load(Ordering::SeqCst));
+        std::thread::sleep(Duration::from_millis(100)); // sync-ok: test code only
+        assert_eq!(statuses(&m), calls, "no poll once stopped");
+        assert_eq!(m.connects.load(Ordering::SeqCst), connects, "no link once stopped");
+        assert!(
+            m.calls.lock().unwrap().iter().all(|(c, _)| *c == Method::RemoteStatus),
+            "a watch only polls"
+        );
+    }
+
+    /// Rule 1293: Close on an unattached row is `remote.close {tab}` over the machine's watch link; asked while the
+    /// machine is down, it goes once the link is up again.
+    #[test]
+    fn close_on_an_unattached_imported_row_sends_remote_close_through_the_watch_link() {
+        let m = Arc::new(FakeMachine::default());
+        let (w, _heard) = watched(&m);
+        wait_for("a poll", || statuses(&m) >= 1);
+        w.close("t1-1");
+        let closes = |m: &FakeMachine| -> Vec<Value> {
+            m.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(c, _)| *c == Method::RemoteClose)
+                .map(|(_, p)| p.clone())
+                .collect()
+        };
+        wait_for("the close", || !closes(&m).is_empty());
+        assert_eq!(closes(&m), [json!({"tab": "t1-1"})]);
+        m.down.store(true, Ordering::SeqCst);
+        let tries = m.connects.load(Ordering::SeqCst);
+        wait_for("the link down", || m.connects.load(Ordering::SeqCst) > tries);
+        w.close("t1-2");
+        std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
+        assert_eq!(closes(&m).len(), 1, "nothing goes while it is down");
+        m.down.store(false, Ordering::SeqCst);
+        wait_for("the close once up", || closes(&m).len() == 2);
+        assert_eq!(closes(&m)[1], json!({"tab": "t1-2"}));
     }
 }

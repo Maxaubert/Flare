@@ -1023,6 +1023,7 @@ console window. Native: `crates/flare-term/src/session.rs` (`spawn_remote_reserv
 `a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token`,
 `the_ssh_command_is_argv_items_quoted_for_the_hosts_shell` and
 `machines_json_keeps_good_machines_and_reads_an_unknown_kind_as_none`. Source: remote sessions PR 3 (2026-11-12).
+Amended by rule 1291: the import's watch link adds the fixed word `--no-start` after `--serve-remote`.
 291. **A remote spawn never uses a warm spare and never mints a `FLARE_TAB_TOKEN`.** A spare is a local shell with a
 local secret; a remote tab adopts none and makes none (`spawn_remote_reserved` reads no shell list, takes no spare and
 makes no `ShellTokens`), and the windows-only kill answer to ConPTY's opening questions is never sent to a remote tab's
@@ -1239,7 +1240,8 @@ there, a `'` written `'\''`); a PC's cmd gets it in double quotes with no `&&`, 
 (which cmd still acts on inside quotes) or a control character builds no command at all. Host and user are argv items
 of their own that cannot be read as an option. Native: `crates/flare/src/remote_link.rs` (`remote_command`,
 `ssh_argv`). Held by `the_remote_command_table_quotes_each_hosts_shell` and
-`the_ssh_command_is_argv_items_quoted_for_the_hosts_shell`. Source: remote sessions PR 6 (2026-11-12).
+`the_ssh_command_is_argv_items_quoted_for_the_hosts_shell`. Source: remote sessions PR 6 (2026-11-12). Amended by rule
+1291: the watch link's command is the same with `--no-start` after `--serve-remote`.
 
 The UI rules of remote sessions PR 7 are numbered after main's last rule (1189) and the PR 6 fixes (1190, 1191). The
 plan's R-new-26 (the folder browser) was dropped with the browser itself: the owner's + menu opens a shell on the
@@ -4967,3 +4969,95 @@ Held by `import_plan_keeps_origin_here_only_and_skips_an_older_host`,
 `saved_counts_active_over_the_kept_tabs_and_an_imported_front_saves_the_last_used_kept_tab`,
 `remove_imported_fronts_the_most_recently_used_other_tab` (`flare-tabs` `model.rs`) and
 `import_remote_defaults_on_and_the_hidden_list_is_capped_and_reads_bad_json_as_empty` (`machine_prefs.rs`).
+
+1291. **The watch link runs `--serve-remote --no-start`, only while it is wanted, and never starts Flare on a host.**
+Max, 2026-11-18, import remote sessions (spec `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`,
+PR 3). Amends rules 290 and 305. One watch link per machine in `machines.json` while
+`flare.machines.importRemote` is on, or while an agent's adopted row of that machine is in the strip; none otherwise.
+Its ssh is a tab link's with one fixed word more, `--no-start` after `--serve-remote` (`watch_command`,
+`ssh_argv_watch`, `SshConnector::watching`; under `--e2e` the loopback argv gets the same word at its end), so a poll
+never starts a hidden Flare: a host with none running answers `unavailable`. It sends `remote.status` every 3 s and,
+while the machine does not answer, waits 3, 6, 12, 24, 48 and then 60 s between tries (`WatchTiming`,
+`next_backoff`). A broken link tells the window nothing; `unavailable` and a passing refusal are handed on as such.
+Dropping the watch (the setting off, the machine removed) stops its thread: no call after. Its only other call is
+`remote.close` for an unattached row (rule 1293), kept while the link is down and sent once it is up. The window
+applies no round before the restore answered. Native: `crates/flare/src/remote_import.rs` (`LinkWatchPort`,
+`heard_of`), `crates/flare/src/remote_link.rs`, `crates/flare/src/appctl/import_glue.rs` (`sync_watches`,
+`on_import`), `crates/flare/src/window.rs`. Held by `the_watch_link_runs_serve_remote_no_start_and_nothing_else_new`
+(`remote_link_tests.rs`), `the_watch_backs_off_from_three_seconds_to_a_minute`,
+`the_watcher_polls_status_backs_off_when_down_and_stops_when_off` (`remote_import.rs`),
+`a_machine_removed_from_settings_stops_its_watcher_and_drops_its_rows_and_hidden_list` and
+`no_import_round_runs_before_the_restore_answered` (`ui_tests/term/flow/import_flows.rs`). Source: Max, 2026-11-18.
+
+1292. **An imported row attaches only when it is shown, never opens or resumes, and sends no size while its host sizes
+it.** Max, 2026-11-18, import remote sessions PR 3. One hook at the top of `refresh()` (before its early return)
+attaches the front tab when it is an unattached row and no Ctrl+Tab walk is held (`Imports::stepping`, set by
+`next_tab`, cleared by `commit_walk` on the Control release and by a blur): a click, Ctrl+1..9, a notification, a
+close that fronts its neighbour. Ctrl+Tab in either switch mode attaches only the row it lands on. The attach is
+`TabHost::spawn_remote` with the row's own `RemoteLive` (its host tab set), never `start_remote` (its second
+`on_spawned` would drop the session the poll gave, and it would add the host's folder to the recent folders), so no
+`remote.open` and no resume is ever sent. A Claude tab whose host's window sizes it (`sized: host` and a session in the
+watch's last status) starts in the host-sizes state of rule 1193: `RemoteSpec::host_sized_start`, and the worker's
+`size_held` sends no size after the attach, on a refit, a tab switch or a reconnect, until the first retake (a click
+on the fitted view) or the first typed thing here; then the newest size goes first and the typing after it (rules 282,
+1211, 1212). A plain shell sends its size on attach as a followed tab does. Native: `crates/flare/src/remote_link.rs`
+(`Worker::size_held`), `crates/flare-term/src/remote_pty.rs` (`RemoteSpec`), `crates/flare/src/appctl/import_glue.rs`
+(`attach_front_import`, `attach_imported`), `crates/flare/src/appctl.rs`. Held by
+`an_imported_claude_tab_sends_no_size_on_attach_refit_switch_or_reconnect_and_one_before_the_first_key`,
+`a_retake_ends_an_imported_tabs_size_hold`, `an_imported_plain_shell_sends_its_size_on_attach_as_a_followed_tab_does`
+(`remote_link_tests.rs`), `an_import_adds_rows_behind_the_front_tab_and_a_click_attaches`,
+`ctrl_tab_in_order_and_recent_modes_attaches_only_the_row_it_lands_on` and
+`a_close_that_fronts_an_imported_row_attaches_it` (`ui_tests/term/flow/import_flows.rs`). Source: Max, 2026-11-18.
+
+1293. **Close on an imported row is a remote close; Hide here only remembers the host tab, for every remote tab.** Max,
+2026-11-18, import remote sessions PR 3. Close on any remote tab (imported, adopted, attached or opened from here)
+reads its host tab before the row goes and puts (machine, host tab) on the closing list, so a host that still lists
+the tab while it asks (rule 48) does not bring it back as an import. An attached tab closes over its own link as
+before; an unattached row has no link, so its `remote.close` goes over its machine's watch link. Hide here only
+(`hide_remote`, rule 1192) detaches as before and adds (machine, host tab) to the hidden list, kept in
+`flare.machines.importHidden`, for an imported tab and for a tab opened from here alike (once detached its host lists
+it as its own). A listing that no longer names a hidden tab prunes it. Rows that go by themselves (the host tab ended,
+the setting off, the machine removed) never go through `close_now`: they detach or leave the model, and nothing is
+remembered as closed. Native: `crates/flare/src/appctl/import_glue.rs` (`closing_remote`, `hiding_remote`,
+`drop_import_row`), `crates/flare/src/appctl.rs` (`close_now`), `crates/flare/src/appctl/remote_glue.rs`
+(`hide_remote`). Held by `close_on_an_unattached_imported_row_sends_remote_close_through_the_watch_link`
+(`remote_import.rs`),
+`close_on_an_unattached_imported_row_sends_remote_close_and_does_not_come_back_while_the_host_asks`,
+`closing_a_followed_remote_tab_keeps_it_out_while_the_host_asks` and
+`hide_here_only_remembers_the_host_tab_and_the_next_poll_does_not_bring_it_back`
+(`ui_tests/term/flow/import_flows.rs`). Source: Max, 2026-11-18.
+
+1294. **The import switch is on by default; off removes imported rows by detach, never a close.** Max, 2026-11-18,
+import remote sessions PR 3. Settings > Machines, This computer, after Computer sharing: the switch "Import sessions
+started on other machines", "Show tabs opened on your linked machines." (`machines-import`,
+`flare.machines.importRemote`, on by default, kept across a restart; its words leave out "ssh", "remote", "mac" and
+"pc" so those still find Add a machine first). The window hears the key change (`PrefsChanged`,
+`sync_import_setting`). Off: every imported row goes, an attached one by `remote.detach`, never `remote.close`; the
+most recently used other tab comes to the front when one was in front; nothing is hidden; tabs the person opened and
+an agent's adopted rows stay; the watch links stop. On again: the machines are watched again. Native:
+`crates/flare-settings/src/rows.rs`, `crates/flare-settings/src/page/machines.rs`, `crates/flare-settings/src/actions.rs`,
+`crates/flare/src/appctl/import_glue.rs`. Held by `turning_import_off_detaches_imported_rows_and_keeps_the_rest`
+(`ui_tests/term/flow/import_flows.rs`), `the_import_switch_is_on_by_default_and_kept_across_a_restart`
+(`ui_tests/settings_machines.rs`), `the_machines_page_draws_sharing_then_import_in_this_computer`
+(`flare-settings` `page/machines.rs`) and `the_machines_page_is_found_by_ssh_mac_and_its_add_row` (`find.rs`). Source:
+Max, 2026-11-18.
+
+1295. **An unattached row is a tab with no shell to every consumer, and its question rings here once and on the host
+once.** Max, 2026-11-18, import remote sessions PR 3. An unattached row has no handle: dictation never routes to it
+(`dictation_tabs`), a plugin's `tabs.input` is refused (`unavailable`), and it holds no window close, no install and no
+staged install (`busy_agents`, `ask_install`, `working_here`), though its host's working mark shows. The hub knows it
+as a remote tab from the import (`on_spawned` then `on_remote_tab`), so its marks show before it attaches, and the
+watch's status goes through its own `RemoteLive::set_status` and `sync_remote_status`, as a link's would. Its
+question rings here once per episode (rule 206) from the watch's status; attaching keeps the episode, so it does not
+ring again. Every attach of an imported row asks `ring: "both"` (`RemoteSpec::ring_both`), reconnects too, so the
+host keeps ringing it (rule 1289); a tab opened from here never asks it (rule 295). A host from before rule 1289
+refuses the param: the attach goes again without it on the same link, and later attaches leave it out. An unattached
+row that leaves by itself is let go of in the hub here, since the hub's own sync never knew a handle for it. A plugin
+approved with `tabs` sees imported rows like local tabs, the host's Claude session id included (Max, "Yes, show
+all"). Native: `crates/flare/src/appctl/import_glue.rs`, `crates/flare/src/remote_link.rs` (`attach_params`,
+`Worker::ring_on`), `crates/flare/src/appctl.rs`. Held by `an_imported_rows_attach_sends_ring_both_and_a_tab_opened_from_here_does_not`,
+`an_older_host_that_refuses_ring_is_attached_without_it` (`remote_link_tests.rs`),
+`an_unattached_row_takes_no_dictation_no_plugin_input_and_holds_no_window_close`,
+`a_plugin_with_tabs_sees_imported_rows_with_their_session_ids` and
+`a_question_on_an_imported_row_rings_here_once_and_attaching_does_not_ring_it_again`
+(`ui_tests/term/flow/import_flows.rs`). Source: Max, 2026-11-18.

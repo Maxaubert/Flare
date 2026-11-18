@@ -740,6 +740,21 @@ pub const APP_OPTIONS: [RowDef; 23] = [
         source: Source::App,
         only_nvidia: false,
     },
+    // Import remote sessions (rule 1294): tabs opened in Flare on a linked machine show here. On by default.
+    RowDef {
+        id: "machines-import",
+        label: "Import sessions started on other machines",
+        sub: "Show tabs opened on your linked machines.",
+        section: "this-computer",
+        page: "machines",
+        icon: "machines",
+        // No "ssh", "remote", "mac" or "pc": those find Add a machine first (the Machines page's search test).
+        keywords: "import sessions tabs linked other computers show",
+        keys: &["flare.machines.importRemote"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
     // Remote sessions PR 7: the Machines page's add row. Its words are for Find; the page draws no subtext (owner
     // pick, 2026-11-12), and a press opens the Add a machine dialog (machine pairing PR 1).
     RowDef {
@@ -771,7 +786,7 @@ pub const APP_OPTIONS: [RowDef; 23] = [
 ];
 
 /// The row ids in draw order (Appendix C, the `#` column), with Flare's own rows where their pages draw them.
-pub const ROW_ORDER: [&str; 53] = [
+pub const ROW_ORDER: [&str; 54] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -820,6 +835,7 @@ pub const ROW_ORDER: [&str; 53] = [
     "dictation-gpu",
     "dictation-anywhere",
     "machines-sharing",
+    "machines-import",
     "machines-add",
     "diag-verbose",
     "diag-folder",
@@ -1029,11 +1045,12 @@ mod tests {
                 "taskbar-badge=flare.window.taskbarBadge",
                 "notify-ask=flare.window.notifyAsk",
                 "machines-sharing=flare.machines.sharing",
+                "machines-import=flare.machines.importRemote",
                 "machines-add=",
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 23);
+        assert_eq!(app.len(), 24);
     }
 
     #[test]

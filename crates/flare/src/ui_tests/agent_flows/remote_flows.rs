@@ -550,3 +550,62 @@ fn a_viewers_size_alone_never_puts_the_hosts_fitted_view_up() {
 
 /// The host's read interval, for the steps of the window clock.
 const HOST_EVERY: u64 = crate::appctl::HOST_CONVO_EVERY_MS;
+
+/// A watch port that starts nothing: the window's import is fed by hand.
+struct NoWatch;
+
+impl crate::remote_import::Watch for NoWatch {
+    fn close(&self, _host_tab: &str) {}
+}
+
+struct HandFed;
+
+impl crate::remote_import::WatchPort for HandFed {
+    fn watch(
+        &self,
+        _machine: &str,
+        _post: crate::remote_import::WatchPost,
+    ) -> Box<dyn crate::remote_import::Watch> {
+        Box::new(NoWatch)
+    }
+}
+
+/// Rule 1291: no import round runs before the restore answered (a saved remote tab and its import never both appear);
+/// the same answer after it adds the row.
+#[test]
+fn no_import_round_runs_before_the_restore_answered() {
+    let f = Fx::new();
+    f.tabs(&["C:\\work"]);
+    {
+        let mut c = f.ctl.borrow_mut();
+        c.set_watch_port(Arc::new(HandFed));
+        c.on_msg(UiMsg::Machines(vec![crate::machines::Machine {
+            id: "mac".into(),
+            name: "Mac Mini".into(),
+            ssh: "mini".into(),
+            flare: "flare".into(),
+            ..Default::default()
+        }]));
+    }
+    let answer = || {
+        UiMsg::Import(crate::remote_import::WatchAnswer {
+            machine: "mac".into(),
+            heard: crate::remote_import::Heard::Listed(serde_json::json!({"tabs": [
+                {"tab": "t1-1", "state": "idle", "folder": "/Users/max/a", "origin": "here"},
+            ]})),
+        })
+    };
+    assert!(!f.ctl.borrow().model().restore_done());
+    f.ctl.borrow_mut().on_msg(answer());
+    f.pump();
+    assert_eq!(f.ids().len(), 1, "no round before the restore answered");
+    AppCtl::start_restore(&f.ctl);
+    f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
+    f.ctl.borrow_mut().on_msg(answer());
+    f.pump();
+    assert!(
+        f.cwds().iter().any(|c| c == "/Users/max/a"),
+        "the same answer imports once the restore answered: {:?}",
+        f.cwds()
+    );
+}
