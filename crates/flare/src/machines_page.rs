@@ -12,14 +12,14 @@
 //! shell is quoted). Every save sends the new list to the window
 //! (`UiMsg::Machines`), so the + menu and the tabs' logos follow at once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use flare_settings::kv::PrefStore;
 use flare_settings::page::machines::{
     AddForm, INCOMING_PREFIX, LinkStatus, MachineOs, MachineRow, MachinesInfo, NEARBY_PREFIX,
-    NearbyChoice,
+    NearbyChoice, SshHost,
 };
 use flare_tabs::tabs::Os;
 
@@ -28,6 +28,7 @@ use crate::pairing::{HostEvent, Me, NoPairNet, PairMsg, PairNet, Pairing, Viewer
 use crate::sharing::{NoSharingOs, Sharing, SharingOs};
 
 use crate::appctl::{Post, UiMsg};
+use crate::host_os::HostKey;
 use crate::machines::{
     FLARE_CANDIDATES, FileMachines, Incoming, Machine, MachinesPort, failure_line, incoming_file,
     incoming_json, machine_id, os_of_hello, parse_incoming, probe_kinds, saved_kind,
@@ -48,6 +49,11 @@ pub trait MachinesIo: Send + Sync {
     fn save(&self, list: &[Machine]) -> Result<(), String>;
     /// The plain hosts of `~/.ssh/config`.
     fn ssh_hosts(&self) -> Vec<String>;
+    /// The plain hosts of `~/.ssh/config`, each with the computer it reaches (its `HostName`), so the drop-down can
+    /// leave out a host that is a computer listed nearby (rule 1285). A host with no `HostName` reaches its own name.
+    fn named_ssh_hosts(&self) -> Vec<SshHost> {
+        self.ssh_hosts().iter().map(|h| SshHost::plain(h)).collect()
+    }
     /// `remote.hello` over the machine's link.
     fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError>;
     /// The computers paired to reach this one (machine pairing PR 3, rule 1260).
@@ -57,6 +63,17 @@ pub trait MachinesIo: Send + Sync {
     fn save_in(&self, _list: &[Incoming]) -> Result<(), String> {
         Ok(())
     }
+    /// The systems found for the SSH hosts before (rule 1278), by host. None by default.
+    fn known_os(&self) -> HashMap<HostKey, MachineOs> {
+        HashMap::new()
+    }
+    /// Looks up the system a host runs (its SSH greeting, then `uname -s` over ssh, `host_os`). None by default: no
+    /// look is made.
+    fn find_os(&self, _host: &SshHost) -> Option<MachineOs> {
+        None
+    }
+    /// Keeps what was found, so the logos show at once the next time.
+    fn remember_os(&self, _found: &[(HostKey, MachineOs)]) {}
 }
 
 /// The real disk and links: the profile's `machines.json` and `machines_in.json`, the home folder's ssh config, ssh
@@ -64,8 +81,11 @@ pub trait MachinesIo: Send + Sync {
 pub struct RealMachinesIo {
     file: FileMachines,
     in_file: PathBuf,
+    os_file: PathBuf,
     home: PathBuf,
     loopback: Option<Vec<String>>,
+    /// The SSH hosts' systems are looked up (rule 1278): never under `--e2e`, where no real host is reached.
+    look_up_os: bool,
 }
 
 impl RealMachinesIo {
@@ -73,9 +93,17 @@ impl RealMachinesIo {
         Self {
             file: FileMachines::new(profile),
             in_file: incoming_file(profile),
+            os_file: crate::host_os::cache_file(profile),
             home,
+            look_up_os: loopback.is_none(),
             loopback,
         }
+    }
+
+    /// Whether the SSH hosts' systems are looked up (the window turns it off under `--e2e`).
+    pub fn with_os_lookup(mut self, on: bool) -> Self {
+        self.look_up_os = on && self.loopback.is_none();
+        self
     }
 }
 
@@ -103,6 +131,30 @@ impl MachinesIo for RealMachinesIo {
 
     fn ssh_hosts(&self) -> Vec<String> {
         crate::ssh_config::hosts_of_home(&self.home)
+    }
+
+    fn named_ssh_hosts(&self) -> Vec<SshHost> {
+        crate::ssh_config::named_hosts_of_home(&self.home)
+    }
+
+    fn known_os(&self) -> HashMap<HostKey, MachineOs> {
+        crate::host_os::read_cache(&self.os_file)
+            .into_iter()
+            .map(|(k, (os, _))| (k, os))
+            .collect()
+    }
+
+    fn find_os(&self, host: &SshHost) -> Option<MachineOs> {
+        if !self.look_up_os {
+            return None;
+        }
+        crate::host_os::find_os(&crate::host_os::RealLookup, host)
+    }
+
+    fn remember_os(&self, found: &[(HostKey, MachineOs)]) {
+        if let Err(e) = crate::host_os::remember(&self.os_file, found, crate::host_os::now_secs()) {
+            log::warn!("{e}");
+        }
     }
 
     fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError> {
@@ -167,12 +219,15 @@ impl MachinesIo for SceneMachinesIo {
 /// A worker's answer for the page.
 #[derive(Debug)]
 pub enum MachinesMsg {
-    /// The machines, the computers that reach this one, and the ssh hosts, read.
+    /// The machines, the computers that reach this one, the ssh hosts and the systems found for them before, read.
     Loaded {
         machines: Vec<Machine>,
         incoming: Vec<Incoming>,
-        hosts: Vec<String>,
+        hosts: Vec<SshHost>,
+        known_os: HashMap<HostKey, MachineOs>,
     },
+    /// One SSH host's system was looked up (rule 1278): what was found, None when nothing answered.
+    HostOs { key: HostKey, os: Option<MachineOs> },
     /// A computer that reaches this one was removed (its key with it): the new list, or the line that says what stays.
     RemovedIn(Result<Vec<Incoming>, String>),
     /// Pairing (machine pairing PR 3).
@@ -197,7 +252,7 @@ pub struct MachinesPage {
     machines: Vec<Machine>,
     /// Each machine's last check in this run: its version and status.
     checks: HashMap<String, (String, LinkStatus)>,
-    hosts: Vec<String>,
+    hosts: Vec<SshHost>,
     add: AddForm,
     /// A read is on its way (the page shows what it had until then).
     loading: bool,
@@ -207,6 +262,11 @@ pub struct MachinesPage {
     incoming: Vec<Incoming>,
     /// Pairing: the nearby computers, the viewer's request, the host's listener and code dialog (PR 3).
     pairing: Pairing,
+    /// The systems of the SSH hosts (rule 1278): found before (the cache) or in this visit.
+    host_os: HashMap<HostKey, MachineOs>,
+    /// The hosts being looked up now, and those looked up in this visit of the page (once a visit each).
+    finding: HashSet<HostKey>,
+    looked: HashSet<HostKey>,
 }
 
 /// Runs `f` on a named worker; a failure to start is logged.
@@ -325,6 +385,9 @@ impl MachinesPage {
             sharing,
             incoming: Vec::new(),
             pairing,
+            host_os: HashMap::new(),
+            finding: HashSet::new(),
+            looked: HashSet::new(),
         }
     }
 
@@ -430,7 +493,8 @@ impl MachinesPage {
                     MachineRow {
                         id: m.id.clone(),
                         name: m.name.clone(),
-                        os: os_of(m.kind),
+                        // A machine that never said its system draws the one found for its SSH host (rule 1278).
+                        os: os_of(m.kind).or_else(|| self.os_of_machine(m)),
                         address: m.target().to_string(),
                         version,
                         status,
@@ -446,7 +510,14 @@ impl MachinesPage {
                     status: LinkStatus::Linked,
                 }))
                 .collect(),
-            ssh_hosts: self.hosts.clone(),
+            ssh_hosts: self
+                .hosts
+                .iter()
+                .map(|h| SshHost {
+                    os: self.host_os.get(&crate::host_os::key_of(h)).copied(),
+                    ..h.clone()
+                })
+                .collect(),
             nearby: self
                 .pairing
                 .nearby()
@@ -455,6 +526,7 @@ impl MachinesPage {
                     id: n.id.clone(),
                     name: n.name.clone(),
                     os: os_of(n.os),
+                    addrs: n.addrs.iter().map(|a| a.to_string()).collect(),
                 })
                 .collect(),
             add: self.add.clone(),
@@ -473,16 +545,112 @@ impl MachinesPage {
         worker("flare-machines-read", move || {
             let machines = io.list();
             let incoming = io.list_in();
-            let hosts = io.ssh_hosts();
+            let hosts = io.named_ssh_hosts();
+            let known_os = io.known_os();
             Self::say(
                 &post,
                 MachinesMsg::Loaded {
                     machines,
                     incoming,
                     hosts,
+                    known_os,
                 },
             );
         });
+    }
+
+    /// The system found for a saved machine's SSH host (rule 1278): the host it names, else one that reaches the same
+    /// computer. Shown only: a machine's `kind` stays what its host said.
+    fn os_of_machine(&self, m: &Machine) -> Option<MachineOs> {
+        let target = m.target();
+        self.hosts
+            .iter()
+            .filter(|h| h.alias == m.ssh)
+            .chain(self.hosts.iter().filter(|h| h.host_name == target))
+            .find_map(|h| self.host_os.get(&crate::host_os::key_of(h)).copied())
+    }
+
+    /// Looks up the system of each SSH host not looked up in this visit (rule 1278), at most `host_os::WORKERS` at
+    /// once, each answering as it is found; what was found is kept on disk once all answered. A host that is a
+    /// computer listed nearby is not looked up: it is not in the drop-down (rule 1285).
+    fn find_host_os(&mut self) {
+        let nearby = self.info().nearby;
+        let todo: Vec<SshHost> = self
+            .hosts
+            .iter()
+            .filter(|h| !self.looked.contains(&crate::host_os::key_of(h)))
+            .filter(|h| {
+                !nearby
+                    .iter()
+                    .any(|n| flare_settings::page::machines::same_computer(h, n))
+            })
+            .cloned()
+            .collect();
+        if todo.is_empty() {
+            return;
+        }
+        for h in &todo {
+            let key = crate::host_os::key_of(h);
+            self.looked.insert(key.clone());
+            self.finding.insert(key);
+        }
+        let n = todo.len().min(crate::host_os::WORKERS);
+        let queue = Arc::new(std::sync::Mutex::new(todo));
+        let (io, post) = (Arc::clone(&self.io), Arc::clone(&self.post));
+        worker("flare-machines-os", move || {
+            let found = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let lookers: Vec<_> = (0..n)
+                .filter_map(|i| {
+                    let (io, post, queue, found) = (
+                        Arc::clone(&io),
+                        Arc::clone(&post),
+                        Arc::clone(&queue),
+                        Arc::clone(&found),
+                    );
+                    std::thread::Builder::new()
+                        .name(format!("flare-machines-os-{i}"))
+                        .spawn(move || Self::look_up(&*io, &post, &queue, &found))
+                        .map_err(|e| log::warn!("could not start a system lookup: {e}"))
+                        .ok()
+                })
+                .collect();
+            for l in lookers {
+                let _ = l.join(); // sync-ok: the lookup's own worker waits for its lookers
+            }
+            let found = std::mem::take(
+                &mut *found
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            io.remember_os(&found);
+        });
+    }
+
+    /// BLOCKING: one looker takes the hosts from the queue until it is empty and says each answer.
+    fn look_up(
+        io: &dyn MachinesIo,
+        post: &Post,
+        queue: &std::sync::Mutex<Vec<SshHost>>,
+        found: &std::sync::Mutex<Vec<(HostKey, MachineOs)>>,
+    ) {
+        loop {
+            let next = queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop();
+            let Some(h) = next else {
+                return;
+            };
+            let key = crate::host_os::key_of(&h);
+            let os = io.find_os(&h);
+            if let Some(os) = os {
+                found
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((key.clone(), os));
+            }
+            Self::say(post, MachinesMsg::HostOs { key, os });
+        }
     }
 
     /// Checks these machines one after the other on one worker.
@@ -576,6 +744,7 @@ impl MachinesPage {
             ..AddForm::default()
         };
         self.pairing.browse(true);
+        self.find_host_os();
     }
 
     /// Cancel: the dialog closes, a pairing request ends (the other computer's code dialog closes with it), and no
@@ -740,11 +909,19 @@ impl MachinesPage {
                 machines,
                 incoming,
                 hosts,
+                known_os,
             } => {
                 self.loading = false;
                 self.machines = machines;
                 self.incoming = incoming;
                 self.hosts = hosts;
+                // A new visit: what was found before shows at once, and each host is looked up again in the background
+                // the next time the dialog is open (now, when it is).
+                self.host_os.extend(known_os);
+                self.looked.retain(|k| self.finding.contains(k));
+                if self.add.open {
+                    self.find_host_os();
+                }
                 self.checks
                     .retain(|id, _| self.machines.iter().any(|m| &m.id == id));
                 let unchecked: Vec<String> = self
@@ -754,6 +931,14 @@ impl MachinesPage {
                     .map(|m| m.id.clone())
                     .collect();
                 self.check(unchecked);
+            }
+            MachinesMsg::HostOs { key, os } => {
+                self.finding.remove(&key);
+                // Nothing answered (a timeout, a VPN in the way): what was found before stays.
+                let Some(os) = os else {
+                    return false;
+                };
+                return self.host_os.insert(key, os) != Some(os);
             }
             MachinesMsg::Checked { id, result } => {
                 let entry = match result {
@@ -869,10 +1054,17 @@ pub(crate) mod fake {
     pub(crate) struct FakeIo {
         pub list: Mutex<Vec<Machine>>,
         pub hosts: Vec<String>,
+        /// The hosts with their `HostName`s, when a test gives them (else `hosts`, each reaching its own name).
+        pub named: Mutex<Vec<SshHost>>,
         pub answers: HashMap<(String, String), Result<HelloFacts, (bool, String)>>,
         pub probes: Mutex<Vec<(String, String, Option<Os>)>>,
         /// The computers that reach this one (machine pairing PR 3).
         pub incoming: Mutex<Vec<Incoming>>,
+        /// What each host's system lookup finds, by its name (rule 1278); a host not listed answers nothing.
+        pub os_answers: HashMap<String, MachineOs>,
+        /// The systems kept (the cache), and the hosts looked up, in order.
+        pub known: Mutex<HashMap<HostKey, MachineOs>>,
+        pub os_asked: Mutex<Vec<String>>,
     }
 
     impl MachinesIo for FakeIo {
@@ -885,6 +1077,14 @@ pub(crate) mod fake {
         }
         fn ssh_hosts(&self) -> Vec<String> {
             self.hosts.clone()
+        }
+        fn named_ssh_hosts(&self) -> Vec<SshHost> {
+            let named = self.named.lock().unwrap().clone();
+            if named.is_empty() {
+                self.hosts.iter().map(|h| SshHost::plain(h)).collect()
+            } else {
+                named
+            }
         }
         fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError> {
             self.probes
@@ -907,6 +1107,16 @@ pub(crate) mod fake {
         fn save_in(&self, list: &[Incoming]) -> Result<(), String> {
             *self.incoming.lock().unwrap() = list.to_vec();
             Ok(())
+        }
+        fn known_os(&self) -> HashMap<HostKey, MachineOs> {
+            self.known.lock().unwrap().clone()
+        }
+        fn find_os(&self, host: &SshHost) -> Option<MachineOs> {
+            self.os_asked.lock().unwrap().push(host.alias.clone());
+            self.os_answers.get(&host.alias).copied()
+        }
+        fn remember_os(&self, found: &[(HostKey, MachineOs)]) {
+            self.known.lock().unwrap().extend(found.iter().cloned());
         }
     }
 }
@@ -954,6 +1164,7 @@ mod tests {
                 }
                 let busy = self.page.loading
                     || self.page.add.busy
+                    || !self.page.finding.is_empty()
                     || self
                         .page
                         .checks
@@ -1001,7 +1212,10 @@ mod tests {
         r.page.page_shown();
         r.settle();
         let info = r.page.info();
-        assert_eq!(info.ssh_hosts, ["mini", "studio"]);
+        assert_eq!(
+            info.ssh_hosts,
+            [SshHost::plain("mini"), SshHost::plain("studio")]
+        );
         assert_eq!(info.machines.len(), 1);
         assert_eq!(info.machines[0].status, LinkStatus::Linked);
         assert_eq!(info.machines[0].version, "0.2.0");
@@ -1464,5 +1678,95 @@ mod tests {
         assert!(r.io.list().is_empty());
         assert!(r.page.machines().is_empty());
         assert!(r.page.info().machines.is_empty());
+    }
+
+    /// Rule 1278 (Max, 2026-11-17: "id like it to show either the windows, linux or mac icon automatically depending
+    /// on the device"): the system kept from before shows at once; opening the dialog looks each SSH host up once a
+    /// visit, and what is found shows on its row and is kept; a host that answers nothing keeps what it had, or shows
+    /// no logo. A saved machine that never said its system draws its host's, and its `kind` stays None.
+    #[test]
+    fn the_dialog_finds_each_ssh_hosts_system_and_keeps_it() {
+        let mut io = FakeIo {
+            hosts: vec!["evo-x2".into(), "pi".into(), "nas".into(), "old".into()],
+            ..FakeIo::default()
+        };
+        io.os_answers.insert("evo-x2".into(), MachineOs::Pc);
+        io.os_answers.insert("pi".into(), MachineOs::Linux);
+        // Found on an earlier visit; nothing answers now (a VPN in the way).
+        io.known
+            .get_mut()
+            .unwrap()
+            .insert(("old".into(), "old".into()), MachineOs::Mac);
+        *io.list.get_mut().unwrap() = vec![Machine {
+            id: "pi".into(),
+            name: "pi".into(),
+            kind: None,
+            ssh: "pi".into(),
+            flare: "flare".into(),
+            ..Default::default()
+        }];
+        let mut r = Rig::new(io);
+        let systems = |r: &Rig| -> Vec<(String, Option<MachineOs>)> {
+            r.page
+                .info()
+                .ssh_hosts
+                .into_iter()
+                .map(|h| (h.alias, h.os))
+                .collect()
+        };
+        r.page.page_shown();
+        r.settle();
+        assert!(
+            r.io.os_asked.lock().unwrap().is_empty(),
+            "no look before the dialog opens"
+        );
+        assert_eq!(
+            systems(&r),
+            [
+                ("evo-x2".to_string(), None),
+                ("pi".into(), None),
+                ("nas".into(), None),
+                ("old".into(), Some(MachineOs::Mac)),
+            ]
+        );
+        r.page.open_form();
+        r.settle();
+        assert_eq!(
+            systems(&r),
+            [
+                ("evo-x2".to_string(), Some(MachineOs::Pc)),
+                ("pi".into(), Some(MachineOs::Linux)),
+                ("nas".into(), None),
+                ("old".into(), Some(MachineOs::Mac)),
+            ]
+        );
+        let mut asked = r.io.os_asked.lock().unwrap().clone();
+        asked.sort();
+        assert_eq!(asked, ["evo-x2", "nas", "old", "pi"]);
+        // The saved machine draws its host's logo; its kind is left as it was.
+        let info = r.page.info();
+        assert_eq!(info.machines[0].os, Some(MachineOs::Linux));
+        assert_eq!(r.page.machines()[0].kind, None);
+        // Kept for the next time, once all answered.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while r.io.known.lock().unwrap().len() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5)); // sync-ok: a test waits for its worker
+        }
+        assert_eq!(
+            r.io.known
+                .lock()
+                .unwrap()
+                .get(&("pi".to_string(), "pi".to_string())),
+            Some(&MachineOs::Linux)
+        );
+        // Opened again in the same visit: no host is looked up twice.
+        r.page.cancel_form();
+        r.page.open_form();
+        r.settle();
+        assert_eq!(r.io.os_asked.lock().unwrap().len(), 4);
+        // A new visit looks them up again, in the background.
+        r.page.page_shown();
+        r.settle();
+        assert_eq!(r.io.os_asked.lock().unwrap().len(), 8);
     }
 }

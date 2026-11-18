@@ -7,7 +7,7 @@
 // The rows are SetRow data (types.slint): a machine's `label` is its name, `value` its address (or SSH host), `note`
 // the Flare version, `state` its status word (unknown, checking, linked, failed), `badge` the status's words, `sub` the
 // line of a failed check (one small grey line under the row, never a tooltip: owner rule 2026-11-13), and `vendor` its
-// system (mac, pc, ""). The dialog draws a MachineAddLook (types.slint).
+// system (mac, pc, linux, ""). The dialog draws a MachineAddLook (types.slint).
 
 import { Theme, Px, SettingsInk, SettingsFixed, SettingsShape } from "../theme.slint";
 import { Glyphs } from "../glyphs.slint";
@@ -25,7 +25,8 @@ global MachineCols {
     out property <length> menu-w: 40px;
 }
 
-// A machine's system: the Apple logo for a Mac, the Windows logo for a PC, nothing when it is not known.
+// A machine's system: the Apple logo for a Mac, the Windows logo for a PC, Tux for Linux (found for its SSH host, rule
+// 1278), nothing when it is not known.
 export component MachineLogo inherits Path {
     in property <string> os;
     in property <length> size: 15px;
@@ -33,7 +34,8 @@ export component MachineLogo inherits Path {
     height: root.size;
     viewbox-width: 24;
     viewbox-height: 24;
-    commands: root.os == "mac" ? Glyphs.logo-mac : root.os == "pc" ? Glyphs.logo-pc : "";
+    commands: root.os == "mac" ? Glyphs.logo-mac : root.os == "pc" ? Glyphs.logo-pc : root.os == "linux" ? Glyphs.logo-linux : "";
+    fill-rule: evenodd;
     fill: Theme.text;
     visible: root.os != "";
 }
