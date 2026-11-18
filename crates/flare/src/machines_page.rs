@@ -160,9 +160,10 @@ impl MachinesIo for RealMachinesIo {
     fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError> {
         let argv = match &self.loopback {
             Some(l) => l.clone(),
-            None => crate::remote_link::ssh_argv(&crate::remote_link::ssh_exe(), m).ok_or_else(
-                || LinkError::Down(format!("cannot build the ssh command for {}", m.ssh)),
-            )?,
+            None => crate::remote_link::ssh_argv_ready(&crate::remote_link::ssh_exe(), m)
+                .ok_or_else(|| {
+                    LinkError::Down(format!("cannot build the ssh command for {}", m.ssh))
+                })?,
         };
         crate::remote_link::hello_over(&argv).map(|info| HelloFacts {
             version: info.flare_version,
