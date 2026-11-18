@@ -6,7 +6,8 @@ function __flare_osc7 --on-event fish_prompt
 end
 
 # A restored tab that hosted an agent: a Claude session id Flare has checked, or codex:last /
-# agy:last. Run once, here, after the user's config has set PATH; then the prompt comes as usual.
+# agy:last / claude:new (a new blank Claude). Run once, here, after the user's config has set
+# PATH; then the prompt comes as usual.
 if set -q FLARE_RESUME_ID
     set -l r $FLARE_RESUME_ID
     set -e FLARE_RESUME_ID
@@ -15,6 +16,8 @@ if set -q FLARE_RESUME_ID
             codex resume --last
         case agy:last
             agy -c
+        case claude:new
+            claude
         case '*'
             if string match -qr -- '^[0-9A-Fa-f][0-9A-Fa-f-]*$' $r
                 claude --resume $r

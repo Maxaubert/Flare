@@ -80,6 +80,7 @@ mod tests {
             cwd: cwd.into(),
             agent: None,
             remote: None,
+            session: None,
         }
     }
 
@@ -159,6 +160,7 @@ mod tests {
                     cwd: "C:\\b".into(),
                     agent: Some(AgentKind::Codex),
                     remote: None,
+                    session: None,
                 },
             ],
             active: 1,

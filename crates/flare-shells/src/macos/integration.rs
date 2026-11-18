@@ -347,10 +347,13 @@ mod tests {
     const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
 
     /// Each resume a restored tab can carry (`FLARE_RESUME_ID`) and the command line it starts.
-    const RESUMES: [(&str, &str); 3] = [
+    const RESUMES: [(&str, &str); 4] = [
         (ID, "claude --resume 3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f"),
         ("codex:last", "codex resume --last"),
         ("agy:last", "agy -c"),
+        // Rule 1286: a Claude tab whose session was never used starts a new blank Claude, with no
+        // argument (the fake agent prints one space before its empty arguments).
+        ("claude:new", "claude "),
     ];
 
     /// Rule 1133: a restored Mac tab that hosted Claude starts `claude --resume <id>` in its login

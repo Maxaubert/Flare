@@ -498,6 +498,7 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
             cwd,
             agent: None,
             remote: None,
+            session: None,
         });
     };
     for t in &plan.tabs {
@@ -1057,6 +1058,7 @@ mod tests {
                 cwd: "C:\\a".into(),
                 agent: None,
                 remote: None,
+                session: None,
             }],
             active: 0,
         });
@@ -1087,6 +1089,7 @@ mod tests {
                 cwd: "C:\\a".into(),
                 agent: None,
                 remote: None,
+                session: None,
             }],
             active: 0,
         };

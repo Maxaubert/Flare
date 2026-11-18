@@ -729,6 +729,7 @@ mod flow {
                     cwd: work_s.clone(),
                     agent: None,
                     remote: None,
+                    session: None,
                 }],
                 active: 0,
             };

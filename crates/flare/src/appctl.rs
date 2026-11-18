@@ -2152,8 +2152,30 @@ impl AppCtl {
             if self.model.agent_kind(&id) != want {
                 self.model.set_agent(&id, want);
             }
+            let session = self.session_to_save(&id, want);
+            if self.model.session(&id) != session.as_deref() {
+                self.model.set_session(&id, session.as_deref());
+            }
         }
         self.close_left_agent_panels();
+    }
+
+    /// The session `tabs.json` keeps for a Claude tab (rule 1286): the one its hooks (or its resume) named; when none
+    /// was named while the hooks are on, `new`, since a Claude names its session with the first message sent, so
+    /// nothing was sent in it and it comes back as a new blank Claude. With the hooks off nothing is known: None.
+    fn session_to_save(&self, id: &str, agent: Option<AgentKind>) -> Option<String> {
+        if agent != Some(AgentKind::Claude) {
+            return None;
+        }
+        match self.hub.claude_session(id) {
+            Some(s) => Some(s.to_string()),
+            None => self
+                .deps
+                .host
+                .plugin_env()
+                .is_some_and(|p| p.on)
+                .then(|| flare_tabs::restore::SESSION_NEW.to_string()),
+        }
     }
 
     /// The agent in `tab` opened its panel: the panel goes when that agent leaves.
@@ -2594,6 +2616,8 @@ impl AppCtl {
             // Only an id that passed the check is a resume; the rest is a plain shell.
             let kind = valid_resume(s.resume.as_deref()).map(agent_of_resume);
             self.model.set_agent(&s.id, kind);
+            let session = self.session_to_save(&s.id, kind);
+            self.model.set_session(&s.id, session.as_deref());
             if let Some(k) = kind {
                 self.restoring.insert(s.id.clone(), (k, now));
             }
@@ -6080,6 +6104,8 @@ mod tests {
     struct Opts {
         shells: Option<Vec<ShellDef>>,
         saved: Vec<(&'static str, Option<AgentKind>)>,
+        /// The `session` each saved tab holds, by place (rule 1286); missing places hold none.
+        saved_sessions: Vec<Option<&'static str>>,
         active: usize,
         launch: Vec<String>,
         real_fs: bool,
@@ -6116,10 +6142,17 @@ mod tests {
                 tabs: opts
                     .saved
                     .iter()
-                    .map(|(cwd, agent)| SavedTab {
+                    .enumerate()
+                    .map(|(i, (cwd, agent))| SavedTab {
                         cwd: (*cwd).to_string(),
                         agent: *agent,
                         remote: None,
+                        session: opts
+                            .saved_sessions
+                            .get(i)
+                            .copied()
+                            .flatten()
+                            .map(String::from),
                     })
                     .collect(),
                 active: opts.active,
@@ -10535,8 +10568,42 @@ two",
         );
     }
 
+    /// Rule 1286, Max 2026-11-18: a Claude tab resumes exactly the session it saved, and one whose session was never
+    /// used (saved as `new`) comes back as a new blank Claude, never the folder's other session. Both keep their
+    /// session in `tabs.json` (the hooks are on: a plugin folder is handed to the shells).
     #[test]
-    fn no_session_means_a_plain_shell() {
+    fn a_tab_resumes_its_own_session_and_a_never_used_one_comes_back_blank() {
+        let lookup = FixedSessions::new(&[SESSION_B, SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![
+                ("C:\\c", Some(AgentKind::Claude)),
+                ("C:\\d", Some(AgentKind::Claude)),
+            ],
+            saved_sessions: vec![Some(SESSION_A), Some("new")],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            plugin_dir: Some("C:\\plugin".into()),
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.wait_made("C:\\c");
+        f.wait_made("C:\\d");
+        let own = &f.made_with("C:\\c")[0];
+        assert_eq!(env_of(own, "FLARE_RESUME_ID").as_deref(), Some(SESSION_A));
+        let blank = &f.made_with("C:\\d")[0];
+        assert!(env_of(blank, "FLARE_RESUME_ID").is_none());
+        let line = blank.spec().args.last().cloned().unwrap_or_default();
+        assert!(line.ends_with("; claude"), "{line}");
+        assert!(!line.contains(SESSION_B), "another session was picked");
+        let saved = f.ctl.borrow().model().saved();
+        let sessions: Vec<Option<String>> = saved.tabs.into_iter().map(|t| t.session).collect();
+        assert_eq!(sessions, vec![Some(SESSION_A.into()), Some("new".into())]);
+    }
+
+    /// Rule 1286: a Claude tab with no session left comes back as a new blank Claude (plain `claude`), not a plain
+    /// shell, and is still a Claude tab.
+    #[test]
+    fn no_session_means_a_new_blank_claude() {
         let lookup = FixedSessions::new(&[]);
         let f = fx_with(Opts {
             saved: vec![("C:\\c", Some(AgentKind::Claude))],
@@ -10546,10 +10613,16 @@ two",
         });
         f.start_restore_and_wait();
         f.wait_made("C:\\c");
-        assert!(env_of(&f.made_with("C:\\c")[0], "FLARE_RESUME_ID").is_none());
-        assert!(!f.h.comp.get_skeleton_shown(), "no skeleton");
+        let made = &f.made_with("C:\\c")[0];
+        assert!(env_of(made, "FLARE_RESUME_ID").is_none());
+        let line = made.spec().args.last().cloned().unwrap_or_default();
+        assert!(line.ends_with("; claude"), "{line}");
+        assert!(!line.contains("--resume") && !line.contains("--continue"));
         let id = f.ids()[0].clone();
-        assert!(f.ctl.borrow().model().agent_kind(&id).is_none());
+        assert_eq!(
+            f.ctl.borrow().model().agent_kind(&id),
+            Some(AgentKind::Claude)
+        );
     }
 
     #[test]

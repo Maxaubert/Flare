@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use regex::Regex;
 
-use crate::kinds::{AGY_RESUME, CODEX_RESUME};
+use crate::kinds::{AGY_RESUME, CLAUDE_NEW, CODEX_RESUME};
 
 /// How much of a transcript is read to tell an interactive one: the marks sit in its first lines.
 pub const HEAD_BYTES: usize = 4096;
@@ -23,10 +23,13 @@ pub const WANT: usize = 32;
 /// The stats and head reads run this many at a time.
 pub const PARALLEL: usize = 16;
 
-/// A session id (a UUID is 36 chars) or the Codex or agy marker; anything else is no resume at all.
+/// How much of a transcript is read, at most, to find its first user message (rule 1286).
+pub const USED_SCAN_BYTES: u64 = 1 << 20;
+
+/// A session id (a UUID is 36 chars) or the Codex, agy or new-Claude marker; anything else is no resume at all.
 pub fn valid_resume(r: Option<&str>) -> Option<&str> {
     let r = r?;
-    if r == CODEX_RESUME || r == AGY_RESUME {
+    if r == CODEX_RESUME || r == AGY_RESUME || r == CLAUDE_NEW {
         return Some(r);
     }
     let b = r.as_bytes();
@@ -183,6 +186,54 @@ pub fn claude_sessions_in(root: &Path, cwd: &str) -> Vec<String> {
     out
 }
 
+/// BLOCKING (the restore worker): whether the transcript of Claude session `id` in `cwd`'s folder of the store at
+/// `root` exists and holds at least one message the user sent (rule 1286). Claude writes no transcript, or none with a
+/// user message, for a session nobody typed into; such a session cannot be resumed. Only a plain session id (no
+/// marker, no path character) is looked up. The read streams line by line, stops at the first user message, and never
+/// reads more than `USED_SCAN_BYTES`.
+pub fn claude_session_used(root: &Path, cwd: &str, id: &str) -> bool {
+    if valid_resume(Some(id)).is_none() || id.contains(':') {
+        return false;
+    }
+    let path = root
+        .join("projects")
+        .join(encode_cwd(cwd))
+        .join(format!("{id}.jsonl"));
+    let opened = std::fs::File::open(path); // sync-ok: runs on a worker (the restore thread)
+    match opened {
+        Ok(file) => has_user_message(file),
+        Err(_) => false,
+    }
+}
+
+/// Whether the transcript read from `r` holds a user message within its first `USED_SCAN_BYTES`: a line whose
+/// `type` is `user` and that is not one of Claude's own meta lines (`isMeta`). A line cut by the cap does not count.
+pub fn has_user_message(r: impl Read) -> bool {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(r.take(USED_SCAN_BYTES));
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // sync-ok: runs on a worker (the restore thread)
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        if is_user_line(&line) {
+            return true;
+        }
+    }
+}
+
+/// One transcript line that is a message the user sent.
+fn is_user_line(line: &[u8]) -> bool {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
+        return false;
+    };
+    v.get("type").and_then(serde_json::Value::as_str) == Some("user")
+        && v.get("isMeta").and_then(serde_json::Value::as_bool) != Some(true)
+}
+
 /// Where Claude keeps its store: `CLAUDE_CONFIG_DIR` when that is set and not empty, else
 /// `<home>\.claude`. `config_dir` is the variable's value.
 pub fn store_root(home: &Path, config_dir: Option<&std::ffi::OsStr>) -> PathBuf {
@@ -239,6 +290,73 @@ mod tests {
         fs::write(dir.join(format!("{ID}.jsonl")), CLI_HEAD).unwrap();
         assert_eq!(claude_sessions_in(&cfg, "C:\\w"), vec![ID.to_string()]);
         assert!(claude_sessions("C:\\w", tmp.path()).is_empty());
+    }
+
+    /// Rule 1286: the new-Claude marker is a resume of its own, and nothing that merely looks like it is.
+    #[test]
+    fn accepts_the_new_claude_marker_and_nothing_near_it() {
+        assert_eq!(valid_resume(Some("claude:new")), Some("claude:new"));
+        for bad in [
+            "claude:new ",
+            "claude:new;x",
+            "claude:New",
+            "claude:",
+            "claude",
+            " claude:new",
+            "claude:new\n",
+        ] {
+            assert_eq!(valid_resume(Some(bad)), None, "{bad:?}");
+        }
+    }
+
+    /// Rule 1286: a session is used when its transcript holds a message the user sent; a missing file, an empty one,
+    /// one with only Claude's own lines, a marker or a path is not.
+    #[test]
+    fn a_session_is_used_only_when_its_transcript_holds_a_user_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".claude");
+        let dir = root.join("projects").join(encode_cwd("C:\\w"));
+        fs::create_dir_all(&dir).unwrap();
+        let used = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e50";
+        let meta = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e51";
+        let empty = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e52";
+        let gone = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e53";
+        fs::write(
+            dir.join(format!("{used}.jsonl")),
+            "{\"type\":\"file-history-snapshot\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(format!("{meta}.jsonl")),
+            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"isMeta\":true}\nnot json\n",
+        )
+        .unwrap();
+        fs::write(dir.join(format!("{empty}.jsonl")), "").unwrap();
+        assert!(claude_session_used(&root, "C:\\w", used));
+        assert!(!claude_session_used(&root, "C:\\w", meta));
+        assert!(!claude_session_used(&root, "C:\\w", empty));
+        assert!(!claude_session_used(&root, "C:\\w", gone));
+        // Another folder's store does not hold it.
+        assert!(!claude_session_used(&root, "C:\\other", used));
+        // A marker or anything that is not an id is never looked up.
+        for bad in ["claude:new", "codex:last", "../x", ""] {
+            assert!(!claude_session_used(&root, "C:\\w", bad), "{bad:?}");
+        }
+    }
+
+    /// Rule 1286: the read stops at the cap, so a user message past it is not found (and a huge file is never read
+    /// whole); one inside it is.
+    #[test]
+    fn the_user_message_scan_is_bounded() {
+        let user = b"{\"type\":\"user\"}\n";
+        let mut early = b"{\"type\":\"summary\"}\n".to_vec();
+        early.extend_from_slice(user);
+        assert!(has_user_message(&early[..]));
+        let mut late = vec![b' '; USED_SCAN_BYTES as usize];
+        late.push(b'\n');
+        late.extend_from_slice(user);
+        assert!(!has_user_message(&late[..]));
+        assert!(!has_user_message(&b""[..]));
     }
 
     #[test]

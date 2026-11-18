@@ -36,7 +36,7 @@ pub struct RevealState {
 }
 
 /// The agent a resume id is for: `codex...` is Codex, `agy...` is agy (no hex id starts with
-/// either), anything else Claude.
+/// either), anything else Claude (a session id or `claude:new`, rule 1286).
 pub fn agent_of_resume(resume: &str) -> AgentKind {
     if resume.starts_with("codex") {
         AgentKind::Codex
@@ -247,6 +247,8 @@ mod tests {
         );
         assert_eq!(agent_of_resume("codex:last"), AgentKind::Codex);
         assert_eq!(agent_of_resume("agy:last"), AgentKind::Agy);
+        // Rule 1286: a new blank Claude is Claude.
+        assert_eq!(agent_of_resume("claude:new"), AgentKind::Claude);
     }
 
     #[test]

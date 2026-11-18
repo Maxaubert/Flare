@@ -58,6 +58,7 @@ fn fx(opts: Opts) -> Fx {
             cwd: CWD.to_string(),
             agent: None,
             remote: None,
+            session: None,
         }],
         active: 0,
     };
