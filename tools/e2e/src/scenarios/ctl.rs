@@ -724,8 +724,9 @@ fn mcp_on(
                 "set_tab_progress",
                 "clear_tab_progress",
                 "open_remote_session",
+                "list_remote_sessions",
             ],
-        format!("tools/list names the eight show tools, the ten browser tools, the four tab tools and the remote session tool ({names:?})"),
+        format!("tools/list names the eight show tools, the ten browser tools, the four tab tools and the two remote session tools ({names:?})"),
     );
     ctx.ok(
         replies

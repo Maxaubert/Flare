@@ -143,6 +143,10 @@ pub enum Method {
     /// `machines.json`, a folder there and an optional Claude session to resume. The agent's (owner decision: no
     /// prompt) and the `flare open --on` command's. The opened tab takes no typing from either (rule 299).
     OpenRemoteSession,
+    /// The tabs the linked machines' own Flares run (import remote sessions PR 4, rule 1296): for each machine of
+    /// `machines.json`, its host tab ids, folders, titles, one state word, the agent kind and whether each is shown or
+    /// hidden here. Never a session id, question words or screen text. The agent's and the app's, like `open.remote`.
+    OpenRemoteList,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -252,7 +256,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 64] = [
+    pub const ALL: [Method; 65] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -317,6 +321,7 @@ impl Method {
         Method::RemoteFetch,
         Method::RemotePut,
         Method::OpenRemoteSession,
+        Method::OpenRemoteList,
     ];
 
     /// The wire name.
@@ -386,6 +391,7 @@ impl Method {
             Method::RemoteFetch => "remote.fetch",
             Method::RemotePut => "remote.put",
             Method::OpenRemoteSession => "open.remote",
+            Method::OpenRemoteList => "open.remote.list",
         }
     }
 
@@ -451,7 +457,7 @@ impl Method {
             | Method::RemoteConvo
             | Method::RemoteFetch
             | Method::RemotePut => Namespace::Remote,
-            Method::OpenRemoteSession => Namespace::Open,
+            Method::OpenRemoteSession | Method::OpenRemoteList => Namespace::Open,
         }
     }
 
@@ -484,6 +490,8 @@ impl Method {
                 REMOTE_CALL
             }
             Namespace::Remote => DEFAULT_TIMEOUT,
+            // The list may ask each linked machine afresh over ssh (rule 1296), all at once and each one bounded.
+            Namespace::Open if self == Method::OpenRemoteList => REMOTE_CALL,
             _ => DEFAULT_TIMEOUT,
         }
     }
@@ -575,7 +583,7 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 64);
+        assert_eq!(Method::ALL.len(), 65);
         assert_eq!(Namespace::ALL.len(), 21);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
@@ -630,6 +638,19 @@ mod tests {
         assert_eq!(Method::OpenRemoteSession.namespace(), Namespace::Open);
         assert_eq!(Method::OpenRemoteSession.timeout(), DEFAULT_TIMEOUT);
         assert_eq!(Namespace::Open.permission(), None);
+    }
+
+    /// Import remote sessions PR 4 (rule 1296): the agent's list of the linked machines' tabs is in `open` too, and it
+    /// may ask each machine afresh over ssh, so it takes the remote call's time; `open.remote` keeps the short one.
+    #[test]
+    fn open_remote_list_is_in_open_and_takes_the_remote_calls_time() {
+        assert_eq!(
+            Method::parse("open.remote.list"),
+            Some(Method::OpenRemoteList)
+        );
+        assert_eq!(Method::OpenRemoteList.namespace(), Namespace::Open);
+        assert_eq!(Method::OpenRemoteList.timeout(), REMOTE_CALL);
+        assert_eq!(Method::OpenRemoteSession.timeout(), DEFAULT_TIMEOUT);
     }
 
     /// `notice.show` (2026-11-17) is a short call of its own namespace, opened by `actions`.

@@ -555,3 +555,128 @@ fn a_question_on_an_imported_row_rings_here_once_and_attaching_does_not_ring_it_
     w.run(300);
     assert_eq!(rung(&row), 1, "the attach does not ring it again");
 }
+
+// ---- the agent's adopt (rule 1296) ----
+
+/// The Mac's host tab `tab` as `open.remote` with a `tab` hands it to the window (the worker found it listed).
+fn adopt(w: &Wx, tab: &str) -> Value {
+    let heard = Heard::Listed(json!({ "tabs": [entry(tab, "working", true)] }));
+    let row = crate::remote_import::adoptable(Some(&heard), tab).expect("listed");
+    let v = w
+        .ctl
+        .borrow_mut()
+        .adopt_remote("mac", row)
+        .expect("the adopt");
+    w.pump();
+    v
+}
+
+/// Rule 1296: an agent's adopt adds an unattached row behind the front tab, marked adopted. Nothing is fronted, so
+/// nothing links: no attach, no resize, no open on the host. The same host tab again makes nothing new.
+#[test]
+fn an_agents_adopt_makes_an_unattached_row_behind_the_front_and_sends_no_attach_or_resize() {
+    let w = Wx::new(1.0);
+    importing(&w);
+    let first = front(&w);
+    let v = adopt(&w, "t1-1");
+    let row = row_of(&w, "t1-1").expect("the adopted row");
+    assert_eq!(v["tab"], row.as_str());
+    assert_eq!(v["added"], true);
+    assert_eq!(front(&w), first, "never in front");
+    assert_eq!(ids(&w), [first.clone(), row.clone()]);
+    {
+        let c = w.ctl.borrow();
+        assert!(c.model().is_unattached(&row));
+        assert_eq!(
+            c.model().import_how(&row),
+            Some(flare_tabs::tabs::ImportHow::Adopted)
+        );
+    }
+    w.run(200);
+    assert!(
+        w.remote.made().is_empty(),
+        "no link: nothing attaches or sizes on the host"
+    );
+    let again = adopt(&w, "t1-1");
+    assert_eq!(again["tab"], row.as_str());
+    assert_eq!(again["added"], false);
+    assert_eq!(ids(&w).len(), 2, "one row per host tab");
+    // An import of the same host tab finds it shown.
+    heard(&w, vec![entry("t1-1", "idle", true)]);
+    assert_eq!(ids(&w).len(), 2);
+}
+
+/// Rule 1296: an adopt takes a hidden host tab off the hidden list (the one way back besides a host restart).
+#[test]
+fn open_remote_with_a_hidden_tab_takes_it_off_the_hidden_list() {
+    let w = Wx::new(1.0);
+    importing(&w);
+    heard(&w, vec![entry("t1-1", "idle", true)]);
+    let row = row_of(&w, "t1-1").unwrap();
+    w.ctl.borrow_mut().hide_remote(&row);
+    assert_eq!(w.ctl.borrow().hidden_of("mac"), ["t1-1"]);
+    adopt(&w, "t1-1");
+    assert!(row_of(&w, "t1-1").is_some());
+    assert!(w.ctl.borrow().hidden_of("mac").is_empty());
+    assert!(
+        flare_settings::machine_prefs::import_hidden(&w.prefs)
+            .get("mac")
+            .is_none_or(Vec::is_empty)
+    );
+}
+
+/// Rule 1296: an adopted row stays when the setting goes off (its machine stays watched for it), and it is never
+/// saved in `tabs.json`.
+#[test]
+fn an_adopted_row_stays_when_the_setting_is_off_and_is_not_saved() {
+    let w = Wx::new(1.0);
+    let watches = importing(&w);
+    flare_settings::machine_prefs::set_import_remote_on(&w.prefs, false);
+    w.pump_until("the watch stops", |_| watches.live().is_empty());
+    adopt(&w, "t1-2");
+    let row = row_of(&w, "t1-2").expect("the adopted row");
+    assert_eq!(watches.live(), ["mac"], "watched for its adopted row");
+    // The watch's next answer feeds it and adds nothing else.
+    heard(
+        &w,
+        vec![entry("t1-2", "idle", true), entry("t1-3", "idle", true)],
+    );
+    assert!(
+        row_of(&w, "t1-3").is_none(),
+        "nothing is imported while off"
+    );
+    assert!(row_of(&w, "t1-2").is_some());
+    let saved = w.ctl.borrow().model().saved();
+    assert!(
+        !saved.tabs.iter().any(|t| t.cwd == "/Users/max/t1-2"),
+        "never saved"
+    );
+    assert!(ids(&w).contains(&row));
+}
+
+/// Rule 1296: no adopt while an open on that machine waits for its host tab (the same host tab could show twice); once
+/// the open has its host tab, the adopt goes.
+#[test]
+fn an_adopt_waits_while_an_open_on_that_machine_is_in_flight() {
+    let w = Wx::new(1.0);
+    importing(&w);
+    let opened = w
+        .ctl
+        .borrow_mut()
+        .open_remote("mac", "/Users/max/proj", None, false);
+    let heard = Heard::Listed(json!({ "tabs": [entry("t1-1", "idle", true)] }));
+    let row = crate::remote_import::adoptable(Some(&heard), "t1-1").unwrap();
+    let e = w
+        .ctl
+        .borrow_mut()
+        .adopt_remote("mac", row.clone())
+        .unwrap_err();
+    assert_eq!(e.code, flare_ctl::code::BUSY);
+    w.ctl
+        .borrow()
+        .model()
+        .remote_live(&opened)
+        .unwrap()
+        .set_host_tab("t1-9");
+    assert!(w.ctl.borrow_mut().adopt_remote("mac", row).is_ok());
+}

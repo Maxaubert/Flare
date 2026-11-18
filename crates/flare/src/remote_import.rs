@@ -10,8 +10,11 @@
 //! [`HiddenList`] is "Hide here only" per machine (kept in `flare.machines.importHidden`), and [`ClosingList`] keeps a
 //! row closed here out while the host still asks about the close (rule 48), until the host drops the tab or for
 //! [`CLOSING_FOR`].
+//!
+//! [`HostLists`] keeps each machine's newest answer for the agent's `open.remote.list` and adopt (rule 1296), and
+//! [`list_machine`] makes the agent's view of it field by field.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -101,7 +104,6 @@ pub struct ImportRow {
     /// The host's folder, or `~` when the host names no safe one (rule 1279).
     pub folder: String,
     /// The host's title, words only, for the agent's list (a `Tab` has no title: labels come from the folder).
-    #[allow(dead_code)] // the agent's list reads it (import remote sessions PR 4)
     pub title: String,
     /// The marks the row shows before it attaches.
     pub status: HostStatus,
@@ -259,8 +261,7 @@ impl HiddenList {
         true
     }
 
-    /// Takes `tab` off the list (an agent's adopt, PR 4). False when it was not hidden.
-    #[allow(dead_code)] // the agent's adopt calls it (import remote sessions PR 4)
+    /// Takes `tab` off the list (an agent's adopt, rule 1296). False when it was not hidden.
     pub fn unhide(&mut self, machine: &str, tab: &str) -> bool {
         self.forget(machine, &[tab.to_string()])
     }
@@ -580,6 +581,268 @@ impl WatchWorker {
             }
         }
     }
+}
+
+// ---- the agent's list and adopt (rule 1296) ----
+
+/// A machine's answer younger than this is used as it is by the agent's list; an older one is asked again, at most once
+/// per machine in this time.
+pub const LIST_FRESH: Duration = Duration::from_secs(5);
+
+/// How long the agent's list waits for the machines it asks afresh, all at once. One that has not answered by then is
+/// listed as not reachable: a link alone may wait up to `remote_link::HELLO_WAIT`, longer than any call's time.
+pub const LIST_WAIT: Duration = Duration::from_secs(10);
+
+/// The longest agent kind read from a peer (`claude`, `codex`, `agy`).
+const AGENT_MAX: usize = 32;
+
+/// Asks one machine's `remote.status` once (the agent's list, rule 1296). A test gives a fake.
+pub trait ListAsk: Send + Sync {
+    /// BLOCKING (ssh): what the ask heard; None when the link did not come up or broke.
+    fn ask(&self, machine: &str) -> Option<Heard>;
+}
+
+/// The real ask: one short link from the watch links' connector (`--serve-remote --no-start`, so it never starts Flare
+/// on the host), one `remote.status`, then the link is let go.
+pub struct LinkListAsk {
+    connector: Arc<dyn Connector>,
+    call: Duration,
+}
+
+impl LinkListAsk {
+    pub fn new(connector: Arc<dyn Connector>) -> Self {
+        Self {
+            connector,
+            call: WatchTiming::default().call,
+        }
+    }
+}
+
+impl ListAsk for LinkListAsk {
+    fn ask(&self, machine: &str) -> Option<Heard> {
+        let mut link = match self.connector.connect(machine) {
+            Ok(l) => l,
+            Err(e) => {
+                log::info!("the agent's list could not reach {machine}: {e}");
+                return None;
+            }
+        };
+        heard_of(link.call(Method::RemoteStatus, json!({}), self.call))
+    }
+}
+
+/// What the agent's list knows of one machine.
+#[derive(Default)]
+struct Known {
+    /// The newest answer and when it was heard or asked (its `Option` None: the link was down).
+    heard: Option<(Instant, Option<Heard>)>,
+    /// When the list last asked it afresh.
+    asked: Option<Instant>,
+}
+
+/// The newest answer of each machine for the agent's list and adopt (rule 1296): the watch links' answers as the window
+/// hears them, and the list's own asks when those are older than [`LIST_FRESH`] (or there is no watch, the setting
+/// being off). Shared by the window and the control channel's workers.
+pub struct HostLists {
+    asker: Arc<dyn ListAsk>,
+    known: Mutex<HashMap<String, Known>>,
+}
+
+impl HostLists {
+    pub fn new(asker: Arc<dyn ListAsk>) -> Self {
+        Self {
+            asker,
+            known: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Lists whose asks never reach a machine (the tests' servers).
+    #[cfg(test)]
+    pub fn asking_none() -> Arc<Self> {
+        struct NoAsk;
+        impl ListAsk for NoAsk {
+            fn ask(&self, _machine: &str) -> Option<Heard> {
+                None
+            }
+        }
+        Arc::new(Self::new(Arc::new(NoAsk)))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Known>> {
+        self.known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A watch link's answer, as the window hears it.
+    pub fn heard(&self, machine: &str, heard: &Heard, now: Instant) {
+        self.lock().entry(machine.to_string()).or_default().heard =
+            Some((now, Some(heard.clone())));
+    }
+
+    /// BLOCKING (a control call's worker, rule 34): the newest answer of each of `machines`. One older than
+    /// [`LIST_FRESH`] is asked again, at most once per machine in that time, all of them at once, each on a thread of
+    /// its own; the call waits at most `wait` for them. A machine that answered nothing, or not in time, is None.
+    pub fn answers(
+        self: &Arc<Self>,
+        machines: &[String],
+        now: Instant,
+        wait: Duration,
+    ) -> HashMap<String, Option<Heard>> {
+        let young = |at: Option<Instant>| {
+            at.is_some_and(|at| now.saturating_duration_since(at) < LIST_FRESH)
+        };
+        // The ask is stamped before it starts, so two calls at once never both ask.
+        let ask: Vec<String> = {
+            let mut known = self.lock();
+            machines
+                .iter()
+                .filter(|m| {
+                    let k = known.entry((*m).clone()).or_default();
+                    if young(k.heard.as_ref().map(|(at, _)| *at)) || young(k.asked) {
+                        return false;
+                    }
+                    k.asked = Some(now);
+                    true
+                })
+                .cloned()
+                .collect()
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        for m in &ask {
+            let (me, m, tx) = (Arc::clone(self), m.clone(), tx.clone());
+            let started = std::thread::Builder::new()
+                .name("flare-remote-list".into())
+                .spawn(move || {
+                    let heard = me.asker.ask(&m);
+                    me.lock().entry(m.clone()).or_default().heard = Some((now, heard));
+                    let _ = tx.send(m);
+                });
+            if let Err(e) = started {
+                log::warn!("could not ask a machine for the agent's list: {e}");
+            }
+        }
+        drop(tx);
+        let end = Instant::now() + wait;
+        let mut late: HashSet<String> = ask.iter().cloned().collect();
+        while !late.is_empty() {
+            let left = end.saturating_duration_since(Instant::now());
+            // sync-ok: a control call's worker waits for its own asks, never the UI thread
+            match rx.recv_timeout(left) {
+                Ok(m) => {
+                    late.remove(&m);
+                }
+                Err(_) => break,
+            }
+        }
+        let known = self.lock();
+        machines
+            .iter()
+            .map(|m| {
+                let heard = if late.contains(m) {
+                    None
+                } else {
+                    known
+                        .get(m)
+                        .and_then(|k| k.heard.as_ref())
+                        .and_then(|(_, h)| h.clone())
+                };
+                (m.clone(), heard)
+            })
+            .collect()
+    }
+}
+
+/// The entries of a listing that are the host's own tabs (`origin: here`), each id well formed, each once.
+fn own_entries(heard: Option<&Heard>) -> Vec<(&str, &Value)> {
+    let Some(Heard::Listed(v)) = heard else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    v["tabs"]
+        .as_array()
+        .map(|tabs| {
+            tabs.iter()
+                .filter_map(|t| Some((t["tab"].as_str().filter(|id| host_tab_ok(id))?, t)))
+                .filter(|(id, t)| t["origin"].as_str() == Some(ORIGIN_HERE) && seen.insert(*id))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A row of a host's own tab: its folder (`~` when the host names no safe one), title and status. None when the entry
+/// has no state.
+fn row_of(id: &str, t: &Value) -> Option<ImportRow> {
+    let status = status_from(t)?;
+    Some(ImportRow {
+        host_tab: id.to_string(),
+        folder: status.folder.clone().unwrap_or_else(|| HOME.into()),
+        title: title_of(&t["title"]),
+        status,
+    })
+}
+
+/// Pure (rule 1296): the host tab `tab` as the machine's newest answer lists it, for an agent's adopt. None when the
+/// answer does not list it as the host's own tab (`origin: here`), or there is no answer.
+pub fn adoptable(heard: Option<&Heard>, tab: &str) -> Option<ImportRow> {
+    own_entries(heard)
+        .into_iter()
+        .find(|(id, _)| *id == tab)
+        .and_then(|(id, t)| row_of(id, t))
+}
+
+/// One machine of the agent's list, as the window and the machine's answer say it.
+pub struct ListedMachine<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub heard: Option<&'a Heard>,
+    /// The host tabs of this machine shown here as rows.
+    pub shown: &'a HashSet<String>,
+    /// The host tabs of this machine hidden here.
+    pub hidden: &'a HashSet<String>,
+}
+
+/// Pure (rule 1296): one machine of the agent's list. Each tab is made field by field, never a copy of the host's
+/// entry: `tab`, `folder`, `title`, `state` (one word), `agent` (a kind or null) and `here` (`shown`, `hidden` or
+/// `none`). Never a session id, question words, a failure's words or screen text. `reachable` is false when the
+/// machine gave no listing (no Flare runs there, a refusal, a link down or late).
+pub fn list_machine(m: &ListedMachine) -> Value {
+    let reachable = matches!(m.heard, Some(Heard::Listed(v)) if v["tabs"].is_array());
+    let tabs: Vec<Value> = own_entries(m.heard)
+        .into_iter()
+        .filter_map(|(id, t)| row_of(id, t))
+        .map(|r| {
+            let here = if m.shown.contains(&r.host_tab) {
+                "shown"
+            } else if m.hidden.contains(&r.host_tab) {
+                "hidden"
+            } else {
+                "none"
+            };
+            let state = flare_ctl::remote::TabState::parse(&r.status.state)
+                .unwrap_or(flare_ctl::remote::TabState::Idle)
+                .word();
+            let agent = r.status.agent.filter(|a| {
+                a.len() <= AGENT_MAX
+                    && a.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            });
+            json!({
+                "tab": r.host_tab,
+                "folder": r.folder,
+                "title": r.title,
+                "state": state,
+                "agent": agent,
+                "here": here,
+            })
+        })
+        .collect();
+    json!({
+        "machine": m.id,
+        "name": m.name,
+        "reachable": reachable,
+        "tabs": tabs,
+    })
 }
 
 #[cfg(test)]
@@ -1182,5 +1445,179 @@ mod tests {
         m.down.store(false, Ordering::SeqCst);
         wait_for("the close once up", || closes(&m).len() == 2);
         assert_eq!(closes(&m)[1], json!({"tab": "t1-2"}));
+    }
+
+    // ---- the agent's list (rule 1296) ----
+
+    /// A list ask that counts its asks per machine and answers what the test set (None: the link is down).
+    #[derive(Default)]
+    struct FakeAsk {
+        answers: Mutex<HashMap<String, Option<Heard>>>,
+        asks: Mutex<Vec<String>>,
+        /// Each ask waits this long first (a slow host).
+        slow: Mutex<Duration>,
+    }
+
+    impl ListAsk for FakeAsk {
+        fn ask(&self, machine: &str) -> Option<Heard> {
+            self.asks.lock().unwrap().push(machine.to_string());
+            let slow = *self.slow.lock().unwrap();
+            std::thread::sleep(slow); // sync-ok: test code only
+            self.answers.lock().unwrap().get(machine).cloned().flatten()
+        }
+    }
+
+    fn asks_of(a: &FakeAsk, m: &str) -> usize {
+        a.asks.lock().unwrap().iter().filter(|x| *x == m).count()
+    }
+
+    /// Rule 1296: the list asks a machine afresh only when its newest answer is older than five seconds, at most once
+    /// per machine in that time, and a watch link's answer counts as fresh. A machine too slow to answer in time is
+    /// none, and the call does not wait for it past its time.
+    #[test]
+    fn the_list_asks_each_machine_at_most_once_per_five_seconds() {
+        let ask = Arc::new(FakeAsk::default());
+        ask.answers
+            .lock()
+            .unwrap()
+            .insert("mac".into(), Some(Heard::Listed(listing(&["t1-1"]))));
+        let lists = Arc::new(HostLists::new(ask.clone()));
+        let t0 = Instant::now();
+        let both = ["mac".to_string(), "pc".to_string()];
+        let a = lists.answers(&both, t0, LIST_WAIT);
+        assert!(matches!(a["mac"], Some(Heard::Listed(_))));
+        assert!(a["pc"].is_none(), "the pc's link is down");
+        assert_eq!((asks_of(&ask, "mac"), asks_of(&ask, "pc")), (1, 1));
+        lists.answers(&both, t0 + Duration::from_secs(4), LIST_WAIT);
+        assert_eq!((asks_of(&ask, "mac"), asks_of(&ask, "pc")), (1, 1));
+        lists.answers(&both, t0 + Duration::from_secs(6), LIST_WAIT);
+        assert_eq!((asks_of(&ask, "mac"), asks_of(&ask, "pc")), (2, 2));
+        // A watch link's answer is the newest: no ask while it is young.
+        lists.heard(
+            "pc",
+            &Heard::Listed(listing(&["t9-1"])),
+            t0 + Duration::from_secs(20),
+        );
+        let a = lists.answers(&both, t0 + Duration::from_secs(22), LIST_WAIT);
+        assert!(matches!(a["pc"], Some(Heard::Listed(_))));
+        assert_eq!((asks_of(&ask, "mac"), asks_of(&ask, "pc")), (3, 2));
+        // A slow machine is none once the wait is over, and the next call within five seconds asks it no more.
+        *ask.slow.lock().unwrap() = Duration::from_millis(400);
+        let started = Instant::now();
+        let a = lists.answers(
+            &["mac".to_string()],
+            t0 + Duration::from_secs(40),
+            Duration::from_millis(50),
+        );
+        assert!(started.elapsed() < Duration::from_millis(350));
+        assert!(a["mac"].is_none(), "late");
+        lists.answers(
+            &["mac".to_string()],
+            t0 + Duration::from_secs(41),
+            Duration::ZERO,
+        );
+        assert_eq!(asks_of(&ask, "mac"), 4);
+    }
+
+    /// Rule 1296: each listed tab is made field by field (no session id, question words, failure or anything else
+    /// the host sent), only the host's own tabs, each once, with `here` from this window.
+    #[test]
+    fn the_list_names_only_the_hosts_own_tabs_and_carries_no_session_or_question() {
+        let heard = Heard::Listed(json!({"tabs": [
+            {"tab": "t1-1", "origin": "here", "state": "question", "kind": "claude",
+             "session": "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f", "question_text": "Allow rm -rf?",
+             "failed": "x", "sized": "host", "folder": "/Users/max/p", "title": "p\u{7} claude",
+             "screen": "secret", "extra": 1},
+            {"tab": "t1-1", "origin": "here", "state": "idle", "folder": "/again"},
+            {"tab": "t1-2", "origin": "here", "state": "a-new-word", "kind": "bad kind!", "folder": "\\\\srv\\x"},
+            {"tab": "t1-3", "origin": "here", "state": "working", "kind": "codex", "folder": "/h"},
+            {"tab": "t1-4", "origin": "viewer", "state": "idle", "folder": "/v"},
+            {"tab": "../x", "origin": "here", "state": "idle", "folder": "/v"},
+            {"tab": "t1-5", "origin": "here", "folder": "/no-state"},
+        ]}));
+        let shown: HashSet<String> = ["t1-1".to_string()].into();
+        let hidden: HashSet<String> = ["t1-3".to_string()].into();
+        let v = list_machine(&ListedMachine {
+            id: "mac",
+            name: "Mac mini",
+            heard: Some(&heard),
+            shown: &shown,
+            hidden: &hidden,
+        });
+        assert_eq!(v["machine"], "mac");
+        assert_eq!(v["name"], "Mac mini");
+        assert_eq!(v["reachable"], true);
+        assert_eq!(
+            v["tabs"],
+            json!([
+                {"tab": "t1-1", "folder": "/Users/max/p", "title": "p claude", "state": "question",
+                 "agent": "claude", "here": "shown"},
+                {"tab": "t1-2", "folder": "~", "title": "", "state": "idle", "agent": null, "here": "none"},
+                {"tab": "t1-3", "folder": "/h", "title": "", "state": "working", "agent": "codex",
+                 "here": "hidden"},
+            ])
+        );
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["machine", "name", "reachable", "tabs"]);
+        let text = v.to_string();
+        for never in [
+            "3f2a9c1e",
+            "Allow",
+            "secret",
+            "sized",
+            "session",
+            "question_text",
+        ] {
+            assert!(!text.contains(never), "{never} in {text}");
+        }
+        // No listing: not reachable, no tabs. An older host (no origin) lists nothing.
+        let none = HashSet::new();
+        for heard in [
+            None,
+            Some(Heard::Unavailable),
+            Some(Heard::Refused),
+            Some(Heard::Listed(json!({"error": 1}))),
+        ] {
+            let v = list_machine(&ListedMachine {
+                id: "pc",
+                name: "PC",
+                heard: heard.as_ref(),
+                shown: &none,
+                hidden: &none,
+            });
+            assert_eq!(v["reachable"], false);
+            assert_eq!(v["tabs"], json!([]));
+        }
+        let older = Heard::Listed(json!({"tabs": [{"tab": "t1-1", "state": "idle"}]}));
+        let v = list_machine(&ListedMachine {
+            id: "pc",
+            name: "PC",
+            heard: Some(&older),
+            shown: &none,
+            hidden: &none,
+        });
+        assert_eq!(
+            (v["reachable"].clone(), v["tabs"].clone()),
+            (json!(true), json!([]))
+        );
+    }
+
+    /// Rule 1296: an agent may adopt only a tab the machine lists as its own.
+    #[test]
+    fn adoptable_finds_only_a_listed_tab_of_the_hosts_own() {
+        let heard = Heard::Listed(json!({"tabs": [
+            entry("t1-1"),
+            {"tab": "t1-2", "origin": "viewer", "state": "idle"},
+        ]}));
+        let r = adoptable(Some(&heard), "t1-1").unwrap();
+        assert_eq!(
+            (r.host_tab.as_str(), r.folder.as_str()),
+            ("t1-1", "/Users/max/t1-1")
+        );
+        assert!(adoptable(Some(&heard), "t1-2").is_none());
+        assert!(adoptable(Some(&heard), "t1-9").is_none());
+        assert!(adoptable(Some(&Heard::Unavailable), "t1-1").is_none());
+        assert!(adoptable(None, "t1-1").is_none());
     }
 }

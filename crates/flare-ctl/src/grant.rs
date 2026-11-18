@@ -998,6 +998,38 @@ mod tests {
         assert!(Grant::Ui.may_call(Method::OpenRemoteSession));
     }
 
+    /// Rule 1296 (amends 299): the agent may list the linked machines' tabs and add one here (`open.remote` with a
+    /// `tab`), with no grant change: both are in `open`. It still never types into, attaches to or sizes one: no
+    /// `remote.*`, `shell.input` or `tabs.input`. No mod, remote link or bridge lists them.
+    #[test]
+    fn the_agent_may_list_and_adopt_remote_tabs_but_never_type_into_one() {
+        for g in [Grant::agent(), Grant::Agent { eval: true }] {
+            assert!(g.check(Method::OpenRemoteList).is_ok());
+            assert!(g.check(Method::OpenRemoteSession).is_ok());
+            for m in Method::ALL
+                .into_iter()
+                .filter(|m| m.namespace() == Namespace::Remote)
+                .chain([Method::ShellInput, Method::TabsInput])
+            {
+                assert_eq!(
+                    g.check(m).unwrap_err().code,
+                    code::FORBIDDEN,
+                    "{}",
+                    m.name()
+                );
+            }
+        }
+        for g in [
+            mod_with(&Permission::ALL),
+            v1_mod_with(&Permission::ALL),
+            Grant::Remote,
+            Grant::Bridge,
+        ] {
+            assert!(!g.may_call(Method::OpenRemoteList), "{}", g.kind());
+        }
+        assert!(Grant::Ui.may_call(Method::OpenRemoteList));
+    }
+
     /// Rule 1282 (amends S3): the folder browser's `remote.ls` is the viewer's own interface, over its link to the
     /// host; the agent never lists a folder on another machine, with or without the eval switch, and no plugin does
     /// either. Only the link (the remote grant and the host's bridge) and the app reach it.

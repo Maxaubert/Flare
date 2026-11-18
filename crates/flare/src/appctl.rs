@@ -4456,6 +4456,10 @@ impl AppCtl {
                 let tab = self.open_remote(&machine, &folder, resume.as_deref(), front);
                 Ok(json!({"tab": tab, "machine": machine, "folder": folder}))
             }
+            // Import remote sessions PR 4 (rule 1296): the agent's list and adopt, checked on the worker, applied in
+            // `import_glue`.
+            CtlOp::OpenRemoteHere => Ok(self.remote_here()),
+            CtlOp::OpenRemoteAdopt { machine, row } => self.adopt_remote(&machine, row),
             // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }

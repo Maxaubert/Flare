@@ -379,6 +379,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `remote.hello` (the `remote` grant's row: it is **no** in every other one, and for `bridge`) | **no** | **no** (no permission opens it) | yes |
 | `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close`, `remote.status`, `remote.convo`, `remote.fetch`, `remote.put` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
 | `open.remote` (remote sessions PR 5; **no** for `remote` and `bridge`) | yes, with no prompt (owner decision); the tab it opens takes no typing from it (rule 299) | **no** (no permission opens it) | yes |
+| `open.remote.list` (import remote sessions PR 4; **no** for `remote` and `bridge`) | yes (rule 1296): no session id, question words or screen text | **no** (no permission opens it) | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
 browser, and open a tab that shows a session on another machine (`open.remote`, rule 299, amending rule 188). It
@@ -1150,6 +1151,30 @@ resume}`) connects on the tab's own worker, so the answer never waits for the ot
 does not name is `not_found` with one line that lists the ones it does. The opened tab takes no typing from the
 agent: the agent grant has no `remote.*`, `shell.input` or `tabs.input`, and an agent names no tab but its own. Timeout:
 15 s.
+
+**With `tab`** (import remote sessions PR 4, rule 1296): `tab` (string: a host tab id as `open.remote.list` gives it, at
+most 64 of letters, digits, `-` and `_`) instead of `folder`. Only `machine` and `tab`: `folder`, `resume` and `front`
+are `bad_params` with it (this call cannot tell the agent from `flare open`, and a fronted row attaches). The tab must
+be one the machine's newest answer lists as its own (`origin: here`), else `not_found`. It opens, resumes, attaches and
+sizes nothing on the host: the window adds the host tab as an unattached row behind the front tab, not saved in
+`tabs.json`, which links only when the person brings it forward. Result: `{tab, added}` (`added` false when the host
+tab is already shown here; `title` too when added). A hidden host tab is taken off the hidden list. `busy` while an
+open on that machine still waits for its host tab, or before the restore answered.
+
+### open.remote.list (import remote sessions PR 4, 2026-11-18)
+
+Lists the tabs the linked machines' own Flares run (rule 1296). Callers: the agent (`list_remote_sessions`) and the
+app; never a mod, a remote link or the bridge (namespace `open`). Listed in `capabilities` where `open.remote` is.
+No params (any is `bad_params`).
+
+Result: `{machines: [{machine, name, reachable, tabs: [{tab, folder, title, state, agent, here}]}]}`, one entry per
+machine of `machines.json`. `reachable` is false when the machine gave no listing (no Flare runs there, a refusal, a
+link down or too late). Each tab is the host's own (`origin: here`), made field by field: `tab` (the host tab id),
+`folder` (`~` when the host names no safe one), `title` (words only, at most 200 characters), `state` (`working`,
+`question`, `done`, `failed` or `idle`), `agent` (a kind or null) and `here` (`shown`, `hidden` or `none`). Never a
+session id, question words or screen text. Each machine's newest answer is the watch link's (rule 1291); one older
+than 5 s is asked again over a short `--no-start` link, at most once per machine per 5 s, all machines at once, and the
+call waits at most 10 s for them. Timeout: 60 s (`REMOTE_CALL`).
 
 ## 6. Errors
 

@@ -118,6 +118,7 @@ fn serve(f: &Fx, tab: &str, apps_root: &Path) -> (CtlServer, String) {
         None,
         None,
         Arc::new(crate::machines::FileMachines::new(f.dir.path())),
+        crate::remote_import::HostLists::asking_none(),
     )
     .expect("the app's server starts on the socket");
     f.ctl.borrow_mut().set_ctl(

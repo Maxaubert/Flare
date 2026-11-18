@@ -3085,3 +3085,19 @@ Flare on a linked machine show as remote tab rows on this one.
 - **Code.** `remote_import.rs` (`LinkWatchPort`, `WatchTiming`), `appctl/import_glue.rs`, `remote_link.rs`
   (`watch_command`, `ssh_argv_watch`, `SshConnector::watching`, `attach_params`, the size hold),
   `flare-term` `RemoteSpec::{host_sized_start, ring_both}`, `flare-settings` (`machines-import`). Rules 1291 to 1295.
+
+## Import remote sessions, PR 4: the agent's list and adopt, 2026-11-18
+
+Spec: `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`. An agent can see what runs on the linked
+machines and show one of those tabs here (Max: "Yes, list and open").
+
+- **The list.** The MCP tool `list_remote_sessions` (`open.remote.list`) gives, for each linked machine, its tabs: the
+  tab id, folder, title, one state word, the agent in it and whether it is shown or hidden here. Never a session id,
+  question words or screen text. It uses the watch's newest answer and asks a machine afresh at most once per 5 s.
+- **Show one here.** `open_remote_session` with a `tab` (`open.remote {machine, tab}`) adds that tab as a row behind
+  the front tab. Nothing links, attaches or sizes on the other machine until the person brings the row forward. A
+  hidden tab comes back this way. The row stays when the import switch is off, and it is never saved.
+- **Still never.** The agent cannot type into, read, close, hide, front, attach or size a remote tab.
+- **Code.** `flare-ctl` (`Method::OpenRemoteList`), `ctl_app.rs` (`open_remote_list`, `adopt_remote`),
+  `remote_import.rs` (`HostLists`, `list_machine`, `adoptable`), `appctl/import_glue.rs` (`adopt_remote`),
+  `flare-mcp` (`list_remote_sessions`). Rule 1296.

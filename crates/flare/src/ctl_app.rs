@@ -378,6 +378,16 @@ pub enum CtlOp {
         resume: Option<String>,
         front: bool,
     },
+    /// `open.remote.list` (import remote sessions PR 4, rule 1296): the host tabs this window shows as rows and the
+    /// hidden ones, per machine. Answered with `{shown: {machine: [host tab]}, hidden: {machine: [host tab]}}`.
+    OpenRemoteHere,
+    /// `open.remote` with a `tab` (rule 1296): the host tab `row` of `machine` (the worker found it in the machine's
+    /// newest answer) as an unattached adopted row behind the front tab. Never fronted, attached or sized. Answered
+    /// with `{tab}`, the row already shown when there is one.
+    OpenRemoteAdopt {
+        machine: String,
+        row: crate::remote_import::ImportRow,
+    },
 }
 
 /// Where `browser.navigate` sends the page.
@@ -448,6 +458,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
             CtlOp::RemoteStatus => "CtlOp::RemoteStatus",
             CtlOp::OpenRemote { .. } => "CtlOp::OpenRemote",
+            CtlOp::OpenRemoteHere => "CtlOp::OpenRemoteHere",
+            CtlOp::OpenRemoteAdopt { .. } => "CtlOp::OpenRemoteAdopt",
         })
     }
 }
@@ -549,10 +561,20 @@ pub struct AppDispatcher {
     /// Remote sessions (PR 5): the machines `open.remote` may name (the profile's `machines.json`). Without it
     /// `open.remote` is neither listed nor answered.
     machines: Option<Arc<dyn crate::machines::MachinesPort>>,
+    /// Import remote sessions PR 4 (rule 1296): the machines' newest answers for `open.remote.list` and an adopt.
+    /// Without it neither is listed or answered.
+    lists: Option<Arc<crate::remote_import::HostLists>>,
 }
 
 /// The longest host folder `open.remote` takes, in bytes.
 const OPEN_FOLDER_MAX: usize = 4096;
+
+/// How long an adopt (`open.remote` with a `tab`, rule 1296) waits for a fresh ask of its machine, well inside the
+/// call's own time.
+const ADOPT_WAIT: Duration = Duration::from_secs(8);
+/// The time an adopt keeps back from its call's time, so the window never adds a row after the caller was told
+/// `timeout`.
+const ADOPT_SPARE: Duration = Duration::from_secs(1);
 
 /// Buckets kept at most; past it the map starts again (a bucket is only a second of memory).
 const DECOR_BUCKETS_MAX: usize = 1024;
@@ -585,6 +607,7 @@ impl AppDispatcher {
             clock: Instant::now,
             remote: None,
             machines: None,
+            lists: None,
         }
     }
 
@@ -600,6 +623,113 @@ impl AppDispatcher {
         self
     }
 
+    /// Lists and adopts the linked machines' own tabs (import remote sessions PR 4, rule 1296), with the machines of
+    /// [`AppDispatcher::with_machines`].
+    pub fn with_lists(mut self, lists: Arc<crate::remote_import::HostLists>) -> Self {
+        self.lists = Some(lists);
+        self
+    }
+
+    fn lists(&self) -> Result<&Arc<crate::remote_import::HostLists>, CtlError> {
+        self.lists.as_ref().ok_or_else(|| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                "this Flare lists no tabs of other machines",
+            )
+        })
+    }
+
+    /// `open.remote.list` (rule 1296): for each machine of `machines.json`, its own tabs as its newest answer lists them
+    /// (a watch link's, or a fresh `--no-start` ask when that is older than five seconds, at most once per machine in
+    /// that time, all machines at once on this worker), and whether each is shown or hidden here. Never a session id,
+    /// question words or screen text (`remote_import::list_machine`).
+    fn open_remote_list(&self, params: &Value) -> Result<Value, CtlError> {
+        let machines = self.machines.as_ref().ok_or_else(|| {
+            CtlError::new(code::UNAVAILABLE, "this Flare opens no remote sessions")
+        })?;
+        let lists = self.lists()?;
+        only_fields(params, &[], "open.remote.list")?;
+        let all = machines.list();
+        let ids: Vec<String> = all.iter().map(|m| m.id.clone()).collect();
+        let answers = lists.answers(&ids, (self.clock)(), crate::remote_import::LIST_WAIT);
+        let here = self.ask(CtlOp::OpenRemoteHere)?;
+        let set_of = |k: &str, m: &str| -> std::collections::HashSet<String> {
+            here[k][m]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let out: Vec<Value> = all
+            .iter()
+            .map(|m| {
+                let (shown, hidden) = (set_of("shown", &m.id), set_of("hidden", &m.id));
+                crate::remote_import::list_machine(&crate::remote_import::ListedMachine {
+                    id: &m.id,
+                    name: &m.name,
+                    heard: answers.get(&m.id).and_then(Option::as_ref),
+                    shown: &shown,
+                    hidden: &hidden,
+                })
+            })
+            .collect();
+        Ok(json!({"machines": out}))
+    }
+
+    /// `open.remote` with a `tab` (rule 1296): the host tab must be one the machine's newest answer lists as its own
+    /// (`not_found` otherwise). The window adds it as an unattached adopted row behind the front tab; nothing on the
+    /// host is opened, attached or sized. `folder`, `resume` and `front` are refused with it: `front` because this
+    /// call cannot tell the agent from `flare open`, and a fronted row attaches.
+    fn adopt_remote(
+        &self,
+        params: &Value,
+        machines: &dyn crate::machines::MachinesPort,
+        machine: &str,
+        tab: &str,
+    ) -> Result<Value, CtlError> {
+        let deadline = Instant::now() + Method::OpenRemoteSession.timeout() - ADOPT_SPARE;
+        for k in ["folder", "resume", "front"] {
+            if params.get(k).is_some() {
+                return Err(CtlError::new(
+                    code::BAD_PARAMS,
+                    format!("{k} is not taken with tab: tab names a tab that already runs there"),
+                ));
+            }
+        }
+        if !crate::remote_import::host_tab_ok(tab) {
+            return Err(CtlError::new(
+                code::BAD_PARAMS,
+                "tab is a host tab id from open.remote.list, one plain word",
+            ));
+        }
+        if machines.get(machine).is_none() {
+            return Err(CtlError::new(
+                code::NOT_FOUND,
+                crate::machines::unknown_machine(machine, &machines.list()),
+            ));
+        }
+        let lists = self.lists()?;
+        let answers = lists.answers(&[machine.to_string()], (self.clock)(), ADOPT_WAIT);
+        let row =
+            crate::remote_import::adoptable(answers.get(machine).and_then(Option::as_ref), tab)
+                .ok_or_else(|| {
+                    CtlError::new(
+                        code::NOT_FOUND,
+                        format!("{machine} lists no tab {tab} of its own (see open.remote.list)"),
+                    )
+                })?;
+        self.ask_by(
+            CtlOp::OpenRemoteAdopt {
+                machine: machine.to_string(),
+                row,
+            },
+            deadline,
+        )
+    }
+
     /// `open.remote` (remote sessions PR 5): the agent's tool and `flare open --on`. The machine must be one
     /// `machines.json` names (read here, on the call's worker); the folder is a path of that machine, never statted or
     /// opened here (it is the host's to check, rule 287); a resume id must pass `valid_resume`. The tab opens at once
@@ -611,7 +741,7 @@ impl AppDispatcher {
         })?;
         only_fields(
             params,
-            &["machine", "folder", "resume", "front"],
+            &["machine", "folder", "resume", "front", "tab"],
             "open.remote",
         )?;
         let machine = str_param(params, "machine")?
@@ -621,6 +751,10 @@ impl AppDispatcher {
                 code::BAD_PARAMS,
                 "machine is an id from machines.json, one plain word",
             ));
+        }
+        // Rule 1296: a tab that already runs there, added here behind the front tab.
+        if let Some(tab) = str_param(params, "tab")? {
+            return self.adopt_remote(params, machines.as_ref(), machine, tab);
         }
         let folder = str_param(params, "folder")?
             .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
@@ -2952,6 +3086,10 @@ impl Dispatcher for AppDispatcher {
         // Opening a remote session (PR 5) only where this run has its machines.
         if self.machines.is_some() {
             all.push(Method::OpenRemoteSession);
+            // Listing the linked machines' own tabs (rule 1296) where this run keeps their answers.
+            if self.lists.is_some() {
+                all.push(Method::OpenRemoteList);
+            }
         }
         // Remote sessions (PR 2) only where this run serves them.
         if self.remote.is_some() {
@@ -3246,6 +3384,7 @@ impl AppDispatcher {
             | Method::RemoteFetch
             | Method::RemotePut => self.remote_call(ctx, method, &params),
             Method::OpenRemoteSession => self.open_remote(&params),
+            Method::OpenRemoteList => self.open_remote_list(&params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?
@@ -3316,12 +3455,14 @@ impl CtlServer {
         mods: Option<Arc<Hub>>,
         remote: Option<Arc<crate::remote_host::RemoteHost>>,
         machines: Arc<dyn crate::machines::MachinesPort>,
+        lists: Arc<crate::remote_import::HostLists>,
     ) -> std::io::Result<Self> {
         let stopping = Arc::new(AtomicBool::new(false));
         let mut d = AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
             .with_eval(eval)
             .with_apps(apps)
-            .with_machines(machines);
+            .with_machines(machines)
+            .with_lists(lists);
         if let Some(hub) = mods {
             d = d.with_mods(hub);
         }
@@ -6351,6 +6492,180 @@ mod tests {
             )),
             code::UNAVAILABLE
         );
+    }
+
+    /// Import remote sessions PR 4: the machines `mac` and `pc`, and a list ask that answers `mac` with a listing and
+    /// counts its asks (`pc`'s link is down).
+    struct ListRig {
+        d: AppDispatcher,
+        ops: Arc<Mutex<Vec<String>>>,
+        asks: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct TwoMachines;
+    impl crate::machines::MachinesPort for TwoMachines {
+        fn list(&self) -> Vec<crate::machines::Machine> {
+            crate::machines::parse_machines(
+                r#"{"machines":[{"id":"mac","name":"Mac mini","ssh":"mac-mini"},{"id":"pc","name":"PC","ssh":"pc"}]}"#,
+            )
+        }
+    }
+
+    struct CountingAsk(Arc<Mutex<Vec<String>>>);
+    impl crate::remote_import::ListAsk for CountingAsk {
+        fn ask(&self, machine: &str) -> Option<crate::remote_import::Heard> {
+            self.0.lock().unwrap().push(machine.to_string());
+            (machine == "mac").then(|| {
+                crate::remote_import::Heard::Listed(json!({"tabs": [
+                    {"tab": "t1-1", "origin": "here", "state": "question", "kind": "claude",
+                     "session": "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f", "question_text": "Allow?",
+                     "sized": "host", "folder": "/Users/max/p", "title": "p"},
+                    {"tab": "t1-2", "origin": "here", "state": "idle", "folder": "/Users/max/q", "title": "q"},
+                    {"tab": "t1-3", "origin": "viewer", "state": "idle", "folder": "/v"},
+                ]}))
+            })
+        }
+    }
+
+    fn list_rig() -> ListRig {
+        let r = rig(
+            |op| match op {
+                CtlOp::OpenRemoteHere => {
+                    Ok(json!({"shown": {"mac": ["t1-1"]}, "hidden": {"mac": ["t1-2"]}}))
+                }
+                CtlOp::OpenRemoteAdopt { row, .. } => {
+                    Ok(json!({"tab": "t7", "host": row.host_tab}))
+                }
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let asks = Arc::new(Mutex::new(Vec::new()));
+        let lists = Arc::new(crate::remote_import::HostLists::new(Arc::new(CountingAsk(
+            Arc::clone(&asks),
+        ))));
+        ListRig {
+            d: r.d.with_machines(Arc::new(TwoMachines)).with_lists(lists),
+            ops: r.ops,
+            asks,
+        }
+    }
+
+    /// Rule 1296: `open.remote.list` names every machine of `machines.json` and only the host's own tabs, each with
+    /// exactly its six fields: never a session id or question words. A machine whose link is down is not reachable.
+    #[test]
+    fn open_remote_list_names_known_machines_only_and_carries_no_session_or_question() {
+        let r = list_rig();
+        let c = agent_in_tab();
+        assert!(r.d.capabilities().contains(&Method::OpenRemoteList));
+        assert_eq!(
+            code_of(r.d.call(&c, Method::OpenRemoteList, json!({"machine": "mac"}))),
+            code::BAD_PARAMS
+        );
+        let v = r.d.call(&c, Method::OpenRemoteList, json!({})).unwrap();
+        assert_eq!(
+            v,
+            json!({"machines": [
+                {"machine": "mac", "name": "Mac mini", "reachable": true, "tabs": [
+                    {"tab": "t1-1", "folder": "/Users/max/p", "title": "p", "state": "question",
+                     "agent": "claude", "here": "shown"},
+                    {"tab": "t1-2", "folder": "/Users/max/q", "title": "q", "state": "idle",
+                     "agent": null, "here": "hidden"},
+                ]},
+                {"machine": "pc", "name": "PC", "reachable": false, "tabs": []},
+            ]})
+        );
+        let text = v.to_string();
+        assert!(
+            !text.contains("3f2a9c1e") && !text.contains("Allow"),
+            "{text}"
+        );
+        assert!(
+            r.ops
+                .lock()
+                .unwrap()
+                .contains(&"CtlOp::OpenRemoteHere".to_string())
+        );
+        // A run without the lists neither lists nor answers it.
+        let bare = rig(|_| Ok(json!({})), false, &[]);
+        let bare = bare.d.with_machines(Arc::new(TwoMachines));
+        assert!(!bare.capabilities().contains(&Method::OpenRemoteList));
+        assert_eq!(
+            code_of(bare.call(&c, Method::OpenRemoteList, json!({}))),
+            code::UNAVAILABLE
+        );
+    }
+
+    /// Rule 1296: two lists in a row ask each machine once: a fresh ask is at most once per machine per five seconds.
+    #[test]
+    fn open_remote_list_asks_each_machine_at_most_once_per_five_seconds() {
+        let r = list_rig();
+        let c = agent_in_tab();
+        for _ in 0..3 {
+            r.d.call(&c, Method::OpenRemoteList, json!({})).unwrap();
+        }
+        let mut asks = r.asks.lock().unwrap().clone();
+        asks.sort();
+        assert_eq!(asks, ["mac", "pc"]);
+    }
+
+    /// Rule 1296: `open.remote` with a `tab` takes `machine` and `tab` only (`folder`, `resume` and `front` are refused
+    /// with it), a plain host tab id, and only one the machine lists as its own: anything else is `not_found` and
+    /// reaches no window.
+    #[test]
+    fn open_remote_refuses_tab_with_folder_resume_or_front_and_an_unknown_host_tab_is_not_found() {
+        let r = list_rig();
+        let c = agent_in_tab();
+        for bad in [
+            json!({"machine": "mac", "tab": "t1-1", "folder": "/p"}),
+            json!({"machine": "mac", "tab": "t1-1", "resume": "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f"}),
+            json!({"machine": "mac", "tab": "t1-1", "front": true}),
+            json!({"machine": "mac", "tab": "t1-1", "front": false}),
+            json!({"machine": "mac", "tab": "../t1"}),
+            json!({"machine": "mac", "tab": ""}),
+            json!({"machine": "mac", "tab": 7}),
+            json!({"tab": "t1-1"}),
+        ] {
+            assert_eq!(
+                code_of(r.d.call(&c, Method::OpenRemoteSession, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        for missing in [
+            json!({"machine": "mac", "tab": "t1-9"}),
+            json!({"machine": "mac", "tab": "t1-3"}),
+            json!({"machine": "pc", "tab": "t1-1"}),
+            json!({"machine": "nas", "tab": "t1-1"}),
+        ] {
+            assert_eq!(
+                code_of(r.d.call(&c, Method::OpenRemoteSession, missing.clone())),
+                code::NOT_FOUND,
+                "{missing}"
+            );
+        }
+        assert!(
+            r.ops.lock().unwrap().is_empty(),
+            "nothing reached the window"
+        );
+        let v =
+            r.d.call(
+                &c,
+                Method::OpenRemoteSession,
+                json!({"machine": "mac", "tab": "t1-2"}),
+            )
+            .unwrap();
+        assert_eq!(v["host"], "t1-2");
+        assert_eq!(*r.ops.lock().unwrap(), ["CtlOp::OpenRemoteAdopt"]);
+        // The folder form is as before (rule 299).
+        r.d.call(
+            &c,
+            Method::OpenRemoteSession,
+            json!({"machine": "mac", "folder": "/p"}),
+        )
+        .unwrap();
+        assert_eq!(r.ops.lock().unwrap().last().unwrap(), "CtlOp::OpenRemote");
     }
 
     /// `remote.open` names a host folder: absolute, there on the disk (asked on the worker), with a resume id that is a

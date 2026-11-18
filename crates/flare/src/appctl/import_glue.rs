@@ -22,7 +22,8 @@ use flare_term::remote_pty::{HostStatus, LinkState};
 
 use super::{AppCtl, UiMsg};
 use crate::remote_import::{
-    ClosingList, HiddenList, Round, Shown, Watch, WatchAnswer, WatchPort, import_plan,
+    ClosingList, HiddenList, HostLists, ImportRow, Round, Shown, Watch, WatchAnswer, WatchPort,
+    import_plan,
 };
 
 /// The window's import state.
@@ -42,9 +43,16 @@ pub(crate) struct Imports {
     on: bool,
     /// A Ctrl+Tab walk is held: the row it lands on attaches on the Control release, the rows passed over do not.
     pub(crate) stepping: bool,
+    /// The agent's list (rule 1296): every watch answer is handed on to it as it comes.
+    lists: Option<Arc<HostLists>>,
 }
 
 impl AppCtl {
+    /// The agent's list shares the watch links' answers (startup).
+    pub fn set_host_lists(&mut self, lists: Arc<HostLists>) {
+        self.imports.lists = Some(lists);
+    }
+
     /// The window hands over the watch links (startup; a test gives a fake). The hidden list is read, and every
     /// machine is watched while the setting is on.
     pub fn set_watch_port(&mut self, port: Arc<dyn WatchPort>) {
@@ -183,10 +191,13 @@ impl AppCtl {
     /// A watch link's answer (rule 1290's plan, applied). A machine no longer watched, or a round before the restore
     /// answered, changes nothing but the closing list.
     pub(crate) fn on_import(&mut self, a: WatchAnswer) {
+        let now = Instant::now();
+        if let Some(lists) = &self.imports.lists {
+            lists.heard(&a.machine, &a.heard, now);
+        }
         if !self.imports.watches.contains_key(&a.machine) {
             return;
         }
-        let now = Instant::now();
         let answer = a.heard.answer();
         self.imports.closing.heard(&a.machine, &answer, now);
         // No round before the restore answered: a saved remote tab and its import never both appear.
@@ -245,27 +256,107 @@ impl AppCtl {
                 changed = true;
             }
         }
-        let tag = self.machine_tag(machine);
         for row in plan.add {
-            let id = self.model.import_remote_tab(
-                tag.clone(),
-                &row.folder,
-                &row.host_tab,
-                ImportHow::Imported,
-            );
-            // The hub knows it as a remote tab from now, or no mark would show before it attaches.
-            self.hub.on_spawned(&id, &row.folder, None);
-            self.hub.on_remote_tab(&id);
-            if let Some(live) = self.model.remote_live(&id) {
-                live.set_status(row.status.clone());
-            }
-            self.imports.last.insert(id, row.status);
+            self.add_import_row(machine, row, ImportHow::Imported);
         }
         if changed {
             // The statuses set above raise the marks as a link's would (rule 294), then the strip is drawn again.
             self.host_wake();
             self.refresh();
         }
+    }
+
+    /// A host tab of `machine` as a new unattached row behind the front tab (an import, or an agent's adopt). The hub
+    /// knows it as a remote tab from now, or no mark would show before it attaches; its status raises the marks.
+    fn add_import_row(&mut self, machine: &str, row: ImportRow, how: ImportHow) -> String {
+        let tag = self.machine_tag(machine);
+        let id = self
+            .model
+            .import_remote_tab(tag, &row.folder, &row.host_tab, how);
+        self.hub.on_spawned(&id, &row.folder, None);
+        self.hub.on_remote_tab(&id);
+        if let Some(live) = self.model.remote_live(&id) {
+            live.set_status(row.status.clone());
+        }
+        self.imports.last.insert(id.clone(), row.status);
+        id
+    }
+
+    /// `open.remote.list` (rule 1296): the host tabs each machine shows here as rows, and the hidden ones.
+    pub(crate) fn remote_here(&self) -> serde_json::Value {
+        let mut shown: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for t in &self.model.state.tabs {
+            if let (Some(r), Some(h)) = (
+                &t.remote,
+                self.model.remote_live(&t.id).and_then(|l| l.host_tab()),
+            ) {
+                shown.entry(r.id.clone()).or_default().push(h);
+            }
+        }
+        serde_json::json!({"shown": shown, "hidden": self.imports.hidden.as_map()})
+    }
+
+    /// An agent's adopt (`open.remote` with a `tab`, rule 1296): the host tab as an unattached `Adopted` row behind the
+    /// front tab, taken off the hidden list. It is never fronted, so it neither attaches nor sizes anything on the host;
+    /// only the person fronting it does. Off, its machine is still watched while the row lives. A host tab already shown
+    /// here makes nothing new. Refused before the restore answered and while an open on that machine waits for its
+    /// host tab: either could show the same host tab twice.
+    pub(crate) fn adopt_remote(
+        &mut self,
+        machine: &str,
+        row: ImportRow,
+    ) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        use flare_ctl::{CtlError, code};
+        let mine = |t: &&flare_tabs::tabs::Tab| t.remote.as_ref().is_some_and(|r| r.id == machine);
+        let tabs: Vec<(String, Option<String>)> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .filter(mine)
+            .map(|t| {
+                (
+                    t.id.clone(),
+                    self.model.remote_live(&t.id).and_then(|l| l.host_tab()),
+                )
+            })
+            .collect();
+        if let Some((id, _)) = tabs
+            .iter()
+            .find(|(_, h)| h.as_deref() == Some(row.host_tab.as_str()))
+        {
+            return Ok(serde_json::json!({"tab": id, "added": false}));
+        }
+        if !self.model.restore_done() {
+            return Err(CtlError::new(
+                code::BUSY,
+                "the tabs are still being restored; ask again in a moment",
+            ));
+        }
+        let in_flight = tabs.iter().any(|(id, h)| {
+            h.is_none()
+                && self
+                    .model
+                    .remote_live(id)
+                    .is_some_and(|l| l.link() != LinkState::Ended)
+        });
+        if in_flight {
+            return Err(CtlError::new(
+                code::BUSY,
+                "a tab on that machine is still opening; ask again in a moment",
+            ));
+        }
+        if self.imports.hidden.unhide(machine, &row.host_tab) {
+            self.save_hidden();
+        }
+        let title = row.title.clone();
+        let id = self.add_import_row(machine, row, ImportHow::Adopted);
+        crate::diag_ctl::crumb_often("import-adopt", &[("id", crate::diag_ctl::txt(&id))]);
+        // Off, an adopted row keeps its machine watched (rule 1291).
+        self.sync_watches();
+        self.host_wake();
+        self.refresh();
+        Ok(serde_json::json!({"tab": id, "added": true, "title": title}))
     }
 
     /// Rule 1292: the tab in front is an unattached row and no Ctrl+Tab walk is held: it attaches now. Called at the

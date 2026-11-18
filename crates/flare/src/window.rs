@@ -1358,6 +1358,21 @@ pub fn run_window(
                 .collect()
             }));
         }
+        // Import remote sessions (rules 1291, 1296): the watch links' connector runs `--serve-remote --no-start` (under
+        // --e2e the scenario's loopback stands in for ssh, with the same word). The agent's list keeps each machine's
+        // newest answer and asks one afresh over the same kind of link.
+        let watch_connector: Arc<dyn crate::remote_link::Connector> =
+            Arc::new(crate::remote_link::SshConnector::watching(
+                &inst.profile.dir,
+                crate::remote_link::e2e_loopback(
+                    e2e::global()
+                        .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
+                        .as_deref(),
+                ),
+            ));
+        let host_lists = Arc::new(crate::remote_import::HostLists::new(Arc::new(
+            crate::remote_import::LinkListAsk::new(Arc::clone(&watch_connector)),
+        )));
         let mut mods_dispatcher = None;
         let mut owner_events = None;
         if let Some(instance) = &ctl_instance {
@@ -1406,6 +1421,7 @@ pub fn run_window(
                 remote.clone(),
                 // `open.remote` (remote sessions PR 5) names a machine of the profile's `machines.json`.
                 Arc::new(crate::machines::FileMachines::new(&inst.profile.dir)),
+                Arc::clone(&host_lists),
             ) {
                 Ok(server) => {
                     if let Some(r) = remote {
@@ -1612,18 +1628,12 @@ pub fn run_window(
                     crate::pairing::Me::this_computer(),
                 ),
             );
-            // Import remote sessions (rule 1291): one watch link per machine while the setting is on, each running
-            // `--serve-remote --no-start`. Under --e2e the scenario's loopback stands in for ssh, with the same word.
+            // Import remote sessions (rule 1291): one watch link per machine while the setting is on. Their answers
+            // also feed the agent's list (rule 1296).
+            rc.borrow_mut().set_host_lists(Arc::clone(&host_lists));
             rc.borrow_mut()
                 .set_watch_port(Arc::new(crate::remote_import::LinkWatchPort::new(
-                    Arc::new(crate::remote_link::SshConnector::watching(
-                        &inst.profile.dir,
-                        crate::remote_link::e2e_loopback(
-                            e2e::global()
-                                .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
-                                .as_deref(),
-                        ),
-                    )),
+                    Arc::clone(&watch_connector),
                     crate::remote_import::WatchTiming::default(),
                 )));
             // The + menu and the remote tabs' logos need the machines from the start: read once on a worker.

@@ -1139,6 +1139,8 @@ statted or opened here. Native: `crates/flare-ctl/src/grant.rs`, `crates/flare/s
 `open_remote_names_a_known_machine_and_opens_a_tab_the_agent_cannot_type_into`,
 `an_agents_remote_open_stays_behind_the_tab_in_front` and
 `open_remote_session_checks_its_arguments_and_routes_to_open_remote`. Source: remote sessions PR 5 (2026-11-12).
+Amended by rule 1296 (2026-11-18): the agent may also list the linked machines' own tabs (`open.remote.list`) and add
+one here as an unattached row behind the front tab (`open.remote` with a `tab`; `front` is refused with it).
 300. **`--on` and other flag values never reach path parsing.** `flare open --on <machine> <folder> [--resume <id>]` reads
 `--on` and `--resume` as values in `config.rs`, takes `open` and the folder out of the bare words, and runs before the
 lock, the hand-off (whose `paths_from_argv` reads the raw command line for folders) and any window, then exits. So a
@@ -5062,3 +5064,39 @@ all"). Native: `crates/flare/src/appctl/import_glue.rs`, `crates/flare/src/remot
 `a_plugin_with_tabs_sees_imported_rows_with_their_session_ids` and
 `a_question_on_an_imported_row_rings_here_once_and_attaching_does_not_ring_it_again`
 (`ui_tests/term/flow/import_flows.rs`). Source: Max, 2026-11-18.
+
+1296. **An agent may list the linked machines' tabs and add one here behind the front tab; it still cannot type into,
+front, attach or size one.** Max, 2026-11-18 ("Yes, list and open"), import remote sessions PR 4. Amends rule 299.
+`open.remote.list` is in the `open` namespace with `open.remote`, so the agent grant and the app reach it and no mod,
+remote link or bridge does; no grant changes. It answers, for each machine of `machines.json`, `machine`, `name`,
+`reachable` and `tabs`, each tab made field by field from the machine's `remote.status`: `tab` (the host tab id),
+`folder`, `title`, `state` (one word), `agent` (a kind or null) and `here` (`shown`, `hidden` or `none`). Only the
+host's own tabs (`origin: here`, rule 1289). Never a Claude session id, question words, a failure's words or screen
+text. It reads each machine's newest answer (the watch link's, rule 1291); one older than 5 s is asked again over a
+short `--no-start` link, at most once per machine per 5 s (the ask is stamped before it starts), all machines at once
+on the call's worker, and the call waits at most 10 s for them (a late one is `reachable: false`). `open.remote` with
+`tab` takes `machine` and `tab` only: `folder`, `resume` and `front` are `bad_params` with it (`open_remote` cannot
+tell the agent from `flare open`, and a fronted row attaches). The tab must be one the machine's newest answer lists
+as its own, else `not_found`. The window adds it as an unattached row marked `Adopted`, behind the front tab: never
+fronted, so it opens, attaches and sizes nothing on the host until the person fronts it (rule 1292). A host tab
+already shown makes nothing new; a hidden one is taken off the hidden list; the row is never saved in `tabs.json`, and
+it stays, with its machine still watched, while the setting is off (rule 1294). No adopt before the restore answered
+or while an open on that machine waits for its host tab (`busy`): either could show one host tab twice. The MCP tool
+`list_remote_sessions` calls the list; `open_remote_session` takes `tab` instead of `folder`. Native:
+`crates/flare-ctl/src/method.rs` (`OpenRemoteList`), `crates/flare/src/ctl_app.rs` (`open_remote_list`,
+`adopt_remote`), `crates/flare/src/remote_import.rs` (`HostLists`, `list_machine`, `adoptable`),
+`crates/flare/src/appctl/import_glue.rs` (`adopt_remote`, `remote_here`), `crates/flare-mcp/src/lib.rs`. Held by
+`the_agent_may_list_and_adopt_remote_tabs_but_never_type_into_one` (`grant.rs`),
+`open_remote_list_is_in_open_and_takes_the_remote_calls_time` (`method.rs`),
+`open_remote_list_names_known_machines_only_and_carries_no_session_or_question`,
+`open_remote_list_asks_each_machine_at_most_once_per_five_seconds`,
+`open_remote_refuses_tab_with_folder_resume_or_front_and_an_unknown_host_tab_is_not_found` (`ctl_app.rs`),
+`the_list_asks_each_machine_at_most_once_per_five_seconds`,
+`the_list_names_only_the_hosts_own_tabs_and_carries_no_session_or_question`,
+`adoptable_finds_only_a_listed_tab_of_the_hosts_own` (`remote_import.rs`),
+`an_agents_adopt_makes_an_unattached_row_behind_the_front_and_sends_no_attach_or_resize`,
+`open_remote_with_a_hidden_tab_takes_it_off_the_hidden_list`,
+`an_adopted_row_stays_when_the_setting_is_off_and_is_not_saved`,
+`an_adopt_waits_while_an_open_on_that_machine_is_in_flight` (`ui_tests/term/flow/import_flows.rs`) and
+`list_remote_sessions_and_open_remote_session_tab_check_their_arguments_and_route` (`flare-mcp`). Source: Max,
+2026-11-18.

@@ -486,6 +486,7 @@ fn a_title_a_helper_sets_over_the_pipe_is_what_the_tab_menu_says() {
         Some(Arc::clone(&w.hub)),
         None,
         Arc::new(crate::machines::FileMachines::new(f.dir.path())),
+        crate::remote_import::HostLists::asking_none(),
     )
     .expect("the app's server starts on the pipe");
     let (tx, rx) = std::sync::mpsc::channel();
