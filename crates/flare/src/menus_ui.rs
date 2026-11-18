@@ -44,6 +44,8 @@ pub const GLYPH_BADGE_PIN: &str = "badge-pin";
 /// A remote machine's system (remote sessions PR 7): filled logos on the 24-unit box.
 pub const GLYPH_LOGO_MAC: &str = "logo-mac";
 pub const GLYPH_LOGO_PC: &str = "logo-pc";
+/// Tux, for an SSH host found to run Linux (rule 1278); its eyes are holes under the even-odd rule.
+pub const GLYPH_LOGO_LINUX: &str = "logo-linux";
 
 /// The glyph a badge icon is drawn with, for a built-in badge name (`flare_ctl::decor::BADGE_ICONS`).
 pub fn badge_glyph(icon: &str) -> Option<&'static str> {
@@ -112,6 +114,9 @@ pub fn glyph_path(name: &str) -> &'static str {
         }
         GLYPH_LOGO_PC => {
             "M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z"
+        }
+        GLYPH_LOGO_LINUX => {
+            "M12 2c-2.2 0-3.5 1.9-3.5 4.4 0 1.2.2 2-.4 3-.9 1.4-2.6 3.5-2.6 6 0 .9.3 1.6.6 2-.8.4-1.6 1-1.6 1.8 0 1.3 2 1.3 3.4 1.8 1 .4 1.6 1 2.6 1s1.4-.6 1.5-.6h1c.1 0 .5.6 1.5.6s1.6-.6 2.6-1c1.4-.5 3.4-.5 3.4-1.8 0-.8-.8-1.4-1.6-1.8.3-.4.6-1.1.6-2 0-2.5-1.7-4.6-2.6-6-.6-1-.4-1.8-.4-3C15.5 3.9 14.2 2 12 2zm-1.5 4.2c.4 0 .7.5.7 1.1 0 .6-.3 1.1-.7 1.1s-.7-.5-.7-1.1c0-.6.3-1.1.7-1.1zm3 0c.4 0 .7.5.7 1.1 0 .6-.3 1.1-.7 1.1s-.7-.5-.7-1.1c0-.6.3-1.1.7-1.1z"
         }
         _ => "",
     }
@@ -960,6 +965,7 @@ mod tests {
             GLYPH_BADGE_PIN,
             GLYPH_LOGO_MAC,
             GLYPH_LOGO_PC,
+            GLYPH_LOGO_LINUX,
         ] {
             let needle = format!("<string> {name}: \"{}\";", glyph_path(name));
             assert!(
