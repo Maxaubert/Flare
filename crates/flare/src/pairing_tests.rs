@@ -629,7 +629,7 @@ fn no_free_pairing_port_says_so_once_and_announces_nothing() {
     assert!(p.net.port().is_some());
 }
 
-/// Rule 1276 (Max, 2026-11-17: "remove the duplicate mac"), on the page: an SSH host whose HostName is a nearby
+/// Rule 1285 (Max, 2026-11-17: "remove the duplicate mac"), on the page: an SSH host whose HostName is a nearby
 /// computer's announced address is left out of the Machine drop-down; the nearby entry and the other hosts stay.
 #[test]
 fn an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down() {

@@ -2,7 +2,7 @@
 //!
 //! Only `Host` lines are listed, and only their plain names: a pattern (`*`, `?`, `!`) is no host one can pick, and the
 //! lines under a `Match` block belong to no host. Each host's `HostName` is read too (the first one met in a block that
-//! takes it, as ssh does), so the drop-down can leave out a host that is a computer already listed nearby (rule 1276). `Include` is followed (relative names under `~/.ssh`, `~/` for the
+//! takes it, as ssh does), so the drop-down can leave out a host that is a computer already listed nearby (rule 1285). `Include` is followed (relative names under `~/.ssh`, `~/` for the
 //! home folder, `*` and `?` in the last part), at most [`INCLUDE_DEPTH`] deep, as ssh itself does. Keywords are matched
 //! without case, a value may be in double quotes, `Host=name` is the same as `Host name`, a CRLF ending is a line
 //! ending. A name that would not be one plain argv item for ssh (`machines::argv_word`) is left out, so nothing read
@@ -386,7 +386,7 @@ mod tests {
             .collect()
     }
 
-    /// Rule 1276: each host comes with the computer it reaches, its first `HostName` as ssh reads it, else its name.
+    /// Rule 1285: each host comes with the computer it reaches, its first `HostName` as ssh reads it, else its name.
     #[test]
     fn each_host_has_its_first_host_name_else_its_own_name() {
         let cfg = "Host mac\n  HostName 192.168.0.120\n  User max\n\
