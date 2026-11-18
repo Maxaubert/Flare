@@ -1067,28 +1067,29 @@ fn import_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
     )?;
     let r = (|| -> Result<(), String> {
         prompt(&mut a)?;
-        let local = a.session.state()?.tabs.len();
+        // The first poll may answer before A's prompt: the rows are told apart by the machine's logo they wear.
+        let remote = |t: &Value| t["machine"] == json!("pc");
         let mut tabs = Vec::new();
         let came = ctx.until("B's tabs imported", 30_000, &mut || {
             tabs = tab_list(&mut a);
-            tabs.len() == local + host_tabs
+            tabs.iter().filter(|t| remote(t)).count() == host_tabs
         });
         ctx.ok(
             came,
             format!(
-                "B's own tabs show on A as rows ({} of {local} + {host_tabs})",
+                "B's own tabs show on A as rows ({} rows of {host_tabs}, {} tabs)",
+                tabs.iter().filter(|t| remote(t)).count(),
                 tabs.len()
             ),
         );
+        let local = tabs.len() - host_tabs;
+        ctx.ok(local >= 1, "A keeps its own tabs");
         let row = tabs.last().cloned().ok_or("no imported row")?;
-        ctx.ok(
-            row["machine"] == json!("pc"),
-            "the row wears the machine's logo",
-        );
+        ctx.ok(remote(&row), "the rows come at the end of the strip");
         ctx.ok(
             tabs.iter()
                 .find(|t| t["front"] == json!(true))
-                .is_some_and(|t| t["machine"].is_null()),
+                .is_some_and(|t| !remote(t)),
             "the import never changes the front tab",
         );
         ctx.ok(
