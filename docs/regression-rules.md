@@ -4759,22 +4759,8 @@ notification while the app was closed (the Dock loads a plugin only for an app t
 `the_app_names_the_dock_tile_plugin_and_its_source_defines_its_class` and
 `the_dock_tile_plugin_builds_and_the_app_signs_with_it` (`release.rs`). Source: Max, 2026-11-17.
 
-1276. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
-screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
-"mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
-read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
-first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
-left out when that name is the nearby computer's announced name or one of its announced addresses, without case, a
-trailing dot or `.local`, an IP in its usual text (`same_computer` in `flare-settings/src/page/machines.rs`). Nothing
-is looked up in DNS. The nearby entry stays (it has the logo and pairing); a host that matches nothing stays. Held by
-`an_ssh_host_is_a_nearby_computer_by_its_name_or_address` and
-`an_ssh_host_that_is_a_nearby_computer_is_left_out_of_the_drop_down` (`flare-settings`),
-`each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
-`an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
-2026-11-17.
-
 1278. **An SSH host in the Machine drop-down shows the logo of the system it runs, found by itself.** Max, 2026-11-17,
-on the same screenshot as rule 1276 (only the nearby Mac had a logo; "mac" and "evo-x2" had none): "id like it to
+on the same screenshot as rule 1285 (only the nearby Mac had a logo; "mac" and "evo-x2" had none): "id like it to
 show either the windows, linux or mac icon automatically depending on the device". Approved mockup: every row of the
 drop-down lines up after the logo's space; a host whose system is not known yet shows no logo. While the Add a machine
 dialog is open, each SSH host (not one that is a computer listed nearby) is looked up once a visit of the page, at
@@ -4827,3 +4813,17 @@ serves only the Add a machine dialog's drop-down. Held by
 `a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click` and
 `a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`).
 Source: Max, 2026-11-17; `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
+
+1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
+screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
+"mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
+read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
+first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
+left out when that name is the nearby computer's announced name or one of its announced addresses, without case, a
+trailing dot or `.local`, an IP in its usual text (`same_computer` in `flare-settings/src/page/machines.rs`). Nothing
+is looked up in DNS. The nearby entry stays (it has the logo and pairing); a host that matches nothing stays. Held by
+`an_ssh_host_is_a_nearby_computer_by_its_name_or_address` and
+`an_ssh_host_that_is_a_nearby_computer_is_left_out_of_the_drop_down` (`flare-settings`),
+`each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
+`an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
+2026-11-17.

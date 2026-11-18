@@ -255,7 +255,7 @@ fn host_key(s: &str) -> String {
         .unwrap_or(s)
 }
 
-/// Pure: whether an SSH host reaches this nearby computer (rule 1276): its `HostName` is the computer's announced name
+/// Pure: whether an SSH host reaches this nearby computer (rule 1285): its `HostName` is the computer's announced name
 /// or one of its addresses, without case, a trailing dot or `.local`. Nothing is looked up.
 pub fn same_computer(host: &SshHost, near: &NearbyChoice) -> bool {
     let key = host_key(&host.host_name);
@@ -267,7 +267,7 @@ pub fn same_computer(host: &SshHost, near: &NearbyChoice) -> bool {
 
 /// The Machine drop-down in the mockup's order: the computers found nearby (machine pairing PR 3) with their logo, then
 /// the SSH config hosts, then "Type an address". An SSH host that reaches a computer listed nearby is left out: the
-/// nearby entry is the same computer, with its logo and pairing (rule 1276). An SSH host carries the system found for it
+/// nearby entry is the same computer, with its logo and pairing (rule 1285). An SSH host carries the system found for it
 /// (rule 1278), so it draws its logo too; one not found yet draws none.
 pub fn machine_choices(nearby: &[NearbyChoice], hosts: &[SshHost]) -> Vec<MachineChoice> {
     let mut out: Vec<MachineChoice> = nearby
@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(MachineOs::from_word("Darwin"), None);
     }
 
-    /// Rule 1276: an SSH host is the nearby computer when its HostName is the computer's name or one of its addresses,
+    /// Rule 1285: an SSH host is the nearby computer when its HostName is the computer's name or one of its addresses,
     /// without case, a trailing dot or `.local`; one that matches nothing is another computer.
     #[test]
     fn an_ssh_host_is_a_nearby_computer_by_its_name_or_address() {
@@ -628,7 +628,7 @@ mod tests {
         assert!(same_computer(&SshHost::plain("Maxs-Mac-Mini.local"), &mac));
     }
 
-    /// Rule 1276 (Max, 2026-11-17: "remove the duplicate mac"): the SSH host `mac` that reaches the nearby Mac is left
+    /// Rule 1285 (Max, 2026-11-17: "remove the duplicate mac"): the SSH host `mac` that reaches the nearby Mac is left
     /// out of the drop-down; the nearby entry stays, and a host that matches nothing stays.
     #[test]
     fn an_ssh_host_that_is_a_nearby_computer_is_left_out_of_the_drop_down() {

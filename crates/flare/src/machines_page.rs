@@ -50,7 +50,7 @@ pub trait MachinesIo: Send + Sync {
     /// The plain hosts of `~/.ssh/config`.
     fn ssh_hosts(&self) -> Vec<String>;
     /// The plain hosts of `~/.ssh/config`, each with the computer it reaches (its `HostName`), so the drop-down can
-    /// leave out a host that is a computer listed nearby (rule 1276). A host with no `HostName` reaches its own name.
+    /// leave out a host that is a computer listed nearby (rule 1285). A host with no `HostName` reaches its own name.
     fn named_ssh_hosts(&self) -> Vec<SshHost> {
         self.ssh_hosts().iter().map(|h| SshHost::plain(h)).collect()
     }
@@ -572,7 +572,7 @@ impl MachinesPage {
 
     /// Looks up the system of each SSH host not looked up in this visit (rule 1278), at most `host_os::WORKERS` at
     /// once, each answering as it is found; what was found is kept on disk once all answered. A host that is a
-    /// computer listed nearby is not looked up: it is not in the drop-down (rule 1276).
+    /// computer listed nearby is not looked up: it is not in the drop-down (rule 1285).
     fn find_host_os(&mut self) {
         let nearby = self.info().nearby;
         let todo: Vec<SshHost> = self
