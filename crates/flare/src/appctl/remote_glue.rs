@@ -197,6 +197,20 @@ impl AppCtl {
     pub(super) fn ctl_remote(&mut self, op: CtlOp) -> Result<Value, CtlError> {
         let closed = || CtlError::new(code::NO_TAB, "that tab is closed");
         let not_running = || CtlError::new(code::UNAVAILABLE, "that tab's shell is not running");
+        // Rule 1289: no mirror chains. A tab that is itself a remote tab here (this window views it on another
+        // machine) is never listed to a viewer, and an op that names one is answered as for a closed tab. Without this
+        // an attach followed it: such a tab has a handle and an output tail.
+        let named = match &op {
+            CtlOp::RemoteAttach { tab, .. }
+            | CtlOp::RemoteInput { tab, .. }
+            | CtlOp::RemoteResize { tab, .. }
+            | CtlOp::RemoteRelease { tab }
+            | CtlOp::RemoteClose { tab } => Some(tab.as_str()),
+            _ => None,
+        };
+        if named.is_some_and(|t| self.model.remote_of(t).is_some()) {
+            return Err(closed());
+        }
         match op {
             CtlOp::RemoteOpen {
                 folder,
@@ -235,8 +249,7 @@ impl AppCtl {
             }
             CtlOp::RemoteTabs => {
                 let tabs: Vec<Value> = self
-                    .tab_facts()
-                    .into_iter()
+                    .own_tab_facts()
                     .map(|f| {
                         json!({
                             "tab": f.id,
@@ -244,12 +257,17 @@ impl AppCtl {
                             "title": f.title,
                             "state": f.state,
                             "session": f.session,
+                            "origin": flare_ctl::remote::ORIGIN_HERE,
                         })
                     })
                     .collect();
                 Ok(json!({"tabs": tabs}))
             }
-            CtlOp::RemoteAttach { tab, conn } => {
+            CtlOp::RemoteAttach {
+                tab,
+                conn,
+                ring_both,
+            } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(closed());
                 }
@@ -268,7 +286,7 @@ impl AppCtl {
                     .ok_or_else(not_running)?;
                 let seq = tail.end();
                 let (cols, rows) = handle.size();
-                host.follow(&tab, conn, handle, tail);
+                host.follow(&tab, conn, handle, tail, ring_both);
                 // A tab that works as a viewer attaches holds the system awake from now (rule 296).
                 self.sync_keep_awake();
                 Ok(json!({"tab": tab, "cols": cols, "rows": rows, "seq": seq}))
@@ -329,13 +347,20 @@ impl AppCtl {
         }
     }
 
+    /// The tab facts of this host's own shell tabs (rule 1289): a remote tab shown here is left out of `remote.tabs` and
+    /// `remote.status`, so no viewer mirrors it back. Plugins' `tabs.list` reads `tab_facts` whole.
+    fn own_tab_facts(&self) -> impl Iterator<Item = super::mods_glue::TabFact> + '_ {
+        self.tab_facts()
+            .into_iter()
+            .filter(|f| self.model.remote_of(&f.id).is_none())
+    }
+
     /// `remote.status` (remote sessions PR 4, rule 294): every shell tab in strip order as this window's own marks say
     /// it: one state word, the agent, its Claude session, the folder and title, how long it has worked, the words of
     /// its question and the kind of its failure. Words only; nothing here is a path to read or a mark to copy.
     pub(crate) fn remote_status_tabs(&self) -> Vec<Value> {
-        use flare_ctl::remote::{QUESTION_MAX, TabState};
-        self.tab_facts()
-            .into_iter()
+        use flare_ctl::remote::{ORIGIN_HERE, QUESTION_MAX, TabState};
+        self.own_tab_facts()
             .map(|f| {
                 let id = f.id.as_str();
                 // Who sizes the tab now (remote sessions PR 7): `host` once someone typed in this window, else the
@@ -352,6 +377,7 @@ impl AppCtl {
                     "folder": f.folder,
                     "title": f.title,
                     "sized": sized,
+                    "origin": ORIGIN_HERE,
                 });
                 match TabState::parse(f.state) {
                     Some(TabState::Working) => {

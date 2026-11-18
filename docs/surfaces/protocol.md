@@ -1007,13 +1007,23 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   is the folder's real path (the viewer's folder browser builds its crumbs from it). `not_found` when it cannot be
   read. 60 s. The viewer's folder browser asks it over a short link of its own and asks the home with no `path`, so a
   host from before rule 1282 answers it too. Never the agent's: no pipe grant reaches `remote.*`.
-- `remote.tabs {}` -> `{tabs: [{tab, cwd, title, state, session}]}`. `state` is `working`, `question`, `done`, `failed`
-  or `idle`, as `tabs.list` tells a plugin.
-- `remote.attach {tab}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
+- `remote.tabs {}` -> `{tabs: [{tab, cwd, title, state, session, origin}]}`. `state` is `working`, `question`, `done`, `failed`
+  or `idle`, as `tabs.list` tells a plugin. Only the host's own shell tabs: a remote tab the host shows (one it views
+  on another machine) is never listed, and `origin` is always `here` (2026-11-18, rule 1289; an older host has no
+  `origin`, and a viewer imports only entries that carry it).
+- `remote.attach {tab, ring?}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
   shell prints is numbered and kept in a 4 MiB ring (made at the first attach, kept for the session's life, fed after the
   tab's own sink so it never blocks it, rule 281). `seq` is the number the next byte gets. `no_tab` (closed),
   `unavailable` (its shell is not running; right after `remote.open` this lasts a moment while the new shell starts,
-  and the viewer asks again on the same link, rule 1210).
+  and the viewer asks again on the same link, rule 1210). `ring: "both"` (2026-11-18, rule 1289: an imported row's
+  attach) asks the host to keep notifying for the tab's question as if nobody followed it, while every follower of the
+  tab asked for it; a follower without it keeps the host quiet (rule 295). Any other `ring` value is ignored. A host
+  from before rule 1289 refuses the field (`bad_params` naming `ring`, as for any unknown field), so a viewer that
+  sends it attaches again without it on the same link.
+- Rule 1289 (2026-11-18): every `remote.*` method that names a tab (`attach`, `input`, `resize`, `close`, and the
+  window's release) answers `no_tab` for a tab that is itself a remote tab on the host, so no viewer mirrors a mirror;
+  the methods that answer only for a followed tab (`output`, `snapshot`, `convo`, `fetch`, `put`) refuse it because
+  it can no longer be followed.
 - `remote.detach {tab}` -> `{tab, detached: true}`. Stops following; never ends the session (rule 280). When the
   last follower of a tab detaches, or its link drops (the connection closes), the tab's size goes back to the window.
 - `remote.input {tab, intents}` -> `{tab, typed}`. Typing as typed intents, never bytes (rule 279): a list of 1 to 1024
@@ -1050,7 +1060,8 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
   in the host's window (rule 48), and `closed` is false until the person there answers.
 - `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, sized, working_for?, question_text?,
-  failed?}], seq}` (remote sessions PR 4, rule 294; `sized` PR 7, rule 1193). Every shell tab of the host in strip order, as the host's own marks say it:
+  failed?, origin}], seq}` (remote sessions PR 4, rule 294; `sized` PR 7, rule 1193). Every shell tab of the host in strip order, as the host's own marks say it,
+  except the remote tabs it shows (rule 1289; each entry says `origin: "here"`, as in `remote.tabs`):
   `state` is one word, `question`, `failed`, `working`, `done` or `idle`, in that order of weight
   (`flare_ctl::remote::TabState`); `kind` the agent the host found (`claude`, `codex`, `agy`, or null); `session` its
   Claude session; `working_for` the milliseconds it has worked (only while `working`); `question_text` the words of

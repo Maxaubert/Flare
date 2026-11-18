@@ -544,9 +544,10 @@ impl AppCtl {
     pub(super) fn notify_update(&mut self) {
         let mut tabs = self.hub.question_tabs();
         // Rule 295: a tab a remote viewer follows asks on the viewer's screen; this host says nothing of it, so one
-        // question is one notification across both machines.
+        // question is one notification across both machines. Rule 1289: a tab every follower of which is an imported row
+        // (`ring: "both"`) rings here too, once, as a tab nobody follows.
         if let Some(host) = &self.remote_host {
-            tabs.retain(|t| !host.is_followed(t));
+            tabs.retain(|t| host.rings_here(t));
         }
         if tabs.is_empty() && self.s7.notifier.is_idle() {
             return;

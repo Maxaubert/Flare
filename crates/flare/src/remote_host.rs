@@ -10,7 +10,7 @@
 //! copy of each batch into its 4 MiB ring and never blocks it (rule 281). A viewer that detaches, or whose link drops,
 //! only stops following: the tab and its shell go on (rule 280).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -113,8 +113,9 @@ impl OpenIds {
 struct Follow {
     handle: Arc<TermHandle>,
     tail: TailHandle,
-    /// The connections (bridge or remote link) that follow the tab.
-    conns: HashSet<u64>,
+    /// The connections (bridge or remote link) that follow the tab, each with whether its attach asked for `ring:
+    /// "both" (rule 1289: the host keeps its own ring for the tab).
+    conns: HashMap<u64, bool>,
 }
 
 /// The bridge key and the tabs remote viewers follow. Shared by the control channel's dispatcher (any worker thread)
@@ -192,20 +193,28 @@ impl RemoteHost {
         !token.is_empty() && same_secret(&self.key, token)
     }
 
-    /// Connection `conn` follows `tab` (the UI thread, at `remote.attach`).
-    pub fn follow(&self, tab: &str, conn: u64, handle: Arc<TermHandle>, tail: TailHandle) {
+    /// Connection `conn` follows `tab` (the UI thread, at `remote.attach`). `ring_both`: its attach asked for
+    /// `ring: "both"` (rule 1289); the same connection attaching again says it anew.
+    pub fn follow(
+        &self,
+        tab: &str,
+        conn: u64,
+        handle: Arc<TermHandle>,
+        tail: TailHandle,
+        ring_both: bool,
+    ) {
         let mut map = self.lk();
         let f = map.entry(tab.to_string()).or_insert_with(|| Follow {
             handle: Arc::clone(&handle),
             tail: tail.clone(),
-            conns: HashSet::new(),
+            conns: HashMap::new(),
         });
         // A tab whose shell was started again since has a new handle and tail.
         if !f.tail.same(&tail) {
             f.handle = handle;
             f.tail = tail;
         }
-        f.conns.insert(conn);
+        f.conns.insert(conn, ring_both);
     }
 
     /// Connection `conn` stops following `tab`. True when nobody follows it any more (the size goes back to the
@@ -215,7 +224,7 @@ impl RemoteHost {
         let Some(f) = map.get_mut(tab) else {
             return false;
         };
-        if !f.conns.remove(&conn) {
+        if f.conns.remove(&conn).is_none() {
             return false;
         }
         if f.conns.is_empty() {
@@ -232,7 +241,7 @@ impl RemoteHost {
         let mut map = self.lk();
         let mut last = Vec::new();
         map.retain(|tab, f| {
-            if f.conns.remove(&conn) && f.conns.is_empty() {
+            if f.conns.remove(&conn).is_some() && f.conns.is_empty() {
                 last.push(tab.clone());
                 return false;
             }
@@ -273,9 +282,18 @@ impl RemoteHost {
             .map(|f| (Arc::clone(&f.handle), f.tail.clone()))
     }
 
-    /// Whether anyone follows `tab`: the host's own question notification is held back for it (rule 295).
+    /// Whether anyone follows `tab` (`remote.convo` and `remote.fetch` answer only for it).
     pub fn is_followed(&self, tab: &str) -> bool {
         self.lk().contains_key(tab)
+    }
+
+    /// Whether this host's own notifier rings for `tab`'s question: nobody follows it, or every follower asked for
+    /// `ring: "both"` (an imported row, rule 1289). A follower without it (a tab opened from a viewer) says the
+    /// question on its own screen, so the host stays quiet (rule 295).
+    pub fn rings_here(&self, tab: &str) -> bool {
+        self.lk()
+            .get(tab)
+            .is_none_or(|f| f.conns.values().all(|both| *both))
     }
 
     /// The tabs remote viewers follow, sorted: the keep-awake counts the ones that work (rule 296).
@@ -334,9 +352,9 @@ mod tests {
     fn a_tab_is_followed_until_its_last_connection_detaches_or_goes() {
         let host = RemoteHost::with_key("k".into());
         let tail = TailHandle::new(64);
-        host.follow("t1", 1, handle(), tail.clone());
-        host.follow("t1", 2, handle(), tail.clone());
-        host.follow("t2", 1, handle(), TailHandle::new(64));
+        host.follow("t1", 1, handle(), tail.clone(), false);
+        host.follow("t1", 2, handle(), tail.clone(), false);
+        host.follow("t2", 1, handle(), TailHandle::new(64), false);
         assert!(host.is_followed("t1"));
         assert!(!host.unfollow("t1", 1), "connection 2 still follows");
         assert!(!host.unfollow("t1", 9), "9 never followed it");
@@ -345,9 +363,43 @@ mod tests {
         assert!(!host.is_followed("t1"));
         assert!(host.unfollow("t2", 1));
         assert!(host.followed("t2").is_none());
-        host.follow("t3", 5, handle(), TailHandle::new(8));
+        host.follow("t3", 5, handle(), TailHandle::new(8), false);
         host.forget_tab("t3");
         assert!(host.gone(5).is_empty());
+    }
+
+    /// Rules 295 and 1289: the host rings for a tab nobody follows, and for a followed tab only while every follower
+    /// asked for `ring: "both"`. One follower without it keeps the host quiet; its going rings here again. The same
+    /// connection attaching again says it anew.
+    #[test]
+    fn the_host_rings_for_a_followed_tab_only_while_every_follower_asked_for_both() {
+        let host = RemoteHost::with_key("k".into());
+        let tail = TailHandle::new(64);
+        assert!(host.rings_here("t1"), "nobody follows it");
+        host.follow("t1", 1, handle(), tail.clone(), true);
+        assert!(host.rings_here("t1"), "an imported row asked for both");
+        host.follow("t1", 2, handle(), tail.clone(), false);
+        assert!(
+            !host.rings_here("t1"),
+            "a tab opened from a viewer: rule 295"
+        );
+        assert!(!host.unfollow("t1", 2));
+        assert!(host.rings_here("t1"), "the quiet follower went");
+        host.follow("t1", 1, handle(), tail.clone(), false);
+        assert!(
+            !host.rings_here("t1"),
+            "the same link attached again without it"
+        );
+        host.follow("t1", 3, handle(), tail.clone(), true);
+        assert_eq!(host.gone(1), Vec::<String>::new());
+        assert!(
+            host.rings_here("t1"),
+            "only the follower that asked for both is left"
+        );
+        assert!(
+            host.is_followed("t1"),
+            "still followed: keep-awake and convo see it"
+        );
     }
 
     /// Rule 294: the status's number stays while nothing changed and grows when something did.
@@ -360,8 +412,8 @@ mod tests {
         assert_eq!(host.status_seq(&a), 1);
         assert_eq!(host.status_seq(&b), 2);
         assert_eq!(host.status_seq(&a), 3);
-        host.follow("t2", 1, handle(), TailHandle::new(8));
-        host.follow("t1", 1, handle(), TailHandle::new(8));
+        host.follow("t2", 1, handle(), TailHandle::new(8), false);
+        host.follow("t1", 1, handle(), TailHandle::new(8), false);
         assert_eq!(host.followed_tabs(), ["t1", "t2"]);
     }
 

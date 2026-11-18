@@ -338,10 +338,12 @@ pub enum CtlOp {
     /// `remote.tabs`: every shell tab with its folder, title, the agent's state word and session.
     RemoteTabs,
     /// `remote.attach`: connection `conn` follows the tab (its handle and output tail go into the `RemoteHost`).
-    /// Answered with `{tab, cols, rows, seq}`.
+    /// Answered with `{tab, cols, rows, seq}`. `ring_both`: the attach asked for `ring: "both"` (rule 1289), so this
+    /// host keeps notifying for the tab while every follower asked for it.
     RemoteAttach {
         tab: String,
         conn: u64,
+        ring_both: bool,
     },
     /// `remote.input`: intents the call's thread checked (rule 279), typed into the tab.
     RemoteInput {
@@ -2554,11 +2556,15 @@ impl AppDispatcher {
                 self.ask(CtlOp::RemoteTabs)
             }
             Method::RemoteAttach => {
-                only_fields(params, &["tab"], "remote.attach")?;
+                only_fields(params, &["tab", "ring"], "remote.attach")?;
                 let tab = remote_tab(params)?;
+                // Rule 1289: only `both` is known; any other ring (a newer word, or not a word) is ignored.
+                let ring_both =
+                    params.get("ring").and_then(Value::as_str) == Some(remote::RING_BOTH);
                 self.ask(CtlOp::RemoteAttach {
                     tab,
                     conn: ctx.conn,
+                    ring_both,
                 })
             }
             Method::RemoteDetach => {
@@ -6083,6 +6089,7 @@ mod tests {
             conn,
             flare_term::handle::TermHandle::new(tab, mgr, 80, 24),
             tail.clone(),
+            false,
         );
         tail
     }
@@ -6211,6 +6218,38 @@ mod tests {
         assert!(ops.lock().unwrap().is_empty());
     }
 
+    /// Rule 1289: `remote.attach` takes an optional `ring`; only `"both"` asks the host to keep its own ring, and any
+    /// other value (a word it does not know, or not a word) is ignored, never refused.
+    #[test]
+    fn remote_attach_passes_ring_both_and_ignores_any_other_ring() {
+        let rings: Arc<Mutex<Vec<bool>>> = Arc::default();
+        let seen = Arc::clone(&rings);
+        let r = rig(
+            move |op| {
+                if let CtlOp::RemoteAttach { ring_both, .. } = op {
+                    seen.lock().unwrap().push(*ring_both);
+                }
+                Ok(json!({"ok": true}))
+            },
+            false,
+            &[],
+        );
+        let host = crate::remote_host::RemoteHost::with_key(BRIDGE_KEY.into());
+        let mut d = r.d.with_remote(host);
+        d.clock = still;
+        for p in [
+            json!({"tab": "t1", "ring": "both"}),
+            json!({"tab": "t1"}),
+            json!({"tab": "t1", "ring": "here"}),
+            json!({"tab": "t1", "ring": 7}),
+            json!({"tab": "t1", "ring": null}),
+        ] {
+            d.call(&bridge(1), Method::RemoteAttach, p.clone())
+                .unwrap_or_else(|e| panic!("{p}: {}", e.message));
+        }
+        assert_eq!(*rings.lock().unwrap(), [true, false, false, false, false]);
+    }
+
     /// Rule 280: a detach only stops following. The size goes back to the window once, when the last follower goes;
     /// a link that drops is the same; nothing closes the tab.
     #[test]
@@ -6222,6 +6261,7 @@ mod tests {
             2,
             host.followed("t1").unwrap().0,
             host.followed("t1").unwrap().1,
+            false,
         );
         let v = d
             .call(&bridge(1), Method::RemoteDetach, json!({"tab": "t1"}))

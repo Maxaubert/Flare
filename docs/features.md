@@ -3021,3 +3021,26 @@ throw an error message on screen". The approved look is mockup A. Rule 1275; the
   `AppDispatcher::notice_show`, `CtlOp::NoticeShow`, `crate::plugin_notice` (the list and its clock),
   `appctl/notice_glue.rs`, `ui/plugin_notice.slint` (`PluginNotices`, `PluginNoticeToast`). Held by the tests in
   `flare_mods::notice`, `crate::plugin_notice`, `appctl::tests::mods_tests::plugin_notice` and `ui_tests::plugin_notice`.
+
+## Import remote sessions, PR 1: the host side, 2026-11-18
+
+Spec: `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`. Nothing changes on screen yet: this PR only
+makes a host safe and ready to be imported from. An older viewer ignores it.
+
+- **Only the host's own tabs, said to be its own.** `remote.tabs` and `remote.status` list only the host's own shell
+  tabs. A remote tab the host shows (one it views on another machine) is left out, and every entry says
+  `"origin": "here"`. A viewer imports only entries that carry it, so an older host is never imported from.
+- **No mirror chains.** `remote.attach`, `remote.input`, `remote.resize`, `remote.close` and the window's release answer
+  `no_tab` for a tab that is itself remote here. Before, an attach followed it (such a tab has a handle and an output
+  tail). The ops that answer only for a followed tab refuse it with that.
+- **Ring on both machines.** `remote.attach` takes an optional `ring: "both"`. While every follower of a tab asked for
+  it, the host keeps notifying for the tab's question as if nobody followed it. A follower without it (a tab opened
+  from a viewer) keeps the host quiet, as rule 295 says. Any other `ring` is ignored. A host from before this PR
+  refuses the field (`bad_params`), so the import (a later PR) attaches again without it.
+- **Code.** `flare_ctl::remote::{ORIGIN_HERE, RING_BOTH}`, `RemoteHost::{follow, rings_here}`, `CtlOp::RemoteAttach`'s
+  `ring_both`, `appctl/remote_glue.rs` (`ctl_remote`, `own_tab_facts`), `appctl/surfaces7.rs` (`notify_update`). Rule
+  1289. Held by `remote_status_and_tabs_leave_out_this_hosts_remote_tabs_and_say_origin`,
+  `every_remote_op_refuses_a_tab_that_is_itself_remote`, `a_tab_followed_with_ring_both_still_notifies_on_the_host`,
+  `a_tab_followed_without_ring_both_stays_quiet_on_the_host` (`ui_tests/agent_flows/remote_flows.rs`),
+  `the_host_rings_for_a_followed_tab_only_while_every_follower_asked_for_both` (`remote_host.rs`) and
+  `remote_attach_passes_ring_both_and_ignores_any_other_ring` (`ctl_app.rs`).

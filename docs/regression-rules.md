@@ -1073,8 +1073,11 @@ host with no `remote.status` keeps its link and is not asked again on it. Native
 the viewer: its hub holds the question mark (live OSC 777, or the host's status) with the host's words for it, and the
 viewer's notifier shows it once per episode as for any tab (rule 206). The host's notifier leaves out every tab a
 remote viewer follows, so the same question never rings on both machines; a tab nobody follows notifies on the host as
-before, and the host's strip still shows the mark. Native: `crates/flare/src/appctl/surfaces7.rs` (`notify_update`),
-`agent_hub.rs` (`question_text` of a remote tab). Held by `a_question_in_a_followed_tab_is_the_viewers_to_notify` and
+before, and the host's strip still shows the mark. Amended by rule 1289 (2026-11-18): a tab every follower of which
+attached with `ring: "both"` (an imported row) still notifies on the host, once; a follower without it keeps the host
+quiet as above. Native: `crates/flare/src/appctl/surfaces7.rs` (`notify_update`, `RemoteHost::rings_here`),
+`agent_hub.rs` (`question_text` of a remote tab). Held by `a_question_in_a_followed_tab_is_the_viewers_to_notify`,
+`a_tab_followed_without_ring_both_stays_quiet_on_the_host` and
 `a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice`. Source: remote sessions PR 4 (2026-11-12).
 296. **The host holds sleep only while a remote-followed session works, and lets go on every exit path.** Owner
 decision 2026-11-12: the machine that runs a remote session stays awake while it works, and sleeps as usual once all
@@ -4907,3 +4910,24 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1289. **The host lists only its own tabs, refuses its remote tabs, and rings for an imported row's question.** Max,
+2026-11-18, import remote sessions (spec `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`, PR 1).
+`remote.tabs` and `remote.status` list only the host's own shell tabs (`model.remote_of(id).is_none()`), each with
+`"origin": "here"`; a remote tab the host shows (one it views on another machine) is never listed. Every `remote.*` op
+that names a tab (`attach`, `input`, `resize`, `close` and the window's release) answers `no_tab` for such a tab, at
+the top of `ctl_remote`: before, an attach followed it, since a host's remote tab has a handle and an output tail. The
+ops that answer only for a followed tab (`output`, `snapshot`, `convo`, `fetch`, `put`) refuse it because it can no
+longer be followed. So there are no mirror chains. `remote.attach` takes an optional `ring`; only `"both"` is known
+(`flare_ctl::remote::RING_BOTH`), anything else is ignored. The host keeps it per follower (`RemoteHost::follow`), and
+`notify_update` leaves out a followed tab only while some follower did not ask for `both` (`RemoteHost::rings_here`),
+so an imported row's question rings on the host once and on the viewer once. Amends rule 295, which still holds for a
+follower without `ring` (a tab opened from a viewer). A host older than this rule refuses the `ring` field
+(`bad_params`, as any unknown field); the viewer must attach again without it. Native: `crates/flare/src/appctl/remote_glue.rs`
+(`ctl_remote`, `own_tab_facts`), `crates/flare/src/remote_host.rs`, `crates/flare/src/ctl_app.rs` (`remote.attach`
+params), `crates/flare/src/appctl/surfaces7.rs`. Held by
+`remote_status_and_tabs_leave_out_this_hosts_remote_tabs_and_say_origin`,
+`every_remote_op_refuses_a_tab_that_is_itself_remote`, `a_tab_followed_with_ring_both_still_notifies_on_the_host`,
+`a_tab_followed_without_ring_both_stays_quiet_on_the_host` (`ui_tests/agent_flows/remote_flows.rs`),
+`the_host_rings_for_a_followed_tab_only_while_every_follower_asked_for_both` (`remote_host.rs`) and
+`remote_attach_passes_ring_both_and_ignores_any_other_ring` (`ctl_app.rs`). Source: Max, 2026-11-18.

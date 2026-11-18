@@ -77,6 +77,7 @@ fn a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after() {
         CtlOp::RemoteAttach {
             tab: ids[0].clone(),
             conn: 7,
+            ring_both: false,
         },
     )
     .expect("the attach");
@@ -121,6 +122,7 @@ fn a_question_in_a_followed_tab_is_the_viewers_to_notify() {
         CtlOp::RemoteAttach {
             tab: ids[0].clone(),
             conn: 3,
+            ring_both: false,
         },
     )
     .expect("the attach");
@@ -140,6 +142,147 @@ fn a_question_in_a_followed_tab_is_the_viewers_to_notify() {
         f.ctl.borrow_mut().hub_mut().question_tabs(),
         [ids[0].clone(), ids[2].clone()]
     );
+}
+
+/// The toasts this window shows, collected.
+fn toasts(f: &Fx) -> Rc<RefCell<Vec<Toast>>> {
+    set_notify_ask_on(&f.prefs, true);
+    let got: Rc<RefCell<Vec<Toast>>> = Rc::default();
+    let sink = Rc::clone(&got);
+    f.ctl
+        .borrow_mut()
+        .set_toast_sink(Rc::new(move |t: &Toast| sink.borrow_mut().push(t.clone())));
+    got
+}
+
+fn attach(f: &Fx, tab: &str, conn: u64, ring_both: bool) -> Result<Value, flare_ctl::CtlError> {
+    ask(
+        f,
+        CtlOp::RemoteAttach {
+            tab: tab.to_string(),
+            conn,
+            ring_both,
+        },
+    )
+}
+
+/// Rule 1289: a tab followed by an imported row (`ring: "both"`) still notifies on the host, once, as a tab nobody
+/// follows does; the viewer rings for it too (rule 295 amended for imported rows only).
+#[test]
+fn a_tab_followed_with_ring_both_still_notifies_on_the_host() {
+    let f = Fx::new();
+    let got = toasts(&f);
+    let ids = f.tabs(&["C:\\work", "C:\\other"]);
+    f.visit(1);
+    let (host, _) = serving(&f);
+    claude(&f, "C:\\work");
+    attach(&f, &ids[0], 3, true).expect("the attach");
+    assert!(host.is_followed(&ids[0]));
+    f.say("C:\\work", Q);
+    until(&f, "the host's own notification", |_| {
+        !got.borrow().is_empty()
+    });
+    for _ in 0..20 {
+        f.step(100);
+    }
+    let all = got.borrow().clone();
+    assert_eq!(all.len(), 1, "one per question on this machine: {all:?}");
+    assert_eq!(all[0].tab, ids[0]);
+}
+
+/// Rule 295 kept: a follower without `ring: "both"` (a tab opened from a viewer) keeps the host quiet, also when another
+/// follower of the same tab asked for both.
+#[test]
+fn a_tab_followed_without_ring_both_stays_quiet_on_the_host() {
+    let f = Fx::new();
+    let got = toasts(&f);
+    let ids = f.tabs(&["C:\\work", "C:\\other", "C:\\third"]);
+    f.visit(1);
+    serving(&f);
+    claude(&f, "C:\\work");
+    claude(&f, "C:\\third");
+    attach(&f, &ids[0], 3, false).expect("the attach");
+    attach(&f, &ids[2], 4, true).expect("an imported row's attach");
+    attach(&f, &ids[2], 5, false).expect("a viewer's own tab's attach");
+    f.say("C:\\work", Q);
+    f.say("C:\\third", Q);
+    for _ in 0..20 {
+        f.step(100);
+    }
+    assert!(got.borrow().is_empty(), "{:?}", got.borrow());
+    assert_eq!(
+        f.ctl.borrow_mut().hub_mut().question_tabs(),
+        [ids[0].clone(), ids[2].clone()],
+        "both still ask on the host's own strip"
+    );
+}
+
+/// Rule 1289: `remote.status` and `remote.tabs` list only this host's own shell tabs, each with `origin: "here"`; a
+/// remote tab shown here (one this host views on another machine) is never listed, so no viewer mirrors it back.
+#[test]
+fn remote_status_and_tabs_leave_out_this_hosts_remote_tabs_and_say_origin() {
+    let f = Fx::new();
+    let ids = f.tabs(&["C:\\work"]);
+    serving(&f);
+    let remote = f
+        .ctl
+        .borrow_mut()
+        .open_remote("mac", "/Users/max/proj", None, false);
+    assert!(f.ctl.borrow().model().remote_of(&remote).is_some());
+    for op in [CtlOp::RemoteStatus, CtlOp::RemoteTabs] {
+        let v = ask(&f, op).expect("the answer");
+        let tabs = v["tabs"].as_array().expect("tabs");
+        let listed: Vec<&str> = tabs.iter().filter_map(|t| t["tab"].as_str()).collect();
+        assert_eq!(listed, [ids[0].as_str()], "only the host's own tab");
+        assert_eq!(tabs[0]["origin"], flare_ctl::remote::ORIGIN_HERE);
+    }
+}
+
+/// Rule 1289: every `remote.*` op that names a tab answers `no_tab` for a tab that is itself remote here (no mirror
+/// chains). Such a tab has a handle and an output tail (open check 2), so before this rule an attach followed it. The
+/// tab stays open and nobody follows it.
+#[test]
+fn every_remote_op_refuses_a_tab_that_is_itself_remote() {
+    let f = Fx::new();
+    f.tabs(&["C:\\work"]);
+    let (host, _) = serving(&f);
+    let id = f
+        .ctl
+        .borrow_mut()
+        .open_remote("mac", "/Users/max/proj", None, false);
+    assert!(f.ctl.borrow().model().remote_of(&id).is_some());
+    assert!(f.ctl.borrow().handle_of(&id).is_some(), "a handle");
+    let no_tab = |r: Result<Value, flare_ctl::CtlError>, what: &str| {
+        assert_eq!(r.expect_err(what).code, flare_ctl::code::NO_TAB, "{what}");
+    };
+    no_tab(attach(&f, &id, 3, true), "attach, ring both");
+    no_tab(attach(&f, &id, 3, false), "attach");
+    no_tab(
+        ask(
+            &f,
+            CtlOp::RemoteInput {
+                tab: id.clone(),
+                intents: vec![flare_term::handle::RemoteIntent::Text("m".into())],
+            },
+        ),
+        "input",
+    );
+    no_tab(
+        ask(
+            &f,
+            CtlOp::RemoteResize {
+                tab: id.clone(),
+                cols: 61,
+                rows: 19,
+                viewer: Some("Mac Mini".into()),
+            },
+        ),
+        "resize",
+    );
+    no_tab(ask(&f, CtlOp::RemoteRelease { tab: id.clone() }), "release");
+    no_tab(ask(&f, CtlOp::RemoteClose { tab: id.clone() }), "close");
+    assert!(!host.is_followed(&id), "nobody follows it");
+    assert!(f.ids().contains(&id), "the tab is still open");
 }
 
 /// Rule 294: `remote.status` says each shell tab's state word from this window's own marks, with the agent, and the

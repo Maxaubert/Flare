@@ -76,6 +76,14 @@ pub fn under_parts(under: &str) -> Option<Vec<&str>> {
     Some(parts)
 }
 
+/// The `origin` of every entry in `remote.status` and `remote.tabs` (rule 1289): the tab runs on this host, never a
+/// remote tab shown here. A viewer imports only entries that carry it.
+pub const ORIGIN_HERE: &str = "here";
+
+/// The one `ring` value `remote.attach` knows (rule 1289): the host keeps notifying for the tab while every follower
+/// asked for it. Any other value is ignored.
+pub const RING_BOTH: &str = "both";
+
 /// The longest `remote.open` id (rule 1210), in bytes.
 pub const OPEN_ID_MAX: usize = 64;
 
