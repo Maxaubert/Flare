@@ -49,6 +49,7 @@ pub fn make_private(path: &Path) -> io::Result<()> {
 /// BLOCKING: a new file at `path`, open for writing, that its owner alone may read from the moment it exists: mode 600
 /// off Windows; on Windows it is made with a protected DACL with one ACE, full control for the user, so no other
 /// account can ever open it (rule 1277). Fails when the file exists already.
+// sync-ok: only `pair_keys::write_private` calls it, on the `flare-pair-viewer` worker
 pub fn create_private_new(path: &Path) -> io::Result<std::fs::File> {
     #[cfg(windows)]
     {
@@ -240,6 +241,7 @@ mod win {
 
     /// A new file made with the owner-only protected DACL by one call (CREATE_NEW), so it never exists with its
     /// folder's ACEs. Opened for writing and shared with no one while the handle is open.
+    // sync-ok: called by `super::create_private_new` alone, on the pairing worker
     pub fn create_private_new(path: &Path) -> io::Result<std::fs::File> {
         use std::os::windows::io::FromRawHandle as _;
         use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
@@ -270,6 +272,7 @@ mod win {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: a valid file handle that this function alone owns; the File closes it.
+        // sync-ok: only wraps the open handle, no I/O; the pairing worker runs it
         Ok(unsafe { std::fs::File::from_raw_handle(handle) })
     }
 
