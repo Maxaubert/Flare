@@ -40,6 +40,12 @@ pub fn status_of(answer: &Value, tab: &str) -> Option<HostStatus> {
         .as_array()?
         .iter()
         .find(|t| t["tab"].as_str() == Some(tab))?;
+    status_from(t)
+}
+
+/// Pure: the status one entry of a `remote.status` answer gives; None when it says no state word. The import reads
+/// every entry this way (rule 1290).
+pub fn status_from(t: &Value) -> Option<HostStatus> {
     let word = |k: &str| t[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
     Some(HostStatus {
         state: word("state")?,

@@ -3044,3 +3044,21 @@ makes a host safe and ready to be imported from. An older viewer ignores it.
   `a_tab_followed_without_ring_both_stays_quiet_on_the_host` (`ui_tests/agent_flows/remote_flows.rs`),
   `the_host_rings_for_a_followed_tab_only_while_every_follower_asked_for_both` (`remote_host.rs`) and
   `remote_attach_passes_ring_both_and_ignores_any_other_ring` (`ctl_app.rs`).
+
+## Import remote sessions, PR 2: the import plan, the row model and the prefs, 2026-11-18
+
+Spec: `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`. Nothing changes on screen yet: no code in
+the window calls this until PR 3 wires the watcher.
+
+- **The plan.** `remote_import::import_plan` decides one poll of one linked machine: which of its own tabs
+  (`origin: here`) to add here as rows, which unattached rows to feed a status, which to remove and which hidden ids
+  the host no longer lists. Nothing comes from an older host, nothing shown, hidden or being closed is added, a round
+  is skipped while an open there waits for its host tab, and rows go only on an answer, never on a refusal.
+- **The hidden and closing lists.** `HiddenList` ("Hide here only", per machine, at most 200 ids) and `ClosingList` (a
+  row closed here stays out while the host may still ask, until the host drops it or two minutes pass).
+- **The rows.** `TabModel::import_remote_tab` adds an unattached remote tab row behind the front tab, at the end of the
+  used list. Imported and adopted rows are never saved in `tabs.json`; `saved()` counts `active` over the kept tabs.
+  `remove_imported` fronts the most recently used other tab.
+- **The prefs.** `flare.machines.importRemote` (on by default) and `flare.machines.importHidden` (JSON, capped, bad
+  JSON reads as nothing hidden).
+- Rule 1290. Tests in `remote_import.rs`, `flare-tabs` `model.rs` and `machine_prefs.rs`.

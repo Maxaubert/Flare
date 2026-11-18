@@ -4931,3 +4931,39 @@ params), `crates/flare/src/appctl/surfaces7.rs`. Held by
 `a_tab_followed_without_ring_both_stays_quiet_on_the_host` (`ui_tests/agent_flows/remote_flows.rs`),
 `the_host_rings_for_a_followed_tab_only_while_every_follower_asked_for_both` (`remote_host.rs`) and
 `remote_attach_passes_ring_both_and_ignores_any_other_ring` (`ctl_app.rs`). Source: Max, 2026-11-18.
+
+1290. **The import plan: only a host's own tabs, one row each, nothing hidden or closing, removed only on an answer.**
+Max, 2026-11-18, import remote sessions (spec `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`,
+PR 2). `remote_import::import_plan` is pure and decides one poll of one machine. It reads only entries that say
+`"origin": "here"` (rule 1289); a host that lists tabs with no `origin` at all is an older Flare, flagged
+(`older_host`), and nothing is imported from it. One row per (machine, host tab): a host tab shown here in any way
+(opened from here, restored, imported or adopted) is never added again, and the machine's rows, hidden ids and closing
+entries are its own (two hosts may use the same tab id). A hidden host tab ("Hide here only", `HiddenList`, kept in
+`flare.machines.importHidden`, at most 200 per machine, the oldest drop, bad JSON reads as nothing hidden) and one
+closed here while the host may still ask about it (`ClosingList`, until a real listing drops it or for two minutes) are
+not added. While a tab here on the machine waits for its open's host tab, the whole round is skipped. A refusal, or an
+answer with no `tabs` list, changes nothing; `unavailable` (no Flare there) removes every unattached row but never
+prunes the hidden list; a real listing removes the unattached imported or adopted rows it no longer names as the
+host's own and prunes the hidden ids it no longer names. With the setting off, a machine polled for an adopted row is
+fed and removed but gets no new rows. A peer's entry is read as words: a host tab id is a plain word of at most 64
+characters, an unsafe folder becomes `~` (rule 1279), the title loses control and invisible characters and keeps 200.
+The rows: `TabModel::import_remote_tab` appends an unattached remote tab row behind the front tab (never `add_tab`,
+which activates), with the host tab set; it joins the used list after the tabs already in it, so a "most recent"
+Ctrl+Tab goes to the tab used before. Imported and adopted rows are never saved in `tabs.json`, and `saved()` counts
+`active` over the kept tabs (an imported row in front saves the most recently used kept tab, 0 when none).
+`remove_imported` fronts the most recently used other tab. `flare.machines.importRemote` is on by default. Native:
+`crates/flare/src/remote_import.rs`, `crates/flare-tabs/src/model.rs`, `crates/flare-tabs/src/tabs.rs` (`ImportHow`,
+`append_remote_tab`), `crates/flare-settings/src/machine_prefs.rs`. Nothing in the window calls the plan until PR 3.
+Held by `import_plan_keeps_origin_here_only_and_skips_an_older_host`,
+`import_plan_makes_one_row_per_machine_and_host_tab`, `import_plan_drops_hidden_and_closing_tabs`,
+`import_plan_prunes_hidden_ids_only_on_a_real_listing_never_on_unavailable`,
+`import_plan_skips_a_machine_while_an_open_there_waits_for_its_host_tab`,
+`import_plan_removes_only_unattached_imported_rows_and_never_on_a_refusal`, `import_plan_keeps_machines_apart`,
+`import_plan_adds_nothing_while_the_setting_is_off_but_still_feeds_and_removes`,
+`import_plan_reads_each_entry_as_words`, `a_closing_entry_lapses_when_the_host_drops_it_or_after_two_minutes`,
+`the_hidden_list_keeps_the_newest_ids_per_machine_and_drops_a_removed_machine` (`remote_import.rs`),
+`an_imported_row_goes_behind_the_front_tab_and_is_not_saved`,
+`an_imported_row_joins_the_end_of_the_used_list_so_ctrl_tab_goes_to_the_tab_used_before`,
+`saved_counts_active_over_the_kept_tabs_and_an_imported_front_saves_the_last_used_kept_tab`,
+`remove_imported_fronts_the_most_recently_used_other_tab` (`flare-tabs` `model.rs`) and
+`import_remote_defaults_on_and_the_hidden_list_is_capped_and_reads_bad_json_as_empty` (`machine_prefs.rs`).

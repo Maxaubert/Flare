@@ -67,6 +67,7 @@ mod remote_convo;
 mod remote_files;
 mod remote_folder;
 mod remote_host;
+mod remote_import;
 mod remote_link;
 mod remote_status;
 mod remote_tunnel;
