@@ -256,15 +256,15 @@ mod tests {
 
     #[test]
     fn the_index_has_46_rows_without_nvidia() {
-        // 38 rows outside dictation (Computer sharing, Add a machine, the app icon and the two caret rows among them),
-        // 8 dictation rows and From any app (the GPU row needs NVIDIA).
+        // 39 rows outside dictation (Computer sharing, the import switch, Add a machine, the app icon and the two caret
+        // rows among them), 8 dictation rows and From any app (the GPU row needs NVIDIA).
         let n = settings_index(&IndexEnv {
             nvidia: false,
             dictation_wired: true,
             mark_colours: true,
         })
         .len();
-        assert_eq!(n, 52);
+        assert_eq!(n, 53);
         assert!(
             settings_index(&IndexEnv {
                 nvidia: false,

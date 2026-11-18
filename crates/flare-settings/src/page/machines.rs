@@ -510,7 +510,7 @@ mod tests {
         };
         let by_default = rows(None);
         assert_eq!(
-            by_default.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            by_default.iter().map(|r| r.id).collect::<Vec<_>>(),
             [SHARING_ROW, IMPORT_ROW]
         );
         let import = &by_default[1];
