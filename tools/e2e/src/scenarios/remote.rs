@@ -906,8 +906,12 @@ fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
         ctx.ok(
             rows[idx]["icon"]
                 .as_str()
-                .is_some_and(|i| i.starts_with("M0 0h11.377")),
+                .is_some_and(|i| i.starts_with("M3 3h7.5v7.5H3z")),
             "the machine's row wears the Windows logo",
+        );
+        ctx.ok(
+            rows[idx]["logo_icon"] == json!(true),
+            "the machine's logo fills in the label's ink",
         );
         ctx.ok(
             idx + 1 == rows.len(),

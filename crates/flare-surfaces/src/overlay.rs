@@ -35,6 +35,8 @@ pub enum Overlay {
     Settings,
     /// The Settings dropdown.
     SettingsSelect,
+    /// A Settings row's action menu (Settings > Machines' ⋯ menu, rule 1281).
+    SettingsRowMenu,
     /// The theme editor.
     ThemeEditor,
     /// The three-way question of the theme switch.
@@ -69,7 +71,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 27] = [
+    pub const ALL: [Overlay; 28] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
@@ -82,6 +84,7 @@ impl Overlay {
         Overlay::PluginNotice,
         Overlay::Settings,
         Overlay::SettingsSelect,
+        Overlay::SettingsRowMenu,
         Overlay::ThemeEditor,
         Overlay::SettingsAsk,
         Overlay::DictationAsk,

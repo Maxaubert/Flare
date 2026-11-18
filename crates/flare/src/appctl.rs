@@ -727,6 +727,7 @@ fn agent_menu_row(label: &str, icon: &'static str) -> (MenuRowData, String) {
             hint: String::new(),
             icon,
             filled_icon: false,
+            logo_icon: false,
             disabled: false,
             trailing_icon: None,
             trailing_filled: false,
@@ -942,7 +943,7 @@ macro_rules! bind {
     }};
 }
 
-fn menu_row(r: &MenuRowData) -> MenuRow {
+pub(crate) fn menu_row(r: &MenuRowData) -> MenuRow {
     MenuRow {
         label: r.label.as_str().into(),
         hint: r.hint.as_str().into(),
@@ -952,6 +953,7 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
             r.icon_cmd.as_str().into()
         },
         filled_icon: r.filled_icon,
+        logo_icon: r.logo_icon,
         disabled: r.disabled,
         trailing_icon: r.trailing_icon.map_or("", glyph_path).into(),
         trailing_filled: r.trailing_filled,

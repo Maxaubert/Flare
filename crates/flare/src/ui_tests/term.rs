@@ -3093,7 +3093,10 @@ mod flow {
         let i = menu_row(&w, "Mac Mini").expect("the machine's row");
         let row = w.h.comp.get_menu_rows().row_data(i).unwrap();
         assert_eq!(row.icon.as_str(), glyph_path(GLYPH_LOGO_MAC));
-        assert!(row.filled_icon);
+        assert!(
+            row.logo_icon && !row.filled_icon,
+            "the logo in the label's ink, not the folder colour"
+        );
         assert_eq!(row.hint.as_str(), MACHINE_HINT);
         assert_eq!(row.trailing_icon.as_str(), "", "no pin on a machine");
         w.h.comp.invoke_menu_picked(i as i32);

@@ -63,7 +63,9 @@ export struct StripGeom { more-x: int, more-w: int, plus-x: int, plus-w: int, mo
 
 export struct Place { path: string, name: string, near: string, label: string, pinned: bool }
 
-export struct MenuRow { label: string, hint: string, icon: string, filled-icon: bool, disabled: bool,
+export struct MenuRow { label: string, hint: string, icon: string, filled-icon: bool,
+                        // A machine's system logo (rule 1280): filled in the label's ink in the 13 px box, never the folder colour.
+                        logo-icon: bool, disabled: bool,
                         trailing-icon: string, trailing-filled: bool, trailing-tip: string,
                         // Checklist row: a pick acts and leaves the menu up (PT keepOpen).
                         keep-open: bool,
