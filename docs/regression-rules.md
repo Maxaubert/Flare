@@ -4759,6 +4759,47 @@ notification while the app was closed (the Dock loads a plugin only for an app t
 `the_app_names_the_dock_tile_plugin_and_its_source_defines_its_class` and
 `the_dock_tile_plugin_builds_and_the_app_signs_with_it` (`release.rs`). Source: Max, 2026-11-17.
 
+1278. **An SSH host in the Machine drop-down shows the logo of the system it runs, found by itself.** Max, 2026-11-17,
+on the same screenshot as rule 1285 (only the nearby Mac had a logo; "mac" and "evo-x2" had none): "id like it to
+show either the windows, linux or mac icon automatically depending on the device". Approved mockup: every row of the
+drop-down lines up after the logo's space; a host whose system is not known yet shows no logo. While the Add a machine
+dialog is open, each SSH host (not one that is a computer listed nearby) is looked up once a visit of the page, at
+most 8 at once, off the UI thread (`host_os.rs`): first its SSH server's greeting (a TCP connect to its `HostName` and
+`Port` from the ssh config, 3 s, the first `SSH-` line read, nothing sent): `OpenSSH_for_Windows` is a PC, a greeting
+that names a Linux distribution (Ubuntu, Debian, Raspbian, Fedora, ...) is Linux, a plain OpenSSH says nothing; then,
+only when it said nothing, `ssh -o BatchMode=yes -o ConnectTimeout=3 -o UpdateHostKeys=no -- <host> uname -s` (no
+console window, ended after 6 s): `Darwin` is a Mac, `Linux` is Linux. What is found is kept in the profile's
+`host_os.json` per host name and `HostName`, with when it was found, and shows at once the next time; a lookup that
+fails (a timeout, a VPN in the way) keeps what was found before, and a host never found shows no logo. Never under
+`--e2e`. A saved machine that never said its system draws the one found for its SSH host on the Machines page; the
+found system is never written into a machine's `kind` (that word says how its login shell is quoted, rules 1207 and
+1208). Rows with no logo get the `blank` vendor once any row has a logo (`settings_ctl::machine_choice_opts`), so the
+names line up; the trigger shows no empty space for it. Tux (`Glyphs.logo-linux`, even-odd so the eyes are holes)
+joins the Apple and Windows logos. Held by `a_greeting_names_windows_or_a_linux_or_nothing`,
+`uname_names_a_mac_a_linux_or_a_windows_shell`, `the_greeting_comes_first_and_ssh_only_when_it_says_nothing`,
+`the_cache_is_written_whole_and_read_back` (`host_os.rs`), `each_host_has_its_first_port` (`ssh_config.rs`),
+`the_dialog_finds_each_ssh_hosts_system_and_keeps_it` (`machines_page.rs`),
+`the_drop_down_rows_carry_the_system_of_an_ssh_host` (`flare-settings`),
+`an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`) and
+`glyph_paths_match_the_slint_file` (`menus_ui.rs`). Source: Max, 2026-11-17.
+
+1279. **A remote tab takes the folder the host's status names, and reads it by the host's path rules.** Max, 2026-11-17,
+from the Mac viewer: a tab opened on home-pc from the + menu showed `~` as its title and its folder line. The tab opens
+in the word `~` (`HOST_HOME`), and the first prompt's folder report (OSC 9;9) is stripped from the snapshot a new tab
+starts from (rule 289, which stays). The host's `remote.status` already named each tab's `folder`; the viewer now reads
+it (`HostStatus::folder`, `remote_status::status_of`) and `sync_remote_status` makes it the tab's folder and names the
+host's home for the recent folders (rule 1213). A folder is taken only whole and only when it is a safe path
+(`remote_status::host_folder`: no control or invisible character, no UNC or device form, at most 1024 characters),
+judged by no platform's rules (a Linux host's `/home` is fine on a Mac). A remote tab's folder line reads by its
+host's rules on any viewer, with no `~` for this machine's home (`tabs_ui::tab_folder_line`,
+`sidebar_rows::folder_line_by` and `PathRules::of_host`: the machine's system, else the path's shape): a PC host's
+`C:\Users\Admin` reads title `Admin`, line `C:\Users`, on a Windows viewer and a Mac viewer alike. Held by
+`a_remote_tab_opened_in_the_hosts_home_takes_the_folder_its_status_names` (`ui_tests/term.rs`),
+`a_status_answer_gives_the_hosts_folder_only_when_it_is_a_safe_path` (`remote_status.rs`),
+`a_remote_tabs_folder_line_reads_by_its_hosts_rules_on_any_viewer` (`tabs_ui.rs`) and
+`a_hosts_folder_reads_by_the_hosts_rules_on_any_viewer` (`flare-tabs/src/sidebar_rows.rs`). Source: Max, 2026-11-17;
+`research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
+
 1284. **The sidebar row's X takes the pointer where it is drawn, past any ring.** Max, 2026-11-17: "thres no hover
 effects on the clsoe button on tabs when tehre workign on other tabs thers a hover effect on the clsoe button". In the
 sidebar (the vertical layout) a working row (the Ring mark, `mark-kind` 1) slides its X in 20 px right of the ring on
@@ -4771,3 +4812,17 @@ and its TouchArea was not. Now `xta.x` uses `has-ring` too, so the hit box and t
 plain rows, active and not, hover square and click) and the strip guard
 `the_close_x_lights_up_under_the_pointer_on_working_and_plain_tabs_active_or_not` (`ui_tests/strip.rs`, also across
 row updates while hovered). Source: Max, 2026-11-17.
+
+1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
+screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
+"mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
+read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
+first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
+left out when that name is the nearby computer's announced name or one of its announced addresses, without case, a
+trailing dot or `.local`, an IP in its usual text (`same_computer` in `flare-settings/src/page/machines.rs`). Nothing
+is looked up in DNS. The nearby entry stays (it has the logo and pairing); a host that matches nothing stays. Held by
+`an_ssh_host_is_a_nearby_computer_by_its_name_or_address` and
+`an_ssh_host_that_is_a_nearby_computer_is_left_out_of_the_drop_down` (`flare-settings`),
+`each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
+`an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
+2026-11-17.

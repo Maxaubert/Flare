@@ -7,17 +7,19 @@ import { Px, SettingsShape, SettingsInk, Theme } from "../theme.slint";
 import { Glyphs } from "../glyphs.slint";
 import { SetOption } from "types.slint";
 
-// A system's logo before an option's name (machine pairing PR 3, the Add a machine dialog's nearby computers): 12 px,
-// the Apple logo for `mac`, the Windows logo for `pc`.
+// A system's logo before an option's name (machine pairing PR 3, the Add a machine dialog's nearby computers and, rule
+// 1278, its SSH hosts whose system was found): 12 px, the Apple logo for `mac`, the Windows logo for `pc`, Tux for
+// `linux`. `blank` draws nothing but keeps the space, so the names of a menu with logos line up.
 component OptionLogo inherits Path {
     in property <string> vendor;
     width: 12px;
     height: 12px;
     viewbox-width: 24;
     viewbox-height: 24;
-    commands: root.vendor == "mac" ? Glyphs.logo-mac : root.vendor == "pc" ? Glyphs.logo-pc : "";
+    commands: root.vendor == "mac" ? Glyphs.logo-mac : root.vendor == "pc" ? Glyphs.logo-pc : root.vendor == "linux" ? Glyphs.logo-linux : "";
+    fill-rule: evenodd;
     fill: Theme.text;
-    visible: root.vendor != "";
+    visible: root.vendor != "" && root.vendor != "blank";
 }
 
 // The trigger: 32 high, min width 168 (the parent gives the width, never less).
@@ -75,7 +77,7 @@ export component SetSelect inherits Rectangle {
     }
 
     for o in root.options: OptionLogo {
-        visible: o.id == root.value && o.vendor != "";
+        visible: o.id == root.value && o.vendor != "" && o.vendor != "blank";
         x: 10px;
         y: (root.height - 12px) / 2;
         vendor: o.vendor;
@@ -83,8 +85,8 @@ export component SetSelect inherits Rectangle {
 
     for o in root.options: Text {
         visible: o.id == root.value;
-        // A logo takes 12 px and a 7 px gap before the name.
-        x: o.vendor != "" ? 29px : 10px;
+        // A logo takes 12 px and a 7 px gap before the name (the trigger shows one pick: no empty space for `blank`).
+        x: o.vendor != "" && o.vendor != "blank" ? 29px : 10px;
         width: max(0px, root.width - self.x - 8px - 12px - 10px);
         height: root.height;
         text: o.name;

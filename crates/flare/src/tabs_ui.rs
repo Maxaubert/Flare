@@ -13,7 +13,7 @@ use flare_agent::tab_look::{Switches, TabSets, tab_look, tab_title};
 use flare_agent::tab_mark::{MarkColour, MarkPlace, MarkState};
 use flare_tabs::decor::{Badge, Decors, MAX_DRAWN, Source, progress_code, room_for};
 use flare_tabs::model::TabModel;
-use flare_tabs::sidebar_rows::{find_keeps, folder_line};
+use flare_tabs::sidebar_rows::{PathRules, find_keeps, folder_line, folder_line_by};
 use flare_tabs::strip_layout::{layout_strip_with, room_for_plan};
 use flare_tabs::strip_plan::{MORE_BUTTON, StripSlot, more_button_css, plan_strip};
 use flare_tabs::tab_drag::{Axis, Release, TabDrag};
@@ -192,7 +192,18 @@ pub struct View {
 /// Most dots the +N button shows.
 const MAX_DOTS: usize = 4;
 
-/// label: tab_labels; tip: the folder path (Settings: ""); folder: folder_line (Settings: "");
+/// A tab's sidebar folder line. A local tab's folder reads by this machine's rules with `home` as `~`. A remote tab's
+/// folder is its host's: it reads by the host's rules (its machine's system, else the path's shape) on any viewer, and
+/// this machine's home is not the host's, so no `~` stands for it (rule 1279: `C:\Users\Admin` reads `C:\Users` on a
+/// Mac too).
+pub fn tab_folder_line(tab: &flare_tabs::tabs::Tab, home: &str) -> String {
+    match &tab.remote {
+        Some(m) => folder_line_by(&tab.cwd, "", PathRules::of_host(m.kind, &tab.cwd)),
+        None => folder_line(&tab.cwd, home),
+    }
+}
+
+/// label: tab_labels; tip: the folder path (Settings: ""); folder: tab_folder_line (Settings: "");
 /// kept: find_keeps, or true when no query (the order never changes); loading: pending is an
 /// agent; mode/x/w: plan_strip then layout_strip; dots: the roles of up to four hidden `needs`
 /// tabs, in strip order. front_kind: nothing in front: 2 (start screen) once `restore_done`,
@@ -262,7 +273,7 @@ pub fn build_view(inp: &ViewInput) -> View {
             folder: if settings {
                 String::new()
             } else {
-                folder_line(&tab.cwd, inp.home)
+                tab_folder_line(tab, inp.home)
             },
             settings,
             active: Some(tab.id.as_str()) == active_id,
@@ -746,6 +757,68 @@ mod tests {
             rainbow: Vec::new(),
             ink: rgb((9, 9, 9)),
         }
+    }
+
+    /// Rule 1279: a remote tab's folder line follows its host's rules, on a Windows viewer and a Mac viewer alike, and
+    /// this machine's home never stands for the host's.
+    #[test]
+    fn a_remote_tabs_folder_line_reads_by_its_hosts_rules_on_any_viewer() {
+        use flare_tabs::tabs::{MachineTag, Os, Tab};
+        let tab = |cwd: &str, kind: Option<Os>| Tab {
+            id: "t".into(),
+            kind: TabKind::Shell,
+            cwd: cwd.into(),
+            pending: None,
+            remote: Some(MachineTag {
+                id: "m".into(),
+                name: "m".into(),
+                kind,
+            }),
+        };
+        let viewer_home = if cfg!(windows) {
+            r"C:\Users\Admin"
+        } else {
+            "/Users/max"
+        };
+        let pc = tab(r"C:\Users\Admin", Some(Os::Pc));
+        assert_eq!(tab_folder_line(&pc, viewer_home), r"C:\Users");
+        assert_eq!(
+            flare_tabs::folder_names::base_name(&pc.cwd),
+            "Admin",
+            "its title"
+        );
+        assert_eq!(
+            tab_folder_line(&tab(r"C:\Users\Admin\code\api", Some(Os::Pc)), viewer_home),
+            r"C:\Users\Admin\code",
+            "the host's home is not this machine's, even when the words match"
+        );
+        assert_eq!(
+            tab_folder_line(&tab("/Users/max/proj", Some(Os::Mac)), viewer_home),
+            "/Users/max"
+        );
+        assert_eq!(
+            tab_folder_line(&tab("/home/max/proj", None), viewer_home),
+            "/home/max",
+            "a Linux host"
+        );
+        assert_eq!(
+            tab_folder_line(&tab(r"D:\work\site", None), viewer_home),
+            r"D:\work"
+        );
+        assert_eq!(
+            tab_folder_line(&tab("~", Some(Os::Pc)), viewer_home),
+            "~",
+            "not named yet"
+        );
+        // A local tab still reads this machine's home as `~`.
+        let local = Tab {
+            remote: None,
+            ..tab(
+                &format!("{viewer_home}{}x", std::path::MAIN_SEPARATOR),
+                None,
+            )
+        };
+        assert_eq!(tab_folder_line(&local, viewer_home), "~");
     }
 
     fn switches(indicator: Indicator) -> Switches {

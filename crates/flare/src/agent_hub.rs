@@ -2256,6 +2256,7 @@ mod tests {
             question: question.map(str::to_string),
             failed: None,
             host_sized: false,
+            folder: None,
         };
         let mut r = Rig::new();
         r.open("b", None);
@@ -2303,6 +2304,7 @@ mod tests {
             question: Some(question.into()),
             failed: None,
             host_sized: false,
+            folder: None,
         };
         let mut r = Rig::new();
         r.open("b", None);

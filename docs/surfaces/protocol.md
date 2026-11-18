@@ -1056,7 +1056,10 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   and a question as said, and raises its own Finished or Failed mark only when the work it showed stops while nobody
   there looks). `sized` says who sets the tab's one live size now (rule 282): `host` once someone typed in the host's
   window, `viewer` while the remote viewer that sent `remote.resize` does; the other screen shows its fitted
-  conversation view (rule 1193). `seq` grows when the answer differs from the last one (while a tab works its
+  conversation view (rule 1193). `folder` is the tab's folder on the host: the viewer's tab takes it as its folder
+  (title and folder line, read by the host's path rules) when it is a safe path (no control or invisible character,
+  no UNC form, at most 1024 characters; anything else is ignored whole), so a tab opened in `~` shows the host's real
+  home within a poll (rule 1279). `seq` grows when the answer differs from the last one (while a tab works its
   `working_for` does).
   Polled by the viewer every 1.5 s; a short call, sent once more after a broken pipe connection.
 - `remote.convo {tab, since?}` -> `{tab, entries: [{seq, role, text, tool?, at?}], reset, to}` (remote sessions PR 4,

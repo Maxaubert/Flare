@@ -633,15 +633,15 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
     }
 }
 
-/// The logo word a machine's system draws by (`mac`, `pc`, "" for none known).
+/// The logo word a machine's system draws by (`mac`, `pc`, `linux`, "" for none known).
 fn os_word(os: Option<flare_settings::page::machines::MachineOs>) -> &'static str {
-    use flare_settings::page::machines::MachineOs;
-    match os {
-        Some(MachineOs::Mac) => "mac",
-        Some(MachineOs::Pc) => "pc",
-        None => "",
-    }
+    os.map(flare_settings::page::machines::MachineOs::word)
+        .unwrap_or("")
 }
+
+/// The logo word of a drop-down row with no logo in a drop-down where another row has one (rule 1278): the row keeps
+/// the logo's space empty, so every name starts at the same place (`select.slint`).
+pub const LOGO_SPACE: &str = "blank";
 
 /// One linked machine's table row (remote sessions PR 7): its name, its address (or SSH host), the Flare version it
 /// said, its status (the word it draws by in `state`, the words it shows in `badge`) and, in `sub`, the one line of a
@@ -666,13 +666,17 @@ pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, 
 }
 
 /// The Machine drop-down's choices as the Select menu draws them: the SSH hosts in `mono` (the code font), the others
-/// in the UI font (machine pairing PR 1, rule 1251); the nearby computers first, each with its system's logo (PR 3).
+/// in the UI font (machine pairing PR 1, rule 1251); the nearby computers first, each with its system's logo (PR 3), and
+/// an SSH host with the logo of the system found for it (rule 1278). Once any row has a logo, the rows with none keep
+/// its space ([`LOGO_SPACE`]), so every name lines up.
 pub fn machine_choice_opts(
     nearby: &[flare_settings::page::machines::NearbyChoice],
-    hosts: &[String],
+    hosts: &[flare_settings::page::machines::SshHost],
     mono: &str,
 ) -> Vec<flare_settings::page::Opt> {
-    flare_settings::page::machines::machine_choices(nearby, hosts)
+    let choices = flare_settings::page::machines::machine_choices(nearby, hosts);
+    let any_logo = choices.iter().any(|c| c.os.is_some());
+    choices
         .into_iter()
         .map(|c| flare_settings::page::Opt {
             id: c.id,
@@ -682,7 +686,10 @@ pub fn machine_choice_opts(
             } else {
                 String::new()
             },
-            vendor: os_word(c.os).to_string(),
+            vendor: match os_word(c.os) {
+                "" if any_logo => LOGO_SPACE.to_string(),
+                w => w.to_string(),
+            },
         })
         .collect()
 }

@@ -110,6 +110,10 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // those announcements and connects to the one picked. Only the pairing exchange crosses (no secret: the code
     // never does), between two of the user's own computers.
     ("flare/src/pairing.rs", "Remote sessions"),
+    // Rule 1278: while the Add a machine dialog is open, each host of the user's ssh config is greeted (a TCP connect
+    // to its HostName and Port, its SSH server's first line read, nothing sent), and only when that says nothing the
+    // user's own ssh runs `uname -s` there with BatchMode (no password or host key is ever asked).
+    ("flare/src/host_os.rs", "Remote sessions"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.
