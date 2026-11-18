@@ -7,7 +7,7 @@ use crate::restore::{
     Restored, SavedRemote, SavedTab, SavedTabs, Spawn, peek_state, settle_restore_from,
 };
 use crate::tab_mru::{Walk, start_walk, step_walk, sync_mru, touch_mru, walk_holds, walk_target};
-use crate::tabs::{self, MachineTag, Pending, SETTINGS_ID, Tab, TabKind, TabState};
+use crate::tabs::{self, ImportHow, MachineTag, Pending, SETTINGS_ID, Tab, TabKind, TabState};
 use flare_agent::kinds::AgentKind;
 use flare_settings::tab_switch::TabSwitch;
 use flare_term::remote_pty::RemoteLive;
@@ -28,6 +28,16 @@ pub struct TabModel {
     /// Each remote tab's live state (remote sessions PR 3): the host's id of the tab and the output it read, which
     /// `tabs.json` keeps so a restart attaches to the same session (rule 288).
     remotes: HashMap<String, RemoteLive>,
+    /// The remote tab rows that came by an import or an agent's adopt (rule 1290), and whether each has attached yet.
+    /// Kept beside the tab, not in it, like `remotes`: these rows are never saved.
+    imports: HashMap<String, ImportRow>,
+}
+
+/// An imported or adopted row's own state: how it came, and whether it has a session link yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImportRow {
+    how: ImportHow,
+    attached: bool,
 }
 
 fn make_id(clock_ms: u64, seq: &mut u64) -> String {
@@ -48,6 +58,7 @@ impl TabModel {
             restore_done: false,
             agents: HashMap::new(),
             remotes: HashMap::new(),
+            imports: HashMap::new(),
         }
     }
 
@@ -115,6 +126,81 @@ impl TabModel {
         id
     }
 
+    /// A linked machine's own tab `host_tab` as an unattached remote tab row (rule 1290): appended at the end of the
+    /// strip, never the front tab, and it joins the used list after the tabs already in it (`sync_mru`), so a "most
+    /// recent" Ctrl+Tab still goes to the tab used before. Its live state has the host tab set and nothing read yet.
+    /// Not saved in `tabs.json`. `add_tab` is not used: it always activates.
+    pub fn import_remote_tab(
+        &mut self,
+        machine: MachineTag,
+        cwd: &str,
+        host_tab: &str,
+        how: ImportHow,
+    ) -> String {
+        let id = self.new_id();
+        self.state = tabs::append_remote_tab(&self.state, &id, cwd, machine);
+        self.remotes
+            .insert(id.clone(), RemoteLive::new(Some(host_tab.to_string()), 0));
+        self.imports.insert(
+            id.clone(),
+            ImportRow {
+                how,
+                attached: false,
+            },
+        );
+        self.after_change();
+        id
+    }
+
+    /// How an imported or adopted row came here; None for every other tab.
+    pub fn import_how(&self, id: &str) -> Option<ImportHow> {
+        self.imports.get(id).map(|r| r.how)
+    }
+
+    /// An imported or adopted row with no session link yet: a tab with no shell to every consumer (rule 1290).
+    pub fn is_unattached(&self, id: &str) -> bool {
+        self.imports.get(id).is_some_and(|r| !r.attached)
+    }
+
+    /// The row attached (it came to the front or was clicked). False for a tab that is no such row.
+    pub fn set_attached(&mut self, id: &str) -> bool {
+        match self.imports.get_mut(id) {
+            Some(r) => {
+                r.attached = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// An imported or adopted row goes by itself (the host tab ended, the setting went off, the machine was removed).
+    /// When it was in front, the most recently used other tab comes forward, not its neighbour as `close` picks. False
+    /// for a tab that is no such row.
+    pub fn remove_imported(&mut self, id: &str) -> bool {
+        if !self.imports.contains_key(id) {
+            return false;
+        }
+        let was_front = self.state.active_id.as_deref() == Some(id);
+        let back = was_front
+            .then(|| {
+                self.mru
+                    .iter()
+                    .find(|t| t.as_str() != id && self.state.tabs.iter().any(|x| &x.id == *t))
+                    .cloned()
+            })
+            .flatten();
+        // Set the front before the used list follows, so the neighbour `close_tab` would pick is never touched.
+        self.state = tabs::close_tab(&self.state, id);
+        if was_front {
+            self.state.active_id = back;
+        }
+        self.agents.remove(id);
+        self.remotes.remove(id);
+        self.imports.remove(id);
+        self.after_change();
+        true
+    }
+
     /// The live state of a remote tab (a restored one gets its own here).
     pub fn set_remote_live(&mut self, id: &str, live: RemoteLive) {
         self.remotes.insert(id.to_string(), live);
@@ -145,6 +231,7 @@ impl TabModel {
         self.state = tabs::close_tab(&self.state, id);
         self.agents.remove(id);
         self.remotes.remove(id);
+        self.imports.remove(id);
         self.after_change();
         true
     }
@@ -286,15 +373,22 @@ impl TabModel {
         self.restore_done.then(|| self.saved())
     }
 
-    /// Shell tabs only; `active` is the index among them, 0 when Settings is in front.
+    /// Shell tabs only, never an imported or adopted row (rule 1290: the first poll after a start brings those back);
+    /// `active` is the index among the kept tabs, 0 when Settings is in front. With an imported row in front it is
+    /// the most recently used kept tab (0 when there is none).
     pub fn saved(&self) -> SavedTabs {
-        let shells: Vec<&Tab> = tabs::shell_tabs(&self.state);
-        let active = self
-            .state
-            .active_id
-            .as_deref()
-            .and_then(|a| shells.iter().position(|t| t.id == a))
-            .unwrap_or(0);
+        let shells: Vec<&Tab> = tabs::shell_tabs(&self.state)
+            .into_iter()
+            .filter(|t| !self.imports.contains_key(&t.id))
+            .collect();
+        let at = |id: &str| shells.iter().position(|t| t.id == id);
+        let active = match self.state.active_id.as_deref() {
+            Some(a) if self.imports.contains_key(a) => {
+                self.mru.iter().find_map(|id| at(id)).unwrap_or(0)
+            }
+            Some(a) => at(a).unwrap_or(0),
+            None => 0,
+        };
         SavedTabs {
             tabs: shells
                 .iter()
@@ -601,5 +695,134 @@ mod remote_tests {
         assert_eq!(s.active, 1);
         assert!(m.close(&id));
         assert!(m.remote_live(&id).is_none());
+    }
+
+    fn mac() -> MachineTag {
+        MachineTag::of_id("mac")
+    }
+
+    /// Rule 1290: an import is a remote tab row at the end of the strip, behind the tab in front, with the host tab set
+    /// and no link yet. It is never saved, and closing it forgets all of it.
+    #[test]
+    fn an_imported_row_goes_behind_the_front_tab_and_is_not_saved() {
+        let mut m = TabModel::empty(1);
+        let a = m.open_tab(r"C:\a");
+        let b = m.open_tab(r"C:\b");
+        m.pick(&a);
+        let r = m.import_remote_tab(mac(), "/Users/max/p", "t5-1", ImportHow::Imported);
+        let d = m.import_remote_tab(mac(), "/Users/max/q", "t5-2", ImportHow::Adopted);
+        assert_eq!(
+            m.state.active_id.as_deref(),
+            Some(a.as_str()),
+            "the front stays"
+        );
+        let ids: Vec<&str> = m.state.tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, [a.as_str(), b.as_str(), r.as_str(), d.as_str()]);
+        assert_eq!(m.remote_of(&r).map(|t| t.id.as_str()), Some("mac"));
+        let live = m.remote_live(&r).unwrap();
+        assert_eq!((live.host_tab().as_deref(), live.seq()), (Some("t5-1"), 0));
+        assert_eq!(m.import_how(&r), Some(ImportHow::Imported));
+        assert_eq!(m.import_how(&d), Some(ImportHow::Adopted));
+        assert_eq!(m.import_how(&a), None);
+        assert!(m.is_unattached(&r) && m.is_unattached(&d));
+        assert!(!m.is_unattached(&a));
+        // A tab opened from here is saved; the imported and adopted rows are not, attached or not.
+        m.open_remote_tab(
+            mac(),
+            "/Users/max/o",
+            RemoteLive::new(Some("t5-9".into()), 0),
+        );
+        m.pick(&a);
+        assert!(m.set_attached(&r));
+        assert!(!m.is_unattached(&r));
+        assert!(!m.set_attached(&a), "not an imported row");
+        let s = m.saved();
+        let cwds: Vec<&str> = s.tabs.iter().map(|t| t.cwd.as_str()).collect();
+        assert_eq!(cwds, [r"C:\a", r"C:\b", "/Users/max/o"]);
+        assert_eq!(s.active, 0);
+        assert!(m.close(&r));
+        assert_eq!(m.import_how(&r), None);
+        assert!(!m.is_unattached(&r));
+        assert!(m.remote_live(&r).is_none());
+        // An import into an empty strip leaves no tab in front.
+        let mut e = TabModel::empty(2);
+        e.import_remote_tab(mac(), "/p", "t1-1", ImportHow::Imported);
+        assert_eq!(e.state.active_id, None);
+    }
+
+    /// Rule 1290: an import joins the used list after the tabs already in it, so a "most recent" Ctrl+Tab goes to the
+    /// tab used before, never to the newest import.
+    #[test]
+    fn an_imported_row_joins_the_end_of_the_used_list_so_ctrl_tab_goes_to_the_tab_used_before() {
+        let mut m = TabModel::empty(1);
+        let a = m.open_tab(r"C:\a");
+        let b = m.open_tab(r"C:\b");
+        m.pick(&a);
+        m.pick(&b);
+        let r = m.import_remote_tab(mac(), "/p", "t5-1", ImportHow::Imported);
+        assert_eq!(m.mru(), [b.clone(), a.clone(), r.clone()]);
+        m.step(1, TabSwitch::Recent);
+        assert_eq!(m.state.active_id.as_deref(), Some(a.as_str()));
+        m.commit_walk();
+        assert_eq!(m.mru(), [a.clone(), b.clone(), r.clone()]);
+    }
+
+    /// Rule 1290: `saved()` counts `active` over the tabs it keeps; with an imported row in front it saves the most
+    /// recently used kept tab, and an imported row in front with no kept tab saves 0.
+    #[test]
+    fn saved_counts_active_over_the_kept_tabs_and_an_imported_front_saves_the_last_used_kept_tab() {
+        let mut m = TabModel::empty(1);
+        m.open_tab(r"C:\a");
+        let r = m.import_remote_tab(mac(), "/p", "t5-1", ImportHow::Imported);
+        let b = m.open_tab(r"C:\b");
+        let c = m.open_tab(r"C:\c");
+        // Strip a, r, b, c: c is the third kept tab, not the fourth tab.
+        assert_eq!(m.saved().active, 2);
+        m.pick(&b);
+        assert_eq!(m.saved().active, 1);
+        m.pick(&r);
+        assert_eq!(m.saved().active, 1, "b was used last");
+        m.pick(&c);
+        m.pick(&r);
+        assert_eq!(m.saved().active, 2, "c was used last");
+        m.open_settings();
+        assert_eq!(m.saved().active, 0, "Settings in front saves 0 as before");
+        let mut lone = TabModel::empty(2);
+        let only = lone.import_remote_tab(mac(), "/p", "t1-1", ImportHow::Adopted);
+        lone.pick(&only);
+        let s = lone.saved();
+        assert!(s.tabs.is_empty());
+        assert_eq!(s.active, 0);
+    }
+
+    /// Rule 1290: a row that goes by itself while in front hands the front to the most recently used other tab, not to
+    /// its neighbour, and the neighbour is not touched in the used list. Only imported or adopted rows go this way.
+    #[test]
+    fn remove_imported_fronts_the_most_recently_used_other_tab() {
+        let mut m = TabModel::empty(1);
+        let a = m.open_tab(r"C:\a");
+        let r = m.import_remote_tab(mac(), "/p", "t5-1", ImportHow::Imported);
+        let b = m.open_tab(r"C:\b");
+        m.pick(&a);
+        m.pick(&r);
+        assert!(m.remove_imported(&r));
+        assert_eq!(m.state.active_id.as_deref(), Some(a.as_str()));
+        assert_eq!(m.mru(), [a.clone(), b.clone()]);
+        assert!(m.remote_live(&r).is_none());
+        assert!(!m.remove_imported(&r));
+        assert!(
+            !m.remove_imported(&b),
+            "a tab opened here is closed, never removed this way"
+        );
+        // Behind the front: the front stays.
+        let s = m.import_remote_tab(mac(), "/q", "t5-2", ImportHow::Adopted);
+        assert!(m.remove_imported(&s));
+        assert_eq!(m.state.active_id.as_deref(), Some(a.as_str()));
+        // The last tab: nothing is in front after it.
+        let mut lone = TabModel::empty(2);
+        let only = lone.import_remote_tab(mac(), "/p", "t1-1", ImportHow::Imported);
+        lone.pick(&only);
+        assert!(lone.remove_imported(&only));
+        assert_eq!(lone.state.active_id, None);
     }
 }

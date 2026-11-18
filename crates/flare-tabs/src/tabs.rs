@@ -57,6 +57,14 @@ impl MachineTag {
     }
 }
 
+/// How a remote tab row came here without being opened from here (import remote sessions, rule 1290): the import of
+/// a linked machine's own tab, or an agent's adopt of one. Both rows start unattached and are never saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportHow {
+    Imported,
+    Adopted,
+}
+
 /// One shell and the folder it is in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tab {
@@ -100,6 +108,14 @@ pub fn add_remote_tab(s: &TabState, id: &str, cwd: &str, machine: MachineTag) ->
     if let Some(t) = out.tabs.last_mut() {
         t.remote = Some(machine);
     }
+    out
+}
+
+/// A remote tab row appended at the end of the strip that does not come to the front (rule 1290): an import never
+/// changes the tab in front.
+pub fn append_remote_tab(s: &TabState, id: &str, cwd: &str, machine: MachineTag) -> TabState {
+    let mut out = add_remote_tab(s, id, cwd, machine);
+    out.active_id = s.active_id.clone();
     out
 }
 
