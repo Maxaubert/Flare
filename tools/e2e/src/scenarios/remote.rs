@@ -1075,10 +1075,16 @@ fn import_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
         });
         ctx.ok(
             came,
-            format!("B's own tabs show on A as rows ({} of {local} + {host_tabs})", tabs.len()),
+            format!(
+                "B's own tabs show on A as rows ({} of {local} + {host_tabs})",
+                tabs.len()
+            ),
         );
         let row = tabs.last().cloned().ok_or("no imported row")?;
-        ctx.ok(row["machine"] == json!("pc"), "the row wears the machine's logo");
+        ctx.ok(
+            row["machine"] == json!("pc"),
+            "the row wears the machine's logo",
+        );
         ctx.ok(
             tabs.iter()
                 .find(|t| t["front"] == json!(true))
@@ -1090,8 +1096,10 @@ fn import_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
             "the import opened nothing on the host",
         );
         let rect = super::input_b::css(&row["rect"]).ok_or("no row rectangle")?;
-        a.session
-            .click((rect.0 + rect.2 / 2.0) as f32, (rect.1 + rect.3 / 2.0) as f32)?;
+        a.session.click(
+            (rect.0 + rect.2 / 2.0) as f32,
+            (rect.1 + rect.3 / 2.0) as f32,
+        )?;
         front_rows_until(ctx, &mut a, "B's prompt in the clicked row", |t| {
             t.contains("PS ")
         })?;
@@ -1105,8 +1113,10 @@ fn import_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
             .find(|t| t["front"] == json!(true))
             .ok_or("no front tab")?;
         let rect = super::input_b::css(&front["rect"]).ok_or("no tab rectangle")?;
-        a.session
-            .right_click((rect.0 + rect.2 / 2.0) as f32, (rect.1 + rect.3 / 2.0) as f32)?;
+        a.session.right_click(
+            (rect.0 + rect.2 / 2.0) as f32,
+            (rect.1 + rect.3 / 2.0) as f32,
+        )?;
         let rows = open_menu_labels(ctx, &mut a);
         let hide = rows
             .iter()
@@ -1118,7 +1128,10 @@ fn import_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
             left = a.session.state().map_or(usize::MAX, |s| s.tabs.len());
             left == local + host_tabs - 1
         });
-        ctx.ok(left == local + host_tabs - 1, "Hide here only takes the row from A");
+        ctx.ok(
+            left == local + host_tabs - 1,
+            "Hide here only takes the row from A",
+        );
         // Two polls and more (the watch asks every 3 s).
         pass(ctx, 7_000);
         ctx.ok(

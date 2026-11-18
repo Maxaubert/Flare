@@ -787,7 +787,10 @@ fn the_watch_link_runs_serve_remote_no_start_and_nothing_else_new() {
             &format!("{} --no-start", tab.last().unwrap()),
             "{flare}"
         );
-        assert!(!tab.last().unwrap().contains("--no-start"), "a tab's link may start Flare");
+        assert!(
+            !tab.last().unwrap().contains("--no-start"),
+            "a tab's link may start Flare"
+        );
     }
     assert_eq!(
         watch_command(Some(Os::Pc), r"C:\Flare\flare.exe").as_deref(),
@@ -1895,7 +1898,11 @@ fn host_with(tab: &str) -> FakeHost {
 
 /// The sizes the host's tab was sent, in order.
 fn sizes(host: &FakeHost, tab: &str) -> Vec<(u64, u64)> {
-    lk(host).tabs.get(tab).map(|t| t.sizes.clone()).unwrap_or_default()
+    lk(host)
+        .tabs
+        .get(tab)
+        .map(|t| t.sizes.clone())
+        .unwrap_or_default()
 }
 
 /// Lets the worker run a few polls, so a call it should not make had its chance.
@@ -1910,7 +1917,9 @@ fn reconnect(r: &Rig) {
     r.host.cut();
     wait_for("the link down", || r.live.link() != LinkState::Live);
     lk(&r.host).refuse = false;
-    wait_for("the attach again", || r.host.calls("remote.attach") > attaches);
+    wait_for("the attach again", || {
+        r.host.calls("remote.attach") > attaches
+    });
     r.live_on();
 }
 
@@ -1918,27 +1927,39 @@ fn reconnect(r: &Rig) {
 /// window sizes it, sends no size on attach, a refit, a tab switch or a reconnect. The first key here ends the hold: the
 /// newest size goes first, then the key.
 #[test]
-fn an_imported_claude_tab_sends_no_size_on_attach_refit_switch_or_reconnect_and_one_before_the_first_key() {
+fn an_imported_claude_tab_sends_no_size_on_attach_refit_switch_or_reconnect_and_one_before_the_first_key()
+ {
     let mut r = rig_flags(host_with("h7"), Some("h7"), fast(), true, true);
     r.live_on();
     assert_eq!(r.host.calls("remote.open"), 0, "an import never opens");
     assert!(lk(&r.host).opens.is_empty(), "nor resumes");
     r.pty.resize(100, 30).unwrap();
     settle();
-    assert!(sizes(&r.host, "h7").is_empty(), "no size on attach or a refit");
+    assert!(
+        sizes(&r.host, "h7").is_empty(),
+        "no size on attach or a refit"
+    );
     reconnect(&r);
     r.pty.resize(110, 32).unwrap();
     settle();
-    assert!(sizes(&r.host, "h7").is_empty(), "none on a reconnect either");
+    assert!(
+        sizes(&r.host, "h7").is_empty(),
+        "none on a reconnect either"
+    );
     r.writer.write_all(b"x").unwrap();
     wait_for("the key", || !r.host.typed("h7").is_empty());
     assert_eq!(sizes(&r.host, "h7"), [(110, 32)], "the newest size, once");
     let log = lk(&r.host).log.clone();
     let at = |m: &str| log.iter().position(|(n, _)| n == m).unwrap();
-    assert!(at("remote.resize") < at("remote.input"), "the size goes before the key");
+    assert!(
+        at("remote.resize") < at("remote.input"),
+        "the size goes before the key"
+    );
     // From then on the tab sizes as any followed tab does.
     r.pty.resize(90, 20).unwrap();
-    wait_for("the next size", || sizes(&r.host, "h7").last() == Some(&(90, 20)));
+    wait_for("the next size", || {
+        sizes(&r.host, "h7").last() == Some(&(90, 20))
+    });
 }
 
 /// Rule 1292: a click on the fitted view (a retake) ends the hold too, and sends the size it kept.

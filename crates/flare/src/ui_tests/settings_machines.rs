@@ -932,8 +932,14 @@ fn the_import_switch_is_on_by_default_and_kept_across_a_restart() {
     f.page();
     f.settle("the read", |f| f.row("machines-import").is_some());
     let row = f.row("machines-import").unwrap();
-    assert_eq!(row.label.as_str(), "Import sessions started on other machines");
-    assert_eq!(row.sub.as_str(), "Show tabs opened on your linked machines.");
+    assert_eq!(
+        row.label.as_str(),
+        "Import sessions started on other machines"
+    );
+    assert_eq!(
+        row.sub.as_str(),
+        "Show tabs opened on your linked machines."
+    );
     assert_eq!(row.row_tip.as_str(), "", "a labelled row has no tooltip");
     assert!(row.on && !row.off && row.tap, "on by default");
     f.b().invoke_row_switch("machines-import".into(), false);
@@ -944,7 +950,10 @@ fn the_import_switch_is_on_by_default_and_kept_across_a_restart() {
     let again = fx_with(1.0, FakeIo::default(), os, prefs);
     again.page();
     again.settle("the read", |f| f.row("machines-import").is_some());
-    assert!(!again.row("machines-import").unwrap().on, "kept across a restart");
+    assert!(
+        !again.row("machines-import").unwrap().on,
+        "kept across a restart"
+    );
 }
 
 /// Rule 1254: when macOS refuses, the Flare dialog "Turn on Remote Login" draws over the Machines page with Cancel and

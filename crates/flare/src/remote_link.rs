@@ -352,8 +352,12 @@ impl SshConnector {
                 LinkError::Down(format!("no machine called {machine} in machines.json"))
             })?;
         keep_key_private(&m);
-        ssh_argv_of(&ssh_exe(), &m, self.no_start)
-            .ok_or_else(|| LinkError::Down(format!("cannot build the ssh command for {machine}")))
+        let argv = if self.no_start {
+            ssh_argv_watch(&ssh_exe(), &m)
+        } else {
+            ssh_argv(&ssh_exe(), &m)
+        };
+        argv.ok_or_else(|| LinkError::Down(format!("cannot build the ssh command for {machine}")))
     }
 }
 

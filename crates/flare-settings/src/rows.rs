@@ -459,7 +459,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 23] = [
+pub const APP_OPTIONS: [RowDef; 24] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",

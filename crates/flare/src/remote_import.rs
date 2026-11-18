@@ -331,6 +331,7 @@ impl ClosingList {
         self.0.retain(|c| c.machine != machine);
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -433,7 +434,9 @@ struct WatchShared {
 
 impl WatchShared {
     fn lock(&self) -> std::sync::MutexGuard<'_, WatchState> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn stopped(&self) -> bool {
@@ -1095,26 +1098,54 @@ mod tests {
         let m = Arc::new(FakeMachine::default());
         let (w, heard) = watched(&m);
         wait_for("three polls", || statuses(&m) >= 3);
-        assert!(heard.lock().unwrap().iter().all(|(mm, k)| mm == "mac" && *k == "listed"));
+        assert!(
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(mm, k)| mm == "mac" && *k == "listed")
+        );
         m.down.store(true, Ordering::SeqCst);
         let connects = m.connects.load(Ordering::SeqCst);
-        wait_for("tries while down", || m.connects.load(Ordering::SeqCst) >= connects + 3);
+        wait_for("tries while down", || {
+            m.connects.load(Ordering::SeqCst) >= connects + 3
+        });
         let n = heard.lock().unwrap().len();
         std::thread::sleep(Duration::from_millis(60)); // sync-ok: test code only
-        assert_eq!(heard.lock().unwrap().len(), n, "a machine that is down tells nothing");
+        assert_eq!(
+            heard.lock().unwrap().len(),
+            n,
+            "a machine that is down tells nothing"
+        );
         m.down.store(false, Ordering::SeqCst);
         *m.refuse.lock().unwrap() = Some(code::UNAVAILABLE);
-        wait_for("unavailable", || heard.lock().unwrap().iter().any(|(_, k)| *k == "unavailable"));
+        wait_for("unavailable", || {
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, k)| *k == "unavailable")
+        });
         *m.refuse.lock().unwrap() = Some(code::BUSY);
-        wait_for("a refusal", || heard.lock().unwrap().iter().any(|(_, k)| *k == "refused"));
+        wait_for("a refusal", || {
+            heard.lock().unwrap().iter().any(|(_, k)| *k == "refused")
+        });
         drop(w);
         std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only
         let (calls, connects) = (statuses(&m), m.connects.load(Ordering::SeqCst));
         std::thread::sleep(Duration::from_millis(100)); // sync-ok: test code only
         assert_eq!(statuses(&m), calls, "no poll once stopped");
-        assert_eq!(m.connects.load(Ordering::SeqCst), connects, "no link once stopped");
+        assert_eq!(
+            m.connects.load(Ordering::SeqCst),
+            connects,
+            "no link once stopped"
+        );
         assert!(
-            m.calls.lock().unwrap().iter().all(|(c, _)| *c == Method::RemoteStatus),
+            m.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(c, _)| *c == Method::RemoteStatus),
             "a watch only polls"
         );
     }
@@ -1140,7 +1171,9 @@ mod tests {
         assert_eq!(closes(&m), [json!({"tab": "t1-1"})]);
         m.down.store(true, Ordering::SeqCst);
         let tries = m.connects.load(Ordering::SeqCst);
-        wait_for("the link down", || m.connects.load(Ordering::SeqCst) > tries);
+        wait_for("the link down", || {
+            m.connects.load(Ordering::SeqCst) > tries
+        });
         w.close("t1-2");
         std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
         assert_eq!(closes(&m).len(), 1, "nothing goes while it is down");

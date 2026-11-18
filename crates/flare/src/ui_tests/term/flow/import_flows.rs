@@ -72,9 +72,7 @@ fn importing(w: &Wx) -> Arc<Watches> {
     w.ctl
         .borrow_mut()
         .set_watch_port(Arc::new(FakePort(Arc::clone(&watches))));
-    w.ctl
-        .borrow_mut()
-        .on_msg(UiMsg::Machines(vec![mac_mini()]));
+    w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
     w.pump();
     watches
 }
@@ -168,7 +166,11 @@ fn an_import_adds_rows_behind_the_front_tab_and_a_click_attaches() {
     assert_eq!(all.len(), 3);
     assert_eq!(front(&w), first, "an import never changes the front tab");
     let (a, b) = (row_of(&w, "t1-1").unwrap(), row_of(&w, "t1-2").unwrap());
-    assert_eq!(all[1..], [a.clone(), b.clone()], "at the end, in the host's order");
+    assert_eq!(
+        all[1..],
+        [a.clone(), b.clone()],
+        "at the end, in the host's order"
+    );
     assert!(w.ctl.borrow().model().is_unattached(&a));
     assert_eq!(
         w.ctl.borrow().model().state.tabs[1].cwd,
@@ -188,9 +190,16 @@ fn an_import_adds_rows_behind_the_front_tab_and_a_click_attaches() {
     assert_eq!(specs.len(), 1, "only the row shown attaches");
     let s = &specs[0];
     assert_eq!(s.machine, "mac");
-    assert_eq!(s.live.host_tab().as_deref(), Some("t1-1"), "its own host tab: no open");
+    assert_eq!(
+        s.live.host_tab().as_deref(),
+        Some("t1-1"),
+        "its own host tab: no open"
+    );
     assert_eq!(s.resume, None, "never a resume");
-    assert!(s.host_sized_start, "the host sizes it: no size until a click or key");
+    assert!(
+        s.host_sized_start,
+        "the host sizes it: no size until a click or key"
+    );
     assert!(s.ring_both, "its question rings on both machines");
     assert!(!w.ctl.borrow().model().is_unattached(&a));
     assert_eq!(
@@ -239,7 +248,11 @@ fn ctrl_tab_in_order_and_recent_modes_attaches_only_the_row_it_lands_on() {
             .on_key_up(&KeyEvent::new("Control", "ControlLeft").released());
         w.pump_until("the attach", |w| !w.remote.made().is_empty());
         let specs = attached(&w);
-        assert_eq!(specs.len(), 1, "{mode}: the rows passed over stay unattached");
+        assert_eq!(
+            specs.len(),
+            1,
+            "{mode}: the rows passed over stay unattached"
+        );
         let host_tab = specs[0].live.host_tab().unwrap();
         assert_eq!(row_of(&w, &host_tab), Some(landed), "{mode}");
     }
@@ -270,7 +283,11 @@ fn an_open_that_ended_without_a_host_tab_does_not_block_imports() {
         .borrow_mut()
         .open_remote("mac", "/Users/max/proj", None, false);
     heard(&w, vec![entry("t1-1", "idle", false)]);
-    assert_eq!(row_of(&w, "t1-1"), None, "an open in flight skips the round");
+    assert_eq!(
+        row_of(&w, "t1-1"),
+        None,
+        "an open in flight skips the round"
+    );
     w.ctl
         .borrow()
         .model()
@@ -284,21 +301,35 @@ fn an_open_that_ended_without_a_host_tab_does_not_block_imports() {
 /// Rule 1293: Close on an unattached row sends `remote.close` over the machine's watch link (no session link is
 /// made); the row goes at once, and while the host still lists the tab (it asks first, rule 48) it does not come back.
 #[test]
-fn close_on_an_unattached_imported_row_sends_remote_close_and_does_not_come_back_while_the_host_asks() {
+fn close_on_an_unattached_imported_row_sends_remote_close_and_does_not_come_back_while_the_host_asks()
+ {
     let w = Wx::new(1.0);
     let watches = importing(&w);
-    heard(&w, vec![entry("t1-1", "idle", false), entry("t1-2", "idle", false)]);
+    heard(
+        &w,
+        vec![entry("t1-1", "idle", false), entry("t1-2", "idle", false)],
+    );
     let row = row_of(&w, "t1-2").unwrap();
     w.ctl.borrow_mut().request_close(&row);
     w.pump();
     assert_eq!(watches.closes(), [("mac".to_string(), "t1-2".to_string())]);
     assert_eq!(row_of(&w, "t1-2"), None, "the row goes at once");
     assert!(attached(&w).is_empty(), "no session link for a close");
-    heard(&w, vec![entry("t1-1", "idle", false), entry("t1-2", "idle", false)]);
-    assert_eq!(row_of(&w, "t1-2"), None, "the host still asks: it stays out");
+    heard(
+        &w,
+        vec![entry("t1-1", "idle", false), entry("t1-2", "idle", false)],
+    );
+    assert_eq!(
+        row_of(&w, "t1-2"),
+        None,
+        "the host still asks: it stays out"
+    );
     // The host dropped it: a later tab of the same id would come in again.
     heard(&w, vec![entry("t1-1", "idle", false)]);
-    heard(&w, vec![entry("t1-1", "idle", false), entry("t1-2", "idle", false)]);
+    heard(
+        &w,
+        vec![entry("t1-1", "idle", false), entry("t1-2", "idle", false)],
+    );
     assert!(row_of(&w, "t1-2").is_some());
 }
 
@@ -351,7 +382,10 @@ fn hide_here_only_remembers_the_host_tab_and_the_next_poll_does_not_bring_it_bac
         ["t1-1", "t1-5"]
     );
     for _ in 0..2 {
-        heard(&w, vec![entry("t1-1", "idle", true), entry("t1-5", "idle", true)]);
+        heard(
+            &w,
+            vec![entry("t1-1", "idle", true), entry("t1-5", "idle", true)],
+        );
         assert_eq!(row_of(&w, "t1-1"), None);
         assert_eq!(row_of(&w, "t1-5"), None);
     }
@@ -378,14 +412,21 @@ fn turning_import_off_detaches_imported_rows_and_keeps_the_rest() {
         .remote_live(&opened)
         .unwrap()
         .set_host_tab("t1-9");
-    heard(&w, vec![entry("t1-1", "idle", true), entry("t1-2", "idle", true)]);
+    heard(
+        &w,
+        vec![entry("t1-1", "idle", true), entry("t1-2", "idle", true)],
+    );
     let row = row_of(&w, "t1-1").unwrap();
     pick(&w, &row);
     w.pump_until("the attach", |w| w.remote.made().len() == 2);
     let io = w.remote.made()[1].1.clone();
     flare_settings::machine_prefs::set_import_remote_on(&w.prefs, false);
     w.pump_until("the rows gone", |w| ids(w).len() == 2);
-    assert_eq!(ids(&w), [first.clone(), opened], "a tab opened from here stays");
+    assert_eq!(
+        ids(&w),
+        [first.clone(), opened],
+        "a tab opened from here stays"
+    );
     assert_eq!(front(&w), first, "the tab used before comes to the front");
     let t = Instant::now();
     let mut leaving = None;
@@ -394,7 +435,10 @@ fn turning_import_off_detaches_imported_rows_and_keeps_the_rest() {
     }
     assert_eq!(leaving, Some(Leaving::Detach), "detached, never closed");
     assert!(watches.closes().is_empty());
-    assert!(watches.live().is_empty(), "no watch while the setting is off");
+    assert!(
+        watches.live().is_empty(),
+        "no watch while the setting is off"
+    );
     assert!(w.ctl.borrow().hidden_of("mac").is_empty(), "nothing hidden");
     flare_settings::machine_prefs::set_import_remote_on(&w.prefs, true);
     w.pump_until("the watch again", |_| watches.live() == ["mac"]);
@@ -405,7 +449,10 @@ fn turning_import_off_detaches_imported_rows_and_keeps_the_rest() {
 fn a_machine_removed_from_settings_stops_its_watcher_and_drops_its_rows_and_hidden_list() {
     let w = Wx::new(1.0);
     let watches = importing(&w);
-    heard(&w, vec![entry("t1-1", "idle", true), entry("t1-2", "idle", true)]);
+    heard(
+        &w,
+        vec![entry("t1-1", "idle", true), entry("t1-2", "idle", true)],
+    );
     let hide = row_of(&w, "t1-2").unwrap();
     w.ctl.borrow_mut().hide_remote(&hide);
     assert_eq!(w.ctl.borrow().hidden_of("mac"), ["t1-2"]);
@@ -415,7 +462,10 @@ fn a_machine_removed_from_settings_stops_its_watcher_and_drops_its_rows_and_hidd
     assert_eq!(row_of(&w, "t1-1"), None);
     assert!(w.ctl.borrow().hidden_of("mac").is_empty());
     assert!(!flare_settings::machine_prefs::import_hidden(&w.prefs).contains_key("mac"));
-    assert!(watches.closes().is_empty(), "a removed machine's rows are never closed");
+    assert!(
+        watches.closes().is_empty(),
+        "a removed machine's rows are never closed"
+    );
     // An answer the stopped watch still sent changes nothing.
     heard(&w, vec![entry("t1-1", "idle", true)]);
     assert_eq!(row_of(&w, "t1-1"), None);

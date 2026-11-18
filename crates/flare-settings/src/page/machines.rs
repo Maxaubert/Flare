@@ -366,9 +366,9 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
                 "this-computer",
                 vec![
                     BlockModel::Row(sharing_row(info.sharing)),
-                    BlockModel::Row(import_row(
-                        crate::machine_prefs::import_remote_on(env.prefs),
-                    )),
+                    BlockModel::Row(import_row(crate::machine_prefs::import_remote_on(
+                        env.prefs,
+                    ))),
                 ],
             ),
             section("machines", blocks),
@@ -516,7 +516,11 @@ mod tests {
         let import = &by_default[1];
         assert_eq!(import.label, "Import sessions started on other machines");
         assert_eq!(import.sub, "Show tabs opened on your linked machines.");
-        assert_eq!(import.control, Control::Switch { on: true }, "on by default");
+        assert_eq!(
+            import.control,
+            Control::Switch { on: true },
+            "on by default"
+        );
         assert!(import.tap && !import.off);
         assert!(import.row_tip.is_empty(), "a labelled row has no tooltip");
         assert_eq!(rows(Some(false))[1].control, Control::Switch { on: false });

@@ -91,14 +91,6 @@ impl AppCtl {
         }
     }
 
-    /// The machines watched now (tests).
-    #[cfg(test)]
-    pub(crate) fn watched(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.imports.watches.keys().cloned().collect();
-        v.sort();
-        v
-    }
-
     /// The setting changed, maybe (every row's change posts `PrefsChanged`). Off (rule 1294): every imported row goes by
     /// detach, never a close, and an agent's adopted rows stay. On: the machines are watched again.
     pub(crate) fn sync_import_setting(&mut self) {
@@ -385,8 +377,8 @@ impl AppCtl {
         self.model.is_unattached(id)
     }
 
-    /// The tabs at work whose shell runs through this window: an unattached row is left out (rule 1295), its quit only
-    /// detaches nothing.
+    /// The tabs at work that hold a close or an install: an unattached row is left out (rule 1295), since no shell of
+    /// it runs here.
     pub(crate) fn working_here(&self) -> usize {
         self.hub
             .indicator()
