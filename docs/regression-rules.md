@@ -4920,3 +4920,19 @@ shows only when nothing at all is known (no pin, no history, no starter), never 
 remote recents and the machine rows are as rule 1282 left them. Native: `menus_ui::folder_rows`. Held by
 `older_recents_fill_the_spots_of_folders_that_have_a_tab` (Max's twelve recents with seven open, and the starter case)
 and the rule 1269 tests (`menus_ui.rs`). Source: Max, 2026-11-18.
+
+1287. **A click in the remote folder browser only picks; a double-click goes in.** Max, 2026-11-18: "when i pick
+choose folder on mac it shows a file picker in the users folder which is fine but clicking anything like i clicked
+documents just reopens the users folder it doesnt go into documents, and it happens on single click". Each click on
+a row called `push_rfolder`, which set new rows and crumbs models on the window. Slint then built every row again:
+`changed rows` scrolled the list back to its top (the folder looked opened again), and the second press of a
+double-click landed on a new row item, so Slint reset its click count and `double-clicked` never fired: nothing was
+ever entered. The tests called `invoke_rfolder_pick` and `invoke_rfolder_enter` directly, and the preview never swaps
+its model, so none saw it. Now a pick (a click, Up or Down) puts only the picked row and the footer's path on the
+window (`push_rfolder_pick`); the rows and crumbs models are set only when a listing comes in or the dialog opens or
+closes. One click picks (highlight, footer path), a double-click enters, Enter is still Open here (rule 1282), and Open
+here opens the picked folder. Native: `appctl/remote_folder_glue.rs`; the window shows the list's place and scroll as
+`rfolder-list-x`, `rfolder-list-y`, `rfolder-list-w` and `rfolder-scrolled`. Held by
+`in_the_window_one_click_picks_and_a_double_click_goes_in` (`ui_tests/term.rs`: the real pointer in the whole window,
+a fake lister that records each asked path: one click asks nothing and the list stays scrolled where it was, a
+double-click asks the child path and the crumbs follow). Source: Max, 2026-11-18.
