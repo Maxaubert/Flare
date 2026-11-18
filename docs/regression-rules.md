@@ -4936,3 +4936,21 @@ here opens the picked folder. Native: `appctl/remote_folder_glue.rs`; the window
 `in_the_window_one_click_picks_and_a_double_click_goes_in` (`ui_tests/term.rs`: the real pointer in the whole window,
 a fake lister that records each asked path: one click asks nothing and the list stays scrolled where it was, a
 double-click asks the child path and the crumbs follow). Source: Max, 2026-11-18.
+
+1288. **An SSH host wears the system a link said, and one that answered nothing is asked again.** Max, 2026-11-18:
+"only the mac has an icon in the machine picker, the evo x2 doesnt have one, it should have a windows icon and that
+stuff should be automatic if possible otherwise dont show any icon there, but only after its connected". The picker
+is Settings > Machines > Add a machine's Machine drop-down. The Mac there is the nearby computer, with the logo its
+announcement carries (its `mac` SSH host is left out by rule 1285). evo-x2 (`HostName 100.105.158.52`, a Windows PC
+over a VPN) is an SSH host whose logo comes only from rule 1278's look (its SSH greeting, then `uname -s`); it was not
+reachable when the dialog looked, so nothing was found, and the dialog looked only once a visit. Now: (1) an SSH host
+takes the system a link said for the same computer: a linked machine's `kind` (its own `remote.hello` at Add, or the
+pairing), matched by the host it names or by its address against the host's `HostName` (`same_host`, the rule 1285
+comparison), else a computer that reaches this one by the address it paired from. That word wins over a greeting, and
+it is kept in `host_os.json` on a worker, so the logo stays after the machine is removed. (2) A host that answered
+nothing is looked at again each time the dialog opens, so its logo comes once it can be reached; a host with a system
+is not asked again in the visit. A host nothing said anything about still draws no logo. What a greeting said is
+never a machine's `kind` (rules 1207, 1208, 1278). Native: `MachinesPage::{os_learnt, os_of_host, keep_learnt_os,
+open_form}`, `flare_settings::page::machines::same_host`. Held by
+`an_ssh_host_wears_the_system_its_link_said_once_connected` and
+`the_dialog_finds_each_ssh_hosts_system_and_keeps_it` (`machines_page.rs`). Source: Max, 2026-11-18.

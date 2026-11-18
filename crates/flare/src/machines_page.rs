@@ -515,7 +515,7 @@ impl MachinesPage {
                 .hosts
                 .iter()
                 .map(|h| SshHost {
-                    os: self.host_os.get(&crate::host_os::key_of(h)).copied(),
+                    os: self.os_of_host(h),
                     ..h.clone()
                 })
                 .collect(),
@@ -558,6 +558,55 @@ impl MachinesPage {
                 },
             );
         });
+    }
+
+    /// The system Flare learnt by connecting to the computer an SSH host reaches (rule 1288; Max, 2026-11-18: the
+    /// logo should come by itself once the computer is connected): a linked machine's `kind`, which its own
+    /// `remote.hello` or the pairing said, for the host it names or one that reaches the same computer; else a computer
+    /// that reaches this one, by the address it paired from. None while no link said it.
+    fn os_learnt(&self, h: &SshHost) -> Option<MachineOs> {
+        use flare_settings::page::machines::same_host;
+        self.machines
+            .iter()
+            .filter(|m| m.kind.is_some())
+            .find(|m| m.ssh == h.alias || same_host(m.target(), &h.host_name))
+            .map(|m| m.kind)
+            .or_else(|| {
+                self.incoming
+                    .iter()
+                    .filter(|m| m.kind.is_some())
+                    .find(|m| same_host(&m.address, &h.host_name))
+                    .map(|m| m.kind)
+            })
+            .and_then(os_of)
+    }
+
+    /// The logo an SSH host draws in the drop-down: what a link said (rule 1288), else what its greeting or `uname`
+    /// said (rule 1278), else none.
+    fn os_of_host(&self, h: &SshHost) -> Option<MachineOs> {
+        self.os_learnt(h)
+            .or_else(|| self.host_os.get(&crate::host_os::key_of(h)).copied())
+    }
+
+    /// Keeps what a link said about an SSH host's computer in `host_os.json` (rule 1288), on a worker, so the logo
+    /// stays after the machine is removed. True when something new was learnt.
+    fn keep_learnt_os(&mut self) -> bool {
+        let learnt: Vec<(HostKey, MachineOs)> = self
+            .hosts
+            .iter()
+            .filter_map(|h| {
+                let os = self.os_learnt(h)?;
+                let key = crate::host_os::key_of(h);
+                (self.host_os.get(&key) != Some(&os)).then_some((key, os))
+            })
+            .collect();
+        if learnt.is_empty() {
+            return false;
+        }
+        self.host_os.extend(learnt.iter().cloned());
+        let io = Arc::clone(&self.io);
+        worker("flare-machines-os-keep", move || io.remember_os(&learnt));
+        true
     }
 
     /// The system found for a saved machine's SSH host (rule 1278): the host it names, else one that reaches the same
@@ -745,6 +794,11 @@ impl MachinesPage {
             ..AddForm::default()
         };
         self.pairing.browse(true);
+        // A host that answered nothing (off, or a VPN not up yet) is looked at again each time the dialog opens, so its
+        // logo comes once it can be reached (rule 1288); one with a system is not.
+        let (finding, found) = (&self.finding, &self.host_os);
+        self.looked
+            .retain(|k| finding.contains(k) || found.contains_key(k));
         self.find_host_os();
     }
 
@@ -903,8 +957,14 @@ impl MachinesPage {
         ))
     }
 
-    /// A worker's answer. True when the page should be drawn again.
+    /// A worker's answer. True when the page should be drawn again. A linked machine's system that a link said is
+    /// kept for its SSH host after each (rule 1288).
     pub fn on_msg(&mut self, m: MachinesMsg) -> bool {
+        let redraw = self.take_msg(m);
+        self.keep_learnt_os() || redraw
+    }
+
+    fn take_msg(&mut self, m: MachinesMsg) -> bool {
         match m {
             MachinesMsg::Loaded {
                 machines,
@@ -1213,9 +1273,16 @@ mod tests {
         r.page.page_shown();
         r.settle();
         let info = r.page.info();
+        // Rule 1288: the linked Mac's host wears the system its hello said.
         assert_eq!(
             info.ssh_hosts,
-            [SshHost::plain("mini"), SshHost::plain("studio")]
+            [
+                SshHost {
+                    os: Some(MachineOs::Mac),
+                    ..SshHost::plain("mini")
+                },
+                SshHost::plain("studio")
+            ]
         );
         assert_eq!(info.machines.len(), 1);
         assert_eq!(info.machines[0].status, LinkStatus::Linked);
@@ -1760,14 +1827,125 @@ mod tests {
                 .get(&("pi".to_string(), "pi".to_string())),
             Some(&MachineOs::Linux)
         );
-        // Opened again in the same visit: no host is looked up twice.
+        // Opened again in the same visit: a host with a system is not looked up twice; the one that answered nothing
+        // is asked again (rule 1288), so it gets its logo once it can be reached.
         r.page.cancel_form();
         r.page.open_form();
         r.settle();
-        assert_eq!(r.io.os_asked.lock().unwrap().len(), 4);
+        assert_eq!(r.io.os_asked.lock().unwrap()[4..], ["nas"]);
         // A new visit looks them up again, in the background.
         r.page.page_shown();
         r.settle();
-        assert_eq!(r.io.os_asked.lock().unwrap().len(), 8);
+        assert_eq!(r.io.os_asked.lock().unwrap().len(), 9);
+    }
+
+    /// Rule 1288 (Max, 2026-11-18: "only the Mac has an icon in the machine picker, evo-x2 doesn't have one. It should
+    /// have a Windows icon, and that should be automatic if possible; otherwise don't show any icon, but only after
+    /// it's connected"). evo-x2 is off when the dialog first looks, so it has no logo; a host that answered nothing is
+    /// asked again when the dialog opens again. Once a link said a computer's system (a machine added or paired, by
+    /// the host it names or the same address; a computer that reaches this one), its SSH host wears that logo, and it
+    /// is kept in the cache. What a greeting said never becomes a machine's `kind`.
+    #[test]
+    fn an_ssh_host_wears_the_system_its_link_said_once_connected() {
+        let mut io = FakeIo::default();
+        *io.named.get_mut().unwrap() = vec![
+            SshHost {
+                alias: "mac".into(),
+                host_name: "192.168.0.120".into(),
+                ..SshHost::default()
+            },
+            SshHost {
+                alias: "evo-x2".into(),
+                host_name: "100.105.158.52".into(),
+                ..SshHost::default()
+            },
+            SshHost {
+                alias: "desk".into(),
+                host_name: "Desk.local".into(),
+                ..SshHost::default()
+            },
+        ];
+        // The Mac paired by its address (machines.json has no alias for it); only the Mac's greeting says nothing.
+        *io.list.get_mut().unwrap() = vec![Machine {
+            id: "maxs-mac-mini".into(),
+            name: "Maxs-Mac-Mini".into(),
+            kind: Some(Os::Mac),
+            ssh: "192.168.0.120".into(),
+            host: Some("192.168.0.120".into()),
+            flare: "flare".into(),
+            ..Default::default()
+        }];
+        // evo-x2's Stable install answers through cmd once it is up (rule 1207).
+        io.answers.insert(
+            ("evo-x2".into(), FLARE_CANDIDATES[1].into()),
+            facts("0.3.0", Some(Os::Pc)),
+        );
+        let mut r = Rig::new(io);
+        let systems = |r: &Rig| -> Vec<(String, Option<MachineOs>)> {
+            r.page
+                .info()
+                .ssh_hosts
+                .into_iter()
+                .map(|h| (h.alias, h.os))
+                .collect()
+        };
+        r.page.page_shown();
+        r.settle();
+        r.page.open_form();
+        r.settle();
+        assert_eq!(
+            systems(&r),
+            [
+                ("mac".to_string(), Some(MachineOs::Mac)),
+                ("evo-x2".into(), None),
+                ("desk".into(), None),
+            ],
+            "the paired Mac's word shows on its host; evo-x2, off, has no logo"
+        );
+        // A computer that paired to reach this one, from Desk's address, said it is a PC.
+        r.io.incoming.lock().unwrap().push(Incoming {
+            id: "desk".into(),
+            name: "Desk".into(),
+            kind: Some(Os::Pc),
+            address: "desk.local.".into(),
+            key: "AAAA".into(),
+            ..Default::default()
+        });
+        // evo-x2 is connected: Add finds Flare there and its hello says it is a PC.
+        r.page.set_pick("evo-x2");
+        r.page.submit();
+        r.settle();
+        r.page.page_shown();
+        r.settle();
+        assert_eq!(
+            systems(&r),
+            [
+                ("mac".to_string(), Some(MachineOs::Mac)),
+                ("evo-x2".into(), Some(MachineOs::Pc)),
+                ("desk".into(), Some(MachineOs::Pc)),
+            ]
+        );
+        let evo = r
+            .page
+            .machines()
+            .iter()
+            .find(|m| m.ssh == "evo-x2")
+            .cloned()
+            .expect("evo-x2 is linked");
+        assert_eq!(evo.kind, Some(Os::Pc), "its kind is what its hello said");
+        // Kept for the next time.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while r.io.known.lock().unwrap().len() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5)); // sync-ok: a test waits for its worker
+        }
+        let known = r.io.known.lock().unwrap().clone();
+        assert_eq!(
+            known.get(&("evo-x2".to_string(), "100.105.158.52".to_string())),
+            Some(&MachineOs::Pc)
+        );
+        assert_eq!(
+            known.get(&("mac".to_string(), "192.168.0.120".to_string())),
+            Some(&MachineOs::Mac)
+        );
     }
 }
