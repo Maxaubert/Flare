@@ -1615,6 +1615,19 @@ mod tests {
         assert_eq!(order, vec!["a", "b", "c"]);
     }
 
+    /// Rule 1286: a tab started as a new blank Claude (`claude:new`) is a Claude tab from its first moment, holds no
+    /// session until its hooks name one (the marker is not a session id), and, like a resume, is not new work (rule 38).
+    #[test]
+    fn a_new_blank_claude_is_claude_with_no_session_and_not_new_work() {
+        let mut r = Rig::new();
+        r.open("a", Some(flare_agent::kinds::CLAUDE_NEW));
+        let a = tab_of(&r.hub, "a");
+        assert_eq!(a.session, None);
+        assert_eq!(a.agent.as_deref(), Some("claude"));
+        assert_eq!(r.hub.claude_session("a"), None);
+        assert!(r.hub.indicator().activity.is_touched("a"));
+    }
+
     #[test]
     fn a_polled_claude_tab_names_its_agent_and_a_question_its_state() {
         let mut r = Rig::new();

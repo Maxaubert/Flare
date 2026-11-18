@@ -107,8 +107,12 @@ are added as milestones land.
   `no_ping_pong_the_order_changes_when_the_hold_ends`.
 - **Restore.** `tabs.json` is Flare's own file, written 400 ms after a change, atomically, and
   flushed before the shells are killed. Nothing is written until the restore has answered. A gone
-  folder is dropped silently; a Claude tab resumes its newest session (two tabs in one folder take
-  the newest and the second newest); a tab without an agent never resumes. The restore draws the
+  folder is dropped silently; a Claude tab saves its own session (`"session"`: the id its hooks
+  named, or `"new"` when nothing was sent in it) and resumes exactly that one when its transcript
+  holds a user message; otherwise it comes back as a new blank Claude (plain `claude`, marker
+  `claude:new`), never another session (rule 1286). A Claude tab from an older file resumes its
+  folder's newest free session (two tabs in one folder take the newest and the second newest), and
+  a new blank Claude when none is left; a tab without an agent never resumes. The restore draws the
   saved strip as placeholders at once and settles them in place. Held by the `restore` and
   `tabs_store` tests and `nothing_is_written_before_the_restore_answered`.
   The transcript reader and the 16-at-a-time lookup are M6 (decision D10).

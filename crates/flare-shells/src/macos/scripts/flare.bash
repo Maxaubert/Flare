@@ -29,13 +29,15 @@ __flare_osc7() {
 }
 PROMPT_COMMAND="__flare_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 
-# A restored tab that hosted an agent: a Claude session id Flare has checked, or codex:last / agy:last.
+# A restored tab that hosted an agent: a Claude session id Flare has checked, or codex:last / agy:last,
+# or claude:new (a new blank Claude).
 __flare_resume_run() {
   local r=$__flare_resume
   __flare_resume=
   case $r in
     codex:last) codex resume --last ;;
     agy:last) agy -c ;;
+    claude:new) claude ;;
     *)
       if [[ -n $r && $r != -* && $r != *[^0-9A-Fa-f-]* ]]; then
         claude --resume "$r"

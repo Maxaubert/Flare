@@ -25,6 +25,8 @@ pub struct TabModel {
     clock_ms: u64,
     restore_done: bool,
     agents: HashMap<String, AgentKind>,
+    /// Each Claude tab's session as `tabs.json` saves it (rule 1286): the id its hooks named, or `SESSION_NEW`.
+    sessions: HashMap<String, String>,
     /// Each remote tab's live state (remote sessions PR 3): the host's id of the tab and the output it read, which
     /// `tabs.json` keeps so a restart attaches to the same session (rule 288).
     remotes: HashMap<String, RemoteLive>,
@@ -47,6 +49,7 @@ impl TabModel {
             clock_ms,
             restore_done: false,
             agents: HashMap::new(),
+            sessions: HashMap::new(),
             remotes: HashMap::new(),
         }
     }
@@ -144,6 +147,7 @@ impl TabModel {
         }
         self.state = tabs::close_tab(&self.state, id);
         self.agents.remove(id);
+        self.sessions.remove(id);
         self.remotes.remove(id);
         self.after_change();
         true
@@ -251,6 +255,23 @@ impl TabModel {
         }
     }
 
+    /// The session `tabs.json` saves for a Claude tab (rule 1286): a session id or `SESSION_NEW`; anything else, and
+    /// None, forgets it. Fed beside `set_agent`.
+    pub fn set_session(&mut self, id: &str, session: Option<&str>) {
+        match session.and_then(crate::restore::saved_session) {
+            Some(s) => {
+                self.sessions.insert(id.to_string(), s);
+            }
+            None => {
+                self.sessions.remove(id);
+            }
+        }
+    }
+
+    pub fn session(&self, id: &str) -> Option<&str> {
+        self.sessions.get(id).map(String::as_str)
+    }
+
     pub fn agent_kind(&self, id: &str) -> Option<AgentKind> {
         self.agents.get(id).copied()
     }
@@ -310,13 +331,22 @@ impl TabModel {
                                 host_tab: live.and_then(RemoteLive::host_tab),
                                 last_seq: live.map_or(0, RemoteLive::seq),
                             }),
+                            session: None,
                         }
                     }
-                    None => SavedTab {
-                        cwd: t.cwd.clone(),
-                        agent: self.agent_kind(&t.id),
-                        remote: None,
-                    },
+                    None => {
+                        let agent = self.agent_kind(&t.id);
+                        // Only a Claude tab keeps its session (rule 1286).
+                        let session = (agent == Some(AgentKind::Claude))
+                            .then(|| self.session(&t.id).map(str::to_string))
+                            .flatten();
+                        SavedTab {
+                            cwd: t.cwd.clone(),
+                            agent,
+                            remote: None,
+                            session,
+                        }
+                    }
                 })
                 .collect(),
             active,
@@ -452,14 +482,42 @@ mod tests {
                     cwd: r"C:\a".into(),
                     agent: None,
                     remote: None,
+                    session: None,
                 },
                 SavedTab {
                     cwd: r"C:\b".into(),
                     agent: Some(AgentKind::Claude),
                     remote: None,
+                    session: None,
                 },
             ]
         );
+    }
+
+    /// Rule 1286: a Claude tab's session (an id or `new`) is saved beside its agent; a tab that is not Claude, a bad
+    /// value and a closed tab keep none.
+    #[test]
+    fn saved_keeps_a_claude_tabs_session_only() {
+        const SID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+        let mut m = TabModel::empty(0);
+        let a = m.open_tab(r"C:\a");
+        let b = m.open_tab(r"C:\b");
+        let c = m.open_tab(r"C:\c");
+        m.set_agent(&a, Some(AgentKind::Claude));
+        m.set_session(&a, Some(SID));
+        m.set_agent(&b, Some(AgentKind::Claude));
+        m.set_session(&b, Some(crate::restore::SESSION_NEW));
+        m.set_agent(&c, Some(AgentKind::Codex));
+        m.set_session(&c, Some(SID));
+        let sessions: Vec<Option<String>> = m.saved().tabs.into_iter().map(|t| t.session).collect();
+        assert_eq!(sessions, vec![Some(SID.into()), Some("new".into()), None]);
+        m.set_session(&a, Some("x; rm"));
+        assert_eq!(m.session(&a), None);
+        m.set_session(&b, None);
+        assert_eq!(m.session(&b), None);
+        m.set_session(&a, Some(SID));
+        assert!(m.close(&a));
+        assert_eq!(m.session(&a), None);
     }
 
     #[test]
@@ -496,11 +554,13 @@ mod tests {
                     cwd: r"C:\a".into(),
                     agent: Some(AgentKind::Claude),
                     remote: None,
+                    session: None,
                 },
                 SavedTab {
                     cwd: r"C:\b".into(),
                     agent: None,
                     remote: None,
+                    session: None,
                 },
             ],
             active: 1,
@@ -544,6 +604,7 @@ mod tests {
                 cwd: r"C:\a".into(),
                 agent: None,
                 remote: None,
+                session: None,
             }],
             active: 0,
         };

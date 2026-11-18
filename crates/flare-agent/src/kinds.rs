@@ -1,4 +1,4 @@
-//! AgentKind, DetectedAgent, is_resumable, CODEX_RESUME, AGY_RESUME (Task 12).
+//! AgentKind, DetectedAgent, is_resumable, CODEX_RESUME, AGY_RESUME, CLAUDE_NEW (Task 12, rule 1286).
 
 /// An agent the restore can resume (the list M6 uses; widening it is a decision with a test).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -17,6 +17,10 @@ pub const CODEX_RESUME: &str = "codex:last";
 
 /// The startup command that resumes the most recent agy conversation in the tab's folder (`agy -c`).
 pub const AGY_RESUME: &str = "agy:last";
+
+/// The startup command that starts a NEW, blank Claude session in the tab's folder (plain `claude`): for a Claude tab
+/// whose own session was never used, so there is nothing to resume, and for one with no session left (rule 1286).
+pub const CLAUDE_NEW: &str = "claude:new";
 
 impl AgentKind {
     /// The name written to `tabs.json`.
@@ -119,6 +123,7 @@ mod tests {
         assert_eq!(AgentKind::parse("aider"), None);
         assert_eq!(CODEX_RESUME, "codex:last");
         assert_eq!(AGY_RESUME, "agy:last");
+        assert_eq!(CLAUDE_NEW, "claude:new");
     }
 
     #[test]

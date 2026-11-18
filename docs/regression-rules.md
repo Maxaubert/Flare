@@ -11,7 +11,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 1. **Input to a shell is inert until the user acts.** Strip every ESC and C0 control except TAB, LF, CR (plus DEL and C1 CSI) before any paste; quote each dropped path with a per-shell function (PowerShell single quotes with doubling, bash escape, cmd double quotes); start Windows tools by absolute System32 path. Native: pure functions `sanitize_paste` and `quote_path` in `flare-shells`, `Command::new` with absolute paths only, one unit test per quoting rule. Source: regression-rules.md inert-input (#1, #5); core/renderer/lib/termPaste.ts; core/main/sysTools.ts.
 2. **The only commands written into a shell are the agent resume, dictated text, and (open decision O1) the idle-prompt cd line.** The resume is the shell's startup command, built from argv Flare owns, with the id validated and carried in `FLARE_RESUME_ID`; dictation is one bracketed paste with a trailing space, never Enter. Exception (M8, N30; rule 182): dictation from another app types into a RUNNING Claude prompt and presses Enter, through the checked send only; inside the Flare window dictation only pastes at the cursor and never presses Enter; words for a copy whose window was in front are only pasted. Exception (plugins phase 5, 2026-10-26): a plugin that holds `input`, which the person approved in Settings as full control, types into a tab it may see (its own, any with `tabs`, one a click gave it) through `tabs.input`: one paste the way the person's paste goes (bracketed when the program asked; a control character other than tab and line breaks is refused, not stripped; at most 4 KB; 2 a second per tab) and, when asked, one Enter 300 ms later; the tab, the plugin's generation and its `input` are checked again before each write. The agent never has it (rule 188). Native: no generic "send text to shell" path in the tab code; the pty write API takes typed intents (the plugin's is `TermHandle::plugin_input` with `PluginInput::Paste` or `PluginInput::Enter`, called only by `AppCtl::ctl_tab_input` and `AppCtl::plugin_enter`). Held for the plugin exception by `tabs_input_types_as_a_paste_with_its_checks_and_the_enter_comes_after`, `the_enter_is_not_pressed_once_the_plugin_is_off_and_a_closed_tab_takes_nothing` and `typing_is_refused_when_empty_too_long_or_holding_a_control_character`. Source: core/main/terminal.ts withResume; core/main/agentResume.ts validResume; core/renderer/lib/dictation.ts finishStop; core/shared/termCwd.ts cdCommand.
 3. **The resume id travels in the environment, and every shell of a kind has the same command line.** Defender judges each new command line inside CreateProcess (700 ms each in Prism Terminal, 3 ms when repeated). Native: set `FLARE_RESUME_ID`, clear it in the startup line before the agent starts, keep each shell kind's command line constant, spawn on a worker, measure a cold restored Claude tab on the release build. Source: regression-rules.md same-command-line (#180); core/main/terminal.ts.
-4. **A claude resume is the newest interactive session of that folder; nothing is guessed.** `--continue` once resumed the wrong conversation. Native: read each transcript's first 4096 bytes, drop a queue-operation first line or a non-cli entrypoint, no session means a plain shell; the lookup runs on a worker, 16 stats at a time. Source: core/main/agentResume.ts; two-apps.md IT RESUMES ONLY YOUR OWN CONVERSATIONS (#87).
+4. **A claude resume is the newest interactive session of that folder; nothing is guessed.** `--continue` once resumed the wrong conversation. Native: read each transcript's first 4096 bytes, drop a queue-operation first line or a non-cli entrypoint, no session means a plain shell; the lookup runs on a worker, 16 stats at a time. Since rule 1286 this is only the fallback for a Claude tab that saved no session of its own (a file from before the `session` key, or the hooks off); a tab with no session left now comes back as a new blank Claude, and a tab that saved one never takes another. Source: core/main/agentResume.ts; two-apps.md IT RESUMES ONLY YOUR OWN CONVERSATIONS (#87).
 5. **One Ctrl+V is one paste; one image key per agent.** The native paste and the app's paste both ran once. Native: the key handler consumes Ctrl+V and returns handled; the image key is a single lookup by agent kind (ESC v for Claude, ^V otherwise); a test asserts one pty write per key. Source: two-apps.md ONE CTRL+V IS ONE PASTE; core/renderer/lib/termPaste.ts imagePasteKey (#170).
 6. **Shift+Enter is a newline only where an agent runs.** A backslash at a plain prompt ran a command with a stray backslash. Native: the newline key is sent only while the agent-armed state is true. Source: core/renderer/lib/termKeys.ts (#21, #175).
 7. **Host chords never reach the pty, and one table decides both.** A chord missing from the "owns this key" check typed into a program while the app acted on it. Native: one keymap table in Rust used by the window key handler and the terminal input encoder; a test asserts the two agree. Source: src/renderer/src/lib/keymap.ts; two-apps.md (#198, table audit 2026-10-12).
@@ -219,7 +219,7 @@ The M6 rules are numbered 162 to 169 (the M6 plan's rules (a) to (h), in order).
 
 162. **A hooked session is never scored from output, and its screen is read only to hold or settle.** Claude Code's hooks are the signal for a session they reach; output scoring and the screen would double-count or invent work. Native: `Indicator` routes a hooked tab past the scorer; the screen is read for a held question and for the settle check only. Held by `a_hooked_session_is_never_scored_and_its_screen_is_not_read_for_output`. Source: core/renderer/lib/useAgentIndicator.ts onTermData; docs/superpowers/plans/2026-10-17-flare-m6.md Task 18.
 163. **Flare accepts only `flare-agent`.** The OSC 777 signal of another program, Prism Terminal's own `prism-agent` among them, is refused, and every other OSC 777 user is left alone, so no foreign program can light a Flare tab. Native: `flare-agent` `signal.rs` checks the first part against `flare-agent` only. Held by `prism_agent_is_not_accepted` and `leaves_other_osc_777_users_alone`. Source: core/renderer/lib/agentHookSignal.ts.
-164. **A resume id is validated at the lookup, the host and the session manager.** Only a Claude session id or the Codex and agy markers `codex:last` and `agy:last` may reach a command line (a marker becomes `codex resume --last` or `agy -c`, never text of its own), and cmd receives only the hex and `-` of a valid id through `FLARE_RESUME_ID`. Native: `valid_resume` in `flare-agent` `resume.rs`, called by the Claude lookup, `tab_host.rs` and `flare-term` `session.rs`. Held by `an_invalid_resume_id_is_no_resume`, `a_bad_resume_id_never_reaches_a_command_line` and `a_bad_resume_id_never_reaches_a_command_line_from_the_lookup`. Source: core/main/agentResume.ts validResume; core/main/terminal.ts withResume.
+164. **A resume id is validated at the lookup, the host and the session manager.** Only a Claude session id or the markers `codex:last`, `agy:last` and `claude:new` (rule 1286) may reach a command line (a marker becomes `codex resume --last`, `agy -c` or plain `claude`, never text of its own), and cmd receives only the hex and `-` of a valid id through `FLARE_RESUME_ID`. Native: `valid_resume` in `flare-agent` `resume.rs`, called by the Claude lookup, `tab_host.rs` and `flare-term` `session.rs`. Held by `an_invalid_resume_id_is_no_resume`, `a_bad_resume_id_never_reaches_a_command_line` and `a_bad_resume_id_never_reaches_a_command_line_from_the_lookup`. Source: core/main/agentResume.ts validResume; core/main/terminal.ts withResume.
 165. **The mark clock runs only while something moves, never while minimised, and stops with Windows' animation effects.** A timer that ticks for a still tab wakes the CPU for nothing, and a motion that runs behind a hidden window costs power. Native: `AppCtl` owns one 16 ms timer that is stopped unless a mark moves, the window is shown and the effects switch is on; `MarkMotion` is the only animation source. Held by `the_clock_runs_only_while_something_moves` and `animation_effects_off_stills_every_mark`. Source: core/renderer/styles/marks.css; core/renderer/styles/marks.test.ts.
 166. **Sonara is contacted on 127.0.0.1 only, off the UI thread.** The question post is a hand-written HTTP request to loopback, on a worker, with a 1500 ms timeout, and a failure is quiet. Native: `sonara.rs` connects only to 127.0.0.1; `agent_hub.rs` posts from a worker. Held by `only_loopback_is_ever_contacted` and `sonara_is_never_called_on_the_ui_thread`. Source: core/main/sonaraLink.ts. (This refines rule 66 for the native port.)
 167. **The diagnostics hold no title, screen or conversation text.** A log line carries the four agent kinds (hook, title, mark, restore), counts and states, never free text. Native: `flare-diag` `agent_diag.rs` writes only the kinds and their folds; the sink takes no text. Held by `no_free_text_reaches_the_sink` and `diagnostics_get_the_four_kinds_and_no_text`, and in the app by `the_log_has_the_marks_the_rules_and_no_text`. Source: core/renderer/lib/agentDiag.ts.
@@ -2664,13 +2664,14 @@ Held by `mac_remove_moves_the_plugin_folder_to_the_trash` (`flare-mods/src/insta
 out) and `mac_reduce_motion_decides` (`flare-win/src/motion.rs`). Source: porting the `agent-moves` sample to the
 Mac (2026-11-11).
 1133. **macOS: a tab that hosted Claude comes back resumed after a quit or restart, as on Windows.** `tabs.json` keeps
-only the folder and `"agent": "claude"`; the restore finds the session id in Claude's store
-(`~/.claude/projects/<encode_cwd>/*.jsonl`, newest interactive first) and hands it to the spawn. `with_resume`
+the folder, `"agent": "claude"` and, since rule 1286, the tab's own `"session"`; the restore resumes that session, or
+for an older file finds the session id in Claude's store (`~/.claude/projects/<encode_cwd>/*.jsonl`, newest
+interactive first) and hands it to the spawn. `with_resume`
 built the resume only for pwsh, powershell and cmd, so a Mac zsh, bash or fish tab dropped the id and came back
 as a plain shell (Max, 2026-11-11: "claude doesnt auto resume on restart either"). Now those shells keep their
 plain login command line and get the id in `FLARE_RESUME_ID`; Flare's shell integration takes it out of the
 environment before the user's startup files run, and runs `claude --resume <id>` (or `codex resume --last`,
-`agy -c`) once those files have set PATH: zsh at the first prompt (`__flare_install` in `flare.zsh`, the id kept
+`agy -c`, or plain `claude` for `claude:new`, rule 1286) once those files have set PATH: zsh at the first prompt (`__flare_install` in `flare.zsh`, the id kept
 by the `.zshenv` shim), bash at the end of its `--rcfile`, fish in `flare.fish`. The script runs only an id of
 hex digits and dashes, quoted. Without the integration on disk a Mac tab still comes back as a plain shell.
 `crates/flare-shells/src/resume.rs`, `crates/flare-shells/src/macos/scripts/`. Held by
@@ -3879,8 +3880,9 @@ Alt too (AltGr) the key is the shell's. Under a question they do nothing and the
 Shift is still a new tab; Ctrl+Shift+T no longer is one. Ctrl+Shift+T opens the tab closed last again, in its old place
 in the strip, in front: a list of the last 10 closed tabs is kept in memory for this run only (never saved), so more
 presses walk back. Settings and a placeholder are not kept. A Claude tab resumes the session the hooks named for it; when
-none was named, or an open tab holds that session now (two Claudes never share one session), a worker reads the folder's sessions and takes the newest one no open tab holds (rule 4), else a plain
-shell. Codex resumes with `codex resume --last` and agy with `agy -c`, as the restore does. A remote tab comes back on
+none was named while the hooks are on, nothing was sent in it and it comes back as a new blank Claude (rule 1286). When
+the hooks are off, or an open tab holds that session now (two Claudes never share one session), a worker reads the
+folder's sessions and takes the newest one no open tab holds (rule 4), else a new blank Claude. Codex resumes with `codex resume --last` and agy with `agy -c`, as the restore does. A remote tab comes back on
 its machine in its folder; the host owns its session. Ctrl+Shift+N is the folder menu's "Choose a folder..." row (the
 row shows the key). Ctrl+Shift+R shows the linked machines as a menu under the bar (the + menu's machine rows; "No
 linked machines yet" when there are none); a pick opens a shell tab on that machine in the host's home folder.
@@ -4907,3 +4909,39 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1286. **A Claude tab whose session was never used comes back as a new blank Claude, never another session.** Max,
+2026-11-18: "if a session is open but never has a message sent, when flare then restarts it contineus a random session
+and not that or gives empty temrinal. you cant continue a empty sessioun so it should open a new claude sessoin that is
+blank in that case." `tabs.json` kept only `"agent": "claude"` per tab and the restore handed each Claude tab the Nth
+newest session of its folder (rule 4). Claude writes no transcript (or none with a user message) for a session nobody
+typed into, so that tab got an older conversation, or a plain shell when the folder had none. Now each local Claude
+tab saves `"session"`: the id its hooks (or its resume) named, or `"new"` when none was named and the tab's shell started with the hooks on
+(the `+sid` hooks name the session with the first message sent, so nothing was sent). The hooks state is the one the
+tab's shell started with (`TabHost::hooks_on_in`), not the setting now: a shell started before the hooks were switched
+on has no hooks, so its used session would read as unused. On restore a saved id is resumed
+only when its transcript in that folder holds a user message (`claude_session_used`: streamed line by line, stops at
+the first `"type":"user"` line that is not `isMeta`, at most 1 MB, on the restore worker; a first message the cap cuts,
+such as one with pasted images, counts by its head, where Claude writes `type` before `message`) and no tab before took it;
+otherwise, and for `"new"`, the tab starts a new blank Claude. A tab without the key (an older file, or the hooks off)
+keeps rule 4's newest session, skipping the ids other tabs saved, and starts a new blank Claude when none is left.
+Ctrl+Shift+T does the same for a closed Claude tab with no session named (rule 1236). The new blank Claude is the marker
+`claude:new` (`CLAUDE_NEW`), validated like `codex:last` (rule 164): pwsh and powershell append `claude`, cmd runs
+`claude` with the current-folder search off, and zsh, bash and fish get the marker in `FLARE_RESUME_ID` and run plain
+`claude` (rule 1133); no text of the marker reaches a command line. The hub treats it as a Claude start
+(`agent_of_resume`), holds no session for it until the hooks name one, and, like a resume, counts the tab as touched,
+so its first paint is not new work (rule 38). Native: `flare_tabs::restore::{SavedTab::session, plan_restore_with,
+SESSION_NEW}`, `TabModel::set_session`, `AppCtl::session_to_save`, `flare_agent::resume::claude_session_used`,
+`sessions.rs` `ClaudeSessionLookup::used`. Held by `the_session_key_round_trips_and_old_files_still_read`,
+`a_tab_resumes_its_own_used_session_and_an_unused_one_comes_back_blank`,
+`a_saved_session_is_never_handed_to_another_tab`, `no_session_means_a_new_blank_claude` (flare-tabs and `appctl`),
+`resolve_restore_asks_the_lookup_whether_the_saved_session_was_used`, `saved_keeps_a_claude_tabs_session_only`,
+`a_session_is_used_only_when_its_transcript_holds_a_user_message`, `the_user_message_scan_is_bounded`,
+`a_first_message_longer_than_the_cap_still_counts`, `a_tab_started_with_the_hooks_off_never_saves_new`,
+`a_new_shell_gets_the_plugin_while_the_setting_is_on`,
+`accepts_the_new_claude_marker_and_nothing_near_it`, `the_new_claude_marker_starts_plain_claude_on_every_windows_shell`,
+`a_restored_zsh_or_bash_tab_resumes_claude_through_the_login_shell`,
+`the_claude_lookup_says_a_session_is_used_only_with_a_user_message`,
+`a_tab_resumes_its_own_session_and_a_never_used_one_comes_back_blank`,
+`a_closed_claude_tab_never_used_comes_back_as_a_new_blank_claude` and
+`a_new_blank_claude_is_claude_with_no_session_and_not_new_work`. Source: Max, 2026-11-18.
