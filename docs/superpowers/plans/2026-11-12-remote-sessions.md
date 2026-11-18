@@ -469,6 +469,7 @@ Where the build differs from the lines above:
 - Linked machines: a table with columns Machine (logo and name), SSH host, Flare (version), Status (green dot and "Linked"), and a ⋯ menu (Test, Remove).
 - Adding: a "+ Add a machine" row that opens an inline form: SSH host drop-down, Name field, Cancel, Add. A failed check is one red line under the form, for example "Flare there is 0.0.9, here 0.1.0. Update it there."
 - The + menu: one row per linked machine, its logo and name (for example the Apple logo and "Mac Mini"). It opens a shell tab on that machine. No submenu, no folder browser, no past-sessions list in the menu: the owner starts or resumes Claude in that shell. Drop the `RemoteFolder` browser and R-new-26.
+  - **Max, 2026-11-17: folder browser chosen (mockup B).** This reverses "no folder browser" above. A machine's row (it now says "choose folder" on its right) opens a Flare-drawn folder browser at the host's home, in the Dialog look: Back and Home, crumbs (`home-pc > C: > Users > Admin`), folders first, files dimmed and never picked, the path in the footer, Cancel and an accent Open here. Open here opens the remote tab in the picked folder (else the folder shown), which joins the remote recents. Those recents stay in the main menu with the folder glyph and "on <machine>", so only a machine's own row wears its logo. Still no submenu and no past-sessions list. It lists with `remote.ls` over a short link, on a worker; `remote.ls` takes `~` as the home, and stays the viewer's own (never the agent's). R-new-26 comes back as rule 1282. Mockup: `docs/superpowers/specs/remote-sessions-mockups/folder-browser.html`; the issue: `research/flare/2026-11-17-remote-ui-issues-from-mac.md`, issue 2.
 - Vertical tabs (Flare's cards with the Clawd pane): Clawd stays in the pane; the machine's logo sits before the folder path on the second line.
 - Horizontal tabs: Clawd stays first; the machine's logo sits at the right, after the status spinner and before the ×.
 - The mockups: `docs/superpowers/specs/remote-sessions-mockups/` (pick.html, tabs.html).
@@ -503,7 +504,7 @@ Where the build differs from the lines above:
 
 **Built (2026-11-12, `feat/remote-7`, stacked on `feat/remote-6`).** Rules R-new-25 and R-new-27 are rules 1192 and 1194
 (numbered after main's last rule, 1189, and the PR 6 fixes 1190 and 1191); the fitted view's rule is 1193; R-new-26 was
-dropped with the folder browser. Where the build differs from the lines above (the owner's picks win):
+dropped with the folder browser (and came back as rule 1282 with it, 2026-11-17). Where the build differs from the lines above (the owner's picks win):
 - **Settings > Machines** is `flare_settings::page::machines` (data: a table heading, one `BlockModel::Machine` a
   machine, the add row or `BlockModel::MachineAdd` in its place) drawn by `ui/settings/machines.slint`, with its door to
   the disk and the links in `crates/flare/src/machines_page.rs` (`MachinesPage`, `MachinesIo`; `RealMachinesIo` in the

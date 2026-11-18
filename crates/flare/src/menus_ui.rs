@@ -230,8 +230,12 @@ pub fn machine_logo(kind: Option<flare_tabs::tabs::Os>) -> Option<&'static str> 
     })
 }
 
+/// What a machine's row says on its right (rule 1282, mockup B): its pick opens the folder browser.
+pub const MACHINE_HINT: &str = "choose folder";
+
 /// The + menu's machine rows (owner pick, 2026-11-12): one a linked machine, its system's logo and its name, after a
-/// rule. A pick opens a shell tab on that machine, in the host's home folder; there is no submenu.
+/// rule, and "choose folder" on its right. A pick opens the folder browser on that machine (rule 1282, Max's pick of
+/// mockup B on 2026-11-17); there is no submenu. Only these rows wear the machine's logo.
 fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, String)> {
     machines
         .iter()
@@ -244,6 +248,7 @@ fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, Stri
             } else {
                 row.icon = GLYPH_LINK;
             }
+            row.hint = MACHINE_HINT.to_string();
             row.group = i == 0;
             (row, format!("{MACHINE_ROW}{}", m.id))
         })
@@ -261,9 +266,10 @@ pub fn remote_folder_of_row(path: &str) -> Option<(&str, &str)> {
     (!machine.is_empty() && !folder.is_empty()).then_some((machine, folder))
 }
 
-/// The + menu's remote folders (rule 1213): the newest folders remote tabs opened, after this machine's, each with its
-/// machine's logo before its name and the machine's name on its right. A machine no longer in `machines.json` drops its
-/// folders from the list. No pin: a pin is this machine's.
+/// The + menu's remote folders (rule 1213): the newest folders remote tabs opened, after this machine's, each with the
+/// folder glyph before its name and "on <machine>" on its right (rule 1282, mockup B: only a machine's own row wears
+/// its logo, so a folder never reads as a machine). A machine no longer in `machines.json` drops its folders from the
+/// list. No pin: a pin is this machine's.
 fn remote_folder_rows(
     prefs: &PrefStore,
     machines: &[crate::machines::Machine],
@@ -284,13 +290,9 @@ fn remote_folder_rows(
         .enumerate()
         .map(|(i, ((r, m), l))| {
             let mut row = MenuRowData::plain(&l.label);
-            if let Some(g) = machine_logo(m.kind) {
-                row.icon_cmd = glyph_path(g).to_string();
-                row.filled_icon = true;
-            } else {
-                row.icon = GLYPH_LINK;
-            }
-            row.hint = m.name.clone();
+            row.icon = GLYPH_FOLDER_FILL;
+            row.filled_icon = true;
+            row.hint = format!("on {}", m.name);
             row.group = i == 0;
             (
                 row,
@@ -636,7 +638,7 @@ mod tests {
     }
 
     /// Owner pick (remote sessions PR 7): one row per linked machine after the folders, its logo and its name, no pin
-    /// and no submenu; its pick names the machine, never a folder.
+    /// and no submenu; its pick names the machine, never a folder. Rule 1282: it says "choose folder" on its right.
     #[test]
     fn each_linked_machine_is_one_row_after_the_folders_with_its_logo_and_name() {
         use crate::machines::Machine;
@@ -666,6 +668,7 @@ mod tests {
         assert_eq!(machine_of_row(path), Some("mac"));
         assert_eq!(mac.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
         assert!(mac.filled_icon && mac.group && mac.trailing_icon.is_none() && !mac.flyout);
+        assert!(rows[2..].iter().all(|(r, _)| r.hint == MACHINE_HINT));
         assert_eq!(rows[3].0.icon_cmd, glyph_path(GLYPH_LOGO_PC));
         assert!(!rows[3].0.group);
         // A system not known draws no logo of either.
@@ -683,11 +686,11 @@ mod tests {
         );
     }
 
-    /// Rule 1213: a remote tab's folder is listed after this machine's, with its machine's logo before its name and the
-    /// machine's name on its right, no pin; its row names the machine and the host folder. A machine no longer linked
-    /// drops its folders from the list.
+    /// Rule 1213: a remote tab's folder is listed after this machine's, no pin; its row names the machine and the host
+    /// folder. A machine no longer linked drops its folders from the list. Rule 1282 (mockup B): it wears the folder
+    /// glyph and "on <machine>", so only the machine's own row carries the machine's logo.
     #[test]
-    fn remote_folders_follow_the_local_ones_with_their_machines_logo() {
+    fn remote_folders_follow_the_local_ones_with_the_folder_glyph_and_their_machine() {
         use crate::machines::Machine;
         use flare_settings::recent_roots::remember_remote_root;
         use flare_tabs::tabs::Os;
@@ -709,9 +712,15 @@ mod tests {
         let (row, path) = &rows[2];
         assert_eq!(remote_folder_of_row(path), Some(("mac", "/Users/max/proj")));
         assert_eq!(machine_of_row(path), None);
-        assert_eq!(row.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
+        assert_eq!(row.icon, GLYPH_FOLDER_FILL);
+        assert!(row.icon_cmd.is_empty(), "no machine logo on a folder");
         assert!(row.filled_icon && row.group && row.trailing_icon.is_none());
-        assert_eq!(row.hint, "Mac Mini");
+        assert_eq!(row.hint, "on Mac Mini");
+        assert_eq!(
+            rows[3].0.icon_cmd,
+            glyph_path(GLYPH_LOGO_MAC),
+            "the machine's row keeps it"
+        );
         assert_eq!(remote_folder_of_row(r"C:\w\a"), None);
         // A remote folder's row has no pin to toggle.
         toggle_pin_in_menu(

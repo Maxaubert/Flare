@@ -1091,7 +1091,8 @@ pub fn run_window(
         let ctl_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
         // A remote tab's pty goes to the link (remote sessions PR 3); every other spec starts a local shell. Under
         // --e2e a scenario may join the link to a loopback `flare --serve-remote` of another profile instead of ssh.
-        let remote_spawner = crate::remote_link::RemoteSpawner::new(
+        // The same links list a machine's folders for the folder browser (rule 1282).
+        let connector: Arc<dyn crate::remote_link::Connector> =
             Arc::new(crate::remote_link::SshConnector::new(
                 &inst.profile.dir,
                 crate::remote_link::e2e_loopback(
@@ -1099,7 +1100,12 @@ pub fn run_window(
                         .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
                         .as_deref(),
                 ),
-            )),
+            ));
+        let folder_lister = Arc::new(crate::remote_folder::LinkLister::new(Arc::clone(
+            &connector,
+        )));
+        let remote_spawner = crate::remote_link::RemoteSpawner::new(
+            connector,
             crate::remote_link::Timing::default(),
         )
         // A remote tab's status from its host wakes the window (remote sessions PR 4).
@@ -1484,6 +1490,7 @@ pub fn run_window(
         }
         // Windows' notifications and the system's listening table (stage 7); under --e2e a recorder.
         crate::appctl::install_surfaces7(&rc, Arc::clone(&post), args.e2e);
+        rc.borrow_mut().set_folder_lister(folder_lister);
         // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
         rc.borrow_mut()
             .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));

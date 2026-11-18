@@ -4800,6 +4800,35 @@ host's rules on any viewer, with no `~` for this machine's home (`tabs_ui::tab_f
 `a_hosts_folder_reads_by_the_hosts_rules_on_any_viewer` (`flare-tabs/src/sidebar_rows.rs`). Source: Max, 2026-11-17;
 `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
 
+1282. **A machine's row opens a Flare-drawn folder browser; `remote.ls` is the viewer's own.** Max, 2026-11-17, from the
+Mac viewer: "home-pc" in the + menu only ever opened a shell in the host's home, and looked like a folder. He picked
+mockup B (`docs/superpowers/specs/remote-sessions-mockups/folder-browser.html`), which reverses the 2026-11-12 "no
+folder browser" pick and brings back R-new-26. A machine's row (the + menu's and Ctrl+Shift+R's) says "choose folder"
+and opens the browser at the host's home: the Dialog look, Back and Home with tips, crumbs with the machine's name
+first, folders first, files dimmed and never picked, the picked folder's path in the footer, Cancel and an accent Open
+here. A click picks, a double-click goes in; Escape or a press outside cancels, Enter is Open here. Open here opens the
+remote tab in the picked folder (else the folder shown, else `~` as before), and it joins the remote recents (rule
+1213). The recents wear the folder glyph and "on <machine>": only a machine's own row wears its logo. Never the OS
+dialog. Each listing is one `remote.ls` over a short link (`remote_folder::LinkLister`, the window's own connector) on a
+worker; the home is asked with no `path` (an older host answers too), and the host now also reads `~` alone as its
+home. Only the newest ask's answer is taken, and none after the dialog closed. The host's answer is never trusted: a
+safe path, at most `LS_MAX` names, no name with a separator, a control or invisible character, `.` or `..`. Crumbs,
+children and roots follow the host's path rules on any viewer (`PathRules::of_host`; `C:` goes to `C:\`). A machine
+that does not answer is one line in the dialog, in Settings > Machines' words ("Not answering"). The agent never lists
+a folder on another machine: no pipe grant but the link's reaches `remote.*`. Held by
+`the_folder_browser_wears_the_dialog_look_at_every_scale_in_both_looks`,
+`the_pointer_and_the_keys_reach_the_dialog_and_never_what_is_behind` and
+`a_crumb_goes_to_its_folder_and_the_last_goes_nowhere` (`ui_tests/remote_folder.rs`);
+`the_folder_browsers_back_home_and_file_glyphs_draw_at_full_size_at_every_scale` (`ui_tests/icons_misc.rs`);
+`a_machines_row_in_the_plus_menu_opens_the_folder_browser_then_a_shell_there`,
+`the_folder_browser_picks_enters_goes_back_and_opens_the_tab_in_the_folder`,
+`a_machine_that_does_not_answer_is_one_line_and_a_late_answer_is_dropped` and
+`the_folder_browser_has_the_keys_while_it_is_up` (`ui_tests/term.rs`); the tests in `remote_folder.rs` (the listing
+read, the crumbs on a PC and a Mac host, the browser's steps); `remote_ls_reads_a_lone_tilde_as_the_hosts_home`
+(`ctl_app.rs`); `the_agent_never_lists_a_folder_on_another_machine` (`flare-ctl/src/grant.rs`); and the e2e
+`remoteUi` (it opens the browser and presses Open here). Source: Max, 2026-11-17;
+`research/flare/2026-11-17-remote-ui-issues-from-mac.md`, issue 2.
+
 1284. **The sidebar row's X takes the pointer where it is drawn, past any ring.** Max, 2026-11-17: "thres no hover
 effects on the clsoe button on tabs when tehre workign on other tabs thers a hover effect on the clsoe button". In the
 sidebar (the vertical layout) a working row (the Ring mark, `mark-kind` 1) slides its X in 20 px right of the ring on

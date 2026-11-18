@@ -23,6 +23,7 @@ mod plugin_bar;
 mod plugin_notice;
 mod plugin_surfaces;
 mod remote_convo;
+mod remote_folder;
 mod scrollbar;
 mod secret_error;
 mod secret_verify;

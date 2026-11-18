@@ -998,6 +998,30 @@ mod tests {
         assert!(Grant::Ui.may_call(Method::OpenRemoteSession));
     }
 
+    /// Rule 1282 (amends S3): the folder browser's `remote.ls` is the viewer's own interface, over its link to the
+    /// host; the agent never lists a folder on another machine, with or without the eval switch, and no plugin does
+    /// either. Only the link (the remote grant and the host's bridge) and the app reach it.
+    #[test]
+    fn the_agent_never_lists_a_folder_on_another_machine() {
+        for g in [Grant::agent(), Grant::Agent { eval: true }] {
+            let err = g.check(Method::RemoteLs).unwrap_err();
+            assert_eq!(err.code, code::FORBIDDEN);
+            assert!(err.message.contains("remote.ls"), "{}", err.message);
+            assert!(!g.permission_names().contains(&"remote"));
+        }
+        for g in [mod_with(&Permission::ALL), v1_mod_with(&Permission::ALL)] {
+            assert_eq!(
+                g.check(Method::RemoteLs).unwrap_err().code,
+                code::FORBIDDEN,
+                "{}",
+                g.kind()
+            );
+        }
+        for g in [Grant::Remote, Grant::Bridge, Grant::Ui] {
+            assert!(g.may_call(Method::RemoteLs), "{}", g.kind());
+        }
+    }
+
     #[test]
     fn only_tabs_lets_a_plugin_name_another_tab() {
         assert!(!Grant::agent().may_act_on_any_tab());

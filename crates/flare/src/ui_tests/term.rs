@@ -3019,24 +3019,105 @@ mod flow {
         (0..rows.row_count()).find(|&i| rows.row_data(i).is_some_and(|r| r.label == label))
     }
 
-    /// Remote sessions PR 7 (owner pick): the + menu has one row per linked machine, its logo and its name; its pick
-    /// opens a shell tab on that machine in the host's home folder, and the tab wears the machine's logo and name.
+    /// A host's folders in memory for the folder browser (rule 1282): each path's names, the home when no path is
+    /// asked, and every ask in order. A path not listed is a host that does not answer.
+    #[derive(Default)]
+    struct FakeLister {
+        home: String,
+        folders: std::collections::HashMap<String, Vec<(&'static str, bool)>>,
+        asks: std::sync::Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    impl crate::remote_folder::FolderLister for FakeLister {
+        fn list(
+            &self,
+            machine: &str,
+            path: Option<&str>,
+        ) -> Result<serde_json::Value, crate::remote_link::LinkError> {
+            self.asks
+                .lock()
+                .unwrap()
+                .push((machine.to_string(), path.map(str::to_string)));
+            let at = path.unwrap_or(&self.home).to_string();
+            match self.folders.get(&at) {
+                Some(names) => Ok(serde_json::json!({
+                    "path": at,
+                    "entries": names
+                        .iter()
+                        .map(|(n, d)| serde_json::json!({"name": n, "dir": d}))
+                        .collect::<Vec<_>>(),
+                    "truncated": false,
+                })),
+                None => Err(crate::remote_link::LinkError::Down(
+                    "the link ended; ssh said: ssh: connect to host mini port 22: Connection refused"
+                        .into(),
+                )),
+            }
+        }
+    }
+
+    /// A Mac's home and two folders under it, the lister set on the window.
+    fn mac_lister(w: &Wx) -> Arc<FakeLister> {
+        let mut l = FakeLister {
+            home: "/Users/max".into(),
+            ..FakeLister::default()
+        };
+        l.folders.insert(
+            "/Users/max".into(),
+            vec![("Desktop", true), ("proj", true), (".zshrc", false)],
+        );
+        l.folders
+            .insert("/Users/max/proj".into(), vec![("src", true)]);
+        let l = Arc::new(l);
+        w.ctl.borrow_mut().set_folder_lister(l.clone());
+        l
+    }
+
+    /// Waits until the folder browser has its answer.
+    fn listed(w: &Wx) {
+        w.pump_until("the folder list", |w| {
+            w.h.comp.get_rfolder_open() && !w.h.comp.get_rfolder_loading()
+        });
+    }
+
+    /// Remote sessions PR 7 (owner pick): the + menu has one row per linked machine, its logo and its name. Rule 1282
+    /// (Max's pick of mockup B, 2026-11-17): its pick opens the folder browser at the host's home, and Open here opens a
+    /// shell tab on that machine in that folder; the tab wears the machine's logo and name.
     #[test]
-    fn a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo() {
-        use crate::menus_ui::{GLYPH_LOGO_MAC, glyph_path};
+    fn a_machines_row_in_the_plus_menu_opens_the_folder_browser_then_a_shell_there() {
+        use crate::menus_ui::{GLYPH_LOGO_MAC, MACHINE_HINT, glyph_path};
         let w = Wx::new(1.0);
         w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let lister = mac_lister(&w);
         w.h.comp.invoke_plus_menu(10.0, 10.0);
         let i = menu_row(&w, "Mac Mini").expect("the machine's row");
         let row = w.h.comp.get_menu_rows().row_data(i).unwrap();
         assert_eq!(row.icon.as_str(), glyph_path(GLYPH_LOGO_MAC));
         assert!(row.filled_icon);
+        assert_eq!(row.hint.as_str(), MACHINE_HINT);
         assert_eq!(row.trailing_icon.as_str(), "", "no pin on a machine");
         w.h.comp.invoke_menu_picked(i as i32);
+        assert!(w.h.comp.get_rfolder_open(), "the browser opens at once");
+        assert!(w.h.comp.get_rfolder_loading());
+        assert!(w.h.comp.get_overlay_open() && w.h.comp.get_chrome_has_focus());
+        assert!(w.remote.made().is_empty(), "no tab yet");
+        listed(&w);
+        assert_eq!(
+            *lister.asks.lock().unwrap(),
+            [("mac".to_string(), None)],
+            "the home is asked with no path"
+        );
+        assert_eq!(
+            w.h.comp.get_rfolder_title().as_str(),
+            "Choose a folder on Mac Mini"
+        );
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max");
+        w.h.comp.invoke_rfolder_open_here();
+        assert!(!w.h.comp.get_rfolder_open());
         w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
         let spec = w.remote.made()[0].0.remote.clone().expect("a remote spec");
         assert_eq!(spec.machine, "mac");
-        assert_eq!(spec.folder, crate::machines::HOST_HOME);
+        assert_eq!(spec.folder, "/Users/max");
         let id = w
             .ctl
             .borrow()
@@ -3062,6 +3143,124 @@ mod flow {
                 .all(|r| r.machine == 0),
             "a local tab wears no logo"
         );
+    }
+
+    /// The crumbs the folder browser shows.
+    fn crumb_labels(w: &Wx) -> Vec<String> {
+        let c = w.h.comp.get_rfolder_crumbs();
+        (0..c.row_count())
+            .filter_map(|i| c.row_data(i))
+            .map(|c| c.label.to_string())
+            .collect()
+    }
+
+    /// Rule 1282: Ctrl+Shift+R's machine row opens the same browser. A click picks a folder (never a file) and the
+    /// footer names it; a double-click goes in and the crumbs follow; Back comes back; Open here opens the remote tab
+    /// in the picked folder, which joins the remote recents with its machine (rule 1213).
+    #[test]
+    fn the_folder_browser_picks_enters_goes_back_and_opens_the_tab_in_the_folder() {
+        use flare_settings::recent_roots::remote_roots;
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let lister = mac_lister(&w);
+        w.ctl.borrow_mut().open_machine_menu();
+        let i = menu_row(&w, "Mac Mini").expect("the machine's row");
+        w.h.comp.invoke_menu_picked(i as i32);
+        listed(&w);
+        assert_eq!(w.h.comp.get_rfolder_rows().row_count(), 3);
+        assert_eq!(crumb_labels(&w), ["Mac Mini", "/", "Users", "max"]);
+        assert!(!w.h.comp.get_rfolder_can_back());
+        w.h.comp.invoke_rfolder_pick(2);
+        assert_eq!(
+            w.h.comp.get_rfolder_selected(),
+            -1,
+            "a file is never picked"
+        );
+        w.h.comp.invoke_rfolder_pick(1);
+        assert_eq!(w.h.comp.get_rfolder_selected(), 1);
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max/proj");
+        w.h.comp.invoke_rfolder_enter(1);
+        assert!(w.h.comp.get_rfolder_loading());
+        listed(&w);
+        assert_eq!(crumb_labels(&w), ["Mac Mini", "/", "Users", "max", "proj"]);
+        assert!(w.h.comp.get_rfolder_can_back());
+        assert_eq!(w.h.comp.get_rfolder_selected(), -1);
+        w.h.comp.invoke_rfolder_back();
+        listed(&w);
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max");
+        assert_eq!(
+            lister
+                .asks
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|a| a.1.clone())
+                .collect::<Vec<_>>(),
+            [
+                None,
+                Some("/Users/max/proj".to_string()),
+                Some("/Users/max".to_string())
+            ]
+        );
+        w.h.comp.invoke_rfolder_pick(1);
+        w.h.comp.invoke_rfolder_open_here();
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        let spec = w.remote.made()[0].0.remote.clone().expect("a remote spec");
+        assert_eq!(
+            (spec.machine.as_str(), spec.folder.as_str()),
+            ("mac", "/Users/max/proj")
+        );
+        assert!(
+            remote_roots(&w.prefs)
+                .iter()
+                .any(|r| r.machine == "mac" && r.path == "/Users/max/proj"),
+            "the folder joins the remote recents"
+        );
+        assert!(!w.h.comp.get_rfolder_open());
+    }
+
+    /// Rule 1282: a machine that does not answer is one line in the dialog (Settings > Machines' words), and nothing
+    /// opens; Cancel closes it, and an answer that comes after is never taken.
+    #[test]
+    fn a_machine_that_does_not_answer_is_one_line_and_a_late_answer_is_dropped() {
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let off = Arc::new(FakeLister::default());
+        w.ctl.borrow_mut().set_folder_lister(off);
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").unwrap();
+        w.h.comp.invoke_menu_picked(i as i32);
+        listed(&w);
+        assert_eq!(w.h.comp.get_rfolder_error().as_str(), "Not answering");
+        assert_eq!(w.h.comp.get_rfolder_rows().row_count(), 0);
+        w.h.comp.invoke_rfolder_cancel();
+        assert!(!w.h.comp.get_rfolder_open());
+        // Opened again and cancelled before its answer: the answer finds no dialog.
+        mac_lister(&w);
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").unwrap();
+        w.h.comp.invoke_menu_picked(i as i32);
+        w.h.comp.invoke_rfolder_cancel();
+        w.run(200);
+        assert!(!w.h.comp.get_rfolder_open());
+        assert!(w.remote.made().is_empty(), "nothing opened");
+        assert_eq!(w.ctl.borrow().rfolder_state()["open"], false);
+    }
+
+    /// Rule 1282: while the dialog is up, a key is the dialog's (Escape, Enter, the arrows), never the shell's.
+    #[test]
+    fn the_folder_browser_has_the_keys_while_it_is_up() {
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        mac_lister(&w);
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").unwrap();
+        w.h.comp.invoke_menu_picked(i as i32);
+        listed(&w);
+        for key in ["Escape", "Enter", "ArrowDown"] {
+            let out = w.ctl.borrow_mut().on_key(&KeyEvent::new(key, key));
+            assert_eq!(out, crate::appctl::KeyOutcome::Slint, "{key}");
+        }
     }
 
     /// Steps the window's clock in 50 ms slices, with a breath of real time for the workers, until `cond`.
@@ -3207,10 +3406,11 @@ mod flow {
     }
 
     /// Rule 1213: a remote tab's folder joins the recent folders with its machine (the host's home folder only once its
-    /// shell names it); the + menu lists it with the machine's logo, and its pick opens a remote tab there.
+    /// shell names it); the + menu lists it with the folder glyph and "on <machine>" (rule 1282), and its pick opens a
+    /// remote tab there.
     #[test]
     fn a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again() {
-        use crate::menus_ui::{GLYPH_LOGO_MAC, glyph_path};
+        use crate::menus_ui::{GLYPH_FOLDER_FILL, glyph_path};
         use flare_settings::recent_roots::{RemoteRoot, recent_roots, remote_roots};
         let w = Wx::new(1.0);
         w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
@@ -3247,7 +3447,8 @@ mod flow {
         w.h.comp.invoke_plus_menu(10.0, 10.0);
         let i = menu_row(&w, "proj").expect("the remote folder's row");
         let row = w.h.comp.get_menu_rows().row_data(i).unwrap();
-        assert_eq!(row.icon.as_str(), glyph_path(GLYPH_LOGO_MAC));
+        assert_eq!(row.icon.as_str(), glyph_path(GLYPH_FOLDER_FILL));
+        assert_eq!(row.hint.as_str(), "on Mac Mini");
         let made = w.remote.made().len();
         w.h.comp.invoke_menu_picked(i as i32);
         // The home tab's own pty can be made late on a busy runner, so find the picked folder's pty among the new ones

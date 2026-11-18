@@ -2541,9 +2541,11 @@ impl AppDispatcher {
             }
             Method::RemoteLs => {
                 only_fields(params, &["path"], "remote.ls")?;
+                // No path, or `~` alone, is this host's home folder (rule 1282: the viewer's folder browser starts
+                // there, as `remote.open` does); `~/x` is still no host path.
                 let dir = match str_param(params, "path")? {
-                    Some(p) => host_folder(p)?,
-                    None => std::path::PathBuf::from(&self.home),
+                    Some(p) if p != crate::machines::HOST_HOME => host_folder(p)?,
+                    _ => std::path::PathBuf::from(&self.home),
                 };
                 list_folder(&dir)
             }
@@ -6401,6 +6403,33 @@ mod tests {
             code::BAD_PARAMS
         );
         assert_eq!(*ops.lock().unwrap(), ["CtlOp::RemoteOpen"]);
+    }
+
+    /// Rule 1282: `remote.ls` with `~` alone, or with no path, lists the host's home and names it by its real path (the
+    /// viewer's folder browser starts there and builds its crumbs from that path); `~/x` is still no host path.
+    #[test]
+    fn remote_ls_reads_a_lone_tilde_as_the_hosts_home() {
+        let (mut d, ops, _) = remote_rig();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Documents")).unwrap();
+        d.home = dir.path().to_string_lossy().into_owned();
+        let c = bridge(1);
+        for params in [json!({"path": "~"}), json!({})] {
+            let v = d.call(&c, Method::RemoteLs, params.clone()).unwrap();
+            assert_eq!(v["path"], json!(d.home), "{params}");
+            assert_eq!(v["entries"][0]["name"], "Documents", "{params}");
+            assert_eq!(v["entries"][0]["dir"], true, "{params}");
+        }
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteLs, json!({"path": "~/x"}))),
+            code::BAD_PARAMS
+        );
+        d.home = dir.path().join("gone").to_string_lossy().into_owned();
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteLs, json!({"path": "~"}))),
+            code::NOT_FOUND
+        );
+        assert!(ops.lock().unwrap().is_empty(), "nothing reached the window");
     }
 
     /// `remote.ls` lists one host folder on the worker: folders first, then by name, bounded.
