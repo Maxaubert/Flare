@@ -4783,6 +4783,23 @@ joins the Apple and Windows logos. Held by `a_greeting_names_windows_or_a_linux_
 `an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`) and
 `glyph_paths_match_the_slint_file` (`menus_ui.rs`). Source: Max, 2026-11-17.
 
+1279. **A remote tab takes the folder the host's status names, and reads it by the host's path rules.** Max, 2026-11-17,
+from the Mac viewer: a tab opened on home-pc from the + menu showed `~` as its title and its folder line. The tab opens
+in the word `~` (`HOST_HOME`), and the first prompt's folder report (OSC 9;9) is stripped from the snapshot a new tab
+starts from (rule 289, which stays). The host's `remote.status` already named each tab's `folder`; the viewer now reads
+it (`HostStatus::folder`, `remote_status::status_of`) and `sync_remote_status` makes it the tab's folder and names the
+host's home for the recent folders (rule 1213). A folder is taken only whole and only when it is a safe path
+(`remote_status::host_folder`: no control or invisible character, no UNC or device form, at most 1024 characters),
+judged by no platform's rules (a Linux host's `/home` is fine on a Mac). A remote tab's folder line reads by its
+host's rules on any viewer, with no `~` for this machine's home (`tabs_ui::tab_folder_line`,
+`sidebar_rows::folder_line_by` and `PathRules::of_host`: the machine's system, else the path's shape): a PC host's
+`C:\Users\Admin` reads title `Admin`, line `C:\Users`, on a Windows viewer and a Mac viewer alike. Held by
+`a_remote_tab_opened_in_the_hosts_home_takes_the_folder_its_status_names` (`ui_tests/term.rs`),
+`a_status_answer_gives_the_hosts_folder_only_when_it_is_a_safe_path` (`remote_status.rs`),
+`a_remote_tabs_folder_line_reads_by_its_hosts_rules_on_any_viewer` (`tabs_ui.rs`) and
+`a_hosts_folder_reads_by_the_hosts_rules_on_any_viewer` (`flare-tabs/src/sidebar_rows.rs`). Source: Max, 2026-11-17;
+`research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
+
 1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
 screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
 "mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
