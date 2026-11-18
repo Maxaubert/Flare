@@ -419,7 +419,14 @@ fn turning_import_off_detaches_imported_rows_and_keeps_the_rest() {
     let row = row_of(&w, "t1-1").unwrap();
     pick(&w, &row);
     w.pump_until("the attach", |w| w.remote.made().len() == 2);
-    let io = w.remote.made()[1].1.clone();
+    // The links start on workers: the row's is found by its host tab, not by its place in the list.
+    let io = w
+        .remote
+        .made()
+        .into_iter()
+        .find(|(s, _)| s.remote.as_ref().and_then(|r| r.live.host_tab()).as_deref() == Some("t1-1"))
+        .map(|(_, io)| io)
+        .expect("the row's link");
     flare_settings::machine_prefs::set_import_remote_on(&w.prefs, false);
     w.pump_until("the rows gone", |w| ids(w).len() == 2);
     assert_eq!(
