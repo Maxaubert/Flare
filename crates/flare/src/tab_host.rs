@@ -116,6 +116,10 @@ pub struct TabHost {
     /// Spawn order, so `live_ids` and `drain_events` are stable.
     order: Vec<String>,
     shell_ids: HashMap<String, Option<String>>,
+    /// The local tabs whose shell started with Flare's hooks on (rule 1286): only a Claude there names its session with
+    /// its first message, so only there does "no session named" mean "nothing was sent". A tab started before the
+    /// setting was switched on is not in it.
+    hooked: std::collections::HashSet<String>,
     dims: (usize, usize),
     waker: Arc<dyn Fn() + Send + Sync>,
     prefs: PrefStore,
@@ -162,6 +166,7 @@ impl TabHost {
             handles: HashMap::new(),
             order: Vec::new(),
             shell_ids: HashMap::new(),
+            hooked: std::collections::HashSet::new(),
             dims: (80, 24),
             waker,
             prefs,
@@ -200,11 +205,17 @@ impl TabHost {
                 resume.map_or(0, str::len)
             );
         }
+        let plugin = self.plugin_env();
+        if plugin.as_ref().is_some_and(|p| p.on) {
+            self.hooked.insert(id.to_string());
+        } else {
+            self.hooked.remove(id);
+        }
         handle.start(StartOptions {
             root: cwd.to_string(),
             shell_id: shell_id.clone(),
             resume: valid.map(str::to_string),
-            plugin: self.plugin_env(),
+            plugin,
             remote: None,
         });
         self.handles.insert(id.to_string(), handle);
@@ -236,6 +247,12 @@ impl TabHost {
         self.handles.get(id).cloned()
     }
 
+    /// Whether the tab's shell started with Flare's hooks on (rule 1286), so a Claude in it names its session with its
+    /// first message. False for a remote tab, a tab this host never spawned, and one started while the hooks were off.
+    pub fn hooks_on_in(&self, id: &str) -> bool {
+        self.hooked.contains(id)
+    }
+
     /// The shell kind the tab was spawned with; `None` for a tab this host never spawned.
     pub fn shell_id_of(&self, id: &str) -> Option<Option<String>> {
         self.shell_ids.get(id).cloned()
@@ -250,6 +267,7 @@ impl TabHost {
         self.mgr.kill(id);
         self.order.retain(|x| x != id);
         self.shell_ids.remove(id);
+        self.hooked.remove(id);
         self.remote_sized.borrow_mut().remove(id);
     }
 
@@ -262,6 +280,7 @@ impl TabHost {
         self.mgr.leave(id);
         self.order.retain(|x| x != id);
         self.shell_ids.remove(id);
+        self.hooked.remove(id);
         self.remote_sized.borrow_mut().remove(id);
         self.viewer_typed.borrow_mut().remove(id);
     }
@@ -460,6 +479,7 @@ impl TabHost {
         self.handles.clear();
         self.order.clear();
         self.shell_ids.clear();
+        self.hooked.clear();
         self.remote_sized.borrow_mut().clear();
         self.mgr.kill_all();
         let ok = self.mgr.shells_gone(QUIT_WAIT);
@@ -1117,6 +1137,13 @@ mod tests {
                 .unwrap_or_default()
                 .ends_with(dir)
         );
+        // Rule 1286: each tab remembers whether its own shell started with the hooks, whatever the setting says now.
+        flare_settings::agent_prefs::set_agent_hooks_on(&prefs, true);
+        assert!(h.hooks_on_in("a"));
+        assert!(!h.hooks_on_in("b"), "started while the hooks were off");
+        assert!(!h.hooks_on_in("never"));
+        h.kill("a");
+        assert!(!h.hooks_on_in("a"));
     }
 
     #[test]

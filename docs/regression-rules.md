@@ -4916,10 +4916,13 @@ and not that or gives empty temrinal. you cant continue a empty sessioun so it s
 blank in that case." `tabs.json` kept only `"agent": "claude"` per tab and the restore handed each Claude tab the Nth
 newest session of its folder (rule 4). Claude writes no transcript (or none with a user message) for a session nobody
 typed into, so that tab got an older conversation, or a plain shell when the folder had none. Now each local Claude
-tab saves `"session"`: the id its hooks (or its resume) named, or `"new"` when none was named while the hooks are on
-(the `+sid` hooks name the session with the first message sent, so nothing was sent). On restore a saved id is resumed
+tab saves `"session"`: the id its hooks (or its resume) named, or `"new"` when none was named and the tab's shell started with the hooks on
+(the `+sid` hooks name the session with the first message sent, so nothing was sent). The hooks state is the one the
+tab's shell started with (`TabHost::hooks_on_in`), not the setting now: a shell started before the hooks were switched
+on has no hooks, so its used session would read as unused. On restore a saved id is resumed
 only when its transcript in that folder holds a user message (`claude_session_used`: streamed line by line, stops at
-the first `"type":"user"` line that is not `isMeta`, at most 1 MB, on the restore worker) and no tab before took it;
+the first `"type":"user"` line that is not `isMeta`, at most 1 MB, on the restore worker; a first message the cap cuts,
+such as one with pasted images, counts by its head, where Claude writes `type` before `message`) and no tab before took it;
 otherwise, and for `"new"`, the tab starts a new blank Claude. A tab without the key (an older file, or the hooks off)
 keeps rule 4's newest session, skipping the ids other tabs saved, and starts a new blank Claude when none is left.
 Ctrl+Shift+T does the same for a closed Claude tab with no session named (rule 1236). The new blank Claude is the marker
@@ -4934,6 +4937,8 @@ SESSION_NEW}`, `TabModel::set_session`, `AppCtl::session_to_save`, `flare_agent:
 `a_saved_session_is_never_handed_to_another_tab`, `no_session_means_a_new_blank_claude` (flare-tabs and `appctl`),
 `resolve_restore_asks_the_lookup_whether_the_saved_session_was_used`, `saved_keeps_a_claude_tabs_session_only`,
 `a_session_is_used_only_when_its_transcript_holds_a_user_message`, `the_user_message_scan_is_bounded`,
+`a_first_message_longer_than_the_cap_still_counts`, `a_tab_started_with_the_hooks_off_never_saves_new`,
+`a_new_shell_gets_the_plugin_while_the_setting_is_on`,
 `accepts_the_new_claude_marker_and_nothing_near_it`, `the_new_claude_marker_starts_plain_claude_on_every_windows_shell`,
 `a_restored_zsh_or_bash_tab_resumes_claude_through_the_login_shell`,
 `the_claude_lookup_says_a_session_is_used_only_with_a_user_message`,

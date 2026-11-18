@@ -207,21 +207,37 @@ pub fn claude_session_used(root: &Path, cwd: &str, id: &str) -> bool {
 }
 
 /// Whether the transcript read from `r` holds a user message within its first `USED_SCAN_BYTES`: a line whose
-/// `type` is `user` and that is not one of Claude's own meta lines (`isMeta`). A line cut by the cap does not count.
+/// `type` is `user` and that is not one of Claude's own meta lines (`isMeta`). A line the cap cuts (a first message
+/// carrying large pasted images) is judged by its head: Claude writes `type` before `message`, and its meta lines are
+/// short, so a cut line that is a user line is a message the user sent.
 pub fn has_user_message(r: impl Read) -> bool {
     use std::io::BufRead;
     let mut reader = std::io::BufReader::new(r.take(USED_SCAN_BYTES));
     let mut line = Vec::new();
+    let mut read: u64 = 0;
     loop {
         line.clear();
         // sync-ok: runs on a worker (the restore thread)
-        match reader.read_until(b'\n', &mut line) {
+        let n = match reader.read_until(b'\n', &mut line) {
             Ok(0) | Err(_) => return false,
-            Ok(_) => {}
-        }
+            Ok(n) => n,
+        };
+        read += n as u64;
         if is_user_line(&line) {
             return true;
         }
+        if read >= USED_SCAN_BYTES && line.last() != Some(&b'\n') {
+            return is_cut_user_line(&line);
+        }
+    }
+}
+
+/// The head of a line the cap cut: a top-level `"type":"user"` written before the line's `"message"`.
+fn is_cut_user_line(line: &[u8]) -> bool {
+    let find = |pat: &[u8]| line.windows(pat.len()).position(|w| w == pat);
+    match (find(b"\"type\":\"user\""), find(b"\"message\":")) {
+        (Some(t), Some(m)) => t < m,
+        _ => false,
     }
 }
 
@@ -357,6 +373,27 @@ mod tests {
         late.extend_from_slice(user);
         assert!(!has_user_message(&late[..]));
         assert!(!has_user_message(&b""[..]));
+    }
+
+    /// Rule 1286: a first message so large the cap cuts it (pasted images) still counts, judged by its head; a cut
+    /// line that is not a user line, or whose `type` sits inside its `message`, does not.
+    #[test]
+    fn a_first_message_longer_than_the_cap_still_counts() {
+        let big = |head: &str| {
+            let mut v = b"{\"type\":\"file-history-snapshot\"}\n".to_vec();
+            v.extend_from_slice(head.as_bytes());
+            v.extend(std::iter::repeat_n(b'A', USED_SCAN_BYTES as usize));
+            v.extend_from_slice(b"\"}]}}\n");
+            v
+        };
+        let user = big(
+            r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":[{"type":"image","source":{"data":""#,
+        );
+        assert!(has_user_message(&user[..]));
+        let assistant = big(r#"{"type":"assistant","message":{"content":[{"type":"text","text":""#);
+        assert!(!has_user_message(&assistant[..]));
+        let nested = big(r#"{"type":"assistant","message":{"x":{"type":"user","text":""#);
+        assert!(!has_user_message(&nested[..]));
     }
 
     #[test]

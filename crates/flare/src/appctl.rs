@@ -2161,8 +2161,9 @@ impl AppCtl {
     }
 
     /// The session `tabs.json` keeps for a Claude tab (rule 1286): the one its hooks (or its resume) named; when none
-    /// was named while the hooks are on, `new`, since a Claude names its session with the first message sent, so
-    /// nothing was sent in it and it comes back as a new blank Claude. With the hooks off nothing is known: None.
+    /// was named and the tab's shell started with the hooks on, `new`, since a Claude names its session with the first
+    /// message sent, so nothing was sent in it and it comes back as a new blank Claude. When its shell started with the
+    /// hooks off (also a tab started before they were switched on) nothing is known: None.
     fn session_to_save(&self, id: &str, agent: Option<AgentKind>) -> Option<String> {
         if agent != Some(AgentKind::Claude) {
             return None;
@@ -2172,8 +2173,7 @@ impl AppCtl {
             None => self
                 .deps
                 .host
-                .plugin_env()
-                .is_some_and(|p| p.on)
+                .hooks_on_in(id)
                 .then(|| flare_tabs::restore::SESSION_NEW.to_string()),
         }
     }
@@ -10598,6 +10598,38 @@ two",
         let saved = f.ctl.borrow().model().saved();
         let sessions: Vec<Option<String>> = saved.tabs.into_iter().map(|t| t.session).collect();
         assert_eq!(sessions, vec![Some(SESSION_A.into()), Some("new".into())]);
+    }
+
+    /// Rule 1286: a Claude tab whose shell started with the hooks off names no session even when used, so it never
+    /// saves `new`, also after the setting is switched on (only a new shell sees that change).
+    #[test]
+    fn a_tab_started_with_the_hooks_off_never_saves_new() {
+        let lookup = FixedSessions::new(&[]);
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![("C:\\c", Some(AgentKind::Claude))],
+                saved_sessions: vec![Some("new")],
+                lookup: lookup_of(&lookup),
+                shells: Some(vec![resume_pwsh()]),
+                plugin_dir: Some("C:\\plugin".into()),
+                ..Opts::default()
+            },
+            |p| flare_settings::agent_prefs::set_agent_hooks_on(p, false),
+        );
+        f.start_restore_and_wait();
+        f.wait_made("C:\\c");
+        let line = f.made_with("C:\\c")[0]
+            .spec()
+            .args
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        assert!(line.ends_with("; claude"), "{line}");
+        let id = f.ids()[0].clone();
+        assert_eq!(f.ctl.borrow().model().session(&id), None);
+        flare_settings::agent_prefs::set_agent_hooks_on(&f.prefs, true);
+        f.ctl.borrow_mut().sync_model_agents();
+        assert_eq!(f.ctl.borrow().model().session(&id), None);
     }
 
     /// Rule 1286: a Claude tab with no session left comes back as a new blank Claude (plain `claude`), not a plain
