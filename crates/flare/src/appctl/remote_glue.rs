@@ -495,7 +495,11 @@ impl AppCtl {
 
     /// Remote sessions PR 4 on the viewer (rule 294): a remote tab's link brought the host's status of it. Each remote
     /// tab's newest status is applied once; the hub turns it into marks (question and working, never a copied done).
-    pub(crate) fn sync_remote_status(&mut self) {
+    /// Rule 1279: the folder the host names (already a safe path, `remote_status::host_folder`) becomes the tab's, so
+    /// a tab opened in the host's home (`~`) shows its real folder within a poll of opening, without the first
+    /// prompt's folder report the snapshot strips (rule 289); it also names that home for the recent folders (rule
+    /// 1213). True when a tab's folder changed.
+    pub(crate) fn sync_remote_status(&mut self) -> bool {
         let news: Vec<(String, flare_term::remote_pty::HostStatus)> = self
             .model
             .state
@@ -509,10 +513,22 @@ impl AppCtl {
                     .map(|s| (t.id.clone(), s))
             })
             .collect();
+        let mut changed = false;
         for (id, st) in news {
             self.rconvo.heard(&id, st.host_sized, st.session.is_some());
             self.hub.on_remote_status(&id, &st);
+            if let Some(folder) = st
+                .folder
+                .as_deref()
+                .filter(|f| crate::remote_status::host_folder(f))
+            {
+                if self.model.set_cwd(&id, folder) {
+                    changed = true;
+                }
+                self.remember_remote_home(&id, folder);
+            }
         }
+        changed
     }
 
     /// Remote sessions PR 7 (rule 1193): each remote tab's link polls its conversation only while its view is wanted,

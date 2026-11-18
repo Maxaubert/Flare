@@ -272,6 +272,7 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
                 "hint": r.hint.to_string(),
                 "icon": r.icon.to_string(),
                 "logo": !r.logo.is_empty(),
+                "logo_icon": r.logo_icon,
                 "disabled": r.disabled,
             })
         })
@@ -308,6 +309,19 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         },
         "dialog": dialog,
         "menu": { "open": app.get_menu_open(), "rows": menu_rows },
+        // The remote folder browser (rule 1282).
+        "remote_folder": {
+            "open": app.get_rfolder_open(),
+            "title": app.get_rfolder_title().to_string(),
+            "path": app.get_rfolder_path().to_string(),
+            "loading": app.get_rfolder_loading(),
+            "error": app.get_rfolder_error().to_string(),
+            "names": app
+                .get_rfolder_rows()
+                .iter()
+                .map(|r| r.name.to_string())
+                .collect::<Vec<_>>(),
+        },
         "find": {
             "open": app.get_find_open(),
             "query": app.get_find_query().to_string(),
@@ -528,6 +542,24 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
             k,
         )),
         "dialog" => Err("ui.rect dialog: no dialog is open".into()),
+        // The remote folder browser's box and its Open here button (rule 1282).
+        "remote-folder" if a.get_rfolder_open() => Ok(rect_json(
+            a.get_rfolder_box_x(),
+            a.get_rfolder_box_y(),
+            a.get_rfolder_box_w(),
+            a.get_rfolder_box_h(),
+            k,
+        )),
+        "remote-folder-open" if a.get_rfolder_open() => Ok(rect_json(
+            a.get_rfolder_open_x(),
+            a.get_rfolder_open_y(),
+            a.get_rfolder_open_w(),
+            a.get_rfolder_open_h(),
+            k,
+        )),
+        "remote-folder" | "remote-folder-open" => {
+            Err(format!("ui.rect {name}: the folder browser is not open"))
+        }
         "start" if a.get_front_kind() == 2 => Ok(rect_json(
             a.get_start_x(),
             a.get_start_y(),

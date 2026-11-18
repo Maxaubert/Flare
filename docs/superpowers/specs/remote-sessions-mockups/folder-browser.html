@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Flare: pick a folder on home-pc</title>
+<style>
+:root{--ground:#171717;--secondary:#0d0d0d;--text:#dedacf;--text-soft:#c2bfb5;--dim:#929089;--dim2:#716f6a;--side-flat:#1f1f1e;--divider:#ffffff12;--line:#ffffff17;--hover:#ffffff0f;--accent:#fe8f34;--lime:#a6d94a}
+body{margin:0;background:#101010;color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;font-size:13px;padding:22px 28px}
+h1{font-size:18px;margin:0 0 4px;font-weight:600}
+.sub{color:var(--dim);font-size:12px;margin:0 0 4px}
+.opt{display:inline-block;background:var(--accent);color:#0b0b0f;font-weight:700;border-radius:3px;padding:0 6px;margin-right:6px;font-size:12px}
+.cur{background:#5e5c59;color:#fff}
+.block{background:var(--secondary);border:1px solid var(--line);border-radius:4px;padding:12px 14px;margin-top:14px}
+.block h2{font-size:13.5px;font-weight:600;margin:0 0 3px}
+.block .cap{font-size:12px;color:var(--dim);margin:0 0 10px}
+.stage{display:flex;gap:0;align-items:flex-start}
+.menu{background:var(--side-flat);border:1px solid var(--divider);border-radius:2px;width:236px;box-shadow:0 10px 28px #00000080;flex:none}
+.mi{height:28px;display:flex;align-items:center;padding:0 11px;gap:8px;font-size:12px;color:var(--text-soft)}
+.mi svg{flex:none}
+.mi .h{margin-left:auto;font-size:10.5px;letter-spacing:.4px;color:var(--dim2);display:flex;align-items:center;gap:4px}
+.mi.lit{background:var(--hover);color:var(--text)}
+.rule{height:9px;position:relative}.rule:after{content:"";position:absolute;left:0;right:0;top:4px;height:1px;background:var(--divider)}
+.hair{height:1px;background:var(--divider)}
+.ghdr{height:22px;display:flex;align-items:flex-end;padding:0 11px 3px;font-size:10.5px;letter-spacing:.4px;color:var(--dim2)}
+.fly{margin-left:-2px;width:auto;min-width:236px}.mi span{white-space:nowrap}.mi .h{padding-left:24px}
+.bad{outline:1.5px dashed #ff8a8d;outline-offset:-2px}
+.good{outline:1.5px dashed #8fd47a;outline-offset:-2px}
+.side-notes{margin-left:22px;font-size:12px;color:var(--text-soft);max-width:300px;line-height:1.5}
+.side-notes b{color:var(--text)}
+/* dialog */
+.dlg{background:var(--side-flat);border:1px solid var(--divider);border-radius:2px;width:430px;box-shadow:0 24px 70px #00000099;padding:20px;flex:none;margin-left:26px}
+.dlg .t{font-size:14.5px;font-weight:600;margin-bottom:14px}
+.bar{display:flex;align-items:center;gap:4px;margin-bottom:8px}
+.ib{width:26px;height:26px;border-radius:3px;display:flex;align-items:center;justify-content:center}
+.ib:hover{background:var(--hover)}
+.crumbs{display:flex;align-items:center;gap:2px;font-size:12.5px;color:var(--text-soft);margin-left:6px}
+.crumbs span.c{padding:3px 5px;border-radius:3px}
+.crumbs span.c.last{color:var(--text);font-weight:600}
+.crumbs .sep{color:var(--dim2)}
+.list{background:var(--ground);border:1px solid var(--line);border-radius:3px;height:254px;overflow:hidden}
+.li{height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;font-size:12.5px;color:var(--text-soft)}
+.li.sel{background:#fe8f3426;color:var(--text)}
+.li.file{color:var(--dim2)}
+.li .r{margin-left:auto;font-size:10.5px;color:var(--dim2)}
+.foot{display:flex;align-items:center;gap:8px;margin-top:14px}
+.path{font-family:Consolas,"Cascadia Mono",monospace;font-size:11.5px;color:var(--dim);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.btn{height:30px;padding:0 14px;border-radius:8px;border:1px solid var(--divider);display:flex;align-items:center;font-size:12.5px;color:var(--text-soft);background:#1e1e1d}
+.btn.pri{background:var(--accent);color:#0b0b0f;font-weight:600}
+.row2{display:flex;gap:16px}
+</style></head><body>
+<h1>home-pc in the New tab menu: open a folder there, not only the home folder</h1>
+<p class="sub">Issue 2 of the 2026-11-17 Mac report. Panels use the real ContextMenu look (side-flat #1f1f1e, 28 px rows, 12 px text, 13 px icons, 10.5 px hints) and the Dialog look. Red dashes: rows that look alike today. Green dashes: how each option tells them apart.</p>
+
+<div class="row2">
+<div class="block" style="flex:none">
+  <h2><span class="opt cur">Now</span>One flat list</h2>
+  <p class="cap">"Admin  home-pc" (a folder) and "home-pc" (a machine)<br>draw the same: lime logo, label, nothing after it.</p>
+  <div class="stage"><div class="menu" id="m-now"></div></div>
+</div>
+<div class="block" style="flex:1">
+  <h2><span class="opt">A</span>Machine row with a chevron and a submenu</h2>
+  <p class="cap">Hover home-pc: open in the home folder, choose a folder there (the browser in B), or one of its recent folders.<br>The machine's recent folders move into its submenu, so the main list has one row per machine.</p>
+  <div class="stage"><div class="menu" id="m-a"></div><div class="menu fly" id="m-a2" style="margin-top:95px"></div></div>
+</div>
+</div>
+
+<div class="block">
+  <h2><span class="opt">B</span>Flare-drawn folder browser for the machine</h2>
+  <p class="cap">Clicking home-pc opens this dialog at the host's home folder (Open here at once is today's behaviour). Folders first, files dimmed and not pickable, breadcrumbs to go up. Never the OS dialog.<br>Recent remote folders stay in the main menu but get the folder glyph and "on home-pc", so only the machine row carries the logo.</p>
+  <div class="stage">
+    <div class="menu" id="m-b"></div>
+    <div class="dlg">
+      <div class="t">Choose a folder on home-pc</div>
+      <div class="bar">
+        <div class="ib" title="Back" id="i-back"></div>
+        <div class="ib" title="Home folder" id="i-home"></div>
+        <div class="crumbs"><span class="c">home-pc</span><span class="sep">›</span><span class="c">C:</span><span class="sep">›</span><span class="c">Users</span><span class="sep">›</span><span class="c last">Admin</span></div>
+      </div>
+      <div class="list" id="list"></div>
+      <div class="foot">
+        <div class="path">C:\Users\Admin\Documents</div>
+        <div class="btn">Cancel</div>
+        <div class="btn pri">Open here</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const G={pc:"M3 3h7.5v7.5H3zm10.5 0H21v7.5h-7.5zM3 13.5h7.5V21H3zm10.5 0H21V21h-7.5z",
+ pcNow:"M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z",
+ ffill:"M2.5 5.5h6.2l2 2.6h10.8v10.4H2.5z",
+ fstroke:"M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2.4h7.4a2 2 0 0 1 2 2v6.6a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z",
+ home:"M4 11l8-7 8 7M6 9.5V20h12V9.5M10 20v-5h4v5",
+ back:"M15 6l-6 6 6 6",
+ file:"M7 3.5h7l4 4V20.5H7zM14 3.5V8h4",
+ chev:"M9 6l6 6-6 6"};
+const S=(d,sz,col,w=1.7,op=.8)=>`<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" style="opacity:${op}"><path d="${d}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const F=(d,sz,col,op=.8,extra='')=>`<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" style="opacity:${op};${extra}"><path d="${d}" fill="${col}"/></svg>`;
+const SOFT='#c2bfb5',LIME='#a6d94a',TXT='#dedacf';
+const fol=F(G.ffill,13,LIME), choose=S(G.fstroke,13,SOFT);
+const pcNow=F(G.pcNow,13.9,LIME,.8,'margin:-.45px'), pc=(lit)=>F(G.pc,13,lit?TXT:SOFT,.85);
+const chev=(lit)=>S(G.chev,11,lit?TXT:SOFT,2.2,.7);
+function r(icon,label,hint='',o={}){return `<div class="mi${o.lit?' lit':''}${o.cls?' '+o.cls:''}">${icon}<span>${label}</span>${hint?`<span class="h">${hint}</span>`:''}${o.tail?(hint?'':'<span style="margin-left:auto"></span>')+o.tail:''}</div>`}
+const rule='<div class="rule"></div>';
+document.getElementById('m-now').innerHTML=
+ r(choose,'Choose a folder…')+'<div class="hair"></div>'+r(fol,'Flare','~\\Projects')+'<div class="hair"></div>'+r(fol,'Documents','~\\Documents')+rule+
+ r(pcNow,'Admin','home-pc',{cls:'bad'})+'<div class="hair"></div>'+r(pcNow,'projects','home-pc')+rule+r(pcNow,'home-pc','',{cls:'bad'});
+document.getElementById('m-a').innerHTML=
+ r(choose,'Choose a folder…')+'<div class="hair"></div>'+r(fol,'Flare','~\\Projects')+'<div class="hair"></div>'+r(fol,'Documents','~\\Documents')+rule+
+ r(pc(true),'home-pc','',{lit:true,tail:chev(true),cls:'good'})+'<div class="hair"></div>'+r(F("M3.5 4.5h17v11h-17zM9 19.5h6M12 15.5v4",13,'transparent',.85).replace('fill="transparent"','fill="none" stroke="#c2bfb5" stroke-width="1.7" stroke-linejoin="round"'),'studio-mac','',{tail:chev(false)});
+document.getElementById('m-a2').innerHTML=
+ r(S(G.home,13,SOFT),'Open in home folder','C:\\Users\\Admin',{lit:true})+'<div class="hair"></div>'+r(choose,'Choose a folder on home-pc…')+rule+
+ '<div class="ghdr">RECENT ON HOME-PC</div>'+r(fol,'Admin','C:\\Users',{cls:'good'})+'<div class="hair"></div>'+r(fol,'projects','C:\\Users\\Admin')+'<div class="hair"></div>'+r(fol,'Flare','D:\\src');
+const onpc=`on home-pc`;
+document.getElementById('m-b').innerHTML=
+ r(choose,'Choose a folder…')+'<div class="hair"></div>'+r(fol,'Flare','~\\Projects')+'<div class="hair"></div>'+r(fol,'Documents','~\\Documents')+rule+
+ r(fol,'Admin',onpc,{cls:'good'})+'<div class="hair"></div>'+r(fol,'projects',onpc)+rule+r(pc(true),'home-pc','choose folder',{lit:true,cls:'good'});
+document.getElementById('i-back').innerHTML=S(G.back,14,SOFT,1.8,1);
+document.getElementById('i-home').innerHTML=S(G.home,14,SOFT,1.7,1);
+const L=document.getElementById('list');
+[['.claude',0],['Desktop',0],['Documents',1],['Downloads',0],['Music',0],['Pictures',0],['projects',0]].forEach(([n,s])=>{L.innerHTML+=`<div class="li${s?' sel':''}">${F(G.ffill,14,LIME,.85)}<span>${n}</span>${s?'<span class="r">double-click to open</span>':''}</div>`});
+['.gitconfig','notes.txt'].forEach(n=>{L.innerHTML+=`<div class="li file">${S(G.file,14,'#716f6a',1.6,1)}<span>${n}</span></div>`});
+</script>
+</body></html>

@@ -1001,9 +1001,12 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   (`bad_params`), the viewer's id for this tab's open. The host remembers the last 64 ids for 10 minutes each; an
   `open_id` it remembers, whose tab is still open, is answered with that tab and its `session`, and no second tab
   opens. A host older than this refuses the param as unknown (`bad_params`), and the viewer opens without it.
-- `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home),
-  read on the worker: folders first, then by name, at most 500 entries, names with a control character left out.
-  Host paths only. `not_found` when it cannot be read. 60 s.
+- `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home; `~`
+  alone is the home too, as for `remote.open`, rule 1282; `~/x` is `bad_params`), read on the worker: folders first,
+  then by name, at most 500 entries, names with a control character left out. Host paths only, and `path` in the answer
+  is the folder's real path (the viewer's folder browser builds its crumbs from it). `not_found` when it cannot be
+  read. 60 s. The viewer's folder browser asks it over a short link of its own and asks the home with no `path`, so a
+  host from before rule 1282 answers it too. Never the agent's: no pipe grant reaches `remote.*`.
 - `remote.tabs {}` -> `{tabs: [{tab, cwd, title, state, session}]}`. `state` is `working`, `question`, `done`, `failed`
   or `idle`, as `tabs.list` tells a plugin.
 - `remote.attach {tab}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
@@ -1056,7 +1059,10 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   and a question as said, and raises its own Finished or Failed mark only when the work it showed stops while nobody
   there looks). `sized` says who sets the tab's one live size now (rule 282): `host` once someone typed in the host's
   window, `viewer` while the remote viewer that sent `remote.resize` does; the other screen shows its fitted
-  conversation view (rule 1193). `seq` grows when the answer differs from the last one (while a tab works its
+  conversation view (rule 1193). `folder` is the tab's folder on the host: the viewer's tab takes it as its folder
+  (title and folder line, read by the host's path rules) when it is a safe path (no control or invisible character,
+  no UNC form, at most 1024 characters; anything else is ignored whole), so a tab opened in `~` shows the host's real
+  home within a poll (rule 1279). `seq` grows when the answer differs from the last one (while a tab works its
   `working_for` does).
   Polled by the viewer every 1.5 s; a short call, sent once more after a broken pipe connection.
 - `remote.convo {tab, since?}` -> `{tab, entries: [{seq, role, text, tool?, at?}], reset, to}` (remote sessions PR 4,

@@ -308,7 +308,8 @@ impl MachinesPort for FileMachines {
 }
 
 /// The folder a + menu row opens a remote shell in (remote sessions PR 7): `remote.open` reads this word as the host's
-/// own home folder, which the viewer does not know. The tab shows the host's real folder once its shell reports it.
+/// own home folder, which the viewer does not know. The tab shows the host's real folder once the host's first
+/// `remote.status` names it (rule 1279), or its shell reports it.
 pub const HOST_HOME: &str = "~";
 
 /// Where Settings > Machines looks for Flare on a host it adds (remote sessions PR 7, rules 1207 and 1208), in this

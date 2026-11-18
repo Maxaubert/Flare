@@ -82,3 +82,8 @@ export struct OverflowRow { id: string, label: string, folder: string, needs: bo
                             mark-state: int, mark-color: color, agent: int }
 
 export struct NoteSection { heading: string, entries: [string] }
+
+// The remote folder browser (rule 1282): a name in the host's folder, and a crumb of the bar (`live`: a click goes
+// there; `last`: the folder shown, in bold).
+export struct RemoteFolderRow { name: string, dir: bool }
+export struct RemoteCrumb { label: string, live: bool, last: bool }

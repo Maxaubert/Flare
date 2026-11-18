@@ -65,6 +65,7 @@ mod plugin_ui;
 mod quiet_context;
 mod remote_convo;
 mod remote_files;
+mod remote_folder;
 mod remote_host;
 mod remote_link;
 mod remote_status;

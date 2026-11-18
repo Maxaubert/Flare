@@ -4783,6 +4783,23 @@ joins the Apple and Windows logos. Held by `a_greeting_names_windows_or_a_linux_
 `an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`) and
 `glyph_paths_match_the_slint_file` (`menus_ui.rs`). Source: Max, 2026-11-17.
 
+1279. **A remote tab takes the folder the host's status names, and reads it by the host's path rules.** Max, 2026-11-17,
+from the Mac viewer: a tab opened on home-pc from the + menu showed `~` as its title and its folder line. The tab opens
+in the word `~` (`HOST_HOME`), and the first prompt's folder report (OSC 9;9) is stripped from the snapshot a new tab
+starts from (rule 289, which stays). The host's `remote.status` already named each tab's `folder`; the viewer now reads
+it (`HostStatus::folder`, `remote_status::status_of`) and `sync_remote_status` makes it the tab's folder and names the
+host's home for the recent folders (rule 1213). A folder is taken only whole and only when it is a safe path
+(`remote_status::host_folder`: no control or invisible character, no UNC or device form, at most 1024 characters),
+judged by no platform's rules (a Linux host's `/home` is fine on a Mac). A remote tab's folder line reads by its
+host's rules on any viewer, with no `~` for this machine's home (`tabs_ui::tab_folder_line`,
+`sidebar_rows::folder_line_by` and `PathRules::of_host`: the machine's system, else the path's shape): a PC host's
+`C:\Users\Admin` reads title `Admin`, line `C:\Users`, on a Windows viewer and a Mac viewer alike. Held by
+`a_remote_tab_opened_in_the_hosts_home_takes_the_folder_its_status_names` (`ui_tests/term.rs`),
+`a_status_answer_gives_the_hosts_folder_only_when_it_is_a_safe_path` (`remote_status.rs`),
+`a_remote_tabs_folder_line_reads_by_its_hosts_rules_on_any_viewer` (`tabs_ui.rs`) and
+`a_hosts_folder_reads_by_the_hosts_rules_on_any_viewer` (`flare-tabs/src/sidebar_rows.rs`). Source: Max, 2026-11-17;
+`research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
+
 1280. **The Windows logo keeps its cross open at the sizes Flare draws it.** Max, 2026-11-17, from the Mac viewer to
 home-pc: the PC logo read as a solid square (a lime block in the + menu). The simple-icons path filled the whole
 24-unit box with a 1.25-unit gap, which blurred shut at 11 to 15 px. Approved mockup, option B: `Glyphs.logo-pc` (and
@@ -4794,7 +4811,7 @@ fill. Held by `the_windows_logo_is_inset_with_a_three_unit_cross` (`menus_ui.rs`
 `the_windows_logos_cross_stays_open_at_11_to_15_px_at_1x_and_2x` (at 11, 12, 13 and 15 px, 1x and 2x, every
 sub-pixel offset: the cross holds no more ink than its width allows and a whole pixel of ground at 2x, while the old
 path measured the same way closes) and `a_machines_logo_in_the_menu_wears_the_label_ink_not_the_folder_colour`
-(`ui_tests/machine_logo.rs`), and `a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo`
+(`ui_tests/machine_logo.rs`), and `a_machines_row_in_the_plus_menu_opens_the_folder_browser_then_a_shell_there`
 (`ui_tests/term.rs`). Source: Max, 2026-11-17; `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
 
 1281. **Settings > Machines' ⋯ menu is the shared menu with icons.** Max, 2026-11-17: the menu was the Settings value
@@ -4813,6 +4830,48 @@ serves only the Add a machine dialog's drop-down. Held by
 `a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click` and
 `a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_looks` (`ui_tests/settings_machines.rs`).
 Source: Max, 2026-11-17; `research/flare/2026-11-17-remote-ui-issues-from-mac.md`.
+
+1282. **A machine's row opens a Flare-drawn folder browser; `remote.ls` is the viewer's own.** Max, 2026-11-17, from the
+Mac viewer: "home-pc" in the + menu only ever opened a shell in the host's home, and looked like a folder. He picked
+mockup B (`docs/superpowers/specs/remote-sessions-mockups/folder-browser.html`), which reverses the 2026-11-12 "no
+folder browser" pick and brings back R-new-26. A machine's row (the + menu's and Ctrl+Shift+R's) says "choose folder"
+and opens the browser at the host's home: the Dialog look, Back and Home with tips, crumbs with the machine's name
+first, folders first, files dimmed and never picked, the picked folder's path in the footer, Cancel and an accent Open
+here. A click picks, a double-click goes in; Escape or a press outside cancels, Enter is Open here. Open here opens the
+remote tab in the picked folder (else the folder shown, else `~` as before), and it joins the remote recents (rule
+1213). The recents wear the folder glyph and "on <machine>": only a machine's own row wears its logo. Never the OS
+dialog. Each listing is one `remote.ls` over a short link (`remote_folder::LinkLister`, the window's own connector) on a
+worker; the home is asked with no `path` (an older host answers too), and the host now also reads `~` alone as its
+home. Only the newest ask's answer is taken, and none after the dialog closed. The host's answer is never trusted: a
+safe path, at most `LS_MAX` names, no name with a separator, a control or invisible character, `.` or `..`. Crumbs,
+children and roots follow the host's path rules on any viewer (`PathRules::of_host`; `C:` goes to `C:\`). A machine
+that does not answer is one line in the dialog, in Settings > Machines' words ("Not answering"). The agent never lists
+a folder on another machine: no pipe grant but the link's reaches `remote.*`. Held by
+`the_folder_browser_wears_the_dialog_look_at_every_scale_in_both_looks`,
+`the_pointer_and_the_keys_reach_the_dialog_and_never_what_is_behind` and
+`a_crumb_goes_to_its_folder_and_the_last_goes_nowhere` (`ui_tests/remote_folder.rs`);
+`the_folder_browsers_back_home_and_file_glyphs_draw_at_full_size_at_every_scale` (`ui_tests/icons_misc.rs`);
+`a_machines_row_in_the_plus_menu_opens_the_folder_browser_then_a_shell_there`,
+`the_folder_browser_picks_enters_goes_back_and_opens_the_tab_in_the_folder`,
+`a_machine_that_does_not_answer_is_one_line_and_a_late_answer_is_dropped` and
+`the_folder_browser_has_the_keys_while_it_is_up` (`ui_tests/term.rs`); the tests in `remote_folder.rs` (the listing
+read, the crumbs on a PC and a Mac host, the browser's steps); `remote_ls_reads_a_lone_tilde_as_the_hosts_home`
+(`ctl_app.rs`); `the_agent_never_lists_a_folder_on_another_machine` (`flare-ctl/src/grant.rs`); and the e2e
+`remoteUi` (it opens the browser and presses Open here). Source: Max, 2026-11-17;
+`research/flare/2026-11-17-remote-ui-issues-from-mac.md`, issue 2.
+
+1284. **The sidebar row's X takes the pointer where it is drawn, past any ring.** Max, 2026-11-17: "thres no hover
+effects on the clsoe button on tabs when tehre workign on other tabs thers a hover effect on the clsoe button". In the
+sidebar (the vertical layout) a working row (the Ring mark, `mark-kind` 1) slides its X in 20 px right of the ring on
+hover, but the X's TouchArea `xta` moved past the ring only for a loading row (`root.tab.loading`): on a working row it
+lay over the ring. Pointing at the X never lit it (no `Theme.hover-hi` square, no bright ink), a click on the X did
+not close, and a click on the ring did. When the Ring mark came in (2026-10-17) the drawn X was moved by `has-ring`
+and its TouchArea was not. Now `xta.x` uses `has-ring` too, so the hit box and the drawn X are one. The strip's
+`TabEnd` already put both in one box and was right. Held by
+`the_x_under_the_pointer_lights_up_and_closes_on_working_and_plain_rows` (`ui_tests/sidebar.rs`: working, loading and
+plain rows, active and not, hover square and click) and the strip guard
+`the_close_x_lights_up_under_the_pointer_on_working_and_plain_tabs_active_or_not` (`ui_tests/strip.rs`, also across
+row updates while hovered). Source: Max, 2026-11-17.
 
 1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
 screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then

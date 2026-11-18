@@ -199,20 +199,19 @@ impl AppCtl {
         self.refresh();
     }
 
-    /// Ctrl+Shift+R: the linked machines as a menu under the bar; a pick opens a shell tab there. With none linked
-    /// the menu says so.
+    /// Ctrl+Shift+R: the linked machines as a menu under the bar; a pick opens the folder browser there. With none
+    /// linked the menu says so.
     pub(crate) fn open_machine_menu(&mut self) {
         self.close_overflow_quietly();
         let rows = machine_menu_rows(&self.machines);
         self.show_menu(MenuKind::Machines, rows, MACHINE_MENU_X, BAR_H);
     }
 
-    /// A row of the machine menu: a shell tab on that machine, in the host's home folder (as the + menu's row).
+    /// A row of the machine menu: the folder browser on that machine, at its home, as the + menu's row (rule 1282).
     pub(super) fn machine_menu_picked(&mut self, path: &str) {
         if let Some(machine) = machine_of_row(path) {
             let machine = machine.to_string();
-            self.open_remote(&machine, crate::machines::HOST_HOME, None, true);
-            self.focus_terminal();
+            self.open_remote_folder(&machine);
         }
     }
 

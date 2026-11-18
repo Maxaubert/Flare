@@ -1,0 +1,503 @@
+// The remote folder browser (rule 1282; Max picked mockup B on 2026-11-17): a machine's row in the + menu opens it, in
+// the Dialog look (side-flat box, hairline edge, 20 px in, the 14.5 px title, Cancel and the accent button). The bar:
+// Back and Home (icon buttons with tips), then the crumbs, the machine's name first. The list: folders first, files
+// dimmed and never picked; a click picks a folder and the footer names the folder Open here opens, a double-click goes
+// into it. A machine that does not answer is one line under the list. Escape or a press outside is Cancel, Enter is
+// Open here, Up and Down pick, Backspace is Back. Rust holds the state (`remote_folder.rs`) and the host's names; this
+// draws them. Never the OS dialog.
+import { Theme, Px, SettingsFixed } from "theme.slint";
+import { Glyphs } from "glyphs.slint";
+import { DialogButton } from "dialog.slint";
+import { RemoteFolderRow, RemoteCrumb } from "types.slint";
+
+// Back or Home: a 26 px square with a stroked 14 px glyph, its tip on hover (an icon-only button).
+component BarButton inherits Rectangle {
+    in property <string> commands;
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <float> stroke-units: 1.7;
+    callback clicked();
+    callback tip(string, length, length, length, length);
+    width: 26px;
+    height: 26px;
+    border-radius: 3px;
+    background: ta.has-hover && root.enabled ? Theme.hover : transparent;
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+    out property <bool> hovered: ta.has-hover;
+    // The box is the icon grown by one stroke, centred: the 24 units then cover 14 px.
+    Path {
+        width: 14px + self.stroke-width;
+        height: 14px + self.stroke-width;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.commands;
+        fill: transparent;
+        stroke: ta.has-hover && root.enabled ? Theme.text : Theme.text-soft;
+        stroke-width: root.stroke-units * 14px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if self.has-hover {
+                root.tip(root.label, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
+            }
+        }
+    }
+}
+
+export component RemoteFolder inherits Rectangle {
+    in property <bool> open;
+    in property <string> title;
+    in property <[RemoteCrumb]> crumbs;
+    in property <[RemoteFolderRow]> rows;
+    // The picked row, -1 for none.
+    in property <int> selected: -1;
+    // The folder Open here opens ("" before the host has named one).
+    in property <string> path;
+    in property <bool> loading;
+    // The one line that says why the last listing failed, or "".
+    in property <string> error;
+    in property <bool> truncated;
+    in property <bool> can-back;
+    callback back();
+    callback home();
+    callback crumb(int);
+    callback pick(int);
+    callback enter(int);
+    callback step(bool);
+    callback open-here();
+    callback cancel();
+    callback tip(string, length, length, length, length);
+
+    property <length> row-h: 28px;
+    property <length> list-h: 254px;
+
+    // Where things are, for the tests and the e2e's pointer.
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> list-x: list.absolute-position.x;
+    out property <length> list-y: list.absolute-position.y;
+    out property <length> list-w: list.width;
+    out property <length> list-h-out: list.height;
+    out property <length> back-x: back-btn.absolute-position.x;
+    out property <length> back-y: back-btn.absolute-position.y;
+    out property <length> home-x: home-btn.absolute-position.x;
+    out property <length> home-y: home-btn.absolute-position.y;
+    out property <length> button-size: back-btn.width;
+    out property <length> open-x: open-btn.absolute-position.x;
+    out property <length> open-y: open-btn.absolute-position.y;
+    out property <length> open-w: open-btn.width;
+    out property <length> open-h: open-btn.height;
+    out property <length> cancel-x: cancel-btn.absolute-position.x;
+    out property <length> cancel-y: cancel-btn.absolute-position.y;
+    out property <length> cancel-w: cancel-btn.width;
+    out property <length> cancel-h: cancel-btn.height;
+    out property <length> error-y: err.absolute-position.y;
+    out property <bool> error-shown: root.error != "";
+    out property <bool> loading-shown: root.loading;
+    out property <length> scrolled: flick.content-y;
+    out property <bool> keys-held: fs.has-focus;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        flick.content-y = 0px;
+        if root.open {
+            fs.focus();
+        }
+    }
+    // A new folder starts at its top; a picked row is kept in sight.
+    changed rows => {
+        flick.content-y = 0px;
+    }
+    changed selected => {
+        if root.selected >= 0 {
+            let top = root.selected * root.row-h;
+            if top + flick.content-y < 0px {
+                flick.content-y = -top;
+            } else if top + root.row-h + flick.content-y > flick.height {
+                flick.content-y = flick.height - top - root.row-h;
+            }
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.scrim;
+    }
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.cancel();
+            }
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            if e.text == Key.Return {
+                root.open-here();
+                return accept;
+            }
+            if e.text == Key.UpArrow || e.text == Key.DownArrow {
+                root.step(e.text == Key.DownArrow);
+                return accept;
+            }
+            if e.text == Key.Backspace {
+                if root.can-back {
+                    root.back();
+                }
+                return accept;
+            }
+            // Tab stays inside: the dialog has the keys until it closes.
+            if e.text == Key.Tab || e.text == Key.Backtab {
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    box := Rectangle {
+        width: min(430px, root.width - 48px);
+        height: col.preferred-height;
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap((root.height - self.height) / 2);
+        background: Theme.side-flat;
+        border-radius: 2px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 24px;
+        drop-shadow-blur: 70px;
+        drop-shadow-color: SettingsFixed.modal-shadow;
+        accessible-role: groupbox;
+        accessible-label: root.title;
+        // Presses inside the box never reach the scrim.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+        col := VerticalLayout {
+            padding: 20px;
+            Text {
+                text: root.title;
+                font-family: Theme.font-ui;
+                font-size: 14.5px;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            Rectangle { height: 14px; }
+            HorizontalLayout {
+                height: 26px;
+                spacing: 4px;
+                back-btn := BarButton {
+                    commands: Glyphs.chevron-left;
+                    label: "Back";
+                    stroke-units: 1.8;
+                    enabled: root.can-back;
+                    clicked => { root.back(); }
+                    tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+                }
+                home-btn := BarButton {
+                    commands: Glyphs.home;
+                    label: "Home folder";
+                    clicked => { root.home(); }
+                    tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+                }
+                Rectangle { width: 6px; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    clip: true;
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 2px;
+                        for c[i] in root.crumbs: HorizontalLayout {
+                            spacing: 2px;
+                            Rectangle {
+                                width: ct.preferred-width + 10px;
+                                border-radius: 3px;
+                                background: cta.has-hover && c.live && !c.last ? Theme.hover : transparent;
+                                accessible-role: button;
+                                accessible-enabled: c.live;
+                                accessible-label: c.label;
+                                accessible-action-default => {
+                                    if c.live {
+                                        root.crumb(i);
+                                    }
+                                }
+                                ct := Text {
+                                    text: c.label;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                    font-family: Theme.font-ui;
+                                    font-size: 12.5px;
+                                    font-weight: c.last ? 600 : 400;
+                                    color: c.last ? Theme.text : Theme.text-soft;
+                                    wrap: no-wrap;
+                                }
+                                cta := TouchArea {
+                                    enabled: c.live;
+                                    clicked => { root.crumb(i); }
+                                }
+                            }
+                            if !c.last: Text {
+                                text: "\u{203a}";
+                                vertical-alignment: center;
+                                font-family: Theme.font-ui;
+                                font-size: 12.5px;
+                                color: Theme.dim2;
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { height: 8px; }
+            list := Rectangle {
+                height: root.list-h;
+                background: Theme.ground;
+                border-radius: 3px;
+                border-width: Px.hair();
+                border-color: Theme.line;
+                clip: true;
+                accessible-role: AccessibleRole.list;
+                accessible-label: "Folders";
+                flick := Flickable {
+                    x: Px.hair();
+                    y: Px.hair();
+                    width: parent.width - 2 * Px.hair();
+                    height: parent.height - 2 * Px.hair();
+                    content-height: rows-col.preferred-height;
+                    visible: !root.loading;
+                    rows-col := VerticalLayout {
+                        for r[i] in root.rows: Rectangle {
+                            height: root.row-h;
+                            background: i == root.selected ? Theme.accent.with-alpha(0.15) : (rta.has-hover && r.dir ? Theme.hover : transparent);
+                            accessible-role: list-item;
+                            accessible-label: r.name;
+                            accessible-action-default => {
+                                if r.dir {
+                                    root.enter(i);
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 8px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 14px;
+                                        height: 14px;
+                                        if r.dir: Path {
+                                            width: 14px;
+                                            height: 14px;
+                                            viewbox-width: 24;
+                                            viewbox-height: 24;
+                                            commands: Glyphs.folder-fill;
+                                            fill: Theme.tree-folder;
+                                            opacity: 0.85;
+                                        }
+                                        // Grown by one stroke and centred, as every stroked glyph: the 24 units cover 14 px.
+                                        if !r.dir: Path {
+                                            width: 14px + self.stroke-width;
+                                            height: 14px + self.stroke-width;
+                                            viewbox-width: 24;
+                                            viewbox-height: 24;
+                                            commands: Glyphs.file;
+                                            fill: transparent;
+                                            stroke: Theme.dim2;
+                                            stroke-width: 1.6 * 14px / 24;
+                                            stroke-line-join: round;
+                                        }
+                                    }
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: r.name;
+                                    vertical-alignment: center;
+                                    font-family: Theme.font-ui;
+                                    font-size: 12.5px;
+                                    color: !r.dir ? Theme.dim2 : (i == root.selected ? Theme.text : Theme.text-soft);
+                                    overflow: elide;
+                                }
+                                if i == root.selected: Text {
+                                    text: "double-click to open";
+                                    vertical-alignment: center;
+                                    font-family: Theme.font-ui;
+                                    font-size: 10.5px;
+                                    color: Theme.dim2;
+                                    wrap: no-wrap;
+                                }
+                            }
+                            rta := TouchArea {
+                                enabled: r.dir;
+                                clicked => { root.pick(i); }
+                                double-clicked => { root.enter(i); }
+                            }
+                        }
+                        if root.truncated: HorizontalLayout {
+                            height: root.row-h;
+                            padding-left: 10px;
+                            Text {
+                                text: "Only the first names are shown.";
+                                vertical-alignment: center;
+                                font-family: Theme.font-ui;
+                                font-size: 11px;
+                                color: Theme.dim2;
+                            }
+                        }
+                    }
+                }
+                if root.loading || (root.rows.length == 0 && root.error == ""): Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.loading ? "Loading\u{2026}" : "This folder is empty.";
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    color: Theme.dim;
+                }
+            }
+            err := Text {
+                visible: root.error != "";
+                height: root.error != "" ? 26px : 0px;
+                text: root.error;
+                vertical-alignment: bottom;
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                color: Theme.light ? SettingsFixed.error-light : SettingsFixed.error-dark;
+                overflow: elide;
+                accessible-role: AccessibleRole.text;
+            }
+            Rectangle { height: 14px; }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.path;
+                    vertical-alignment: center;
+                    font-family: SettingsFixed.font-mono;
+                    font-size: 11.5px;
+                    color: Theme.dim;
+                    overflow: elide;
+                    wrap: no-wrap;
+                }
+                cancel-btn := DialogButton {
+                    label: "Cancel";
+                    clicked => { root.cancel(); }
+                }
+                open-btn := DialogButton {
+                    label: "Open here";
+                    is-primary: true;
+                    clicked => { root.open-here(); }
+                }
+            }
+        }
+    }
+}
+
+// The preview for the UI tests: a stand-in behind the dialog that must never be reached, and what the dialog reported.
+export component RemoteFolderPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: Theme.ground;
+
+    in-out property <bool> open;
+    in-out property <string> dialog-title: "Choose a folder on home-pc";
+    in-out property <[RemoteCrumb]> crumbs;
+    in-out property <[RemoteFolderRow]> rows;
+    in-out property <int> selected: -1;
+    in-out property <string> path;
+    in-out property <bool> loading;
+    in-out property <string> error;
+    in-out property <bool> truncated;
+    in-out property <bool> can-back;
+    in-out property <int> backs;
+    in-out property <int> homes;
+    in-out property <int> crumbed: -1;
+    in-out property <int> picked: -1;
+    in-out property <int> entered: -1;
+    in-out property <int> steps;
+    in-out property <int> opens;
+    in-out property <int> cancels;
+    in-out property <int> behind-clicks;
+    in-out property <string> tip-text;
+    out property <length> box-x: dlg.box-x;
+    out property <length> box-y: dlg.box-y;
+    out property <length> box-w: dlg.box-w;
+    out property <length> box-h: dlg.box-h;
+    out property <length> list-x: dlg.list-x;
+    out property <length> list-y: dlg.list-y;
+    out property <length> list-w: dlg.list-w;
+    out property <length> list-h: dlg.list-h-out;
+    out property <length> back-x: dlg.back-x;
+    out property <length> back-y: dlg.back-y;
+    out property <length> home-x: dlg.home-x;
+    out property <length> home-y: dlg.home-y;
+    out property <length> button-size: dlg.button-size;
+    out property <length> open-x: dlg.open-x;
+    out property <length> open-y: dlg.open-y;
+    out property <length> open-w: dlg.open-w;
+    out property <length> open-h: dlg.open-h;
+    out property <length> cancel-x: dlg.cancel-x;
+    out property <length> cancel-y: dlg.cancel-y;
+    out property <length> cancel-w: dlg.cancel-w;
+    out property <length> cancel-h: dlg.cancel-h;
+    out property <length> error-y: dlg.error-y;
+    out property <bool> error-shown: dlg.error-shown;
+    out property <length> scrolled: dlg.scrolled;
+    out property <bool> keys-held: dlg.keys-held;
+
+    behind := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.behind-clicks += 1; }
+    }
+    dlg := RemoteFolder {
+        open: root.open;
+        title: root.dialog-title;
+        crumbs: root.crumbs;
+        rows: root.rows;
+        selected: root.selected;
+        path: root.path;
+        loading: root.loading;
+        error: root.error;
+        truncated: root.truncated;
+        can-back: root.can-back;
+        back => { root.backs += 1; }
+        home => { root.homes += 1; }
+        crumb(i) => { root.crumbed = i; }
+        pick(i) => { root.picked = i; }
+        enter(i) => { root.entered = i; }
+        step(down) => { root.steps += down ? 1 : -1; }
+        open-here => { root.opens += 1; }
+        cancel => { root.cancels += 1; }
+        tip(t, x, y, w, h) => { root.tip-text = t; }
+    }
+}
