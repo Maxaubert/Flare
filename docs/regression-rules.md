@@ -4555,8 +4555,9 @@ e2e `brand` scenario (the box ends 16 px under Cancel). Source: Max, 2026-11-15,
 the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
 recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
 choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
-case. A folder below or beside it is another folder. A hidden folder frees no spot: no older recent and no starter
-takes it, and no "No recent folders" note appears, so the list just has fewer rows. A remote tab's folder is on
+case. A folder below or beside it is another folder. A hidden folder brings no "No recent folders" note. (Amended by
+rule 1286 on 2026-11-18: its spot now goes to the next older recent without a tab, then to a starter; it no longer
+stays empty.) A remote tab's folder is on
 another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
 menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
 `menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
@@ -4907,3 +4908,15 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1286. **Older recents fill the folder menu's spots that open tabs leave.** Max, 2026-11-18: "the new tab right click
+menu only shows choose a folder on this machine or the mac, no recent folders". His `flare.recentRoots` held twelve
+folders, and the seven newest each had an open tab. Rule 1269 took the newest five first and then hid those with a
+tab, and a hidden folder's spot stayed empty, so all five spots were empty and only "Choose a folder…" and the
+machine's row were left (no remote recents were kept yet). Now the folders with an open local tab leave the history
+before the newest five are taken: the five newest recents without a tab are listed, and a starter fills a spot only
+when no older recent is left (never one with a tab). A pin still always stays. The "No recent folders" note still
+shows only when nothing at all is known (no pin, no history, no starter), never because folders are hidden. The
+remote recents and the machine rows are as rule 1282 left them. Native: `menus_ui::folder_rows`. Held by
+`older_recents_fill_the_spots_of_folders_that_have_a_tab` (Max's twelve recents with seven open, and the starter case)
+and the rule 1269 tests (`menus_ui.rs`). Source: Max, 2026-11-18.
