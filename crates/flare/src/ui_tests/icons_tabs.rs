@@ -27,7 +27,7 @@ pub const RING_TAB: &str = "M4.5 0.75A3.75 3.75 0 1 1 4.499 0.75Z";
 pub const RING_MARK: &str = "M11 6a5 5 0 1 1-10 0a5 5 0 1 1 10 0z";
 
 /// Bounding box `(min x, min y, max x, max y)` of an SVG path in its own viewbox units, for the commands the
-/// glyph table uses (`M L H V C A Z`, absolute and relative). Curves and arcs are sampled, so their true
+/// glyph table uses (`M L H V C S A Z`, absolute and relative). Curves and arcs are sampled, so their true
 /// extremes are included.
 pub fn svg_bbox(commands: &str) -> (f32, f32, f32, f32) {
     let b = commands.as_bytes();
@@ -36,11 +36,14 @@ pub fn svg_bbox(commands: &str) -> (f32, f32, f32, f32) {
     let mut cur = (0.0f64, 0.0f64);
     let mut start = (0.0f64, 0.0f64);
     let mut pts: Vec<(f64, f64)> = Vec::new();
+    // The last control point of the curve just drawn (for `S`).
+    let mut last_c2: Option<(f64, f64)> = None;
     loop {
         skip_sep(b, &mut i);
         if i >= b.len() {
             break;
         }
+        let prev_c2 = last_c2.take();
         if b[i].is_ascii_alphabetic() {
             cmd = b[i];
             i += 1;
@@ -70,10 +73,16 @@ pub fn svg_bbox(commands: &str) -> (f32, f32, f32, f32) {
                 cur = (cur.0, if rel { cur.1 + v } else { v });
                 pts.push(cur);
             }
-            b'C' => {
-                let c1 = (num(b, &mut i) + origin.0, num(b, &mut i) + origin.1);
+            b'C' | b'S' => {
+                // `S` takes its first control point as the last one of the curve before, turned about the point.
+                let c1 = if cmd.eq_ignore_ascii_case(&b'S') {
+                    prev_c2.map_or(cur, |c| (2.0 * cur.0 - c.0, 2.0 * cur.1 - c.1))
+                } else {
+                    (num(b, &mut i) + origin.0, num(b, &mut i) + origin.1)
+                };
                 let c2 = (num(b, &mut i) + origin.0, num(b, &mut i) + origin.1);
                 let p = (num(b, &mut i) + origin.0, num(b, &mut i) + origin.1);
+                last_c2 = Some(c2);
                 for k in 1..=32 {
                     let t = k as f64 / 32.0;
                     let u = 1.0 - t;
