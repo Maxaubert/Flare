@@ -539,6 +539,18 @@ fn a_question_on_an_imported_row_rings_here_once_and_attaching_does_not_ring_it_
     pick(&w, &row);
     w.pump_until("the attach", |w| !w.remote.made().is_empty());
     assert!(attached(&w)[0].ring_both, "and on the host too");
+    // The attached row's own link brings the host's status: its first answer after the attach is always news (rule
+    // 294), and the same question is not rung again.
+    let st = crate::remote_status::status_from(&asks).expect("a status");
+    w.ctl
+        .borrow()
+        .model()
+        .remote_live(&row)
+        .expect("the row's live state")
+        .set_status(st);
+    w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+    w.run(300);
+    // A poll the watch still sent changes nothing for an attached row.
     heard(&w, vec![asks]);
     w.run(300);
     assert_eq!(rung(&row), 1, "the attach does not ring it again");

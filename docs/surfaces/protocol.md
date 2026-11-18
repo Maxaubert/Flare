@@ -153,8 +153,9 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     Windows session 0 (where sshd runs its logins; no window there is ever seen) starts nothing. When no Flare can be
     had, `remote.hello` answers `host_not_ready` with one line (no grant; the link stays open and may say
     `remote.hello` again), and the viewer shows that line once in the tab and tries again on its back-off. The viewer
-    waits up to **90 s** for the hello. `flare --serve-remote --no-start` (the process tests) never starts one: the hello
-    answers at once and, with no Flare running, every relayed call is `unavailable`.
+    waits up to **90 s** for the hello. `flare --serve-remote --no-start` (the process tests, and the import's watch
+    link, rule 1291) never starts one: the hello answers at once and, with no Flare running, every relayed call is
+    `unavailable`.
   - **The viewer** (remote sessions PR 3, `crates/flare/src/remote_link.rs`). Each remote tab has one link and one
     worker thread. The link is the child `ssh -o BatchMode=yes -T [-l <user>] -- <host> <command>` (ssh by its absolute
     path, no console window), every part an argv item of its own; `<host>` and `<user>` come from `machines.json` in the

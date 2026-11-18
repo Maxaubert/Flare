@@ -4986,8 +4986,9 @@ applies no round before the restore answered. Native: `crates/flare/src/remote_i
 `on_import`), `crates/flare/src/window.rs`. Held by `the_watch_link_runs_serve_remote_no_start_and_nothing_else_new`
 (`remote_link_tests.rs`), `the_watch_backs_off_from_three_seconds_to_a_minute`,
 `the_watcher_polls_status_backs_off_when_down_and_stops_when_off` (`remote_import.rs`),
-`a_machine_removed_from_settings_stops_its_watcher_and_drops_its_rows_and_hidden_list` and
-`no_import_round_runs_before_the_restore_answered` (`ui_tests/term/flow/import_flows.rs`). Source: Max, 2026-11-18.
+`a_machine_removed_from_settings_stops_its_watcher_and_drops_its_rows_and_hidden_list`
+(`ui_tests/term/flow/import_flows.rs`) and `no_import_round_runs_before_the_restore_answered`
+(`ui_tests/agent_flows/remote_flows.rs`). Source: Max, 2026-11-18.
 
 1292. **An imported row attaches only when it is shown, never opens or resumes, and sends no size while its host sizes
 it.** Max, 2026-11-18, import remote sessions PR 3. One hook at the top of `refresh()` (before its early return)
