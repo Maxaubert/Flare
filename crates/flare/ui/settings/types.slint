@@ -3,8 +3,9 @@
 export enum SetKind { none, pill, switch, segmented, select, slider, colour, save, key, mic, text, icons }
 export enum BlockKind { row, wall, about, slint, note, model, machine-head, machine }
 
-// face: the font-family for the font select ("" = the UI font); vendor: a system's logo before the name (mac, pc, ""), the
-// Add a machine dialog's nearby computers (machine pairing PR 3)
+// face: the font-family for the font select ("" = the UI font); vendor: a system's logo before the name (mac, pc, linux, ""), the
+// Add a machine dialog's nearby computers (machine pairing PR 3) and SSH hosts (rule 1278); `blank` keeps the logo's
+// space empty, so the names of a menu with logos line up
 export struct SetOption { id: string, name: string, face: string, vendor: string }
 // The Add a machine dialog (machine pairing PR 1, rule 1251): the Machine drop-down's pick and choices, whether "Type an
 // address" is picked (the Address and User fields show), what is typed in them, the red line ("" for none), busy while

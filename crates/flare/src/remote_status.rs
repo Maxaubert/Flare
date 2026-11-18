@@ -3,8 +3,9 @@
 //! A remote tab's processes and screen are the host's: the viewer's poll is blind to them and its screen is not read
 //! for a question (rule 289). So the host says what its own marks say, as words: `remote.status` answers every host
 //! tab with one state word (`working`, `question`, `done`, `failed`, `idle`), the agent, its Claude session and the
-//! words of its question. The tab's link polls it every second or two ([`StatusPoll`]) and hands a change to the
-//! window, which gives it to the hub (`AgentHub::on_remote_status`).
+//! words of its question, and its folder ([`host_folder`], rule 1279). The tab's link polls it every second or two
+//! ([`StatusPoll`]) and hands a change to the window, which gives it to the hub (`AgentHub::on_remote_status`) and
+//! takes the folder as the tab's own.
 //!
 //! What the hub makes of it ([`mark_of`]): a question and work are shown as the host says them; a finished turn or
 //! a failure is never copied. When the host stops working, the viewer raises its own Finished or Failed mark only if
@@ -49,7 +50,25 @@ pub fn status_of(answer: &Value, tab: &str) -> Option<HostStatus> {
         // Remote sessions PR 7: the host's own window sizes the tab (someone typed there last). A host that does not
         // say it (an older Flare) is read as the viewer sizing it: the terminal stays.
         host_sized: word("sized").as_deref() == Some("host"),
+        folder: word("folder").filter(|f| host_folder(f)),
     })
+}
+
+/// The longest folder a host's status may name, in characters; a longer one is no folder.
+pub const FOLDER_MAX: usize = 1024;
+
+/// Pure (rule 1279): whether the folder a host's status names may be a remote tab's folder. It is the host's path, so
+/// it is judged by no platform's rules here (a Linux host's `/home/max` is fine on a Mac viewer), and it is refused
+/// whole, never rewritten (a changed path names nothing on the host): no control or invisible character, no UNC or
+/// device form that would reach a server, and at most [`FOLDER_MAX`] characters.
+pub fn host_folder(f: &str) -> bool {
+    !f.trim().is_empty()
+        && f.chars().count() <= FOLDER_MAX
+        && !f
+            .chars()
+            .any(|c| c.is_control() || flare_ctl::text::invisible(c))
+        && !flare_shells::cwd::has_control(f)
+        && !flare_shells::cwd::is_unc(f)
 }
 
 /// One remote tab's `remote.status` polls on its link worker: when the next is due, and the last status handed on.
@@ -153,6 +172,7 @@ mod tests {
                 question: Some("Overwrite it?".into()),
                 failed: None,
                 host_sized: false,
+                folder: Some("/Users/max/p".into()),
             })
         );
         assert_eq!(
@@ -170,6 +190,49 @@ mod tests {
         assert!(!status_of(&sized, "c").unwrap().host_sized);
         assert_eq!(status_of(&json!({"tabs": [{"tab": "t1"}]}), "t1"), None);
         assert_eq!(status_of(&json!({}), "t1"), None);
+    }
+
+    /// Rule 1279: the host's folder is read as it is, and a folder that is not a safe path is no folder.
+    #[test]
+    fn a_status_answer_gives_the_hosts_folder_only_when_it_is_a_safe_path() {
+        let folder = |f: Value| {
+            status_of(
+                &json!({"tabs": [{"tab": "a", "state": "idle", "folder": f}]}),
+                "a",
+            )
+            .unwrap()
+            .folder
+        };
+        assert_eq!(
+            folder(json!(r"C:\Users\Admin")),
+            Some(r"C:\Users\Admin".into())
+        );
+        assert_eq!(
+            folder(json!("/home/max/p  q")),
+            Some("/home/max/p  q".into()),
+            "kept as it is"
+        );
+        assert_eq!(folder(json!("")), None);
+        assert_eq!(folder(json!("  ")), None);
+        assert_eq!(folder(json!(7)), None);
+        assert_eq!(
+            folder(json!("C:\\a\u{1b}]0;x\u{7}")),
+            None,
+            "a control character"
+        );
+        assert_eq!(folder(json!("/a\nb")), None);
+        assert_eq!(folder(json!("/a\u{85}b")), None, "a C1 control");
+        assert_eq!(folder(json!("/a\u{202e}b")), None, "an invisible override");
+        assert_eq!(folder(json!(r"\\evil\share")), None, "a UNC path");
+        assert_eq!(folder(json!("//evil/share")), None);
+        assert_eq!(folder(json!(format!("/{}", "a".repeat(FOLDER_MAX)))), None);
+        assert_eq!(
+            status_of(&json!({"tabs": [{"tab": "a", "state": "idle"}]}), "a")
+                .unwrap()
+                .folder,
+            None,
+            "an older host names none"
+        );
     }
 
     #[test]

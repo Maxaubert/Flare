@@ -726,6 +726,7 @@ fn set_overlay(c: &AppWindow, which: Overlay, on: bool) {
         Overlay::PluginsDropdown => c.set_plugins_open(on),
         Overlay::Dialog => c.set_dialog_open(on),
         Overlay::PluginAsk => c.set_pask_open(on),
+        Overlay::RemoteFolder => c.set_rfolder_open(on),
         Overlay::UpdateWindow => c.set_update_open(on),
         Overlay::UpdateNotice => c.set_update_notice(if on { "A new version" } else { "" }.into()),
         Overlay::StagedToast => {
@@ -817,6 +818,7 @@ fn overlay_open_is_read_only_for_rust_and_computed_in_the_window_file() {
         "root.plugins-open",
         "root.dialog-open",
         "root.pask-open",
+        "root.rfolder-open",
         "root.update-open",
         "root.update-notice",
         "root.plugin-notices.length > 0",

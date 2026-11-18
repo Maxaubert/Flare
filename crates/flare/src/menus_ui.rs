@@ -44,6 +44,8 @@ pub const GLYPH_BADGE_PIN: &str = "badge-pin";
 /// A remote machine's system (remote sessions PR 7): filled logos on the 24-unit box.
 pub const GLYPH_LOGO_MAC: &str = "logo-mac";
 pub const GLYPH_LOGO_PC: &str = "logo-pc";
+/// Tux, for an SSH host found to run Linux (rule 1278); its eyes are holes under the even-odd rule.
+pub const GLYPH_LOGO_LINUX: &str = "logo-linux";
 
 /// The glyph a badge icon is drawn with, for a built-in badge name (`flare_ctl::decor::BADGE_ICONS`).
 pub fn badge_glyph(icon: &str) -> Option<&'static str> {
@@ -112,6 +114,9 @@ pub fn glyph_path(name: &str) -> &'static str {
         }
         GLYPH_LOGO_PC => {
             "M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z"
+        }
+        GLYPH_LOGO_LINUX => {
+            "M12 2c-2.2 0-3.5 1.9-3.5 4.4 0 1.2.2 2-.4 3-.9 1.4-2.6 3.5-2.6 6 0 .9.3 1.6.6 2-.8.4-1.6 1-1.6 1.8 0 1.3 2 1.3 3.4 1.8 1 .4 1.6 1 2.6 1s1.4-.6 1.5-.6h1c.1 0 .5.6 1.5.6s1.6-.6 2.6-1c1.4-.5 3.4-.5 3.4-1.8 0-.8-.8-1.4-1.6-1.8.3-.4.6-1.1.6-2 0-2.5-1.7-4.6-2.6-6-.6-1-.4-1.8-.4-3C15.5 3.9 14.2 2 12 2zm-1.5 4.2c.4 0 .7.5.7 1.1 0 .6-.3 1.1-.7 1.1s-.7-.5-.7-1.1c0-.6.3-1.1.7-1.1zm3 0c.4 0 .7.5.7 1.1 0 .6-.3 1.1-.7 1.1s-.7-.5-.7-1.1c0-.6.3-1.1.7-1.1z"
         }
         _ => "",
     }
@@ -225,8 +230,12 @@ pub fn machine_logo(kind: Option<flare_tabs::tabs::Os>) -> Option<&'static str> 
     })
 }
 
+/// What a machine's row says on its right (rule 1282, mockup B): its pick opens the folder browser.
+pub const MACHINE_HINT: &str = "choose folder";
+
 /// The + menu's machine rows (owner pick, 2026-11-12): one a linked machine, its system's logo and its name, after a
-/// rule. A pick opens a shell tab on that machine, in the host's home folder; there is no submenu.
+/// rule, and "choose folder" on its right. A pick opens the folder browser on that machine (rule 1282, Max's pick of
+/// mockup B on 2026-11-17); there is no submenu. Only these rows wear the machine's logo.
 fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, String)> {
     machines
         .iter()
@@ -239,6 +248,7 @@ fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, Stri
             } else {
                 row.icon = GLYPH_LINK;
             }
+            row.hint = MACHINE_HINT.to_string();
             row.group = i == 0;
             (row, format!("{MACHINE_ROW}{}", m.id))
         })
@@ -256,9 +266,10 @@ pub fn remote_folder_of_row(path: &str) -> Option<(&str, &str)> {
     (!machine.is_empty() && !folder.is_empty()).then_some((machine, folder))
 }
 
-/// The + menu's remote folders (rule 1213): the newest folders remote tabs opened, after this machine's, each with its
-/// machine's logo before its name and the machine's name on its right. A machine no longer in `machines.json` drops its
-/// folders from the list. No pin: a pin is this machine's.
+/// The + menu's remote folders (rule 1213): the newest folders remote tabs opened, after this machine's, each with the
+/// folder glyph before its name and "on <machine>" on its right (rule 1282, mockup B: only a machine's own row wears
+/// its logo, so a folder never reads as a machine). A machine no longer in `machines.json` drops its folders from the
+/// list. No pin: a pin is this machine's.
 fn remote_folder_rows(
     prefs: &PrefStore,
     machines: &[crate::machines::Machine],
@@ -279,13 +290,9 @@ fn remote_folder_rows(
         .enumerate()
         .map(|(i, ((r, m), l))| {
             let mut row = MenuRowData::plain(&l.label);
-            if let Some(g) = machine_logo(m.kind) {
-                row.icon_cmd = glyph_path(g).to_string();
-                row.filled_icon = true;
-            } else {
-                row.icon = GLYPH_LINK;
-            }
-            row.hint = m.name.clone();
+            row.icon = GLYPH_FOLDER_FILL;
+            row.filled_icon = true;
+            row.hint = format!("on {}", m.name);
             row.group = i == 0;
             (
                 row,
@@ -631,7 +638,7 @@ mod tests {
     }
 
     /// Owner pick (remote sessions PR 7): one row per linked machine after the folders, its logo and its name, no pin
-    /// and no submenu; its pick names the machine, never a folder.
+    /// and no submenu; its pick names the machine, never a folder. Rule 1282: it says "choose folder" on its right.
     #[test]
     fn each_linked_machine_is_one_row_after_the_folders_with_its_logo_and_name() {
         use crate::machines::Machine;
@@ -661,6 +668,7 @@ mod tests {
         assert_eq!(machine_of_row(path), Some("mac"));
         assert_eq!(mac.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
         assert!(mac.filled_icon && mac.group && mac.trailing_icon.is_none() && !mac.flyout);
+        assert!(rows[2..].iter().all(|(r, _)| r.hint == MACHINE_HINT));
         assert_eq!(rows[3].0.icon_cmd, glyph_path(GLYPH_LOGO_PC));
         assert!(!rows[3].0.group);
         // A system not known draws no logo of either.
@@ -678,11 +686,11 @@ mod tests {
         );
     }
 
-    /// Rule 1213: a remote tab's folder is listed after this machine's, with its machine's logo before its name and the
-    /// machine's name on its right, no pin; its row names the machine and the host folder. A machine no longer linked
-    /// drops its folders from the list.
+    /// Rule 1213: a remote tab's folder is listed after this machine's, no pin; its row names the machine and the host
+    /// folder. A machine no longer linked drops its folders from the list. Rule 1282 (mockup B): it wears the folder
+    /// glyph and "on <machine>", so only the machine's own row carries the machine's logo.
     #[test]
-    fn remote_folders_follow_the_local_ones_with_their_machines_logo() {
+    fn remote_folders_follow_the_local_ones_with_the_folder_glyph_and_their_machine() {
         use crate::machines::Machine;
         use flare_settings::recent_roots::remember_remote_root;
         use flare_tabs::tabs::Os;
@@ -704,9 +712,15 @@ mod tests {
         let (row, path) = &rows[2];
         assert_eq!(remote_folder_of_row(path), Some(("mac", "/Users/max/proj")));
         assert_eq!(machine_of_row(path), None);
-        assert_eq!(row.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
+        assert_eq!(row.icon, GLYPH_FOLDER_FILL);
+        assert!(row.icon_cmd.is_empty(), "no machine logo on a folder");
         assert!(row.filled_icon && row.group && row.trailing_icon.is_none());
-        assert_eq!(row.hint, "Mac Mini");
+        assert_eq!(row.hint, "on Mac Mini");
+        assert_eq!(
+            rows[3].0.icon_cmd,
+            glyph_path(GLYPH_LOGO_MAC),
+            "the machine's row keeps it"
+        );
         assert_eq!(remote_folder_of_row(r"C:\w\a"), None);
         // A remote folder's row has no pin to toggle.
         toggle_pin_in_menu(
@@ -951,6 +965,7 @@ mod tests {
             GLYPH_BADGE_PIN,
             GLYPH_LOGO_MAC,
             GLYPH_LOGO_PC,
+            GLYPH_LOGO_LINUX,
         ] {
             let needle = format!("<string> {name}: \"{}\";", glyph_path(name));
             assert!(

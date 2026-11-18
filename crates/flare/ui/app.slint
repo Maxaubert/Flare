@@ -9,9 +9,10 @@ import { Tip } from "tip.slint";
 import { ThumbBubble } from "thumb.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
 import { PluginAsk } from "plugin_ask.slint";
+import { RemoteFolder } from "remote_folder.slint";
 import { PluginLook } from "plugin_look.slint";
 import { PluginNotices, PluginNoticeRow } from "plugin_notice.slint";
-import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection, PluginRow, PluginButton } from "types.slint";
+import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection, PluginRow, PluginButton, RemoteFolderRow, RemoteCrumb } from "types.slint";
 import { PluginChip } from "decor.slint";
 import { PluginsDropdown } from "plugin_sections.slint";
 import { FindBar } from "find.slint";
@@ -51,7 +52,8 @@ export { TabSidebarPreview } from "sidebar.slint";
 export { StartScreenPreview } from "start.slint";
 export { MenusPreview } from "menus.slint";
 export { DialogPreview } from "dialog.slint";
-export { TabRow, StripGeom, Place, MenuRow, OverflowRow, PluginRow, PluginButton } from "types.slint";
+export { RemoteFolderPreview } from "remote_folder.slint";
+export { TabRow, StripGeom, Place, MenuRow, OverflowRow, PluginRow, PluginButton, RemoteFolderRow, RemoteCrumb } from "types.slint";
 export { ConvoFileRow, ConvoDiffRow, ConvoInk } from "convo.slint";
 export { RemoteConvoLine } from "remote_convo.slint";
 
@@ -579,7 +581,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.plugin-notices.length > 0 || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.machine-add-open || SettingsBridge.sharing-ask-open || SettingsBridge.pair-code-open || SettingsBridge.notice-open || SettingsBridge.sheet-open || SettingsBridge.keys-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.rfolder-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.plugin-notices.length > 0 || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.machine-add-open || SettingsBridge.sharing-ask-open || SettingsBridge.pair-code-open || SettingsBridge.notice-open || SettingsBridge.sheet-open || SettingsBridge.keys-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -783,6 +785,26 @@ export component AppWindow inherits Window {
     in property <string> pask-asker;
     in property <string> pask-letter;
     in property <PluginLook> pask-look;
+    // The remote folder browser (rule 1282): a machine's folders, from `remote_folder.rs`.
+    in property <bool> rfolder-open;
+    in property <string> rfolder-title;
+    in property <[RemoteCrumb]> rfolder-crumbs;
+    in property <[RemoteFolderRow]> rfolder-rows;
+    in property <int> rfolder-selected: -1;
+    in property <string> rfolder-path;
+    in property <bool> rfolder-loading;
+    in property <string> rfolder-error;
+    in property <bool> rfolder-truncated;
+    in property <bool> rfolder-can-back;
+    // Where its buttons are, for the e2e's pointer.
+    out property <length> rfolder-box-x: rfolder.box-x;
+    out property <length> rfolder-box-y: rfolder.box-y;
+    out property <length> rfolder-box-w: rfolder.box-w;
+    out property <length> rfolder-box-h: rfolder.box-h;
+    out property <length> rfolder-open-x: rfolder.open-x;
+    out property <length> rfolder-open-y: rfolder.open-y;
+    out property <length> rfolder-open-w: rfolder.open-w;
+    out property <length> rfolder-open-h: rfolder.open-h;
     // A secret ask with `verify` (rule 1274): 0 the field, 1 checking, 2 right (a green check), 3 ended by the plugin;
     // the checking line, and a result's heading and line.
     in property <int> pask-stage;
@@ -810,7 +832,7 @@ export component AppWindow inherits Window {
     out property <length> thumb-h: thumbbox.bubble-h;
     // ---- focus ----
     // The overflow list focuses its field when it opens, so "open" stands for "its field has the keys".
-    out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open || root.pask-open || root.update-open;
+    out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open || root.pask-open || root.rfolder-open || root.update-open;
     public function focus-terminal() { keys.focus(); }
     public function focus-find() { find.focus-input(); }
     public function focus-sidebar-find() { sb.focus-find(); }
@@ -996,6 +1018,14 @@ export component AppWindow inherits Window {
     // A plugin fill's answer (0 Deny, 1 Allow) and a secret's (OK with the text, or Cancel).
     callback pask-fill(int);
     callback pask-secret(bool, string);
+    callback rfolder-back();
+    callback rfolder-home();
+    callback rfolder-crumb(int);
+    callback rfolder-pick(int);
+    callback rfolder-enter(int);
+    callback rfolder-step(bool);
+    callback rfolder-open-here();
+    callback rfolder-cancel();
     callback tip-request(string, length, length, length, length);
     callback bar-double-clicked();
     callback title-pressed();
@@ -1954,6 +1984,33 @@ export component AppWindow inherits Window {
             query <=> SettingsBridge.keys-query;
             close => { SettingsBridge.keys-close(); }
             query-edited(q) => { SettingsBridge.keys-query-edited(q); }
+        }
+        // The remote folder browser (rule 1282): over the Settings overlays, under a plugin's question and the close
+        // question.
+        rfolder := RemoteFolder {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: root.rfolder-open;
+            title: root.rfolder-title;
+            crumbs: root.rfolder-crumbs;
+            rows: root.rfolder-rows;
+            selected: root.rfolder-selected;
+            path: root.rfolder-path;
+            loading: root.rfolder-loading;
+            error: root.rfolder-error;
+            truncated: root.rfolder-truncated;
+            can-back: root.rfolder-can-back;
+            back => { root.rfolder-back(); }
+            home => { root.rfolder-home(); }
+            crumb(i) => { root.rfolder-crumb(i); }
+            pick(i) => { root.rfolder-pick(i); }
+            enter(i) => { root.rfolder-enter(i); }
+            step(d) => { root.rfolder-step(d); }
+            open-here => { root.rfolder-open-here(); }
+            cancel => { root.rfolder-cancel(); }
+            tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
         }
         // A plugin's question sits under the close question: that one is answered first.
         pask := PluginAsk {

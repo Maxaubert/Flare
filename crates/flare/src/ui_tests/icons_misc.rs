@@ -430,6 +430,67 @@ fn the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale() {
     }
 }
 
+// --- The remote folder browser (rule 1282): Back and Home in its bar, 14 px; a file's glyph in its list, 14 px. ---
+
+const HOME: &str = "M4 11l8-7 8 7M6 9.5V20h12V9.5M10 20v-5h4v5";
+const FILE: &str = "M7 3.5h7l4 4V20.5H7zM14 3.5V8h4";
+/// `Theme.dim2`: a file's ink.
+const DIM2: [f32; 3] = [113.0, 111.0, 106.0];
+
+fn folder_browser(s: f32) -> Harness<crate::RemoteFolderPreview> {
+    use crate::RemoteFolderRow;
+    let h = Harness::new(s, 1000, 640, || crate::RemoteFolderPreview::new().unwrap());
+    h.comp.set_rows(ModelRc::new(VecModel::from(vec![
+        RemoteFolderRow {
+            name: "a".into(),
+            dir: true,
+        },
+        RemoteFolderRow {
+            name: "notes.txt".into(),
+            dir: false,
+        },
+    ])));
+    h.comp.set_can_back(true);
+    h.comp.set_open(true);
+    h.advance(0);
+    h.render();
+    h.advance(0);
+    h
+}
+
+fn draw_bar_button(s: f32, home: bool) -> Drawn {
+    let h = folder_browser(s);
+    let f = h.render();
+    let b = h.comp.get_button_size() / 2.0;
+    let (x, y) = if home {
+        (h.comp.get_home_x(), h.comp.get_home_y())
+    } else {
+        (h.comp.get_back_x(), h.comp.get_back_y())
+    };
+    let r = region_around(&f, (x + b) * s, (y + b) * s, 11.0 * s);
+    let want = if home {
+        expected_extent_px(HOME, 14.0, 24.0, 1.7 * 14.0 / 24.0, s)
+    } else {
+        expected_extent_px(CHEVRON_LEFT, 14.0, 24.0, 1.8 * 14.0 / 24.0, s)
+    };
+    (drawn(&f, r, TEXT_SOFT), want)
+}
+
+fn draw_file_glyph(s: f32) -> Drawn {
+    let h = folder_browser(s);
+    let f = h.render();
+    let hair = s.floor().max(1.0) / s;
+    let (cx, cy) = (
+        h.comp.get_list_x() + hair + 10.0 + 7.0,
+        h.comp.get_list_y() + hair + 28.0 + 14.0,
+    );
+    let r = region_around(&f, cx * s, cy * s, 10.0 * s);
+    (
+        drawn(&f, r, DIM2),
+        expected_extent_px(FILE, 14.0, 24.0, 1.6 * 14.0 / 24.0, s),
+    )
+}
+
 // --- A checked secret (rule 1274): the green check of a right answer (24 px, stroke 3) and the button's spinner
 // (16 px, stroke 2; its quarter at rest, before the first turn). ---
 
@@ -541,6 +602,15 @@ fn draw_notice_close(s: f32) -> Drawn {
 }
 
 #[test]
+fn the_folder_browsers_back_home_and_file_glyphs_draw_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("folder browser Back", s, draw_bar_button(s, false));
+        assert_size("folder browser Home", s, draw_bar_button(s, true));
+        assert_size("folder browser file", s, draw_file_glyph(s));
+    }
+}
+
+#[test]
 fn the_checked_secrets_check_and_spinner_draw_at_full_size_at_every_scale() {
     for s in SCALES {
         assert_size("secret check", s, draw_check(s));
@@ -568,7 +638,9 @@ fn the_plugin_notices_close_cross_draws_at_full_size_at_every_scale() {
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 16] = [
+const SIZED: [(&str, usize); 17] = [
+    // `the_folder_browsers_back_home_and_file_glyphs_draw_at_full_size_at_every_scale`: Back and Home share one.
+    ("remote_folder.slint", 2),
     // `the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale`, and the check and the spinner:
     // `the_checked_secrets_check_and_spinner_draw_at_full_size_at_every_scale`.
     ("plugin_ask.slint", 3),

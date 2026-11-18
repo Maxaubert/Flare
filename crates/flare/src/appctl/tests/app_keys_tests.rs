@@ -264,6 +264,8 @@ fn menu_labels_now(f: &Fx) -> Vec<String> {
         .collect()
 }
 
+/// Rule 1236; rule 1282: a pick opens the folder browser on the machine (here no link answers: one line, nothing
+/// listed), and its Open here a tab there, in the host's home as before.
 #[test]
 fn ctrl_shift_r_lists_the_linked_machines_and_a_pick_opens_a_tab_there() {
     let f = fx();
@@ -279,10 +281,22 @@ fn ctrl_shift_r_lists_the_linked_machines_and_a_pick_opens_a_tab_there() {
     f.key(shift_ctrl_key("R"));
     assert_eq!(menu_labels_now(&f), ["Mac Mini"]);
     f.h.comp.invoke_menu_picked(0);
+    assert!(!f.h.comp.get_menu_open());
+    assert!(f.h.comp.get_rfolder_open(), "the folder browser opens");
+    f.h.comp.invoke_rfolder_open_here();
+    assert!(!f.h.comp.get_rfolder_open());
     let front = f.ctl.borrow().front_id().unwrap();
     let tag = f.ctl.borrow().model().remote_of(&front).cloned();
     assert_eq!(tag.map(|t| t.id), Some("mac".to_string()));
-    assert!(!f.h.comp.get_menu_open());
+    assert_eq!(
+        f.ctl
+            .borrow()
+            .model()
+            .active()
+            .map(|t| t.cwd.clone())
+            .as_deref(),
+        Some(crate::machines::HOST_HOME)
+    );
 }
 
 #[test]

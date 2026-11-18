@@ -195,6 +195,8 @@ pub enum UiMsg {
     /// Ctrl+Shift+T on a closed Claude tab whose session the hooks never named: a worker found the newest session of
     /// the folder no open tab holds (rule 1236).
     Reopen(app_keys_glue::Reopen),
+    /// A worker listed a folder on a machine for the remote folder browser (rule 1282), or said why not.
+    RemoteFolder(crate::remote_folder::FolderMsg),
 }
 
 mod app_keys_glue;
@@ -206,6 +208,7 @@ mod notice_glue;
 mod plugins_glue;
 mod quiet_glue;
 mod remote_files_glue;
+mod remote_folder_glue;
 mod remote_glue;
 mod sessions_glue;
 pub mod staged_glue;
@@ -540,6 +543,11 @@ pub struct AppCtl {
     /// Remote tabs opened in the host's home folder whose real folder has not joined the recent folders yet: the first
     /// folder the host's shell reports does (rule 1213).
     remote_home: std::collections::HashSet<String>,
+    /// The remote folder browser while it is open (rule 1282), the number its last ask took (every dialog's asks
+    /// count on, so an answer for a closed one is never taken by the next), and what lists a host's folder.
+    rfolder: Option<crate::remote_folder::Browser>,
+    rfolder_seq: u64,
+    rfolder_lister: Arc<dyn crate::remote_folder::FolderLister>,
     /// A remote tab's fitted conversation view (remote sessions PR 7).
     rconvo: remote_glue::RemoteConvoView,
     /// The host's own fitted view of a tab a remote viewer sizes (rule 1211).
@@ -1118,6 +1126,9 @@ impl AppCtl {
             starters: Vec::new(),
             machines: Vec::new(),
             remote_home: std::collections::HashSet::new(),
+            rfolder: None,
+            rfolder_seq: 0,
+            rfolder_lister: Arc::new(crate::remote_folder::NoLister),
             rconvo: remote_glue::RemoteConvoView::default(),
             hconvo: remote_glue::HostConvoView::default(),
             source_id: None,
@@ -1520,6 +1531,15 @@ impl AppCtl {
             on_pask_secret,
             |c, ok: bool, text: SharedString| c.answer_secret(ok, text)
         );
+        bind!(app, rc, on_rfolder_back, |c| c.rfolder_back());
+        bind!(app, rc, on_rfolder_home, |c| c.rfolder_home());
+        bind!(app, rc, on_rfolder_crumb, |c, i: i32| c.rfolder_crumb(i));
+        bind!(app, rc, on_rfolder_pick, |c, i: i32| c.rfolder_pick(i));
+        bind!(app, rc, on_rfolder_enter, |c, i: i32| c.rfolder_enter(i));
+        bind!(app, rc, on_rfolder_step, |c, down: bool| c
+            .rfolder_step(down));
+        bind!(app, rc, on_rfolder_open_here, |c| c.rfolder_open_here());
+        bind!(app, rc, on_rfolder_cancel, |c| c.rfolder_cancel());
         bind!(
             app,
             rc,
@@ -3209,9 +3229,10 @@ impl AppCtl {
                     let (machine, folder) = (machine.to_string(), folder.to_string());
                     self.open_remote(&machine, &folder, None, true);
                 } else if let Some(machine) = crate::menus_ui::machine_of_row(path) {
-                    // A linked machine's row (remote sessions PR 7): a shell tab there, in the host's home folder.
+                    // A linked machine's row: the folder browser on that machine, at its home (rule 1282, Max's pick
+                    // of mockup B on 2026-11-17; before, it opened a shell in the home folder at once).
                     let machine = machine.to_string();
-                    self.open_remote(&machine, crate::machines::HOST_HOME, None, true);
+                    self.open_remote_folder(&machine);
                 } else if !path.is_empty() {
                     self.open_recent(path);
                 }
@@ -5536,6 +5557,7 @@ impl AppCtl {
             }
             UiMsg::Picked(None) => {}
             UiMsg::Reopen(r) => self.reopened(r),
+            UiMsg::RemoteFolder(m) => self.rfolder_answered(m),
             UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::Machines(list) => self.set_machines(list),
             UiMsg::HostConvo(read) => self.on_host_convo(read),
@@ -5741,7 +5763,9 @@ impl AppCtl {
         self.hub.on_host_events(&events);
         // A remote tab's link brought the host's status of it (remote sessions PR 4, rule 294), or its conversation
         // (PR 7's fitted view).
-        self.sync_remote_status();
+        if self.sync_remote_status() {
+            changed = true;
+        }
         if self.sync_remote_convo() {
             changed = true;
         }

@@ -1235,3 +1235,149 @@ fn the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request() {
     assert!(!f.b().get_pair_code_open());
     assert!(wire::recv(&mut *s).is_err(), "the request ended");
 }
+
+/// The Machine drop-down's choices as the menu draws them: the nearby Mac, then the SSH hosts `evo-x2` (found a PC),
+/// `pi` (found Linux) and `nas` (not found), then "Type an address" (rule 1278).
+fn host_rows() -> Vec<crate::SetOption> {
+    use flare_settings::page::machines::{MachineOs, NearbyChoice, SshHost};
+    let nearby = [NearbyChoice {
+        id: "mini".into(),
+        name: "Maxs-Mac-Mini".into(),
+        os: Some(MachineOs::Mac),
+        addrs: vec!["192.168.0.120".into()],
+    }];
+    let hosts = [
+        SshHost {
+            os: Some(MachineOs::Pc),
+            ..SshHost::plain("evo-x2")
+        },
+        SshHost {
+            os: Some(MachineOs::Linux),
+            ..SshHost::plain("pi")
+        },
+        SshHost::plain("nas"),
+    ];
+    crate::settings_ctl::machine_choice_opts(&nearby, &hosts, "Consolas")
+        .into_iter()
+        .map(|o| crate::SetOption {
+            id: o.id.into(),
+            name: o.name.into(),
+            face: o.face.into(),
+            vendor: o.vendor.into(),
+        })
+        .collect()
+}
+
+/// A look's chrome tokens written into the select preview's Theme (the ones the menu draws with).
+fn paint_select(h: &Harness<crate::SelectPreview>, id: &str) {
+    use crate::chrome_apply::colour;
+    use flare_theme::edges::DEFAULT_WINDOW_EDGES;
+    use flare_theme::look::{LookInput, apply_look};
+    let l = apply_look(&LookInput {
+        theme_id: id,
+        custom: None,
+        draft: None,
+        background: None,
+        accent: None,
+        secondary: None,
+        edges: DEFAULT_WINDOW_EDGES,
+        see_through: 0,
+        glass_possible: false,
+    });
+    let tok = |n: &str| colour(&l.chrome.vars[n]);
+    let t = h.comp.global::<crate::Theme>();
+    t.set_light(l.light);
+    t.set_ground(tok("--p-bg"));
+    t.set_side_flat(tok("--p-side-flat"));
+    t.set_text(tok("--p-text"));
+    t.set_text_soft(tok("--p-text-soft"));
+    t.set_dim(tok("--p-dim"));
+    t.set_line(tok("--p-line"));
+    t.set_hover(tok("--p-hover"));
+    t.set_control(tok("--p-control"));
+    h.advance(0);
+}
+
+/// Rule 1278 (Max, 2026-11-17: "id like it to show either the windows, linux or mac icon automatically depending on
+/// the device"): in the open drop-down an SSH host found to be a PC draws the Windows logo and one found to run Linux
+/// draws Tux, at full size in the text ink, like the nearby Mac's Apple logo; a host not found draws none, and its name
+/// and "Type an address" still start after the logo's space. At every scale, in a dark and a light look.
+#[test]
+fn an_ssh_hosts_row_draws_its_systems_logo_at_every_scale_in_both_looks() {
+    use super::icons_tabs::{Ink, expected_extent_px, ink_edges, svg_bbox};
+    use crate::menus_ui::{GLYPH_LOGO_LINUX, GLYPH_LOGO_MAC, GLYPH_LOGO_PC, glyph_path};
+    use crate::ui_harness::SCALES;
+    use slint::{ModelRc, VecModel};
+    let rows = host_rows();
+    let vendors: Vec<&str> = rows.iter().map(|o| o.vendor.as_str()).collect();
+    assert_eq!(vendors, ["mac", "pc", "linux", "blank", "blank"]);
+    let rgb = |c: slint::Color| {
+        [
+            f32::from(c.red()),
+            f32::from(c.green()),
+            f32::from(c.blue()),
+        ]
+    };
+    for look in ["pt-default", "paper"] {
+        for s in SCALES {
+            let h = Harness::new(s, 400, 420, || crate::SelectPreview::new().unwrap());
+            paint_select(&h, look);
+            h.comp
+                .set_options(ModelRc::new(VecModel::from(rows.clone())));
+            h.comp.set_value("".into());
+            h.comp.set_open(true);
+            h.advance(16);
+            let f = h.render();
+            let theme = h.comp.global::<crate::Theme>();
+            let (text, soft) = (rgb(theme.get_text()), rgb(theme.get_text_soft()));
+            let (mx, my, oh) = (h.comp.get_menu_x(), h.comp.get_menu_y(), h.comp.get_opt_h());
+            let k = |v: f32| (v * s).round() as u32;
+            for (i, o) in rows.iter().enumerate() {
+                let top = my + 2.0 + oh * i as f32;
+                let mid = top + oh / 2.0;
+                let bg = f.px(k(mx + 4.0), k(mid));
+                let what = format!("{look} at {s}: {}", o.name);
+                // The logo's box, 11 to 23 px in, with a pixel to spare each side.
+                let logo_box = (k(mx + 9.0), k(top + 2.0), k(mx + 25.0), k(top + oh - 2.0));
+                let glyph = match o.vendor.as_str() {
+                    "mac" => Some(GLYPH_LOGO_MAC),
+                    "pc" => Some(GLYPH_LOGO_PC),
+                    "linux" => Some(GLYPH_LOGO_LINUX),
+                    _ => None,
+                };
+                let got = ink_edges(&f, logo_box, &Ink::new(bg, text));
+                match glyph {
+                    Some(g) => {
+                        let got = got.unwrap_or_else(|| panic!("{what}: the logo draws"));
+                        let want = expected_extent_px(glyph_path(g), 12.0, 24.0, 0.0, s);
+                        let (w, hh) = (got.2 - got.0, got.3 - got.1);
+                        assert!(
+                            (w - want.0).abs() <= 1.0 && (hh - want.1).abs() <= 1.0,
+                            "{what}: drawn {w} by {hh} px, want {} by {}",
+                            want.0,
+                            want.1
+                        );
+                        // The logo's box starts 11 px in; the glyph where its own commands start in that box.
+                        let at = 11.0 + svg_bbox(glyph_path(g)).0 * 12.0 / 24.0;
+                        assert!(
+                            (got.0 / s - (mx + at)).abs() <= 1.0,
+                            "{what}: the logo starts {at} px in ({})",
+                            got.0 / s - mx
+                        );
+                    }
+                    None => assert!(got.is_none(), "{what}: no logo"),
+                }
+                // Every name starts after the logo's space.
+                let name_box = (k(mx + 9.0), k(top + 2.0), k(mx + 160.0), k(top + oh - 2.0));
+                let name = ink_edges(&f, name_box, &Ink::new(bg, soft));
+                if glyph.is_none() {
+                    let x0 = name.unwrap_or_else(|| panic!("{what}: the name draws")).0 / s - mx;
+                    assert!(
+                        x0 >= 29.0,
+                        "{what}: the name starts after the logo's space ({x0})"
+                    );
+                }
+            }
+        }
+    }
+}
