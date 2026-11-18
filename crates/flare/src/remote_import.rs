@@ -557,8 +557,11 @@ impl WatchWorker {
                 if let Err(LinkError::Down(_)) =
                     link.call(Method::RemoteClose, json!({"tab": tab}), self.t.call)
                 {
-                    // Tried again once the link is back (the spec's `close_without_a_link`).
-                    self.shared.lock().closes.splice(0..0, closes[n..].iter().cloned());
+                    // Tried again once the link is back (the spec's `close_without_a_link`), before any asked since.
+                    let mut st = self.shared.lock();
+                    let mut again = closes[n..].to_vec();
+                    again.append(&mut st.closes);
+                    st.closes = again;
                     return;
                 }
             }

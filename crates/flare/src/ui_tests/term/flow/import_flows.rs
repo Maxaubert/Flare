@@ -225,7 +225,7 @@ fn ctrl_tab_in_order_and_recent_modes_attaches_only_the_row_it_lands_on() {
         );
         let tab = || ctrl("Tab", "Tab");
         for _ in 0..2 {
-            w.ctl.borrow_mut().on_key(&tab());
+            let _ = w.ctl.borrow_mut().on_key(&tab());
             w.pump();
         }
         let landed = front(&w);
