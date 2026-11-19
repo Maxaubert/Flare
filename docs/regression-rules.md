@@ -5083,7 +5083,8 @@ text. It reads each machine's newest answer (the watch link's, rule 1291); one o
 short `--no-start` link, at most once per machine per 5 s (the ask is stamped before it starts), all machines at once
 on the call's worker, and the call waits at most 10 s for them (a late one is `reachable: false`; an answer older
 than 5 s is never handed out, so a stale listing never names a tab to adopt; no second ask starts while one of that
-machine still runs). `open.remote` with `tab` takes `machine` and `tab` only: `folder`, `resume` and `front` are `bad_params` with it (`open_remote` cannot
+machine still runs). An ask's answer is kept only when the machine's newest answer is older than the ask's start, so it
+never overwrites a watch answer heard while it ran. `open.remote` with `tab` takes `machine` and `tab` only: `folder`, `resume` and `front` are `bad_params` with it (`open_remote` cannot
 tell the agent from `flare open`, and a fronted row attaches). The tab must be one the machine's newest answer lists
 as its own, else `not_found`. The window adds it as an unattached row marked `Adopted`, behind the front tab: never
 fronted, so it opens, attaches and sizes nothing on the host until the person fronts it (rule 1292). A host tab
@@ -5099,7 +5100,7 @@ or while an open on that machine waits for its host tab (`busy`): either could s
 `open_remote_list_names_known_machines_only_and_carries_no_session_or_question`,
 `open_remote_list_asks_each_machine_at_most_once_per_five_seconds`,
 `open_remote_refuses_tab_with_folder_resume_or_front_and_an_unknown_host_tab_is_not_found` (`ctl_app.rs`),
-`the_list_asks_each_machine_at_most_once_per_five_seconds`,
+`the_list_asks_each_machine_at_most_once_per_five_seconds`, `an_ask_never_overwrites_a_fresher_watch_answer`,
 `the_list_names_only_the_hosts_own_tabs_and_carries_no_session_or_question`,
 `adoptable_finds_only_a_listed_tab_of_the_hosts_own` (`remote_import.rs`),
 `an_agents_adopt_makes_an_unattached_row_behind_the_front_and_sends_no_attach_or_resize`,

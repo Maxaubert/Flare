@@ -769,7 +769,10 @@ impl HostLists {
                     {
                         let mut known = me.lock();
                         let k = known.entry(m.clone()).or_default();
-                        k.heard = Some((now, heard));
+                        // A watch answer heard after the ask started is fresher: the ask's own is dropped.
+                        if k.heard.as_ref().is_none_or(|(at, _)| *at < now) {
+                            k.heard = Some((now, heard));
+                        }
                         k.running = false;
                     }
                     let _ = tx.send(m);
@@ -1680,6 +1683,38 @@ mod tests {
             4,
             "no second ask beside the running one"
         );
+    }
+
+    /// Rule 1296: an ask's answer never overwrites a watch answer heard after the ask started: the list hands out the
+    /// fresher one, even when the ask found the link down.
+    #[test]
+    fn an_ask_never_overwrites_a_fresher_watch_answer() {
+        /// An ask during which the watch hears the machine, then finds its own link down.
+        struct WatchHearsMeanwhile {
+            lists: Mutex<Option<std::sync::Weak<HostLists>>>,
+            at: Instant,
+        }
+        impl ListAsk for WatchHearsMeanwhile {
+            fn ask(&self, machine: &str) -> Option<Heard> {
+                let lists = self.lists.lock().unwrap().clone().unwrap();
+                if let Some(l) = lists.upgrade() {
+                    l.heard(machine, &Heard::Listed(listing(&["t9-9"])), self.at);
+                }
+                None
+            }
+        }
+        let t0 = Instant::now();
+        let ask = Arc::new(WatchHearsMeanwhile {
+            lists: Mutex::new(None),
+            at: t0 + Duration::from_secs(1),
+        });
+        let lists = Arc::new(HostLists::new(ask.clone()));
+        *ask.lists.lock().unwrap() = Some(Arc::downgrade(&lists));
+        let a = lists.answers(&["mac".to_string()], t0, LIST_WAIT);
+        let Some(Heard::Listed(v)) = &a["mac"] else {
+            panic!("the watch's fresher answer is handed out");
+        };
+        assert_eq!(v["tabs"][0]["tab"], "t9-9");
     }
 
     /// Rule 1296: each listed tab is made field by field (no session id, question words, failure or anything else
