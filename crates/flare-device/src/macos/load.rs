@@ -35,6 +35,8 @@ pub struct Loaded {
     pub coresim_version: String,
     pub simkit_version: String,
     pub simkit_path: PathBuf,
+    /// AccessibilityPlatformTranslation loaded (the UI tree).
+    pub ax_loaded: bool,
 }
 
 /// The Xcode to use: `DEVELOPER_DIR` (Flare sets it), else what `xcode-select -p` says (run by hand). BLOCKING.
@@ -57,7 +59,7 @@ pub fn developer_dir() -> Result<PathBuf, String> {
 }
 
 /// The `CFBundleVersion` of the bundle at `path`.
-fn bundle_version(path: &Path) -> Option<String> {
+pub(crate) fn bundle_version(path: &Path) -> Option<String> {
     let b = NSBundle::bundleWithPath(&NSString::from_str(&path.to_string_lossy()))?;
     let v = b.objectForInfoDictionaryKey(&NSString::from_str("CFBundleVersion"))?;
     let s = v.downcast_ref::<NSString>()?.to_string();
@@ -92,12 +94,15 @@ pub fn load(developer_dir: &Path) -> Result<Loaded, String> {
     open(&simkit_path)?;
     let coresim_version = bundle_version(Path::new(CORESIM)).unwrap_or_default();
     let simkit_version = bundle_version(&simkit_path).unwrap_or_default();
+    // The UI tree's framework is optional: without it the sim host runs with no tree (`ax` false in hello).
+    let ax_loaded = super::ax::load().is_ok();
     Ok(Loaded {
         developer_dir: developer_dir.to_path_buf(),
         xcode_version,
         coresim_version,
         simkit_version,
         simkit_path,
+        ax_loaded,
     })
 }
 
@@ -112,8 +117,7 @@ impl Loaded {
             xcode_version: self.xcode_version.clone(),
             xcode_path: self.developer_dir.to_string_lossy().to_string(),
             input_path: versions::input_path(&self.coresim_version),
-            // The UI tree comes with PR 3.
-            ax: false,
+            ax: self.ax_loaded && ax_missing().is_empty(),
         }
     }
 
@@ -133,8 +137,10 @@ pub enum Owner {
     Protocol(&'static str),
 }
 
-/// Every class, protocol and selector the frame path uses (`sim.rs`), checked by `--self-test` and before attach.
+/// Every class, protocol and selector the frame and input paths use (`sim.rs`, `xpc.rs`, `orient.rs`), checked by
+/// `--self-test` and before the sim host serves.
 pub const USED: &[(Owner, &str)] = &[
+    (Owner::Class("SimDevice"), "lookup:error:"),
     (
         Owner::ClassMethod("SimServiceContext"),
         "sharedServiceContextForDeveloperDir:error:",
@@ -177,6 +183,42 @@ pub const USED: &[(Owner, &str)] = &[
         "unregisterIOSurfacesChangeCallbackWithUUID:",
     ),
 ];
+
+/// What the UI tree uses (`ax.rs`): checked by `--self-test`; when one is missing the sim host runs with no tree.
+pub const USED_AX: &[(Owner, &str)] = &[
+    (Owner::ClassMethod("AXPTranslator"), "sharedInstance"),
+    (Owner::Class("AXPTranslator"), "setBridgeTokenDelegate:"),
+    (
+        Owner::Class("AXPTranslator"),
+        "frontmostApplicationWithDisplayId:bridgeDelegateToken:",
+    ),
+    (
+        Owner::Class("AXPTranslator"),
+        "objectAtPoint:displayId:bridgeDelegateToken:",
+    ),
+    (
+        Owner::Class("AXPTranslator"),
+        "macPlatformElementFromTranslation:",
+    ),
+    (Owner::ClassMethod("AXPTranslatorResponse"), "emptyResponse"),
+    (
+        Owner::Class("SimDevice"),
+        "sendAccessibilityRequestAsync:completionQueue:completionHandler:",
+    ),
+];
+
+/// Every missing symbol of the UI tree.
+pub fn ax_missing() -> Vec<Broken> {
+    let mut missing = Vec::new();
+    for (owner, s) in USED_AX {
+        if let Err(b) = check(*owner, s)
+            && !missing.contains(&b)
+        {
+            missing.push(b);
+        }
+    }
+    missing
+}
 
 fn protocol(name: &str) -> Result<&'static AnyProtocol, Broken> {
     let c = std::ffi::CString::new(name).map_err(|_| Broken::missing(name))?;
@@ -221,9 +263,9 @@ pub fn check(owner: Owner, selector: &str) -> Result<(), Broken> {
     }
 }
 
-/// Every missing symbol (empty: the frame path can run on this Xcode).
+/// Every missing symbol of the frame and input paths (empty: they can run on this Xcode).
 pub fn self_test() -> Vec<Broken> {
-    let mut missing = Vec::new();
+    let mut missing = super::xpc::missing_symbols();
     for (owner, s) in USED {
         if let Err(b) = check(*owner, s)
             && !missing.contains(&b)
@@ -288,7 +330,13 @@ pub fn run_self_test() -> SelfTest {
             versions::XCODE_FLOOR
         ));
     }
-    let missing: Vec<String> = self_test()
+    let mut found = self_test();
+    if loaded.ax_loaded {
+        found.extend(ax_missing());
+    } else {
+        found.push(Broken::missing("AccessibilityPlatformTranslation"));
+    }
+    let missing: Vec<String> = found
         .iter()
         .map(|b| b.in_coresim(&hello.coresim_version))
         .collect();
@@ -296,7 +344,7 @@ pub fn run_self_test() -> SelfTest {
         ok: missing.is_empty(),
         skipped: None,
         hello: Some(hello),
-        checked: USED.len(),
+        checked: USED.len() + USED_AX.len() + super::xpc::SIM4_SYMBOLS.len(),
         missing,
     }
 }
@@ -338,8 +386,12 @@ mod tests {
             return;
         }
         assert!(r.ok, "missing: {:?}", r.missing);
-        assert_eq!(r.checked, USED.len());
+        assert_eq!(
+            r.checked,
+            USED.len() + USED_AX.len() + crate::macos::xpc::SIM4_SYMBOLS.len()
+        );
         let hello = r.hello.unwrap();
+        assert!(hello.ax, "the UI tree is there");
         assert!(!hello.coresim_version.is_empty());
         assert!(!hello.simkit_version.is_empty());
         assert!(crate::versions::Version::parse(&hello.xcode_version).is_some());

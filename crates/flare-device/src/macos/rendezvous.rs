@@ -94,6 +94,26 @@ const DESC_LEN: usize = std::mem::size_of::<PortDesc>();
 #[repr(C, align(8))]
 struct RcvBuf([u8; 1024]);
 
+/// Sends a complete mach message built by hand (`buf` starts with its header, `len` bytes go), with a send
+/// timeout: the kern_return. Used for the Purple orientation event (orient.rs).
+pub(crate) fn send_raw(buf: &mut [u8], len: u32, timeout_ms: u32) -> i32 {
+    if buf.len() < (len as usize).max(std::mem::size_of::<Header>()) {
+        return -1;
+    }
+    // SAFETY: the buffer holds the whole message, header first (checked above); send only, with a timeout.
+    unsafe {
+        mach_msg(
+            buf.as_mut_ptr().cast::<Header>(),
+            MACH_SEND_MSG | MACH_SEND_TIMEOUT,
+            len,
+            0,
+            0,
+            timeout_ms,
+            0,
+        )
+    }
+}
+
 unsafe extern "C" {
     static bootstrap_port: Port;
     static mach_task_self_: Port;

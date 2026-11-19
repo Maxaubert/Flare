@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::geom::Orientation;
-use crate::source::{Button, DeviceState, Key, Screen, Touch};
+use crate::source::{Button, DeviceState, InputState, Key, Screen, Touch};
 use crate::target::Target;
 use crate::versions::InputPath;
 
@@ -143,9 +143,39 @@ pub enum HostLine {
         target: Target,
         state: DeviceState,
     },
+    /// The device's input connection changed.
+    Input {
+        target: Target,
+        state: InputState,
+    },
     Broken {
         why: String,
     },
+}
+
+/// A snapshot's answer: `{"png": <base64>}`.
+pub fn png_result(png: &[u8]) -> Value {
+    use base64::Engine as _;
+    serde_json::json!({ "png": base64::engine::general_purpose::STANDARD.encode(png) })
+}
+
+/// The PNG in a snapshot's answer, None when it is not one.
+pub fn png_of(result: &Value) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let b = base64::engine::general_purpose::STANDARD
+        .decode(result.get("png")?.as_str()?)
+        .ok()?;
+    b.starts_with(b"\x89PNG\r\n\x1a\n").then_some(b)
+}
+
+/// A UI tree's answer: `{"tree": <UiNode>}`.
+pub fn tree_result(tree: &crate::tree::UiNode) -> Value {
+    serde_json::json!({ "tree": tree })
+}
+
+/// The tree in a UI tree's answer.
+pub fn tree_of(result: &Value) -> Option<crate::tree::UiNode> {
+    serde_json::from_value(result.get("tree")?.clone()).ok()
 }
 
 /// One JSON line (no newline inside; the caller writes the `\n`).
@@ -408,6 +438,16 @@ mod tests {
                 target: t.clone(),
                 state: DeviceState::Booted,
             },
+            HostLine::Input {
+                target: t.clone(),
+                state: InputState::Connecting,
+            },
+            HostLine::Input {
+                target: t.clone(),
+                state: InputState::Broken {
+                    why: "dtuhidd gave no liveness reply in 5 tries".into(),
+                },
+            },
             HostLine::Broken {
                 why: "SimDevice missing in CoreSimulator 1174.21".into(),
             },
@@ -416,6 +456,25 @@ mod tests {
             let line = to_line(&l);
             assert_eq!(from_line::<HostLine>(&line), Some(l), "{line}");
         }
+        // A snapshot's PNG and a tree cross as JSON.
+        let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+        let v = png_result(&png);
+        assert_eq!(
+            png_of(&from_line::<Value>(&to_line(&v)).unwrap()),
+            Some(png)
+        );
+        assert_eq!(
+            png_of(&serde_json::json!({"png": "bm90IGEgcG5n"})),
+            None,
+            "not a PNG"
+        );
+        assert_eq!(png_of(&Value::Null), None);
+        let tree = crate::tree::UiNode {
+            role: "AXButton".into(),
+            label: "OK".into(),
+            ..Default::default()
+        };
+        assert_eq!(tree_of(&tree_result(&tree)), Some(tree));
         // Anything not shaped right is refused, never guessed at.
         for bad in [
             "",

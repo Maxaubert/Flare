@@ -52,21 +52,21 @@ pub trait Sink: Send + Sync {
 
 /// The type encodings CoreSimulator's proxies need to forward a block over XPC ("Block is missing signature field"
 /// otherwise): no arguments, one object, two objects; each returns void.
-struct Enc0;
+pub(crate) struct Enc0;
 // SAFETY: the encoding matches the arguments and return type (64-bit: the block itself at 0, objects 8 bytes each).
 unsafe impl ManualBlockEncoding for Enc0 {
     type Arguments = ();
     type Return = ();
     const ENCODING_CSTR: &'static std::ffi::CStr = c"v8@?0";
 }
-struct Enc1;
+pub(crate) struct Enc1;
 // SAFETY: as above.
 unsafe impl ManualBlockEncoding for Enc1 {
     type Arguments = (*mut AnyObject,);
     type Return = ();
     const ENCODING_CSTR: &'static std::ffi::CStr = c"v16@?0@8";
 }
-struct Enc2;
+pub(crate) struct Enc2;
 // SAFETY: as above.
 unsafe impl ManualBlockEncoding for Enc2 {
     type Arguments = (*mut AnyObject, *mut AnyObject);
@@ -82,9 +82,14 @@ pub fn now_us() -> u64 {
 
 /// An object that crosses to the callback queue (the proxies are thread-safe; CoreSimulator calls them from its own
 /// queues).
-struct Sendable<T>(T);
+pub(crate) struct Sendable<T>(pub(crate) T);
 // SAFETY: see the type's comment.
 unsafe impl<T> Send for Sendable<T> {}
+
+/// The text of an object (`description`), for errors and logs.
+pub(crate) fn describe(obj: *mut AnyObject) -> String {
+    text(obj)
+}
 
 /// The text of an object (`description`), for errors.
 fn text(obj: *mut AnyObject) -> String {
@@ -203,7 +208,18 @@ pub struct Device {
     obj: Retained<AnyObject>,
 }
 
+// SAFETY: a CoreSimulator device object, used from the sim host's threads one call at a time; CoreSimulator's objects
+// are thread-safe.
+unsafe impl Send for Device {}
+// SAFETY: as above.
+unsafe impl Sync for Device {}
+
 impl Device {
+    /// The `SimDevice` itself, for the private calls of input, orientation and the UI tree.
+    pub fn ptr(&self) -> *mut AnyObject {
+        ptr(&self.obj)
+    }
+
     /// "Booted", "Shutdown", ...
     pub fn state(&self) -> Result<String, Broken> {
         autoreleasepool(|_| Ok(text(ptr(&get(ptr(&self.obj), "stateString")?))))
@@ -379,6 +395,8 @@ pub struct Stream {
     queue: DispatchRetained<DispatchQueue>,
     scale: f64,
     probe_barcode: bool,
+    /// The interface's orientation (orient.rs keeps it), carried in each new ring's screen facts.
+    orientation: Arc<Mutex<Orientation>>,
 }
 
 // SAFETY: every field is used under the mutex or is thread-safe (the queue, the GPU, the sink).
@@ -451,8 +469,8 @@ impl Stream {
             size_px: px,
             size_pt: Size::new(px.w / self.scale, px.h / self.scale),
             scale: self.scale,
-            // The interface's orientation comes with PR 3 (orient.rs); the framebuffer stays portrait (spike S5).
-            orientation: Orientation::Rot0,
+            // The framebuffer stays portrait (spike S5); the interface's orientation is what orient.rs last read.
+            orientation: *self.orientation.lock().unwrap_or_else(|p| p.into_inner()),
         }
     }
 
@@ -579,6 +597,25 @@ impl Stream {
     pub fn last_barcode(&self) -> Option<u16> {
         self.lock().barcode
     }
+
+    /// The device's framebuffer itself (fresh while paused: snapshots read it, not a ring slot).
+    pub fn framebuffer(&self) -> Option<CFRetained<IOSurfaceRef>> {
+        self.lock().fb.clone()
+    }
+
+    /// The screen's scale (pixels per point).
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    /// The screen's portrait size in points.
+    pub fn portrait_pt(&self) -> Option<Size> {
+        let fb = self.framebuffer()?;
+        Some(Size::new(
+            fb.width() as f64 / self.scale,
+            fb.height() as f64 / self.scale,
+        ))
+    }
 }
 
 /// The probe app's 16-bit frame barcode (the band at 120 to 180 pt, read at 150 pt) in an RGBA or BGRA surface.
@@ -614,6 +651,10 @@ pub struct AttachOptions {
     /// Hands out ring numbers (`device` in records), unique in the sim host.
     pub ids: Arc<AtomicU32>,
     pub probe_barcode: bool,
+    /// The interface's orientation, shared with whoever reads it (orient.rs).
+    pub orientation: Arc<Mutex<Orientation>>,
+    /// Called on the screen's properties callback (it fires about 270 ms after a rotation, spike S5).
+    pub on_props: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Attaches to a booted device: reads its screen, makes its ring, registers the callbacks. The ring goes to the sink
@@ -651,6 +692,7 @@ pub fn attach(sim: &Sim, target: &Target, opts: AttachOptions) -> Result<Attache
         queue: queue.clone(),
         scale,
         probe_barcode: opts.probe_barcode,
+        orientation: opts.orientation,
     });
     // The surfaces callback does not fire on attach: the ring is made from the framebuffer read above.
     {
@@ -683,7 +725,12 @@ pub fn attach(sim: &Sim, target: &Target, opts: AttachOptions) -> Result<Attache
     );
     match &screen {
         Screen0::Modern(sc) => {
-            let props = RcBlock::with_encoding::<_, _, _, Enc1>(move |_props: *mut AnyObject| {});
+            let on_props = opts.on_props.clone();
+            let props = RcBlock::with_encoding::<_, _, _, Enc1>(move |_props: *mut AnyObject| {
+                if let Some(f) = &on_props {
+                    let _ = objc2::exception::catch(std::panic::AssertUnwindSafe(|| f()));
+                }
+            });
             guarded(ptr(sc), REGISTER, |o, s| {
                 send!(o, s => (),
                     uuid_p => *mut AnyObject,
@@ -795,6 +842,7 @@ mod tests {
             queue: DispatchQueue::new("com.flare.sim-host.test", None),
             scale: 2.0,
             probe_barcode: false,
+            orientation: Arc::new(Mutex::new(Orientation::Rot0)),
         };
         let mut g = stream.lock();
         for seq in 1..=10 {

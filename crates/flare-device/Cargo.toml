@@ -8,8 +8,8 @@ publish = false
 # The device panel (issue #248): a live phone simulator beside a tab. PR 1 is the pure model: targets, the source
 # trait and its fake, the 60 fps cap and ring ownership, coordinates, the US keymap, the UI tree filter, the touch
 # indicators, the agent job, the sim host's wire protocol and the version table. PR 2 adds the sim host itself
-# (`flare-sim-host`, frames only), Flare's side of it (`client.rs`, `SimSource`) and the Xcode pick. Nothing is wired
-# into the app yet.
+# (`flare-sim-host`, frames only), Flare's side of it (`client.rs`, `SimSource`) and the Xcode pick. PR 3 adds the
+# sim host's input (DTUHID, legacy Indigo), rotation, the UI tree and snapshots. Nothing is wired into the app yet.
 [dependencies]
 # The agent cursor's glide and the border (indicator.rs), the target limits (target.rs).
 flare-surfaces = { path = "../flare-surfaces" }
@@ -19,6 +19,8 @@ serde.workspace = true
 # The client's log lines (the sim host's own log is its file).
 log.workspace = true
 serde_json.workspace = true
+# A snapshot's PNG crosses the control channel as base64 in its JSON answer (wire.rs).
+base64.workspace = true
 # The still pictures (`simctl io screenshot`, a PNG) decoded to RGBA on the still worker (client.rs).
 png.workspace = true
 

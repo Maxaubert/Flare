@@ -7,12 +7,26 @@
 //! - [`ring`]: the RGBA IOSurface ring and the GPU pass that fills it.
 //! - [`rendezvous`]: the mach channel (Flare's checked-in service, the sim host's port), pid-checked both ways.
 //! - [`simctl`]: the public `simctl` tool.
-//! - [`bench`]: `flare-sim-host --bench`, the frame path against the probe app.
+//! - [`xpc`]: XPC to the simulator's services, the liveness barrier.
+//! - [`dtuhid`]: touches, keys and buttons as `dtuhidd` messages (CoreSimulator 1155.4 and newer).
+//! - [`indigo`]: the legacy Indigo client (older CoreSimulator), never mixed with DTUHID in one boot.
+//! - [`input`]: one device's input worker, everything in order.
+//! - [`orient`]: rotation (Purple GSEvent 50) and the interface's orientation (CoreDevice `displayinfo`).
+//! - [`ax`]: the UI tree (`AXPTranslator`), one request in flight.
+//! - [`snapshot`]: the current screen as a point-sized PNG.
+//! - [`bench`]: `flare-sim-host --bench` and `--input-bench`, against the probe apps.
 
+pub mod ax;
 pub mod bench;
+pub mod dtuhid;
 pub mod guarded;
+pub mod indigo;
+pub mod input;
 pub mod load;
+pub mod orient;
 pub mod rendezvous;
 pub mod ring;
 pub mod sim;
 pub mod simctl;
+pub mod snapshot;
+pub mod xpc;
