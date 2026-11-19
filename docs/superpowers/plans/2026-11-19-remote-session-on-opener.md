@@ -180,3 +180,19 @@ Branch `feat/remote-on-opener-3`. Needs PR 1. Waits for Max's answer on "Hide he
 3. A working hidden session holds the host awake even with the opener gone (recommended)?
 4. Remote tabs opened before the update end once on the opener (they stay on the host's strip). Fine?
 5. For PR 2's mockup: which design skill and image tool?
+
+## Update, Max, 2026-11-19 (after the mockups)
+
+Max: "just have it show which PCs are connected, no session things. If you start a session on the Mac it stays only
+there. Only sessions you start remotely on the PC or remotely on the Mac show, but in the normal tab view."
+
+- There is NO list of hidden sessions in Settings. No "Running for other machines" section, no Show here, no End on the
+  host. Settings > Machines stays as it is: the machines and whether they are connected.
+- A session started on a machine shows only there, as a normal tab. A session opened on another machine shows only on
+  the opener, as a normal tab in its strip. The host shows it nowhere.
+- Close on the opener ends it on the host. A hidden session whose opener never comes back keeps running until the
+  host's Flare quits (it is saved and restored like any hidden session until then). The cap of 50 hidden sessions per
+  machine stays.
+- PR 2 keeps `remote.find` (the opener finds its session again after a host restart) and drops the Settings list, Show
+  here and End. The "now shows on" line goes; "was ended on" stays only for a session that ended on the host by
+  itself (its shell exited).

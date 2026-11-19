@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Flare: running for other machines, 10 takes</title><style>
+:root{
+  --ground:#171717; --secondary:#0d0d0d; --text:#dedacf; --soft:#c2bfb5; --dim:#929089; --dim2:#716f6a;
+  --line:#ffffff17; --divider:#ffffff12; --hover:#ffffff0f; --control:#1e1e1d; --pressed:#3d3c39;
+  --accent:#fe8f34; --accent-hi:#f6a25b; --on-accent:#0b0b0f; --track:#5e5c59; --ok:#3fb950; --danger:#b4353f;
+  --panel:rgba(222,218,207,.036); --tile:rgba(222,218,207,.06); --rowhover:rgba(222,218,207,.025); --sub:#cbc8bf;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#0b0b0b;color:var(--text);font:13px/1.4 "Segoe UI",system-ui,sans-serif}
+nav{display:flex;gap:2px;justify-content:center;padding:16px}
+nav button{background:transparent;border:0;color:var(--dim);font:600 11.5px "Segoe UI";padding:5px 12px;border-radius:12px;cursor:pointer}
+nav button.on{background:var(--pressed);color:var(--text)}
+.stage{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;padding:0 16px 30px}
+.hide{display:none}
+.cap{font-size:11.5px;color:var(--dim);margin:0 0 6px 2px}
+.win{width:600px;max-width:100%;background:var(--ground);border:1px solid #2a2a29;border-radius:8px;display:flex;overflow:hidden}
+.rail{width:150px;background:var(--secondary);padding:10px 6px;flex:none}
+.rail div{padding:6px 10px;border-radius:4px;color:var(--dim);font-size:13px}
+.rail .sel{background:var(--hover);color:var(--text)}
+.content{flex:1;padding:22px 22px 26px;min-width:0}
+.h{font:600 13px "Segoe UI";color:var(--soft);margin:0 0 8px;height:20px;display:flex;align-items:center}
+.h+.panel{margin-bottom:22px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.row{display:flex;align-items:center;gap:14px;padding:0 16px 0 14px;min-height:58px;position:relative}
+.row+.row::before{content:"";position:absolute;top:0;left:60px;right:0;height:1px;background:var(--line)}
+.row.full+.row::before,.row+.row.full::before{left:0}
+.tile{width:32px;height:32px;border-radius:4px;background:var(--tile);display:grid;place-items:center;flex:none}
+.tile svg{width:16px;height:16px;stroke:var(--soft);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.col{flex:1;min-width:0}
+.lb{font-weight:600;font-size:13px}
+.sb{font-size:11.5px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw{width:36px;height:20px;border-radius:10px;background:var(--track);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+.sw.on{background:var(--accent)}.sw.on::after{left:18px;background:var(--on-accent)}
+.btn{height:32px;padding:0 12px;border-radius:3px;background:var(--control);border:1px solid var(--divider);color:var(--text);font:600 12px "Segoe UI";display:inline-flex;align-items:center;flex:none}
+.field{height:32px;border-radius:3px;background:var(--control);border:1px solid var(--divider);display:flex;align-items:center;padding:0 10px;font-size:12px;color:var(--text)}
+.field.focus{border-color:var(--accent-hi)}
+.field .ph{color:var(--dim)}
+.select{height:32px;width:168px;border-radius:3px;background:var(--control);border:1px solid var(--divider);display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px}
+.code{font:600 22px/1 "Cascadia Mono",Consolas,monospace;letter-spacing:.14em}
+.mono{font:12.5px "Cascadia Mono",Consolas,monospace;color:var(--soft)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px}
+.spin{width:12px;height:12px;border:1.5px solid var(--track);border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:sp 1s linear infinite;vertical-align:-1px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.thead{display:flex;font-size:12px;color:var(--dim);padding:0 14px;height:34px;align-items:center}
+.mrow{display:flex;align-items:center;padding:0 14px;height:50px;border-top:1px solid var(--line)}
+.mrow.tall{height:68px;flex-wrap:wrap;align-content:center}
+.c1{width:36%;display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px}
+.c2{width:22%}.c3{width:14%;color:var(--dim)}.c4{flex:1;font-weight:500;display:flex;align-items:center}
+.more{width:30px;text-align:center;color:var(--soft);letter-spacing:1px}
+.why{width:100%;padding-left:23px;font-size:11.5px;color:var(--sub);margin-top:2px}
+.logo{width:15px;height:15px;fill:var(--text);flex:none}
+.addrow{display:flex;align-items:center;gap:10px;padding:0 16px 0 14px;height:58px;border-top:1px solid var(--line);background:var(--rowhover)}
+.grow{flex:1}
+/* OS prompts, drawn the way the OS draws them */
+.os{border-radius:8px;overflow:hidden;width:360px;max-width:100%;box-shadow:0 12px 34px #000a}
+.uac{background:#2b2b2b;color:#fff;font-family:"Segoe UI"}
+.uac .t{background:#1c1c1c;padding:12px 16px;font-size:12px}
+.uac .b{padding:16px;font-size:14px}
+.uac .b small{display:block;color:#bbb;font-size:12px;margin-top:10px}
+.uac .f{display:flex;gap:8px;padding:12px 16px;background:#202020}
+.uac .f span{flex:1;text-align:center;padding:6px;border-radius:4px;background:#3a3a3a;font-size:13px}
+.uac .f span.y{background:#4cc2ff;color:#000}
+.mac{background:#2c2c2e;color:#eee;font-family:-apple-system,"Segoe UI";text-align:center;padding:20px 22px}
+.mac b{display:block;font-size:13px;margin:8px 0 4px}
+.mac p{font-size:11px;color:#aaa;margin:0 0 12px}
+.mac .i{background:#1c1c1e;border:1px solid #444;border-radius:5px;padding:5px 8px;text-align:left;font-size:12px;color:#888;margin-top:6px}
+.mac .f{display:flex;gap:8px;margin-top:14px}
+.mac .f span{flex:1;padding:5px;border-radius:6px;background:#48484a;font-size:12px}
+.mac .f span.y{background:#0a84ff;color:#fff}
+.oslabel{font-size:11.5px;color:var(--dim);margin:0 0 6px 2px}
+
+.seg{display:inline-flex;height:32px;border-radius:16px;background:var(--control);border:1px solid var(--divider);padding:3px;gap:2px;flex:none}
+.seg span{padding:0 12px;border-radius:12px;font:600 11.5px "Segoe UI";color:var(--dim);display:flex;align-items:center}
+.seg span.on{background:var(--pressed);color:var(--text)}
+.win{position:relative;min-height:400px}
+.scrim{position:absolute;inset:0;background:#00000080;display:flex;align-items:center;justify-content:center;padding:24px}
+.dlg{width:380px;max-width:100%;background:#1f1f1e;border:1px solid var(--divider);border-radius:2px;box-shadow:0 24px 70px #00000099;padding:20px}
+.dlg .t{font:600 14.5px "Segoe UI";margin:0 0 16px}
+.dlg .lbl{font-size:12px;color:var(--dim);margin:14px 0 6px}
+.dlg .select,.dlg .field{width:100%}
+.dlg .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+.db{height:30px;padding:0 14px;border-radius:8px;background:var(--hover);border:1px solid var(--divider);color:var(--soft);font:600 12.5px "Segoe UI";display:inline-flex;align-items:center}
+.db.p{background:var(--accent);border:0;color:var(--on-accent)}
+.db.off{opacity:.45}
+.big{font:600 30px/1 "Cascadia Mono",Consolas,monospace;letter-spacing:.14em;text-align:center;margin:18px 0 8px}
+.mid{text-align:center;color:var(--dim);font-size:12.5px}
+.err{display:flex;align-items:center;font-size:12.5px;margin-top:8px}
+.menu{background:#1f1f1e;border:1px solid var(--line);border-radius:5px;padding:4px;margin-top:4px}
+.menu div{height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:3px;font-size:12.5px}
+.menu .hl{background:var(--hover)}
+.menu hr{border:0;height:1px;background:var(--line);margin:4px 0}
+.c2{width:26%!important}.c3{width:12%!important}
+
+.c2{width:26%!important}.c3{width:12%!important}
+
+.srow{display:flex;align-items:center;gap:12px;padding:0 14px;height:56px;border-top:1px solid var(--line)}
+.panel>.srow:first-child{border-top:0}
+.agent{width:22px;height:22px;flex:none;display:grid;place-items:center}
+.agent svg{width:18px;height:18px;fill:#d97757}
+.state{font-size:11.5px;color:var(--sub);display:flex;align-items:center;white-space:nowrap;overflow:hidden}
+.btn.danger{color:#f0a3a8}
+.btn.sm{height:28px;padding:0 10px;font-size:11.5px}
+.ghead{display:flex;align-items:center;gap:8px;padding:0 14px;height:40px;font-weight:600;font-size:13px;background:var(--rowhover);border-bottom:1px solid var(--line)}
+.ghead .n{color:var(--dim);font-weight:400}
+.ghead .st{margin-left:auto;font-weight:400;font-size:11.5px;display:flex;align-items:center}
+.note{font-size:11.5px;color:var(--dim);margin:8px 2px 0}
+.ib{width:30px;height:30px;border-radius:3px;display:grid;place-items:center;color:var(--soft);flex:none;border:1px solid transparent}
+.ib:hover,.ib.hov{background:var(--hover);border-color:var(--divider)}
+.ib svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.tip{position:absolute;background:#2a2a29;border:1px solid var(--line);border-radius:3px;padding:3px 7px;font-size:11px;white-space:nowrap;top:-26px;right:0}
+.chip{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--tile);color:var(--soft);display:inline-flex;align-items:center;gap:5px}
+.chip.ok{color:var(--ok)} .chip.warn{color:var(--accent-hi)}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.card .acts{display:flex;gap:6px;margin-top:4px}
+.callout{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:5px;background:rgba(254,143,52,.08);border:1px solid rgba(254,143,52,.25);margin-bottom:10px;font-size:12.5px}
+.callout b{display:block;margin-bottom:2px}
+.sub{padding-left:40px;background:rgba(0,0,0,.12)}
+.chev{color:var(--dim);font-size:11px;width:12px}
+.link{color:var(--accent-hi);font-weight:600;font-size:12px}
+.vt{font:600 12px "Segoe UI";color:var(--accent);margin:0 0 4px 2px} .tile .logo{fill:var(--soft)}</style></head><body><nav><button data-s="v1" class="on">1</button><button data-s="v2">2</button><button data-s="v3">3</button><button data-s="v4">4</button><button data-s="v5">5</button><button data-s="v6">6</button><button data-s="v7">7</button><button data-s="v8">8</button><button data-s="v9">9</button><button data-s="v10">10</button></nav><svg width="0" height="0" style="position:absolute">
+  <symbol id="pc" viewBox="0 0 24 24"><path d="M3 3.5 10.5 2.4v8.3H3zm8.4-1.2L21 1v9.7h-9.6zM3 11.6h7.5v8.3L3 18.8zm8.4 0H21V21l-9.6-1.3z"/></symbol>
+  <symbol id="claude" viewBox="0 0 24 24"><path d="M5 9h14v2h2v3h-2v2h-1v3h-2v-3h-2v3h-2v-3H10v3H8v-3H7v-2H5v-3H3v-3h2zm3 1v2h2v-2zm6 0v2h2v-2z"/></symbol>
+  <symbol id="shell" viewBox="0 0 24 24"><path d="M5 7l5 5-5 5M12 17h7" stroke="#c2bfb5" stroke-width="1.8" fill="none" stroke-linecap="round"/></symbol>
+</svg><div class="stage" data-s="v1" id="v1"><div><div class="vt">1. Grouped by machine</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="panel">
+<div class="ghead"><svg class="logo"><use href="#pc"/></svg>MAX <span class="n">2 sessions</span><span class="st" style="color:var(--ok)"><span class="dot" style="background:var(--ok)"></span>Open there now</span></div>
+<div class="srow"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare</div><div class="state"><span class="spin"></span>Working · ~/Documents/Claude/Github/Flare</div></div><div class="btn">Show here</div><div class="btn danger">End</div></div>
+<div class="srow"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert</div><div class="state">Idle · ~</div></div><div class="btn">Show here</div><div class="btn danger">End</div></div></div></div></div></div></div>
+<div class="stage hide" data-s="v2" id="v2"><div><div class="vt">2. A table like Linked machines</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="panel">
+<div class="thead"><span style="width:30%">Session</span><span style="width:20%">For</span><span style="width:22%">State</span><span></span></div>
+<div class="mrow"><div class="c1" style="width:30%"><div class="agent"><svg><use href="#claude"/></svg></div>Flare</div><div style="width:20%;display:flex;align-items:center;gap:6px"><svg class="logo"><use href="#pc"/></svg>MAX</div><div style="width:22%" class="state"><span class="spin"></span>Working</div><div style="margin-left:auto;display:flex;gap:6px"><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div></div>
+<div class="mrow"><div class="c1" style="width:30%"><div class="agent"><svg><use href="#shell"/></svg></div>maxaubert</div><div style="width:20%;display:flex;align-items:center;gap:6px"><svg class="logo"><use href="#pc"/></svg>MAX</div><div style="width:22%" class="state">Idle</div><div style="margin-left:auto;display:flex;gap:6px"><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div></div></div></div></div></div></div>
+<div class="stage hide" data-s="v3" id="v3"><div><div class="vt">3. Inside the machine row</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Linked machines</div><div class="panel">
+<div class="thead"><span style="width:36%">Machine</span><span style="width:26%">Address</span><span style="width:12%">Flare</span><span>Status</span></div>
+<div class="mrow"><div class="c1"><span class="chev">▾</span><svg class="logo"><use href="#pc"/></svg>MAX</div><div class="c2 mono">192.168.50.109</div><div class="c3">0.1.0</div><div class="c4" style="color:var(--ok)"><span class="dot" style="background:var(--ok)"></span>Linked</div><div class="more">···</div></div>
+<div class="srow sub"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare</div><div class="state">Running here for MAX · <span class="spin"></span>Working</div></div><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div>
+<div class="srow sub"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert</div><div class="state">Running here for MAX · Idle</div></div><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div>
+<div class="addrow" style="background:none"><span style="color:var(--dim)">+</span> Add a machine</div></div></div></div></div></div>
+<div class="stage hide" data-s="v4" id="v4"><div><div class="vt">4. Rows with a ··· menu</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="panel">
+<div class="srow"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare</div><div class="state">For MAX · <span class="spin"></span>Working</div></div><div class="more">···</div></div>
+<div class="srow" style="position:relative"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert</div><div class="state">For MAX · Idle</div></div><div class="more" style="background:var(--hover);border-radius:3px">···</div>
+<div class="menu" style="position:absolute;right:14px;top:46px;width:150px;z-index:2"><div class="hl">Show here</div><hr><div style="color:#f0a3a8">End session</div></div></div></div>
+<div style="height:60px"></div></div></div></div></div>
+<div class="stage hide" data-s="v5" id="v5"><div><div class="vt">5. Cards</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="cards">
+<div class="card"><div style="display:flex;gap:8px;align-items:center"><div class="agent"><svg><use href="#claude"/></svg></div><div class="lb">Flare</div><span class="chip" style="margin-left:auto"><svg class="logo"><use href="#pc"/></svg>MAX</span></div><div class="state"><span class="spin"></span>Working · ~/Documents/Claude/Github/Flare</div><div class="acts"><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div></div>
+<div class="card"><div style="display:flex;gap:8px;align-items:center"><div class="agent"><svg><use href="#shell"/></svg></div><div class="lb">maxaubert</div><span class="chip" style="margin-left:auto"><svg class="logo"><use href="#pc"/></svg>MAX</span></div><div class="state">Idle · ~</div><div class="acts"><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div></div></div></div></div></div></div>
+<div class="stage hide" data-s="v6" id="v6"><div><div class="vt">6. One summary row, details in a dialog</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="panel"><div class="row"><div class="tile"><svg class="logo"><use href="#pc"/></svg></div><div class="col"><div class="lb">2 sessions running for MAX</div><div class="sb">1 working, 1 idle. They show only on MAX.</div></div><div class="btn">Manage</div></div></div>
+<div class="scrim" style="position:absolute"><div class="dlg" style="width:440px"><div class="t">Running for MAX</div>
+<div class="panel"><div class="srow"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare</div><div class="state"><span class="spin"></span>Working</div></div><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div>
+<div class="srow"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert</div><div class="state">Idle</div></div><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div></div>
+<div class="foot"><span class="db">Close</span></div></div></div></div></div></div></div>
+<div class="stage hide" data-s="v7" id="v7"><div><div class="vt">7. Icon buttons with tooltips</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="panel">
+<div class="srow"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare <span class="chip" style="margin-left:6px"><svg class="logo"><use href="#pc"/></svg>MAX</span></div><div class="state"><span class="spin"></span>Working · ~/Documents/Claude/Github/Flare</div></div><div class="ib" style="position:relative"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/></svg></div><div class="ib"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></div></div>
+<div class="srow"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert <span class="chip" style="margin-left:6px"><svg class="logo"><use href="#pc"/></svg>MAX</span></div><div class="state">Idle · ~</div></div><div class="ib hov" style="position:relative"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/></svg><span class="tip">Show here</span></div><div class="ib"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></div></div></div></div></div></div></div>
+<div class="stage hide" data-s="v8" id="v8"><div><div class="vt">8. Collapsible group with End all</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="panel">
+<div class="ghead"><span class="chev">▾</span><svg class="logo"><use href="#pc"/></svg>MAX <span class="n">2 sessions</span><span class="st"><span class="chip ok"><span class="dot" style="background:var(--ok);margin:0"></span>Open there now</span><span class="btn sm danger" style="margin-left:10px">End all</span></span></div>
+<div class="srow"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare</div><div class="state"><span class="spin"></span>Working</div></div><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div>
+<div class="srow"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert</div><div class="state">Idle</div></div><div class="btn sm">Show here</div><div class="btn sm danger">End</div></div>
+<div class="ghead" style="border-top:1px solid var(--line);border-bottom:0"><span class="chev">▸</span><svg class="logo"><use href="#pc"/></svg>evo-x2 <span class="n">1 session</span><span class="st"><span class="chip">Not connected</span></span></div></div></div></div></div></div>
+<div class="stage hide" data-s="v9" id="v9"><div><div class="vt">9. Quiet list, actions on hover</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div><div class="panel">
+<div class="srow"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare</div><div class="state">For MAX · <span class="spin"></span>Working</div></div></div>
+<div class="srow" style="background:var(--rowhover)"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert</div><div class="state">For MAX · Idle</div></div><span class="link">Show here</span><span class="link" style="color:#f0a3a8;margin-left:12px">End</span></div></div>
+<div class="note">The pointer is on the second row.</div></div></div></div></div>
+<div class="stage hide" data-s="v10" id="v10"><div><div class="vt">10. A warning when the PC is gone</div><div class="win" style="width:680px;min-height:360px"><div class="rail"><div>General</div><div>Appearance</div><div>Terminal</div><div class="sel">Machines</div></div><div class="content"><div class="h">Running for other machines</div>
+<div class="callout"><span style="color:var(--accent-hi);font-size:15px">!</span><div><b>MAX hasn't connected for 2 days</b><span style="color:var(--sub)">Its 2 sessions keep running on this Mac. Show them here or end them.</span></div></div>
+<div class="panel">
+<div class="srow"><div class="agent"><svg><use href="#claude"/></svg></div><div class="col"><div class="lb">Flare</div><div class="state" style="color:var(--accent-hi)">Waiting for your answer · ~/Documents/Claude/Github/Flare</div></div><div class="btn">Show here</div><div class="btn danger">End</div></div>
+<div class="srow"><div class="agent"><svg><use href="#shell"/></svg></div><div class="col"><div class="lb">maxaubert</div><div class="state">Idle · ~</div></div><div class="btn">Show here</div><div class="btn danger">End</div></div></div></div></div></div></div>
+<script>document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll(".stage").forEach(s=>s.classList.toggle("hide",s.dataset.s!==b.dataset.s))});</script></body></html>

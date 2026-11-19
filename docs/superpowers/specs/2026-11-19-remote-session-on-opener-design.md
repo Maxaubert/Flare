@@ -289,3 +289,19 @@ All headless. No real ssh. No visible window (global rule, 2026-10-28). Per PR i
 9. Close a remote tab on the PC while Claude works: the PC asks, the Mac never shows an ask.
 10. Ask Claude in a hidden session to show an image: it says it cannot show panels there. The Mac shows nothing.
 11. The same from the Mac to the PC (both directions).
+
+## Update, Max, 2026-11-19 (after the mockups)
+
+Max: "just have it show which PCs are connected, no session things. If you start a session on the Mac it stays only
+there. Only sessions you start remotely on the PC or remotely on the Mac show, but in the normal tab view."
+
+- There is NO list of hidden sessions in Settings. No "Running for other machines" section, no Show here, no End on the
+  host. Settings > Machines stays as it is: the machines and whether they are connected.
+- A session started on a machine shows only there, as a normal tab. A session opened on another machine shows only on
+  the opener, as a normal tab in its strip. The host shows it nowhere.
+- Close on the opener ends it on the host. A hidden session whose opener never comes back keeps running until the
+  host's Flare quits (it is saved and restored like any hidden session until then). The cap of 50 hidden sessions per
+  machine stays.
+- PR 2 keeps `remote.find` (the opener finds its session again after a host restart) and drops the Settings list, Show
+  here and End. The "now shows on" line goes; "was ended on" stays only for a session that ended on the host by
+  itself (its shell exited).
