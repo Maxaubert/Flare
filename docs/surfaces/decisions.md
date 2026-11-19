@@ -1215,3 +1215,32 @@ Spec and plan: `docs/superpowers/specs/2026-11-11-file-link-markers.md`. Researc
 - 2026-11-11, links: the note to the session goes only to a session inside a Flare tab (the tab token is set), on
   start, resume, clear and compact, and once more in the MCP server's `instructions`. Codex and Antigravity are not told
   (no Flare plugin); any program that prints the marks gets links.
+## Device panel (issue #248), 2026-11-19
+
+Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`,
+research `research/flare/2026-11-19-ios-simulator-input.md` (spikes S1 to S6).
+
+- 2026-11-19, device PR 1: one new crate, `crates/flare-device`, holds the pure model (targets, the `DeviceSource`
+  trait and its `FakeSource`, the 60 fps cap and ring ownership, coordinates, the US keymap, the UI tree filter, the
+  touch indicators, the agent job, the sim host's wire protocol, the version table). Later PRs add the client that
+  starts the sim host and the sim host itself (`[[bin]] flare-sim-host`, macOS code under `src/macos/`). Why: one
+  place for everything about devices, like `flare-web` for the browser; the app crate only gets `device_ctl.rs` and
+  its glue.
+- 2026-11-19, device: the sim host is Rust (objc2, block2, libloading), not Objective-C (builder's call 2, decision 3).
+  Why: one toolchain, and clippy and nextest cover it. Spike S2 proved the ring handover from Rust.
+- 2026-11-19, device: coordinates outside the sim host are device points in the current orientation (what the UI tree
+  reports and what `device_look` shows); only the sim host turns them into the digitizer's 0..1 portrait ratios
+  (`flare_device::geom::to_portrait_ratio`). The panel maps Slint logical points to device points through the letterbox,
+  so neither the Mac's backing scale nor the device's scale enters it. Whether the digitizer wants landscape points
+  turned back to portrait (idb says yes) is settled by PR 3's landscape `--input-bench` before rotation ships.
+- 2026-11-19, device PR 1: `PanelKind::Device` is named and stored now but `is_built` stays false until PR 4a, so a
+  build of PR 1 to 3 never hands a `sim/<udid>` target to the file preview (rule 1316).
+- 2026-11-19, device PR 1: the dot and glow reuse `flare_surfaces::agent_cursor::{AgentCursor, AgentBorder}` as they
+  are, with the device's screen in points as the viewport; `indicator.rs` adds only the 250 ms trail, the keyboard
+  badge and the 1.5 s hold. A swipe places the dot along the path (no glide per point).
+- 2026-11-19, device PR 1: the cap sends a frame at once when 15 ms passed since the last, else holds the newest. Over
+  a scrolling app's 77 callbacks a second that is 66 sends (1000 / 15 is the most), every 60 Hz refresh among them; a
+  steady 60 Hz stream passes untouched.
+- 2026-11-19, device PR 1: the US keymap is ported from idb's `Keymap.swift` (MIT, notice in `keymap.rs` and
+  `THIRD-PARTY-NOTICES.md`), plus `\n` as Return and `\t` as Tab. Text with any character the keymap lacks is pasted
+  whole through the simulator's own pasteboard, so its order is kept (rule 1314, PR 3).
