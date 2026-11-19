@@ -101,6 +101,15 @@ jobs:
           sysctl kern.timer.coalescing_enabled kern.timer_coalesce_bg_ns_max || true
       - name: Tests
         run: cargo nextest run --workspace --no-tests=pass --no-fail-fast
+      # The device panel's sim host (issue #248): every private class and selector it uses is there in the runner's
+      # Xcode. It opens no window; with no Xcode, or one under the floor, it passes and says why it skipped.
+      - name: Sim host self-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(cargo run --locked -p flare-device --bin flare-sim-host -- --self-test)"
+          printf '%s\n' "$out"
+          if grep -q '"skipped": "' <<<"$out"; then echo "::notice::flare-sim-host --self-test skipped: $(grep '"skipped"' <<<"$out")"; fi
       # The Mac's speech engine (port phase 7, rule 1084): whisper.cpp built with Metal from its pinned commit and
       # tree, then one real pass with the pinned tiny model and the Parakeet host loading the built libraries.
       - uses: actions/cache@v4
