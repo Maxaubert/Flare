@@ -122,7 +122,12 @@ pub struct ImportPlan {
     pub hidden_gone: Vec<String>,
     /// The host lists tabs but says no `origin` (a Flare from before rule 1289): nothing is imported from it.
     pub older_host: bool,
+    /// More host tabs were new than [`IMPORT_ROWS_MAX`] leaves room for: only the first in the listing's order are added.
+    pub capped: bool,
 }
+
+/// The most imported and adopted rows one machine shows here (a peer that lists thousands of tabs adds no more).
+pub const IMPORT_ROWS_MAX: usize = IMPORT_HIDDEN_MAX;
 
 /// One round's inputs for one machine.
 pub struct Round<'a> {
@@ -204,6 +209,17 @@ pub fn import_plan(round: &Round) -> ImportPlan {
         .filter(|s| !s.host_tab.as_deref().is_some_and(|h| own.contains(h)))
         .map(|s| s.id.clone())
         .collect();
+    // The cap counts the imported and adopted rows that stay after this round.
+    let staying = round
+        .shown
+        .iter()
+        .filter(|s| s.how.is_some() && !plan.remove.contains(&s.id))
+        .count();
+    let room = IMPORT_ROWS_MAX.saturating_sub(staying);
+    if plan.add.len() > room {
+        plan.add.truncate(room);
+        plan.capped = true;
+    }
     plan
 }
 
@@ -1211,6 +1227,42 @@ mod tests {
         assert_eq!(p.update.len(), 1);
         assert_eq!(p.update[0].0, "a");
         assert_eq!(p.remove, ["b"]);
+    }
+
+    /// Rule 1290: one machine shows at most [`IMPORT_ROWS_MAX`] imported and adopted rows. Past it the round adds the
+    /// first host tabs in the listing's order up to the cap and says it was capped; a row this round removes frees
+    /// its place, and tabs opened from here do not count.
+    #[test]
+    fn import_plan_caps_the_rows_one_machine_adds() {
+        let fx = Fx::new();
+        let ids: Vec<String> = (0..IMPORT_ROWS_MAX + 50)
+            .map(|n| format!("t1-{n}"))
+            .collect();
+        let names: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let answer = listing(&names);
+        let p = fx.plan("mac", Answer::Listed(&answer), &[]);
+        assert_eq!(p.add.len(), IMPORT_ROWS_MAX);
+        assert_eq!(added(&p), names[..IMPORT_ROWS_MAX]);
+        assert!(p.capped);
+        // Partly full: 3 rows stay (one imported, one adopted, both listed); a tab opened from here does not count,
+        // and a row this round removes frees its place.
+        let shown = [
+            row("a", Some("t1-0"), Some(ImportHow::Imported), false),
+            row("b", Some("t1-1"), Some(ImportHow::Adopted), true),
+            row("c", Some("t1-2"), Some(ImportHow::Imported), true),
+            row("opened", Some("t1-3"), None, true),
+            row("gone", Some("t7-7"), Some(ImportHow::Imported), false),
+        ];
+        let p = fx.plan("mac", Answer::Listed(&answer), &shown);
+        assert_eq!(p.remove, ["gone"]);
+        assert_eq!(p.add.len(), IMPORT_ROWS_MAX - 3);
+        assert_eq!(added(&p)[0], "t1-4");
+        assert!(p.capped);
+        // Under the cap nothing is capped.
+        let small = listing(&names[..10]);
+        let p = fx.plan("mac", Answer::Listed(&small), &shown);
+        assert_eq!(p.add.len(), 6);
+        assert!(!p.capped);
     }
 
     /// Rule 1290: a peer's entry is read as words: a tab id that is not a plain word names nothing, an unsafe folder

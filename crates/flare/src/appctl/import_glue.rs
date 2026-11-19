@@ -39,6 +39,8 @@ pub(crate) struct Imports {
     last: HashMap<String, HostStatus>,
     /// Machines whose host was logged as older (one line each).
     older: HashSet<String>,
+    /// Machines logged as listing more new tabs than `IMPORT_ROWS_MAX` leaves room for (one line each).
+    capped: HashSet<String>,
     /// The setting as last applied.
     on: bool,
     /// A Ctrl+Tab walk is held: the row it lands on attaches on the Control release, the rows passed over do not.
@@ -157,6 +159,7 @@ impl AppCtl {
             }
             self.imports.closing.drop_machine(m);
             self.imports.older.remove(m);
+            self.imports.capped.remove(m);
         }
         self.sync_watches();
     }
@@ -239,6 +242,12 @@ impl AppCtl {
         });
         if plan.older_host && self.imports.older.insert(machine.to_string()) {
             log::info!("{machine} runs a Flare from before rule 1289: nothing is imported from it");
+        }
+        if plan.capped && self.imports.capped.insert(machine.to_string()) {
+            log::warn!(
+                "{machine} lists more tabs than fit: at most {} of its tabs show here",
+                crate::remote_import::IMPORT_ROWS_MAX
+            );
         }
         if !plan.hidden_gone.is_empty() && self.imports.hidden.forget(machine, &plan.hidden_gone) {
             self.save_hidden();

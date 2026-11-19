@@ -4951,6 +4951,9 @@ prunes the hidden list; a real listing removes the unattached imported or adopte
 host's own and prunes the hidden ids it no longer names. With the setting off, a machine polled for an adopted row is
 fed and removed but gets no new rows. A peer's entry is read as words: a host tab id is a plain word of at most 64
 characters, an unsafe folder becomes `~` (rule 1279), the title loses control and invisible characters and keeps 200.
+One machine shows at most 200 imported and adopted rows (`IMPORT_ROWS_MAX`, counted after the round's removes; tabs
+opened from here do not count): past it the round adds the first new host tabs in the listing's order and says
+`capped`, and the window logs that once per machine.
 The rows: `TabModel::import_remote_tab` appends an unattached remote tab row behind the front tab (never `add_tab`,
 which activates), with the host tab set; it joins the used list after the tabs already in it, so a "most recent"
 Ctrl+Tab goes to the tab used before. Imported and adopted rows are never saved in `tabs.json`, and `saved()` counts
@@ -4964,7 +4967,7 @@ Held by `import_plan_keeps_origin_here_only_and_skips_an_older_host`,
 `import_plan_skips_a_machine_while_an_open_there_waits_for_its_host_tab`,
 `import_plan_removes_only_unattached_imported_rows_and_never_on_a_refusal`, `import_plan_keeps_machines_apart`,
 `import_plan_adds_nothing_while_the_setting_is_off_but_still_feeds_and_removes`,
-`import_plan_reads_each_entry_as_words`, `a_closing_entry_lapses_when_the_host_drops_it_or_after_two_minutes`,
+`import_plan_reads_each_entry_as_words`, `import_plan_caps_the_rows_one_machine_adds`, `a_closing_entry_lapses_when_the_host_drops_it_or_after_two_minutes`,
 `the_hidden_list_keeps_the_newest_ids_per_machine_and_drops_a_removed_machine` (`remote_import.rs`),
 `an_imported_row_goes_behind_the_front_tab_and_is_not_saved`,
 `an_imported_row_joins_the_end_of_the_used_list_so_ctrl_tab_goes_to_the_tab_used_before`,
@@ -4984,7 +4987,9 @@ while the machine does not answer, waits 3, 6, 12, 24, 48 and then 60 s between 
 Dropping the watch (the setting off, the machine removed) stops its thread: no `remote.status` after, and with no close
 waiting no call or link at all. Its only other call is `remote.close` for an unattached row (rule 1293), kept while the
 link is down and sent once it is up; a watch dropped with closes still waiting sends them first, over the link that is
-up or the next one within `WatchTiming::drain` (two minutes, `CLOSING_FOR`), then ends. The window
+up or the next one within `WatchTiming::drain` (two minutes, `CLOSING_FOR`), then ends. However many tabs a host
+lists, its watch's rounds keep it at 200 imported and adopted rows (`IMPORT_ROWS_MAX`, rule 1290), logged once per
+machine (`Imports::capped`). The window
 applies no round before the restore answered. Native: `crates/flare/src/remote_import.rs` (`LinkWatchPort`,
 `heard_of`), `crates/flare/src/remote_link.rs`, `crates/flare/src/appctl/import_glue.rs` (`sync_watches`,
 `on_import`), `crates/flare/src/window.rs`. Held by `the_watch_link_runs_serve_remote_no_start_and_nothing_else_new`
