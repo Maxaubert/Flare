@@ -2472,6 +2472,34 @@ fn key_event_of(k: flare_ctl::remote::KeyIntent) -> flare_term::keys::KeyEvent {
     }
 }
 
+/// A checked mouse intent as the event the host's terminal reports (rule 1317).
+fn remote_mouse_of(m: flare_ctl::remote::MouseIntent) -> flare_term::handle::RemoteMouse {
+    use flare_ctl::remote::{MouseAct, MouseBtn};
+    use flare_term::handle::{RemoteMouse, RemoteMouseAct};
+    use flare_term::mouse_report::{MouseButton, MouseMods};
+    RemoteMouse {
+        act: match m.act {
+            MouseAct::Press => RemoteMouseAct::Press,
+            MouseAct::Release => RemoteMouseAct::Release,
+            MouseAct::Motion => RemoteMouseAct::Motion,
+            MouseAct::WheelUp => RemoteMouseAct::WheelUp,
+            MouseAct::WheelDown => RemoteMouseAct::WheelDown,
+        },
+        button: m.button.map(|b| match b {
+            MouseBtn::Left => MouseButton::Left,
+            MouseBtn::Middle => MouseButton::Middle,
+            MouseBtn::Right => MouseButton::Right,
+        }),
+        col: m.col,
+        row: m.row,
+        mods: MouseMods {
+            shift: m.shift,
+            alt: m.alt,
+            ctrl: m.ctrl,
+        },
+    }
+}
+
 impl AppDispatcher {
     /// The remote host, or `unavailable` when this run serves no remote sessions.
     fn remote_host(&self) -> Result<&Arc<crate::remote_host::RemoteHost>, CtlError> {
@@ -2613,6 +2641,9 @@ impl AppDispatcher {
                         }
                         remote::Intent::Text(t) => flare_term::handle::RemoteIntent::Text(t),
                         remote::Intent::Paste(p) => flare_term::handle::RemoteIntent::Paste(p),
+                        remote::Intent::Mouse(m) => {
+                            flare_term::handle::RemoteIntent::Mouse(remote_mouse_of(m))
+                        }
                     })
                     .collect();
                 self.ask(CtlOp::RemoteInput { tab, intents })
@@ -2672,6 +2703,9 @@ impl AppDispatcher {
                     "rows": snap.rows,
                     "styled": styled,
                     "data": b64.encode(&snap.data),
+                    // Rule 1317: the program's mouse reports as words, which the viewer sets from the word alone.
+                    "mouse": flare_term::remote_pty::mouse_mode_word(snap.mouse),
+                    "sgr_mouse": snap.sgr_mouse,
                 }))
             }
             Method::RemoteClose => {

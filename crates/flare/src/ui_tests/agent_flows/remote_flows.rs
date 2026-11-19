@@ -783,3 +783,66 @@ fn remote_find_answers_only_for_a_hidden_sessions_open_id() {
     let e = find(&f, "o-1").expect_err("ended");
     assert_eq!(e.code, flare_ctl::code::NO_TAB);
 }
+
+/// Rule 1317: Claude Code's AskUserQuestion menu on a hidden session, clicked from its opener. Before the program asks
+/// for mouse reports a click writes nothing; once it asks (1000 and SGR 1006, as Claude Code does), the click on the
+/// option's row reaches the shell as the press and release the program reads, and nothing else.
+#[test]
+fn a_click_from_the_opener_picks_an_option_in_the_hidden_sessions_menu() {
+    use flare_term::handle::{RemoteIntent, RemoteMouse, RemoteMouseAct};
+    use flare_term::mouse_report::{MouseButton, MouseMods};
+    let f = Fx::new();
+    f.tabs(&["C:\\work"]);
+    serving(&f);
+    let id = hidden(&f, "C:\\there");
+    ask(
+        &f,
+        CtlOp::RemoteAttach {
+            tab: id.clone(),
+            conn: 4,
+            viewer: None,
+        },
+    )
+    .expect("the attach");
+    let click = |act| {
+        RemoteIntent::Mouse(RemoteMouse {
+            act,
+            button: Some(MouseButton::Left),
+            col: 4,
+            row: 3,
+            mods: MouseMods::default(),
+        })
+    };
+    let pick = || {
+        ask(
+            &f,
+            CtlOp::RemoteInput {
+                tab: id.clone(),
+                intents: vec![click(RemoteMouseAct::Press), click(RemoteMouseAct::Release)],
+            },
+        )
+        .expect("the input")
+    };
+    let shell = f.shell("C:\\there");
+    let before = shell.written();
+    let v = pick();
+    assert_eq!(v["typed"], 0, "no mouse mode: nothing is written");
+    assert_eq!(shell.written(), before);
+    f.say(
+        "C:\\there",
+        "\x1b[?1000h\x1b[?1006hWhich one?\r\n\r\n  1. Red\r\n  2. Blue\r\n",
+    );
+    f.pump_until("the mouse mode", |f| {
+        f.ctl
+            .borrow()
+            .handle_of(&id)
+            .is_some_and(|h| h.mode().sgr_mouse)
+    });
+    let v = pick();
+    assert_eq!(v["typed"], 2);
+    let want = b"\x1b[<0;5;4M\x1b[<0;5;4m";
+    f.pump_until("the click", |_| {
+        shell.written().len() >= before.len() + want.len()
+    });
+    assert_eq!(&shell.written()[before.len()..], want);
+}

@@ -2807,6 +2807,66 @@ mod flow {
         assert_eq!(w.quiet(), before, "nothing reached the local shell");
     }
 
+    /// Rule 1317: on a remote tab whose host program asked for mouse reports (here set as a snapshot's mouse mode
+    /// sets it), a click is a press and a release for the link, at the cell clicked; before that it is a local
+    /// selection click and nothing reaches the link.
+    #[test]
+    fn a_click_on_a_remote_tab_in_mouse_mode_reaches_the_link_as_mouse_intents() {
+        use flare_term::handle::{RemoteIntent, RemoteMouse, RemoteMouseAct};
+        use flare_term::mouse_report::{MouseButton, MouseMods};
+        let w = Wx::new(1.0);
+        let before = w.written();
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, true);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        let io = w.remote.made()[0].1.clone();
+        let front = || w.slot.borrow().clone().expect("a tab in front");
+        w.pump_until("the remote tab in front", |w| {
+            w.slot.borrow().as_ref().is_some_and(|h| h.id() == id)
+        });
+        io.push_output(b"Which one?\r\n  1. Red\r\n  2. Blue\r\n");
+        w.pump_until("the menu", |_| {
+            front().screen_tail(5).join("\n").contains("2. Blue")
+        });
+        let at = w.cell_center_css(3, 1);
+        w.down(at, PointerEventButton::Left);
+        w.up(at, PointerEventButton::Left);
+        w.pump();
+        assert!(
+            io.take_outgoing(Duration::from_millis(30))
+                .intents
+                .is_empty(),
+            "no mouse mode: a local click"
+        );
+        io.push_output(&flare_term::remote_pty::mouse_mode_bytes("click", true).unwrap());
+        w.pump_until("the mouse mode", |_| front().mode().sgr_mouse);
+        w.step(1000);
+        w.down(at, PointerEventButton::Left);
+        w.up(at, PointerEventButton::Left);
+        let mut typed = Vec::new();
+        let t = Instant::now();
+        while typed.len() < 2 && t.elapsed() < Duration::from_secs(5) {
+            typed.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+            w.pump();
+        }
+        let click = |act| {
+            RemoteIntent::Mouse(RemoteMouse {
+                act,
+                button: Some(MouseButton::Left),
+                col: 3,
+                row: 1,
+                mods: MouseMods::default(),
+            })
+        };
+        assert_eq!(
+            typed,
+            vec![click(RemoteMouseAct::Press), click(RemoteMouseAct::Release)]
+        );
+        assert_eq!(w.quiet(), before, "nothing reached the local shell");
+    }
+
     /// A remote tab in front, its link the test's: the tab's id and its live state (where its errands wait).
     fn remote_in_front(w: &Wx) -> (String, flare_term::remote_pty::RemoteLive) {
         let id = w

@@ -177,7 +177,9 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     tab shows one line saying so. A `no_tab` end drops the kept typing: it is never typed into another host tab. A tab that has shown nothing yet starts from `remote.snapshot`;
     after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
     snapshot instead), with the agent's signals taken out of what it catches up on (rule 289). Then, one call at a time:
-    the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries),
+    the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries;
+    a mouse motion right after a motion takes its place, a call of motion alone waits 40 ms after the last one, and a
+    mouse event is never kept while the link is down, rule 1317),
     the last size asked as one `remote.resize`, and a `remote.output {since}` poll every 30 ms while output flows,
     backing off to 250 ms when idle, and a `remote.status {}` poll every 1.5 s (the first at once after each attach;
     remote sessions PR 4). The tab's own entry in the answer is handed to the window when it changed (the first after
@@ -1032,7 +1034,16 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   (sanitised on the host as a local paste, rule 1, bracketed when the program asked). At most 64 KB of text a call,
   key names at most 32 bytes and key text 16, neither with a control character; anything else is `bad_params` and
   nothing of the call is typed. At most 50 calls a second on one tab (`rate_limited`). `typed` counts the intents
-  that wrote something. It counts as typing (an answer key answers a question as a local key does).
+  that wrote something. It counts as typing (an answer key answers a question as a local key does). Rule 1317
+  (2026-11-19): an intent may also be `{"mouse": {kind, button?, col, row, shift?, alt?, ctrl?}}`: `kind` one of
+  `press`, `release`, `motion`, `wheel_up`, `wheel_down`; `button` `left`, `middle` or `right` (needed by a press and a
+  release, never on a wheel); `col` under 1000 and `row` under 500, 0-based; each counts 16 bytes. The host writes it
+  as a mouse report in the encoding its program asked for (SGR or the default), only while that program asked for mouse
+  reports and its tracking mode reports that event, and only for a cell inside the tab's grid; else it writes nothing
+  (`typed` leaves it out). A wheel is a wheel report, never a scroll of the host's view. A press or a release counts as
+  the remote typist's typing; a motion or a wheel does not. A host older than rule 1317 answers `bad_params` "no intent
+  is called mouse" and types nothing of the call: the viewer sends the call again without its mouse intents and sends
+  none on that link after.
 - `remote.resize {tab, cols, rows}` -> `{tab, cols, rows}`. Clamped to 2..1000 columns and 1..500 rows, never refused;
   the tab takes that size and the remote viewer owns it: the window's refits pass the tab by until a key is typed here
   (the last typist wins, rule 282). While it does and the viewer has typed (`remote.input`) since it took the size, an
@@ -1047,7 +1058,11 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   the oldest kept, and the viewer asks for `remote.snapshot`. Answered on the worker, never the UI thread. `no_tab`
   when no connection follows the tab (send `remote.attach` first). Polled in short calls: events are lossy and never
   sent to a link.
-- `remote.snapshot {tab, styled?}` -> `{tab, seq, cols, rows, styled, data}`. The tab's whole screen and history above
+- `remote.snapshot {tab, styled?}` -> `{tab, seq, cols, rows, styled, data, mouse, sgr_mouse}`. Rule 1317: `mouse` names
+  the mouse reports the tab's program asked for when the text was read (`none`, `x10`, `click`, `drag`, `any`) and
+  `sgr_mouse` whether in SGR; the viewer sets that mode on its own terminal from the word (every mouse mode off, then the
+  one named), so a click on a restored or caught-up tab still reaches the program. An older host sends neither and the
+  viewer's modes stay; an unknown word changes nothing. The tab's whole screen and history above
   it, 1000 lines at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and
   right that put the cursor where the host's is, rule 293; no modes), read while no batch of output is being parsed,
   so it holds every byte before `seq` and none after: `remote.output {since: seq}` goes on from it with no byte twice.
