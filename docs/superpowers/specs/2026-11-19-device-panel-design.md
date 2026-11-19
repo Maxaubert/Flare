@@ -1,6 +1,7 @@
 # A live iPhone simulator beside a tab (device panel, issue #248)
 
-Status: draft for Max's approval (2026-11-19). Plan: `docs/superpowers/plans/2026-11-19-device-panel.md`.
+Status: draft for Max's approval (2026-11-19). Plan: `docs/superpowers/plans/2026-11-19-device-panel.md`. Step 0 spikes
+done 2026-11-19, every gate passed; the open decisions are taken (see "Decisions taken" at the end).
 
 Research:
 - Issue #248 brief, decisions (2026-11-16) and spike results (2026-11-16, 2026-11-17).
@@ -9,8 +10,10 @@ Research:
 - `research/flare/2026-11-17-ios-simulator-60fps.md` and its probe folder (`cap.m`, `zc.m`, `enc.m`, `sig.m`,
   `FPSProbe-App.swift`, `project.yml`).
 - Input, UI tree and Apple `mcpbridge` read-through (2026-11-19, idb, AXe, serve-sim and Baguette at HEAD). Its facts
-  are folded into "Findings" below; the long form goes to `research/flare/2026-11-19-ios-simulator-input.md` in the
-  plan's step 0.
+  are folded into "Findings" below.
+- `research/flare/2026-11-19-ios-simulator-input.md` (`~/Documents/Claude/research/...`): Step 0 spikes S1 to S6
+  (input latency, ring handover, signing, UI tree, rotation, colour) with the input read-through, and its probe folder
+  (`hid.m`, `TouchProbe/`, `rdv_child.m`, `rdv-parent/`, `s3_tap.m`, `ax.m`, `rot.m`).
 
 Builds on:
 - `docs/superpowers/specs/2026-10-21-surfaces-design.md` (panels beside a tab).
@@ -144,8 +147,8 @@ Max's words: "a real, smooth video stream, a steady 60 fps" (2026-11-17).
    Mac's clipboard is never touched.
 9. The panel never boots a simulator on its own. Restore shows the last device with a Boot button.
 10. Rule numbers start at 1310 (see the plan).
-11. Rotation is in v1 only if spike S5 finds a headless way to set and read the orientation. Without one, the Rotate
-    buttons and `device_press` `rotate_*` are left out and the picture is always portrait (open decision 11).
+11. Rotation is in v1: spike S5 found a headless way to set (Purple GSEvent 50 to `PurpleWorkspacePort`) and read
+    (CoreDevice `displayinfo`) the orientation (open decision 11, taken 2026-11-19).
 12. The point size and scale come from the device type (`SimDeviceType` `mainScreenScale` and `mainScreenSize`, read
     by the sim host at attach), never guessed from the pixel size.
 13. The fake source and the device kind are also offered under `--e2e` on Windows, so the fake e2e scenarios run on
@@ -223,20 +226,31 @@ Max's words: "a real, smooth video stream, a steady 60 fps" (2026-11-17).
   `/Library/Developer/PrivateFrameworks/CoreSimulator.framework`, installed by the newest Xcode that ran its first
   launch, and shared by every Xcode on the Mac. With two Xcodes installed, SimulatorKit (per Xcode) and CoreSimulator
   (one) can be of different builds.
-- Not measured yet: whether the LCD framebuffer changes size when the device rotates or stays portrait (Simulator.app
-  rotates its own view), and how to set and read the orientation headless (spike S5). The framebuffer's colour space
-  (sRGB or Display P3) is not known either; v1 copies the pixels as they are.
+- Rotation (S5, 2026-11-19): a Purple GSEvent 50 sent to `PurpleWorkspacePort` (`-[SimDevice lookup:error:]`) rotates
+  headless (values 1 portrait, 2 upside down, 3 and 4 landscape); CoreDevice `displayinfo` reads `currentOrientation`
+  (the interface rotation) in 1 to 4 ms and shows the change 41 to 54 ms after the send. The vendor HID orientation
+  picker does nothing on iOS 27.2. A portrait-only app keeps rot0 while the device is landscape, so the panel follows
+  `displayinfo`. The LCD framebuffer stays portrait 1206x2622 (same surface, `surfacesChangedCallback` does not fire;
+  `propertiesChangedCallback` fires about 270 ms later): the UI is drawn rotated inside it, so Flare rotates the
+  picture.
+- Colour (S6): the framebuffer is Display P3 (`kIOSurfaceColorSpace` 7, primaries P3_D65, sRGB transfer, no ICC
+  profile). The sim host's swizzle pass converts it to sRGB.
 - Input on CoreSimulator 1155.4 and newer (this Mac: 1174.21) is DTUHID: XPC to
   `com.apple.coredevice.feature.remote.hid.digitizer` through `-[SimDevice lookup:error:]`,
   `xpc_endpoint_create_mach_port_4sim`, `xpc_connection_create_from_endpoint` and
   `xpc_connection_enable_sim2host_4sim`. Messages: `IndigoDigitizerEvent` (0..1 points, start / position / end),
   `IndigoKeyboardButtonEvent` (HID usage, 1 down / 2 up), `IndigoButtonEvent` (page 0x0C: home 0x40, lock 0x30,
   volume 0xE9 / 0xEA). Liveness is a barrier reply (4 s timeout, 5 tries). `dtuhidd` can answer up to about 19 s late
-  after a slow boot. Hold one connection for the session. Older CoreSimulator: legacy Indigo through
+  after a slow boot (S1 measured 2.0, 8.0 and 11.6 s on three fresh boots; 2 of 3 needed a second try; warm 6 to
+  32 ms). Hold one connection for the session. S1: tap p50 15 to 17.5 ms, 300/300 landed within 0.17 pt, a second
+  contact (`pointTwo`) works. Older CoreSimulator: legacy Indigo through
   `SimDeviceLegacyHIDClient`. Never mix the two in one boot.
 - UI tree: `AccessibilityPlatformTranslation.framework` (`AXPTranslator`), requests sent with
   `-[SimDevice sendAccessibilityRequestAsync:...]`. About 0.6 ms per element (159 elements in about 99 ms). Frames
   come back in points and match tap points. Filter unlabelled full-screen groups and zero-size elements.
+  S4 (2026-11-19): Settings has 16 elements on iOS 27.2, 15 to 39 ms warm (1 to 2.4 ms per element); the first request
+  after a boot takes about 3.3 s, so the sim host sends one right after attach. Frames come in interface points of the
+  current rotation. `AXIsProcessTrusted` causes a TCC preflight attributed to Flare, so the sim host never calls it.
 - Apple's `xcrun mcpbridge` DeviceInteraction is built on XCUIAutomation, needs Xcode running, "affects the
   user-facing UI" and returns a screenshot per action. Too slow for live input; not used.
 - `simctl` (public) boots, shuts down, lists, installs, launches, writes the simulator's pasteboard and takes
@@ -283,11 +297,12 @@ no extra descriptor has to cross `guard_command`.
    control (JSON lines); stderr goes to its log. No other descriptor is passed (the guard owns `pre_exec`).
 2. Before the spawn, Flare checks in a per-pid mach service (`com.flare.terminal.simhost.<pid>`,
    `bootstrap_check_in`, the way Chromium's `MachPortRendezvousServer` does) and passes its name in argv. The sim
-   host looks it up and sends a first message with a receive right of its own (for slot-done records), then one
-   message per ring with the three IOSurface send rights (`IOSurfaceCreateMachPort`). Flare maps them with
+   host looks it up and sends a first message with a send right to a receive port of its own (for slot-done
+   records; S2), then one message per ring with the three IOSurface send rights (`IOSurfaceCreateMachPort`). Flare maps them with
    `IOSurfaceLookupFromMachPort`. Frame records come on the same channel. The sim host keeps its own bootstrap port
-   (CoreSimulator needs launchd lookups; `setsid` in the guard does not change it). This is gate spike S2; if the
-   rendezvous fails, the fallback is open decision 3b.
+   (CoreSimulator needs launchd lookups; `setsid` in the guard does not change it). Spike S2 proved it (2026-11-19). Each side checks the audit-token pid on every message, not only
+   the first, and frees a refused message with `mach_msg_destroy`. If the rendezvous fails at run time, the panel goes
+   to still mode (decision 3b).
 3. The sim host is started with `DEVELOPER_DIR` set to the Xcode Flare chose (see "Setup"), so its `simctl` calls and
    its dlopen use the same Xcode.
 4. The sim host answers `hello {protocol, version, coresim_version, simkit_version, xcode_version, xcode_path,
@@ -297,17 +312,17 @@ no extra descriptor has to cross `guard_command`.
 
 In the sim host, per attached device:
 - It allocates a ring of three IOSurfaces at the framebuffer's size in `'RGBA'` (`kCVPixelFormatType_32RGBA`),
-  wrapped as `MTLTexture`s with `ShaderRead | RenderTarget`.
+  wrapped as `MTLTexture`s with storage mode Shared and `ShaderRead | RenderTarget`.
 - It reads `framebufferSurface` at once (the surfaces-changed callback does not fire on attach), then registers the
   frame callback on its own serial queue.
 - On each callback it applies the 60 fps cap without adding a wait to a lone frame: a frame is sent at once if at
   least 15 ms passed since the last one sent; otherwise it is held and sent when 15 ms have passed, and a newer frame
   replaces it meanwhile (77 callbacks a second while scrolling become 60; a single tap's frame goes out at once). It
   takes the next free slot, runs one tiny render pass that samples the BGRA framebuffer and writes RGBA with A forced
-  to 255, waits for the command buffer, and sends `(device, slot, seq, t_us)`. With no free slot (Flare is behind)
+  to 255 and Display P3 converted to sRGB (S6), waits for the command buffer, and sends `(device, slot, seq, t_us)`. With no free slot (Flare is behind)
   it drops the frame and counts it. The ring size is one constant (`RING_SLOTS`, 3); because Flare frees a slot one
   frame late (see below), the bench counts "no free slot" drops and PR 4b raises it to 4 if they show up.
-- On `surfacesChangedCallback` (a different device size, and rotation if S5 shows the surface changes) it makes a
+- On `surfacesChangedCallback` (a different device size; rotation does not fire it, S5) it makes a
   new ring, sends its ports, and frees the old ring once Flare has said every old slot is done.
 - Every callback also bumps a per-device "changed" counter, sent even while paused, so an agent job can wait for the
   screen to change when nothing is shown (window minimised).
@@ -354,11 +369,11 @@ Fallbacks, in order:
 - `DeviceCtl` maps logical panel points to device points (the picture is letterboxed to keep its aspect), drops
   points outside the screen, and sends `touch {phase: start|move|end, x, y}`. Moves are coalesced to one per
   displayed frame. Right click does nothing. Two-finger pinch: Alt + drag mirrors a second finger around the centre
-  (Simulator.app's gesture), sent as `pointTwo`, only if spike S1 shows DTUHID takes a second contact; else Alt does
-  nothing in v1.
+  (Simulator.app's gesture), sent as `pointTwo` (spike S1 showed DTUHID takes a second contact).
 - The map from panel points to device points uses Slint logical points on the Flare side and device points on the
   other, so the Mac's backing scale (1x or 2x) and the device's scale (2x or 3x) never enter it.
-- Header buttons: Home, Lock, Rotate (left / right, only with S5, builder's call 11), and a menu with Shake, Volume
+- Header buttons: Home, Lock, Rotate (left / right, builder's call 11; Flare rotates the picture by the orientation
+  the sim host reports), and a menu with Shake, Volume
   up / down, Shut down, Choose device.
 - Every press, key or wheel first calls `person_input(tab)`, which ends a running agent job with `interrupted`
   (takeover), as in `web_live.rs:227`. Not while the splitter is held.
@@ -369,7 +384,7 @@ Fallbacks, in order:
   it, legacy Indigo only. It never mixes them in one boot.
 - DTUHID: one XPC connection per device to the digitizer service, opened at attach, kept for the session. Liveness
   barrier (4 s, five tries), then 200 ms before the first event. Until it is alive the panel shows "Connecting
-  touch..." and touches are queued for up to 5 s, then dropped with a line.
+  touch..." and touches are queued for up to 20 s (S1 saw 11.6 s after a cold boot), then dropped with a line.
 - Each event: `xpc_connection_send_message` then `xpc_connection_send_barrier`. Never wait for a reply per event.
 - Swipes for the agent: positions every 8 points along the path, at the speed asked, then end. Text: key down / up
   per character with the US keymap; non-keymap text via `simctl pbcopy` (simulator pasteboard) and Cmd-V.
@@ -404,7 +419,7 @@ Tools (flare-mcp `crates/flare-mcp/src/device.rs`), each one to one with a ctl m
 | `device_tap` | `ref?` or `x,y`; `hold_ms?` | A tap (or a long press). |
 | `device_swipe` | `from {x,y}` and `to {x,y}`, or `direction` + `ref?`; `duration_ms?` | A drag. Scrolls as a person does. |
 | `device_type` | `text`, `ref?`, `submit?` | Taps `ref` first if given, types, presses Return if `submit`. |
-| `device_press` | `button` (home, lock, volume_up, volume_down, shake; rotate_left, rotate_right only with S5) or `key` (return, delete, escape, tab, arrows) | A hardware button or one key. |
+| `device_press` | `button` (home, lock, volume_up, volume_down, shake, rotate_left, rotate_right) or `key` (return, delete, escape, tab, arrows) | A hardware button or one key. |
 | `device_launch` | `app` (bundle id), `args?` | Launches (or brings to front) an installed app. |
 | `device_install` | `path` (an `.app` folder) | Installs an app the agent built. The path, with symlinks resolved, must be inside the tab's folder or `~/Library/Developer/Xcode/DerivedData`, and be a simulator build (its `Info.plist` names `iPhoneSimulator` in `CFBundleSupportedPlatforms`). |
 | `device_state` | none | Booted or not, the app in front, live or still and why, frames shown per second, whether the person took over last. |
@@ -551,8 +566,8 @@ host whose protocol does not match (both ship in one bundle, so this only catche
   not reach CoreSimulatorService), with the hardened runtime and no entitlements (`Role::Tool`), signed with Flare's
   Developer ID, identifier `com.flare.terminal.flare-sim-host`. It loads only Apple-signed frameworks:
   CoreSimulator from `/Library/Developer/PrivateFrameworks` and SimulatorKit and `AccessibilityPlatformTranslation`
-  from the chosen Xcode. Library validation allows Apple-signed code, so no `disable-library-validation` is expected;
-  spike S3 proves it for a Developer ID build and for the ad-hoc signed dev build (`IDENTITY=-`, where `sign.rs`
+  from the chosen Xcode. Library validation allows Apple-signed code, so no `disable-library-validation` is needed;
+  spike S3 proved it (2026-11-19) for a Developer ID build and for the ad-hoc signed dev build (`IDENTITY=-`, where `sign.rs`
   already notes library validation refuses an ad-hoc framework to a tool). If S3 shows an entitlement is needed it is
   added to the sim host alone, never to Flare, and recorded here.
 - It accepts commands only from its parent's pipes. The mach rendezvous name carries Flare's pid; both sides check
@@ -574,7 +589,7 @@ host whose protocol does not match (both ship in one bundle, so this only catche
 | Device shut down outside Flare | State 9. A running agent call answers `unavailable`. |
 | Sim host crashes | Restarted and reattached; at the fourth crash in 5 minutes, still mode for the session. |
 | A new Xcode renames a private symbol | Still mode with the symbol named in the line and the log. No crash, no black panel. |
-| Touch service slow after boot (`dtuhidd` late) | "Connecting touch..." in the panel; touches queued 5 s; agent calls wait up to 20 s, then `retry`. |
+| Touch service slow after boot (`dtuhidd` late) | "Connecting touch..." in the panel; touches queued 20 s; agent calls wait up to 20 s, then `retry`. |
 | Ring handover fails (mach rendezvous) | CPU path is not possible without the surfaces; still mode, logged. |
 | GPU import refused | CPU path, "slow" mark. |
 | Flare behind (window busy) | The sim host drops frames with no free slot and counts them; nothing queues up. |
@@ -660,6 +675,29 @@ always a device made for the run (`simctl create "Flare Test iPhone" ...`) and d
     and send the orientation some other way after more research.
 12. **Device tools only where they work**: flare-mcp lists `device_*` only when Flare says it can (recommended: no
     12 dead tools in every agent's context on a PC), or always list them and answer `unavailable`.
+
+### Decisions taken (2026-11-19, delegated by Max: the recommendation, adjusted by the Step 0 spikes)
+
+Spike numbers: `research/flare/2026-11-19-ios-simulator-input.md`.
+
+| # | Chosen |
+|---|---|
+| 1 | Yes: own private-API code for frames, only in `flare-sim-host`. |
+| 2 | **a**: own DTUHID input in the sim host (legacy Indigo below CoreSimulator 1155.4), no AXe. S1 passed: tap p50 15 to 17.5 ms, 300/300 landed, 300/300 characters. |
+| 3 | Rust with objc2. **3b** not needed: S2 passed (pattern exact, forged pid refused, round trip p99 at most 41.5 us). No in-process frame path is built; a run-time rendezvous failure goes to still mode. |
+| 4 | Bundled inside `Flare.app`. S3: no entitlement needed. |
+| 5 | Restore shows the last device with Boot; never auto-boots. |
+| 6 | Shut down at quit the simulators Flare booted, default on. |
+| 7 | No plugin access in v1. |
+| 8 | Xcode 26 best effort via legacy Indigo, untested by us. |
+| 9 | Newest frame wins on 120 Hz displays; no display link in v1. |
+| 10 | Mockup step before PR 4a. |
+| 11 | **Rotation in v1**: S5 found a headless way (Purple GSEvent 50 to set, `displayinfo` to read). Flare rotates the portrait framebuffer when it shows it. Whether touch ratios need un-rotating is checked in PR 3 before merge. |
+| 12 | `device_*` tools listed only where they work. |
+
+Also from the spikes: the Alt-drag pinch ships in v1 (S1), touches wait up to 20 s for a cold `dtuhidd` (S1), the
+picture is converted from Display P3 to sRGB in the sim host (S6), and the agent's typing wait allows about 1 s for
+the first key of a session (S1).
 
 ## Open checks for Max's by-hand test (Mac mini)
 

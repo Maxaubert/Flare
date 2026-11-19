@@ -1,7 +1,8 @@
 # Device panel (live iPhone simulator beside a tab, issue #248): implementation plan (2026-11-19)
 
 Spec: `docs/superpowers/specs/2026-11-19-device-panel-design.md`.
-Status: draft for Max's approval, together with the spec. Not started.
+Status: draft for Max's approval, together with the spec. Step 0 done 2026-11-19 (every gate passed, see "Open
+checks"); no PR started.
 
 One gating step (spikes, no PR), then seven code PRs. Each builds and passes its own tests. Merge order:
 **1, 2, 6, 3, 4a, 4b, 5** (PR numbers are names, not the order).
@@ -113,6 +114,9 @@ at most 50 ms, 100/100 land, 100/100 characters arrive. S2 passes if the pattern
 wrong pid, and records round-trip under 1 ms p99. S3 passes if both signings work with no prompt. S5 has an answer
 (a way, or none). Max answers open decisions 2, 3b and 11 with the results; S2 and S3 before PR 2 starts, S1 and S5
 before PR 3 starts.
+
+Done 2026-11-19: every gate passed; Max delegated the open decisions (2, 3b and 11 included), taken under "Open checks"
+below.
 
 ---
 
@@ -304,10 +308,10 @@ Branch `feat/device-panel-3`. Ships alone (unwired). Built per open decision 2 (
   flight, tree to `UiNode`.
 - `src/macos/snapshot.rs`: `framebufferSurface` itself (not a ring slot, so it is fresh while the stream is paused)
   scaled to point size by a Metal pass, read back and encoded as PNG with ImageIO, on the sim host's worker.
-- `src/macos/orient.rs` (only if S5 found a way): set and read the orientation; the `rotate` control line; the
-  orientation in the `Frames` event. Without S5 the `rotate_*` buttons are not in the wire protocol.
-- Fallback only if open decision 2 says c: `src/macos/axe.rs` running a pinned AXe v2.0.4 (SHA-256 in
-  `versions.rs`), downloaded like the dictation engine (`fetch_ureq`, `.part`, hash checked, no quarantine).
+- `src/macos/orient.rs` (S5 found a way, decision 11): set the orientation with a Purple GSEvent 50 to
+  `PurpleWorkspacePort`, read it from CoreDevice `displayinfo`; the `rotate` control line; the orientation in the
+  `Frames` event and an event when it changes.
+- No AXe fallback: S1 passed, so open decision 2 is a (no `axe.rs`).
 - Docs: rules 1313, 1314, 1315 (sim host half); research link; `docs/surfaces/decisions.md` (input path chosen,
   with S1 numbers).
 
@@ -318,7 +322,7 @@ Branch `feat/device-panel-3`. Ships alone (unwired). Built per open decision 2 (
 - `flare_device::macos::xpc::no_liveness_reply_after_five_tries_is_broken_input`
 - `flare_device::macos::indigo::indigo_is_never_used_after_dtuhid_in_one_boot`
 - `flare_device::macos::ax::one_request_is_in_flight_at_a_time`
-- `flare_device::client::touches_wait_up_to_five_seconds_for_the_connection_then_drop`
+- `flare_device::client::touches_wait_up_to_twenty_seconds_for_the_connection_then_drop`
 - `flare_device::client::non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs`
 - `flare_device::macos::snapshot::a_snapshot_while_paused_is_the_current_screen` (macOS, real simulator, skipped
   with a reason without one)
@@ -335,7 +339,7 @@ Branch `feat/device-panel-4a`. Ships alone: the device kind is offered only unde
 tests, so a release with it shows nothing new. Mockup step first.
 
 **Step 0, before code: mockup** (impeccable; `docs/superpowers/specs/2026-11-19-device-panel-mockup.html`): the
-header (device name, Home, Lock, Rotate if S5, menu), each setup state, the still badge and line, the "slow" mark, the
+header (device name, Home, Lock, Rotate, menu), each setup state, the still badge and line, the "slow" mark, the
 Settings row. Claude gives Max the file path and does not open it (Zen is not installed on the Mac; no other browser).
 Max picks; the spec gets an "Update, Max, <date> (after the mockups)" section.
 
@@ -536,19 +540,76 @@ running `Flare.app`), with Claude in a tab.
 
 ## Open checks for the builder (verify before coding, note the answer in the PR)
 
-1. S1: DTUHID tap latency and landing on Xcode 27.2 (gate). Answered: not yet.
-2. S2: mach-port ring handover and wgpu import from another process. Answered: not yet.
+### Step 0 results (2026-11-19)
+
+Full numbers: `~/Documents/Claude/research/flare/2026-11-19-ios-simulator-input.md`. Mac mini (M6), macOS 27.2,
+Xcode 27.2 (27B52), CoreSimulator 1174.21, iPhone 18 Pro on iOS 27.2, every spike on its own simulator, all headless.
+Every gate passed.
+
+| Spike | Result |
+|---|---|
+| S1 input (gate) | Pass, 3 runs. Tap p50 15.1 to 17.5 ms (all 300: p50 15.8, p99 58.6, max 162.8); 300/300 landed within 0.17 pt; 300/300 characters; swipes 60/60 with every move; pinch (`pointTwo`) works. Cold connect after a fresh boot: 2.0 s, 11.6 s and 8.0 s (2 of 3 needed a second try); warm 6 to 32 ms. First key of a session 200 to 690 ms. |
+| S2 ring handover | Pass. 0 wrong bytes in all 3 slots, `Image::try_from` accepts them, forged frame record and ring refused 2/2, 600 records each way, round trip p99 6.8 to 41.5 us. Three corrections (below). |
+| S3 signing | Pass. Developer ID and ad hoc, hardened runtime, no entitlements: frames, DTUHID tap, AX dlopen, `simctl launch` and `screenshot` all work from a signed parent; no TCC request. Notarized path untested (PR 6). |
+| S4 UI tree | Settings 16 elements, 15 to 39 ms warm (66 XPC calls); 3.3 s on the first request after a boot; no prompt. `AXIsProcessTrusted` triggers a TCC preflight: never call it. |
+| S5 rotation | A way: set with a Purple GSEvent 50 to `PurpleWorkspacePort`, read `currentOrientation` from CoreDevice `displayinfo` (1 to 4 ms). The framebuffer stays portrait 1206x2622 (same surface, no surfaces-changed callback). |
+| S6 colour | Display P3 (colour space 7, P3_D65, sRGB transfer, no ICC profile). |
+
+Corrections the PRs take from the spikes:
+- PR 2 (`rendezvous.rs`): the sim host's first message carries a **send** right to its own receive port; the audit
+  pid is checked on **every** message on both sides, and a refused message is freed with `mach_msg_destroy`
+  (test `ports_from_another_pid_are_refused` covers a forged ring and a forged frame record).
+- PR 2 (`ring.rs`) and PR 4b (`device_frames.rs`): the IOSurface `MTLTexture` uses storage mode Shared and usage
+  `ShaderRead | RenderTarget`; the wgpu descriptor adds `COPY_SRC` (needed by the read-back test).
+- PR 2 (`ring.rs`): the swizzle pass converts Display P3 to sRGB (a 3x3 matrix in linear light), so colours match
+  Simulator.app (by-hand check 2).
+- PR 3: touches wait up to **20 s** for the connection (not 5 s), the same as the agent's wait; the test becomes
+  `touches_wait_up_to_twenty_seconds_for_the_connection_then_drop`. The agent's typing wait allows 1 s for the first
+  key of a session. The sim host sends one AX request right after attach to warm the tree. Never `AXIsProcessTrusted`.
+- PR 3 (`orient.rs`, in scope): Purple GSEvent 50 to set, `displayinfo` to read (polled after a rotate, or on
+  `propertiesChangedCallback`). Before merge, `--input-bench` taps in landscape to settle whether touch ratios are
+  un-rotated (idb: the digitizer stays portrait); the result goes in `geom.rs`.
+- PR 4b: the ring does not change on rotation; Flare rotates the picture by the orientation in the `Frames` /
+  orientation event (rot90 and rot270).
+- PR 6: no entitlement, no `pack.sh` or `sign.rs` sim-host case.
+
+### Decisions taken (delegated by Max, 2026-11-19: the spec's recommendation, adjusted by Step 0)
+
+1. Own private-API code for frames: yes, in `flare-sim-host` only.
+2. Input path: **a**, own DTUHID code (legacy Indigo below CoreSimulator 1155.4), no AXe. S1 passed the gate.
+3. Sim host in Rust with objc2. **3b**: not needed, S2 passed; no in-process frame path is built. A rendezvous that
+   fails at run time goes to still mode, as the failure-mode table says.
+4. The sim host ships inside `Flare.app`.
+5. Restore shows the last device with Boot; never auto-boots.
+6. Shut down at quit the simulators Flare booted: default on.
+7. Plugins: no device access in v1.
+8. Xcode 26: best effort via legacy Indigo, untested by us.
+9. 120 Hz displays: newest frame wins, no display link in v1.
+10. Mockup step before PR 4a: yes.
+11. Rotation: **in v1** (S5 found a headless way). The Rotate buttons and `device_press` `rotate_left` /
+    `rotate_right` ship; the picture is rotated in Flare.
+12. `device_*` tools are listed only where they work.
+
+Also from S1: the Alt-drag two-finger pinch ships in v1.
+
+### Checks
+
+1. S1: DTUHID tap latency and landing on Xcode 27.2 (gate). Answered 2026-11-19: pass (see above).
+2. S2: mach-port ring handover and wgpu import from another process. Answered 2026-11-19: pass.
 3. S3: a Developer ID hardened-runtime tool with no entitlements can dlopen SimulatorKit and CoreSimulator.
-   Answered: not yet.
-4. S4: AX tree time on a 150-element screen. Answered: not yet.
+   Answered 2026-11-19: yes, and ad hoc too; notarized build still to prove in PR 6.
+4. S4: AX tree time on a 150-element screen. Answered 2026-11-19: no 150-element screen found; Settings 16 elements
+   in 15 to 39 ms, about 1 to 2.4 ms per element, 3.3 s once per boot.
 5. Whether `xcrun simctl` needs `xcodebuild -runFirstLaunch` on a fresh Xcode, and which error text says so (for
    setup state 3).
 6. Whether the GitHub macOS runner image has an iOS runtime and Xcode 27 (for `deviceReal` and `--self-test`).
 7. Whether `IOSurfaceLock` on the RGBA ring is fast enough for the CPU fallback at 30 fps (about 12 MB a frame).
 8. Rule numbers 1310 to 1322 still free on origin/main.
-9. S5: rotation, headless set and read, and whether the framebuffer changes size. Answered: not yet.
-10. S6: the framebuffer's colour space. Answered: not yet.
+9. S5: rotation, headless set and read, and whether the framebuffer changes size. Answered 2026-11-19: Purple
+   GSEvent 50 sets it, `displayinfo` reads it, the framebuffer stays portrait. Touch un-rotation still open (PR 3).
+10. S6: the framebuffer's colour space. Answered 2026-11-19: Display P3.
 11. Whether `bootstrap_check_in` of an undeclared per-pid name works from a hardened-runtime, Developer ID signed
-    Flare (Chromium's rendezvous does it; S2 and S3 together answer it).
+    Flare (Chromium's rendezvous does it; S2 and S3 together answer it). Answered 2026-11-19: yes (kr 0, Developer ID
+    and ad hoc parent).
 12. Whether `RING_SLOTS` 3 is enough with the one-frame-late release (PR 2 bench with a late consumer, PR 4b trace).
 13. Whether a Settings row can be macOS only today, or the row shows on Windows greyed with a note.
