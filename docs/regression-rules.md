@@ -910,6 +910,8 @@ stay for quit. Native: `crates/flare/src/remote_host.rs` (`unfollow`, `gone`), `
 `remote.detach`), `appctl/remote_glue.rs`. Held by `a_remote_detach_or_a_dropped_link_never_closes_the_tab`,
 `a_tab_is_followed_until_its_last_connection_detaches_or_goes` and `taking_the_size_back_never_kills_the_shell`.
 Source: remote sessions PR 2 (2026-11-12).
+Amended by rule 1302 (2026-11-19): a hidden session keeps its opener's size when its last follower goes, and
+`remote.close` ends it at once with no ask on the host (rule 1305).
 281. **The output ring has a cap and never blocks the UI sink.** A followed tab's output is numbered (a `u64` that only
 goes up) and kept in a ring of 4 MiB (`TAIL_CAP`); older bytes drop off, and a `since` older than the ring answers
 `gap: true` and the bytes from the oldest kept, never a silent skip. The ring is fed in `Session::deliver` after the
@@ -1074,8 +1076,10 @@ the viewer: its hub holds the question mark (live OSC 777, or the host's status)
 viewer's notifier shows it once per episode as for any tab (rule 206). The host's notifier leaves out every tab a
 remote viewer follows, so the same question never rings on both machines; a tab nobody follows notifies on the host as
 before, and the host's strip still shows the mark. Native: `crates/flare/src/appctl/surfaces7.rs` (`notify_update`),
-`agent_hub.rs` (`question_text` of a remote tab). Held by `a_question_in_a_followed_tab_is_the_viewers_to_notify` and
+`agent_hub.rs` (`question_text` of a remote tab). Held by `a_hidden_sessions_question_never_rings_on_the_host_followed_or_not` and
 `a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice`. Source: remote sessions PR 4 (2026-11-12).
+Amended by rule 1304 (2026-11-19): a session another machine opens is hidden on the host and never rings there,
+followed or not; the host's own strip tabs are never followed (rule 1303).
 296. **The host holds sleep only while a remote-followed session works, and lets go on every exit path.** Owner
 decision 2026-11-12: the machine that runs a remote session stays awake while it works, and sleeps as usual once all
 are idle. The window holds one `Hold` while any tab a remote viewer follows has an agent at work (`working` and an
@@ -1089,9 +1093,11 @@ locks. Under `--e2e` a counter stands in. Native: `crates/flare-win/src/keep_awa
 `crates/flare/src/appctl/remote_glue.rs` (`sync_keep_awake`). Held by
 `the_system_is_held_from_the_first_hold_to_the_last_drop`, `the_fake_counts_holds_and_a_drop_lets_go`,
 `the_system_keep_awake_takes_and_lets_go_without_waiting`,
-`a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after` and, on a real Mac (CI's macOS job),
+`a_working_hidden_session_holds_the_host_awake_with_no_follower` and, on a real Mac (CI's macOS job),
 `keep_awake::sys::tests::a_hold_makes_one_real_assertion_and_its_last_drop_releases_it` (`pmset -g assertions` lists
 the process's one Flare assertion while held and none after). Source: remote sessions PR 4 (2026-11-12).
+Amended by rule 1302 (2026-11-19): a hidden session at work holds the system awake followed or not (nobody on the host
+sees it, and its opener cannot reach a sleeping host).
 297. **Conversation entries cross the link as numbered `Entry` values; no host path does.** `remote.convo {tab, since}`
 answers the followed tab's Claude session as entries (role, text, tool, time) the host numbers from 1 per tab. The host
 finds the transcript from the tab's session and folder with its own Claude folder, so a Mac's project slug and a PC's
@@ -1249,8 +1255,10 @@ after "Close tab": the tab goes from this window and its pty lets go the quit's 
 session goes on on its machine and nothing asks. A local tab has no such row. Native:
 `crates/flare/src/appctl/remote_glue.rs` (`hide_remote`), `crates/flare/src/tab_host.rs` (`TabHost::leave`),
 `crates/flare-term/src/session.rs` (`SessionManager::leave`), `crates/flare/src/menus_ui.rs` (`HIDE_HERE`). Held by
-`ui_tests::term::flow::hide_here_only_detaches_and_close_ends_the_session_everywhere` and the e2e `remoteUi`. Source:
-remote sessions PR 7 (2026-11-12), plan R-new-25.
+`ui_tests::term::flow::a_remote_tabs_menu_has_close_and_no_hide_here_only` and the e2e `remoteUi`. Source:
+remote sessions PR 7 (2026-11-12), plan R-new-25. Amended 2026-11-19 (Max): "Hide here only" is gone, since it left a
+hidden session nobody sees (`hide_remote`, `HIDE_HERE` and `TabHost::leave` removed; the quit still detaches through
+`SessionManager::leave`, rule 288); the host closes a hidden session at once and the opener asks instead (rule 1305).
 1193. **While the other machine sizes a remote tab, this screen shows its conversation fitted to the window, never a
 terminal at the other window's size; a click or a key takes the terminal back.** The live terminal has one size, the
 last typist's (rule 282). The host's `remote.status` says who that is (`sized`: `host` or `viewer`). While the host
@@ -3531,7 +3539,7 @@ that it was not sent. A `no_tab` end drops the kept typing: it is never typed in
 `the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole`),
 `remote_host::tests::an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them`,
 `ctl_app::tests::remote_open_checks_the_host_folder_and_the_resume_id_first` and
-`remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_tab`. Source: Max, 2026-11-13.
+`remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_session`. Source: Max, 2026-11-13.
 1211. **The host's own window shows the fitted conversation view while a remote viewer sizes an agent tab.** The
 owner's design (spec "Size" and "The other screen"): the live terminal has one size, the last typist's, and the other
 screen shows the conversation instead of a squeezed terminal. Rule 1193 gave the viewer that view; the host kept
@@ -3552,7 +3560,7 @@ character. Native: `appctl/remote_glue.rs` (`host_view_stands`, `HostConvoView`,
 `appctl::remote_glue::tests` (the switching rule, the reads taken once, another session or tab starting over, the
 viewer named), `ctl_app::tests::remote_resize_names_the_viewer_the_bridge_said`,
 `serve_remote::tests::the_bridge_names_the_links_machine_to_the_running_flare` and
-`remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab` (every shipped scale:
+(until 2026-11-19) `remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab` (every shipped scale:
 the view and its machine, a key and a click taking the size back, the release, a plain shell, another tab in front).
 Source: Max, 2026-11-13.
 1212. **A viewer's size alone never puts the host's fitted view up; only its typing does.** Found 2026-11-13 by an
@@ -3567,8 +3575,11 @@ tab), and the size coming back here clears it (`take_size_back`: a key typed her
 tab's size as rule 282 says; only the view waits for the viewer's typing. After a reconnect the viewer types once
 before the view returns. Native: `tab_host.rs` (`viewer_typed`, `note_viewer_typed`, `viewer_typed_last`),
 `appctl/remote_glue.rs` (`CtlOp::RemoteInput`, `host_convo_want`, `host_view_stands`). Held by
-`tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and
+`tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and (until 2026-11-19)
 `remote_flows::a_viewers_size_alone_never_puts_the_hosts_fitted_view_up`. Source: independent review, 2026-11-13.
+Note 2026-11-19 (rules 1302, 1303): only a hidden session can be sized by a viewer now, and it is never in the host's
+front, so the host's own fitted view (rules 1211, 1212) can no longer stand; its two window flow tests were removed with
+that, and the code goes in the remote-on-opener plan's PR 3 (rule 1309).
 
 1213. **A remote tab's Preview chip opens through an ssh tunnel, its folder joins the recent folders with its machine,
 its snapshot keeps the host's colours, and a dropped folder is copied whole.** Owner approved 2026-11-13. (1) A remote
@@ -4961,3 +4972,57 @@ with the same id. Held by `a_named_session_is_a_change_even_when_no_mark_moves` 
 `a_session_named_after_the_work_showed_is_saved_and_kept_while_its_claude_stays` (`appctl`) and
 `zsh_runs_a_restored_tabs_resume_before_its_first_folder_report` (`flare-term/tests/real_shells_macos.rs`, a real
 zsh with a stand-in `claude`).
+1302. **A session another machine opened runs hidden on its host.** Max, 2026-11-19: "on the machine its running on, it
+will be in the background, you wont see it, only on the machine that started it remotely." `remote.open` makes a hidden
+session (`TabModel::open_hidden`), never a strip tab: the model keeps it in a list of its own (`TabModel::hidden`, never
+`state.tabs`), so no strip tab, sidebar row, Ctrl+Tab or Ctrl+1..9 stop, used-list entry, front pick, Ctrl+Shift+T
+entry, badge, attention count, taskbar flash, plugin tab (`tabs.list`, the `tabs` and `agent` events) or dictation
+target ever shows it. It keeps its opener's machine name (`ctl_app::viewer_of`; "another computer" when the bridge named
+none, renamed at each attach), its `open_id` and its size. It is born remote-sized (`TabHost::spawn_hidden`): its
+opener's saved size, or the window's grid size until the opener's first `remote.resize`; the window's refits, a key
+typed there and the last follower going never hand its size back (amends 280). A hidden session at work holds the
+system awake, followed or not (amends 296). The quit ask and the install hold count it and name it "<folder> (for
+<opener>)" (`busy_hidden`). Its agent's calls that would show something on this screen (a panel, a `show_*` tool, the
+browser panel, a mini-app, a mod's panel or tool, a fill, a badge or progress, the session bar) answer `unavailable`:
+"this session shows on <opener>; its panels cannot show there yet" (`AppCtl::hidden_refusal`, ahead of every handler);
+its hooks' `panel.state`, `tabs.list` of its own tab, its folder and `session.read` still answer. A hidden session whose
+shell ends goes, and its followers hear `no_tab`. `tabs.json` saves it after the strip as a tab with
+`hidden: {opener, open_id, cols, rows}` (`active` counts strip tabs only); an older Flare reads it as a local tab (rule
+40). The restore brings it back hidden with a new id, its Claude session resumed as rule 1286 says. A machine holds at
+most 50 (`MAX_HIDDEN`, Max 2026-11-19): a 51st `remote.open` is refused (`busy`, said on the opener in one line), a
+retried open (rule 1210) never is. Native: `crates/flare-tabs/src/model.rs` (`Hidden`, `open_hidden`, `close_hidden`,
+`saved`, `settle`), `restore.rs` (`SavedHidden`, `RestoredHidden`, `parse_tabs`, `tabs_json`, `plan_restore_with`),
+`crates/flare/src/tab_host.rs` (`spawn_hidden`), `appctl/remote_glue.rs` (`CtlOp::RemoteOpen`, `sync_keep_awake`),
+`appctl.rs` (`sync_hub`, `sync_model_agents`, `restored`, `busy_hidden`, `hidden_refusal`, `host_wake`),
+`agent_hub.rs` (`on_hidden_tab`). Held by `flare_tabs::model::hidden_tests`, the hidden tests of
+`flare_tabs::restore::tests`, `tab_host::tests::a_hidden_session_is_remote_sized_from_birth_and_keeps_its_size` and
+`ui_tests::agent_flows::remote_flows` (`a_remote_open_makes_a_hidden_session_with_its_opener_name`,
+`a_remote_open_sent_again_with_its_open_id_opens_no_second_session`,
+`a_hidden_session_keeps_its_size_when_its_last_follower_goes`,
+`a_working_hidden_session_holds_the_host_awake_with_no_follower`,
+`the_quit_ask_names_a_working_hidden_session_for_its_opener`,
+`a_hidden_tabs_agent_cannot_open_a_panel_or_front_the_window`,
+`plugins_tabs_list_and_events_leave_hidden_sessions_out`, `a_hidden_session_whose_shell_ends_goes`) and the e2e
+`remoteViewer`, `remoteOpen` and `remoteUi`. Source: Max, 2026-11-19, plan `2026-11-19-remote-session-on-opener.md` PR 1.
+1303. **The remote ops answer only for hidden sessions.** `remote.status` and `remote.tabs` list only hidden sessions
+(`hidden_rows`, never `tab_facts`), and `remote.attach`, `input`, `resize`, `release` and `close` answer `no_tab` for a
+tab that is not one: a strip tab of the host and a remote tab the host shows alike. The ops the control channel's worker
+answers itself (`output`, `snapshot`, `fetch`, `put`, `convo`, `detach`) need a follow, and only `remote.attach` of a
+hidden session makes one. So one session shows on one screen, and no machine follows another's viewer tab (no mirror
+chains; reused from closed PR #281). Native: `crates/flare/src/appctl/remote_glue.rs` (`ctl_remote`). Held by
+`remote_flows::every_remote_op_refuses_a_tab_that_is_not_hidden` and
+`remote_flows::remote_status_and_tabs_list_only_hidden_sessions`. Source: Max, 2026-11-19.
+1304. **A hidden session's question rings only on its opener.** The host's notifier, its question posts, its taskbar
+badge and attention count and its bell flash leave hidden sessions out, followed or not (amends 295): the hub marks them
+(`AgentHub::on_hidden_tab`) and `question_tabs`, `attention`, `send_tabs` and the screen question post skip them, while
+`remote.status` still says their state word and question to the opener. Native: `crates/flare/src/agent_hub.rs`,
+`appctl.rs` (`host_wake`'s bell). Held by `remote_flows::a_hidden_sessions_question_never_rings_on_the_host_followed_or_not`.
+Source: Max, 2026-11-19.
+1305. **`remote.close` ends a hidden session at once on the host; the opener asks first.** Nobody sits at the host's
+screen for a hidden session, so `remote.close` ends it with no ask there (`close_hidden_now`) and it never joins the
+host's Ctrl+Shift+T list (amends 1192 for the host side). The opener asks before closing a remote tab while its host's
+status names an agent, idle or not (`AgentHub::remote_agent`, kept before any early return of `on_remote_status`;
+`AppCtl::close_asks`), so an idle Claude tab never closes unasked on both machines. Native:
+`crates/flare/src/appctl/remote_glue.rs`, `appctl.rs` (`close_asks`, `agent_named`), `agent_hub.rs`. Held by
+`remote_flows::a_remote_close_ends_a_hidden_session_without_asking_on_the_host` and
+`ui_tests::term::flow::the_opener_asks_before_closing_an_idle_remote_claude_tab`. Source: Max, 2026-11-19.

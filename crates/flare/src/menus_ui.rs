@@ -477,10 +477,6 @@ pub fn toggle_pin_in_menu(
     *rows = plus_menu_rows(prefs, starters, home, machines, open);
 }
 
-/// A remote tab's menu row after Close tab (remote sessions PR 7, rule 1192): the tab goes from this window and the
-/// session goes on on its machine.
-pub const HIDE_HERE: &str = "Hide here only";
-
 /// A tab's own menu: Close tab (with its key) and, for a folder tab only, Copy folder path.
 /// Settings has no folder, and copying "" would blank the clipboard.
 pub fn tab_menu_rows(cwd: &str, close_hint: &str) -> Vec<MenuRowData> {

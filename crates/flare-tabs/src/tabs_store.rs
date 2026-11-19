@@ -120,6 +120,7 @@ mod tests {
         s.save(&SavedTabs {
             tabs: vec![one("C:\\lost")],
             active: 0,
+            hidden: Vec::new(),
         });
         s.flush();
         drop(held);
@@ -137,6 +138,7 @@ mod tests {
         s.save(&SavedTabs {
             tabs: vec![one("C:\\a")],
             active: 0,
+            hidden: Vec::new(),
         });
         s.flush();
         let raw = std::fs::read_to_string(&f).unwrap(); // sync-ok: test code only, never the app
@@ -152,6 +154,7 @@ mod tests {
         s.save(&SavedTabs {
             tabs: vec![one("C:\\a")],
             active: 0,
+            hidden: Vec::new(),
         });
         let want = SavedTabs {
             tabs: vec![
@@ -164,6 +167,7 @@ mod tests {
                 },
             ],
             active: 1,
+            hidden: Vec::new(),
         };
         s.save(&want);
         assert!(!f.exists());
@@ -184,6 +188,7 @@ mod tests {
         s.save(&SavedTabs {
             tabs: vec![one("C:\\new")],
             active: 0,
+            hidden: Vec::new(),
         });
         assert_eq!(s.load().tabs, vec![one("C:\\new")]);
         s.flush();

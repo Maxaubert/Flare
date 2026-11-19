@@ -732,6 +732,7 @@ mod flow {
                     session: None,
                 }],
                 active: 0,
+                hidden: Vec::new(),
             };
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
             let prefs = PrefStore::memory();
@@ -3472,46 +3473,45 @@ mod flow {
         assert!(menu_row(&w, "proj").is_none());
     }
 
-    /// Rule 1192: a remote tab's menu has "Hide here only" after Close tab; it lets go here and the host session goes on
-    /// (`remote.detach`), where Close ends it everywhere (`remote.close`). A local tab has no such row.
+    /// Rule 1192 as amended by 1305: a remote tab's menu has Close tab and no "Hide here only" (Max 2026-11-19: it left
+    /// a hidden session nobody sees); Close ends the session everywhere (`remote.close`).
     #[test]
-    fn hide_here_only_detaches_and_close_ends_the_session_everywhere() {
+    fn a_remote_tabs_menu_has_close_and_no_hide_here_only() {
         use flare_term::remote_pty::Leaving;
         let w = Wx::new(1.0);
-        let local = w
-            .ctl
-            .borrow()
-            .model()
-            .active()
-            .map(|t| t.id.clone())
-            .unwrap();
-        w.h.comp.invoke_tab_menu(local.as_str().into(), 10.0, 10.0);
-        assert_eq!(menu_row(&w, crate::menus_ui::HIDE_HERE), None);
-        let (hide, _) = remote_in_front(&w);
-        let close = w
-            .ctl
-            .borrow_mut()
-            .open_remote("mac", "/Users/max/two", None, true);
-        w.pump_until("two remote ptys", |w| w.remote.made().len() == 2);
-        w.h.comp.invoke_tab_menu(hide.as_str().into(), 10.0, 10.0);
-        let i = menu_row(&w, crate::menus_ui::HIDE_HERE).expect("Hide here only");
-        assert_eq!(i, 1, "right after Close tab");
-        w.h.comp.invoke_menu_picked(i as i32);
-        w.pump();
-        assert!(
-            w.ctl.borrow().model().remote_of(&hide).is_none(),
-            "gone here"
-        );
-        let io0 = w.remote.made()[0].1.clone();
-        w.pump_until("the detach", |_| io0.leaving().is_some());
-        assert_eq!(io0.leaving(), Some(Leaving::Detach));
+        let (close, _) = remote_in_front(&w);
         w.h.comp.invoke_tab_menu(close.as_str().into(), 10.0, 10.0);
-        let c = menu_row(&w, "Close tab").unwrap();
+        assert_eq!(menu_row(&w, "Hide here only"), None);
+        let c = menu_row(&w, "Close tab").expect("Close tab");
+        assert_eq!(c, 0);
         w.h.comp.invoke_menu_picked(c as i32);
         w.pump();
-        let io1 = w.remote.made()[1].1.clone();
-        w.pump_until("the close", |_| io1.leaving().is_some());
-        assert_eq!(io1.leaving(), Some(Leaving::Close));
+        let io0 = w.remote.made()[0].1.clone();
+        w.pump_until("the close", |_| io0.leaving().is_some());
+        assert_eq!(io0.leaving(), Some(Leaving::Close));
+    }
+
+    /// Rule 1305: the opener asks before closing a remote tab whose host names an agent, even an idle one its hub never
+    /// saw working or asking (the host never asks for a hidden session).
+    #[test]
+    fn the_opener_asks_before_closing_an_idle_remote_claude_tab() {
+        let w = Wx::new(1.0);
+        let (id, _) = remote_in_front(&w);
+        let live = w.ctl.borrow().model().remote_live(&id).cloned().unwrap();
+        live.set_status(flare_term::remote_pty::HostStatus {
+            state: "idle".into(),
+            agent: Some("claude".into()),
+            ..flare_term::remote_pty::HostStatus::default()
+        });
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        w.pump();
+        assert!(!w.ctl.borrow().hub().working(&id), "never seen working");
+        w.ctl.borrow_mut().request_close(&id);
+        assert!(w.ctl.borrow().ask_text().is_some(), "the close asks first");
+        assert!(
+            w.ctl.borrow().model().remote_of(&id).is_some(),
+            "still open"
+        );
     }
 
     /// Rule 1279: a remote tab opened in the host's home (`~`) takes the folder the host's first status names (the

@@ -327,21 +327,24 @@ pub enum CtlOp {
         tool: String,
         input: Value,
     },
-    /// `remote.open` (remote sessions PR 2): a new tab in a host folder the call's thread checked is one, with a session
-    /// id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host answered lately is answered
-    /// with the tab it opened, not a second one (rule 1210).
+    /// `remote.open` (remote sessions PR 2): a hidden session (rule 1302) in a host folder the call's thread checked
+    /// is one, with a session id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host
+    /// answered lately is answered with the session it opened, not a second one (rule 1210). `opener` is the opener's
+    /// machine as its link named it (`viewer_of`), None when the bridge named none.
     RemoteOpen {
         folder: String,
         resume: Option<String>,
         open_id: Option<String>,
+        opener: Option<String>,
     },
-    /// `remote.tabs`: every shell tab with its folder, title, the agent's state word and session.
+    /// `remote.tabs`: every hidden session (rule 1303) with its folder, title, the agent's state word and session.
     RemoteTabs,
-    /// `remote.attach`: connection `conn` follows the tab (its handle and output tail go into the `RemoteHost`).
-    /// Answered with `{tab, cols, rows, seq}`.
+    /// `remote.attach`: connection `conn` follows the hidden session (its handle and output tail go into the
+    /// `RemoteHost`). Answered with `{tab, cols, rows, seq}`. `viewer` renames the session's opener (rule 1302).
     RemoteAttach {
         tab: String,
         conn: u64,
+        viewer: Option<String>,
     },
     /// `remote.input`: intents the call's thread checked (rule 279), typed into the tab.
     RemoteInput {
@@ -356,16 +359,17 @@ pub enum CtlOp {
         rows: usize,
         viewer: Option<String>,
     },
-    /// The last remote viewer of the tab detached or went: its size goes back to the window. Never ends it (rule 280).
+    /// The last remote viewer of the tab detached or went. Never ends it (rule 280); a hidden session keeps its
+    /// opener's size (rule 1302).
     RemoteRelease {
         tab: String,
     },
-    /// `remote.close`: the tab closes the way a person's close does; an agent at work asks first (rule 48).
+    /// `remote.close`: the hidden session ends at once, never asking on this screen (rule 1305).
     RemoteClose {
         tab: String,
     },
-    /// `remote.status` (remote sessions PR 4): every shell tab as the host's own marks say it (rule 294). Answered with
-    /// `{tabs}`; the worker numbers it.
+    /// `remote.status` (remote sessions PR 4): every hidden session as the host's own marks say it (rules 294, 1303).
+    /// Answered with `{tabs}`; the worker numbers it.
     RemoteStatus,
     /// `open.remote` (remote sessions PR 5): a tab here that shows a session on `machine` (an id the worker found in
     /// `machines.json`) in the host's `folder`, resuming `resume` there (checked with `valid_resume`). In front only
@@ -2537,6 +2541,7 @@ impl AppDispatcher {
                     folder: dir.to_string_lossy().into_owned(),
                     resume,
                     open_id,
+                    opener: viewer_of(ctx),
                 })
             }
             Method::RemoteLs => {
@@ -2559,6 +2564,7 @@ impl AppDispatcher {
                 self.ask(CtlOp::RemoteAttach {
                     tab,
                     conn: ctx.conn,
+                    viewer: viewer_of(ctx),
                 })
             }
             Method::RemoteDetach => {

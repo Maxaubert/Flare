@@ -278,8 +278,9 @@ impl AppCtl {
     }
 
     /// `session.read` on the UI thread: where the tab's Claude session is filed (the call's thread reads it).
+    /// A hidden session's too (rule 1302): its opener's `remote.fetch` reads its folder, and its own agent's hooks ask.
     pub(super) fn ctl_session_of(&self, tab: &str) -> Result<Value, CtlError> {
-        let Some((_, folder)) = self.shell_tabs().into_iter().find(|(id, _)| id == tab) else {
+        let Some(folder) = self.session_tab_folder(tab) else {
             return Err(CtlError::new(code::NO_TAB, "that tab is closed"));
         };
         let dir = self
