@@ -223,6 +223,10 @@ pub enum CtlOp {
     /// transcript. Answered with `{session, folder, claude_dir}` (`session` null when none is known).
     SessionOf {
         tab: String,
+        /// Whether a hidden session (rule 1302) may answer: true for its opener's `remote.fetch` and `remote.convo`,
+        /// and for a call made with that session's own tab token. A plugin naming it gets the answer an unknown tab
+        /// gets (rule 1306).
+        hidden_ok: bool,
     },
     /// `tabs.input` (plugins phase 5): text a plugin types into the tab's shell as one paste, checked on the call's
     /// thread (the permission, the tab, the size, the characters, the rate), and an Enter after it when asked.
@@ -1123,7 +1127,12 @@ impl AppDispatcher {
             READ_RATE,
             "session.read calls for one tab",
         )?;
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        // A hidden session answers only a call made with its own tab token (rule 1306).
+        let hidden_ok = ctx.tab.as_deref() == Some(tab.as_str());
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok,
+        })?;
         let none = || Ok(json!({"tab": tab, "session": null, "entries": []}));
         let (Some(session), Some(folder), Some(dir)) = (
             at["session"].as_str(),
@@ -2700,7 +2709,10 @@ impl AppDispatcher {
                 "that tab is not followed: send remote.attach first",
             ));
         }
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok: true,
+        })?;
         let folder = at["folder"].as_str().unwrap_or_default();
         let file = crate::remote_files::resolve_fetch(folder, path, &self.home, host.temp())?;
         let c = crate::remote_files::read_chunk(&file, chunk)?;
@@ -2835,7 +2847,10 @@ impl AppDispatcher {
             REMOTE_CONVO_RATE,
             "remote.convo calls on one tab",
         )?;
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok: true,
+        })?;
         let (Some(session), Some(folder), Some(dir)) = (
             at["session"].as_str(),
             at["folder"].as_str(),
@@ -2868,12 +2883,10 @@ pub const REMOTE_CONVO_RATE: f64 = 10.0;
 /// and the bridge says it as its `hello`'s client. An older bridge says only its own name, which names no machine, and
 /// so does a name that is empty, too long or holds a control character.
 pub fn viewer_of(ctx: &CallContext) -> Option<String> {
-    let name = ctx.client.trim();
-    (!name.is_empty()
-        && name != crate::serve_remote::BRIDGE_CLIENT
-        && name.chars().count() <= flare_ctl::session::MAX_MACHINE_NAME
-        && !name.chars().any(char::is_control))
-    .then(|| name.to_string())
+    // Rule 1306: the one check a hidden session's opener name meets at open, rename and restore.
+    flare_tabs::restore::valid_opener(&ctx.client)
+        .filter(|n| *n != crate::serve_remote::BRIDGE_CLIENT)
+        .map(str::to_string)
 }
 
 impl Dispatcher for AppDispatcher {

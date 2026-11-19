@@ -25,7 +25,10 @@ use super::AppCtl;
 use crate::ctl_app::CtlOp;
 
 /// The opener's name when its link named none (an older bridge, rule 1211's `viewer_of`).
-pub(crate) const OPENER_UNNAMED: &str = "another computer";
+pub(crate) use flare_tabs::restore::OPENER_UNNAMED;
+
+// Rule 1306: an opener's name is a machine's name, so restore keeps exactly what `remote.hello` takes.
+const _: () = assert!(flare_tabs::restore::MAX_OPENER_NAME == flare_ctl::session::MAX_MACHINE_NAME);
 
 /// A hidden session as the remote ops list it (rule 1303).
 pub(crate) struct HiddenRow {

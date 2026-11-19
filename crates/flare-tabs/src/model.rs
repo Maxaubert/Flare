@@ -202,7 +202,10 @@ impl TabModel {
                 pending: None,
                 remote: None,
             },
-            opener: opener.to_string(),
+            // Rule 1306: the one check restore uses too, so what opens is what comes back.
+            opener: crate::restore::valid_opener(opener)
+                .unwrap_or(crate::restore::OPENER_UNNAMED)
+                .to_string(),
             open_id: open_id.map(str::to_string),
             since_ms: now_ms,
             size,
@@ -247,8 +250,12 @@ impl TabModel {
         }
     }
 
-    /// The opener named itself again (each attach): a renamed machine shows its new name.
+    /// The opener named itself again (each attach): a renamed machine shows its new name. A name the check refuses
+    /// (rule 1306) changes nothing.
     pub fn set_hidden_opener(&mut self, id: &str, opener: &str) -> bool {
+        let Some(opener) = crate::restore::valid_opener(opener) else {
+            return false;
+        };
         match self.hidden.iter_mut().find(|h| h.tab.id == id) {
             Some(h) if h.opener != opener => {
                 h.opener = opener.to_string();
@@ -874,6 +881,33 @@ mod hidden_tests {
         assert_eq!(m.agent_kind(&h), None, "its agent goes with it");
         assert_eq!(m.session(&h), None);
         assert!(!m.close_hidden(&a), "a strip tab is no hidden session");
+    }
+
+    /// Rule 1306: opening, renaming and restoring check an opener's name the same way. A name restore would refuse is
+    /// kept as "another computer" at open and changes nothing at a rename, so a saved session always comes back hidden
+    /// with the name it showed.
+    #[test]
+    fn an_opener_name_is_checked_the_same_at_open_rename_and_restore() {
+        use crate::restore::{MAX_OPENER_NAME, OPENER_UNNAMED};
+        let mut m = TabModel::empty(0);
+        let long = "m".repeat(MAX_OPENER_NAME + 1);
+        let most = "m".repeat(MAX_OPENER_NAME);
+        let h = m.open_hidden(r"C:\h", &long, None, None, 0);
+        assert_eq!(m.hidden_of(&h).unwrap().opener, OPENER_UNNAMED);
+        let h2 = m.open_hidden(r"C:\h2", "Mac\u{7}Mini", None, None, 0);
+        assert_eq!(m.hidden_of(&h2).unwrap().opener, OPENER_UNNAMED);
+        let h3 = m.open_hidden(r"C:\h3", &most, None, None, 0);
+        assert_eq!(m.hidden_of(&h3).unwrap().opener, most);
+        assert!(!m.set_hidden_opener(&h3, &long));
+        assert!(!m.set_hidden_opener(&h3, "Mac\nMini"));
+        assert_eq!(m.hidden_of(&h3).unwrap().opener, most);
+        assert!(m.set_hidden_opener(&h, " Mac Studio "));
+        assert_eq!(m.hidden_of(&h).unwrap().opener, "Mac Studio");
+        // What was kept comes back, all hidden.
+        let back = parse_tabs(&tabs_json(&m.saved()));
+        assert!(back.tabs.is_empty());
+        let names: Vec<&str> = back.hidden.iter().map(|h| h.opener.as_str()).collect();
+        assert_eq!(names, ["Mac Studio", OPENER_UNNAMED, most.as_str()]);
     }
 
     #[test]

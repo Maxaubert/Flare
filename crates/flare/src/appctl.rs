@@ -4495,7 +4495,7 @@ impl AppCtl {
                 generation,
             } => self.ctl_actions_set(plugin, key, tab, state, generation),
             // Sessions and typing (plugins phase 5): checked on the worker, applied in `sessions_glue`.
-            CtlOp::SessionOf { tab } => self.ctl_session_of(&tab),
+            CtlOp::SessionOf { tab, hidden_ok } => self.ctl_session_of(&tab, hidden_ok),
             CtlOp::TabInput {
                 plugin,
                 tab,

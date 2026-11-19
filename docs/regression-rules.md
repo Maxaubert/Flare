@@ -5029,3 +5029,19 @@ status names an agent, idle or not (`AgentHub::remote_agent`, kept before any ea
 `crates/flare/src/appctl/remote_glue.rs`, `appctl.rs` (`close_asks`, `agent_named`), `agent_hub.rs`. Held by
 `remote_flows::a_remote_close_ends_a_hidden_session_without_asking_on_the_host` and
 `ui_tests::term::flow::the_opener_asks_before_closing_an_idle_remote_claude_tab`. Source: Max, 2026-11-19.
+1306. **A hidden session is no plugin's to read, and its opener's name passes one check everywhere.** A plugin's
+`session.read` that names a hidden session (rule 1302) gets `no_tab` "that tab is closed", the answer a tab that does not
+exist gets, so it learns nothing (`CtlOp::SessionOf { hidden_ok }`, `AppCtl::ctl_session_of`). Only a call made with
+that session's own tab token, and its opener's `remote.fetch` and `remote.convo`, read it. An opener's name is checked
+the same way when the session opens (`open_hidden`), when the opener names itself again (`set_hidden_opener`, a name it
+refuses changes nothing), at restore and in `viewer_of`: trimmed, not empty, at most `MAX_OPENER_NAME` (256, the same as
+`flare_ctl::session::MAX_MACHINE_NAME`, a compile-time check holds them equal) characters, no control character
+(`flare_tabs::restore::valid_opener`). A saved tab with any `hidden` value but null is a hidden session: a bad opener
+comes back as "another computer", a bad open id or size as none, and it never comes back as a strip tab (a session another
+machine opened never shows on this screen). Native: `crates/flare/src/ctl_app.rs` (`session_read`, `viewer_of`),
+`appctl/sessions_glue.rs`, `appctl/remote_glue.rs`, `crates/flare-tabs/src/restore.rs` (`valid_opener`, `parse_hidden`),
+`model.rs`. Held by
+`mods_tests::plugin_sessions::session_read_never_gives_a_plugin_a_hidden_session_but_its_own_token_reads_it`,
+`flare_tabs::restore::tests::a_hidden_entry_with_a_bad_opener_restores_hidden_and_unnamed` and
+`flare_tabs::model::hidden_tests::an_opener_name_is_checked_the_same_at_open_rename_and_restore`. Source: the security
+review of PR #289, 2026-11-19.

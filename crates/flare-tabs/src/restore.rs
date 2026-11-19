@@ -95,8 +95,20 @@ fn parse_remote(v: Option<&Value>) -> Option<SavedRemote> {
 /// file keeps no more.
 pub const MAX_HIDDEN: usize = 50;
 
-/// The longest opener name a hidden session keeps (a machine name, `flare_ctl::session::MAX_MACHINE_NAME`).
-const OPENER_MAX: usize = 64;
+/// The longest opener name a hidden session keeps: a machine name, so the same limit `remote.hello` checks
+/// (`flare_ctl::session::MAX_MACHINE_NAME`; the flare crate asserts they match). Rule 1306.
+pub const MAX_OPENER_NAME: usize = 256;
+
+/// The opener's name when it named none, or a name no check passes (rule 1306).
+pub const OPENER_UNNAMED: &str = "another computer";
+
+/// An opener name as every path checks it (rule 1306): trimmed, not empty, at most [`MAX_OPENER_NAME`] characters
+/// and no control character. Used when a session opens, when its opener names itself again, and at restore.
+pub fn valid_opener(name: &str) -> Option<&str> {
+    let s = name.trim();
+    (!s.is_empty() && s.chars().count() <= MAX_OPENER_NAME && !s.chars().any(char::is_control))
+        .then_some(s)
+}
 
 /// A hidden session as `tabs.json` keeps it (rule 1302): a local session this machine runs for another machine's
 /// Flare, never shown in the strip. Written as a tab with `hidden: {opener, open_id, cols, rows}` after the strip's
@@ -115,11 +127,12 @@ pub struct SavedHidden {
     pub size: Option<(u16, u16)>,
 }
 
-/// An opener name the file may hold: printable, not empty, short.
-fn opener_name(v: Option<&Value>) -> Option<String> {
-    let s = v?.as_str()?.trim();
-    (!s.is_empty() && s.chars().count() <= OPENER_MAX && !s.chars().any(char::is_control))
-        .then(|| s.to_string())
+/// The opener name the file holds, or [`OPENER_UNNAMED`] when it holds none [`valid_opener`] passes.
+fn opener_name(v: Option<&Value>) -> String {
+    v.and_then(Value::as_str)
+        .and_then(valid_opener)
+        .unwrap_or(OPENER_UNNAMED)
+        .to_string()
 }
 
 /// An `open_id` as rule 1210 checks it: 1 to 64 ASCII letters, digits, `-` or `_`.
@@ -133,15 +146,19 @@ pub fn valid_open_id(s: &str) -> bool {
 /// What a saved tab's `hidden` object holds: the opener, the open id and the size.
 type HiddenKey = (String, Option<String>, Option<(u16, u16)>);
 
-/// The `hidden` object of a saved tab; anything not shaped right reads as None, and the tab then comes back as a local
-/// tab (rule 40).
+/// The `hidden` key of a saved tab. None only when the key is missing or null (a file from before rule 1302, rule
+/// 40). Any other value is a hidden session, and it never comes back as a strip tab (rule 1306): a part that is not
+/// shaped right reads as unknown (the opener as [`OPENER_UNNAMED`], no open id, no size).
 fn parse_hidden(v: Option<&Value>) -> Option<HiddenKey> {
-    let o = v?.as_object()?;
-    let opener = opener_name(o.get("opener"))?;
-    let open_id = match o.get("open_id") {
-        None | Some(Value::Null) => None,
-        Some(x) => Some(x.as_str().filter(|s| valid_open_id(s))?.to_string()),
-    };
+    let v = v.filter(|v| !v.is_null())?;
+    let empty = serde_json::Map::new();
+    let o = v.as_object().unwrap_or(&empty);
+    let opener = opener_name(o.get("opener"));
+    let open_id = o
+        .get("open_id")
+        .and_then(Value::as_str)
+        .filter(|s| valid_open_id(s))
+        .map(str::to_string);
     let dim = |k: &str| {
         o.get(k)
             .and_then(Value::as_u64)
@@ -183,8 +200,10 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
             }
             let at = kept;
             kept += 1;
-            // A hidden session (rule 1302) is never a strip tab: it goes to its own list.
-            if e.get("remote").is_none()
+            let remote = parse_remote(e.get("remote"));
+            // A hidden session (rule 1302) is never a strip tab: it goes to its own list (rule 1306). Only a
+            // well-shaped remote tab (it runs on another machine) is never hidden.
+            if remote.is_none()
                 && let Some((opener, open_id, size)) = parse_hidden(e.get("hidden"))
             {
                 if hidden.len() < MAX_HIDDEN {
@@ -209,7 +228,6 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
                 return None;
             }
             at_of.push(at);
-            let remote = parse_remote(e.get("remote"));
             // The host owns a remote tab's session: no agent of this machine resumes it.
             let agent = e
                 .get("agent")
@@ -833,31 +851,54 @@ mod tests {
         assert_eq!(parse_tabs(raw).active, 0);
     }
 
-    /// Rule 40: a file from before rule 1302 reads exactly as before, and a `hidden` that is not shaped right (no
-    /// opener, a bad open id, a control character) reads as a local tab.
+    /// Rule 40: a file from before rule 1302 (no `hidden` key, or a null one) reads exactly as before.
     #[test]
     fn an_older_tabs_json_reads_as_before() {
-        let raw = r#"{"tabs":[{"cwd":"C:\\a","agent":"claude"},{"cwd":"C:\\b"}],"active":1}"#;
+        let raw = r#"{"tabs":[{"cwd":"C:\\a","agent":"claude"},{"cwd":"C:\\b","hidden":null}],"active":1}"#;
         let p = parse_tabs(raw);
         assert!(p.hidden.is_empty());
         assert_eq!(p.tabs.len(), 2);
         assert_eq!(p.active, 1);
-        for bad in [
-            r#"{"x":1}"#,
-            r#"{"opener":""}"#,
-            r#"{"opener":"PC","open_id":"a b"}"#,
-            r#"{"opener":"P\u0007C"}"#,
-            r#""PC""#,
-        ] {
-            let raw = format!(r#"{{"tabs":[{{"cwd":"C:\\h","hidden":{bad}}}],"active":0}}"#);
-            let p = parse_tabs(&raw);
-            assert!(p.hidden.is_empty(), "{bad}");
-            assert_eq!(p.tabs, vec![st("C:\\h", None)], "{bad}");
-        }
         // A remote tab never turns hidden.
         let raw = r#"{"tabs":[{"cwd":"/p","remote":{"machine":"mac"},"hidden":{"opener":"PC"}}],"active":0}"#;
         let p = parse_tabs(raw);
         assert!(p.hidden.is_empty() && p.tabs[0].remote.is_some());
+    }
+
+    /// Rule 1306: a `hidden` entry that is not shaped right (no opener, an empty one, one too long, one with a control
+    /// character, a bad open id, not an object) still comes back hidden, with the parts it got wrong unknown. It is
+    /// never a strip tab, so a session another machine opened never shows on this screen.
+    #[test]
+    fn a_hidden_entry_with_a_bad_opener_restores_hidden_and_unnamed() {
+        let long = "m".repeat(MAX_OPENER_NAME + 1);
+        let long_entry = format!(r#"{{"opener":"{long}"}}"#);
+        for bad in [
+            r#"{"x":1}"#,
+            r#"{"opener":""}"#,
+            r#"{"opener":"P\u0007C"}"#,
+            r#"{"opener":"Mac\nMini"}"#,
+            r#"{"opener":7}"#,
+            long_entry.as_str(),
+            r#""PC""#,
+        ] {
+            let raw = format!(r#"{{"tabs":[{{"cwd":"C:\\h","hidden":{bad}}}],"active":0}}"#);
+            let p = parse_tabs(&raw);
+            assert!(p.tabs.is_empty(), "{bad}");
+            assert_eq!(p.hidden.len(), 1, "{bad}");
+            assert_eq!(p.hidden[0].opener, OPENER_UNNAMED, "{bad}");
+        }
+        // A bad open id is dropped; the good opener stays.
+        let raw =
+            r#"{"tabs":[{"cwd":"C:\\h","hidden":{"opener":"PC","open_id":"a b"}}],"active":0}"#;
+        let p = parse_tabs(raw);
+        assert!(p.tabs.is_empty());
+        assert_eq!(p.hidden[0].opener, "PC");
+        assert_eq!(p.hidden[0].open_id, None);
+        // The longest name `remote.hello` takes comes back whole.
+        let most = "m".repeat(MAX_OPENER_NAME);
+        let raw =
+            format!(r#"{{"tabs":[{{"cwd":"C:\\h","hidden":{{"opener":"{most}"}}}}],"active":0}}"#);
+        assert_eq!(parse_tabs(&raw).hidden[0].opener, most);
     }
 
     /// Max 2026-11-19: a file keeps at most [`MAX_HIDDEN`] hidden sessions.
