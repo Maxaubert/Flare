@@ -1245,3 +1245,24 @@ research `research/flare/2026-11-19-ios-simulator-input.md` (spikes S1 to S6).
 - 2026-11-19, device PR 1: the US keymap is ported from idb's `Keymap.swift` (MIT, notice in `keymap.rs` and
   `THIRD-PARTY-NOTICES.md`), plus `\n` as Return and `\t` as Tab. Text with any character the keymap lacks is pasted
   whole through the simulator's own pasteboard, so its order is kept (rule 1314, PR 3).
+- 2026-11-19, device PR 2: the sim host sends private messages through `objc_msgSend` cast to each method's C
+  signature (`macos::guarded::send!`), not `objc2::msg_send!`. Why: in a debug build `msg_send!` checks the receiver's
+  class for the method and panics when it is missing, and CoreSimulator's `ROCKRemoteProxy` objects only forward the
+  screen methods. Every send still goes through `guarded` (selector check, exception catch).
+- 2026-11-19, device PR 2: blocks handed to CoreSimulator carry their type encoding (`RcBlock::with_encoding`). Why:
+  the proxy forwards a block over XPC and refused one without it ("Block is missing signature field"), found by the
+  first bench run.
+- 2026-11-19, device PR 2: each ring gets a fresh `device` number (the `device` of `frames` and of every record), so a
+  slot-done record (which carries no ring id) always names its ring, even while an old ring waits for its last slots.
+- 2026-11-19, device PR 2: Flare's reader keeps the newest frame record per ring (`client::Mailbox`) and wakes the UI
+  once until it takes it; a record it replaces gets its slot-done at once (Flare skipped it). The UI's `Frame` event is
+  a wake: PR 4b reads the newest with `SimSource::take_frame`.
+- 2026-11-19, device PR 2: the sim host serves only frames, the device list and `simctl` (boot, shutdown, launch,
+  install); touch, keys, buttons, text, snapshots and the UI tree answer `unavailable` until PR 3. The rotation is
+  `rot0` in `frames` until PR 3 reads `displayinfo`.
+- 2026-11-19, device PR 2: `objc2` gets its `exception` feature (for `objc2::exception::catch`), which adds the small
+  `objc2-exception-helper` crate (MIT/Apache/Zlib, compiled C from `cc`, already in the build). macOS only; the app's
+  own `msg_send!` calls do not change (`catch-all` stays off).
+- 2026-11-19, device PR 2: the probe app (`tools/device-probe/`) builds with `xcrun swiftc` for the simulator's SDK, a
+  checked-in `Info.plist` and an ad-hoc signature, with no Xcode project and no xcodegen (neither the CI runner nor a
+  fresh Mac has xcodegen). Tests and the bench only, never shipped.

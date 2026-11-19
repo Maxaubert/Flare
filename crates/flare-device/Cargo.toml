@@ -5,16 +5,45 @@ edition = "2024"
 license.workspace = true
 publish = false
 
-# The device panel (issue #248): a live phone simulator beside a tab. PR 1 is the pure model only: targets, the
-# source trait and its fake, the 60 fps cap and ring ownership, coordinates, the US keymap, the UI tree filter, the
-# touch indicators, the agent job, the sim host's wire protocol and the version table. Nothing is wired yet.
+# The device panel (issue #248): a live phone simulator beside a tab. PR 1 is the pure model: targets, the source
+# trait and its fake, the 60 fps cap and ring ownership, coordinates, the US keymap, the UI tree filter, the touch
+# indicators, the agent job, the sim host's wire protocol and the version table. PR 2 adds the sim host itself
+# (`flare-sim-host`, frames only), Flare's side of it (`client.rs`, `SimSource`) and the Xcode pick. Nothing is wired
+# into the app yet.
 [dependencies]
 # The agent cursor's glide and the border (indicator.rs), the target limits (target.rs).
 flare-surfaces = { path = "../flare-surfaces" }
 # `clean_text` for UI-tree labels (untrusted text, tree.rs).
 flare-ctl = { path = "../flare-ctl" }
 serde.workspace = true
+# The client's log lines (the sim host's own log is its file).
+log.workspace = true
 serde_json.workspace = true
+# The still pictures (`simctl io screenshot`, a PNG) decoded to RGBA on the still worker (client.rs).
+png.workspace = true
+
+# The sim host and Flare's side of it are macOS only; on Windows the crate holds the pure model and the fake source,
+# and the `flare-sim-host` bin is a stub.
+[target.'cfg(target_os = "macos")'.dependencies]
+# `guard_command` (rule 1053): the sim host dies with Flare.
+flare-proc = { path = "../flare-proc" }
+libc.workspace = true
+# Every private call is wrapped in `objc2::exception::catch` (rule 1310), which needs the `exception` feature.
+objc2 = { workspace = true, features = ["exception"] }
+block2.workspace = true
+dispatch2.workspace = true
+libloading.workspace = true
+objc2-foundation.workspace = true
+objc2-core-foundation.workspace = true
+objc2-io-surface.workspace = true
+objc2-metal = { workspace = true, features = ["block2", "objc2-core-foundation", "objc2-io-surface", "MTLAllocation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
+
+[[bin]]
+name = "flare-sim-host"
+path = "src/bin/flare_sim_host.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

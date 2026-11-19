@@ -4967,6 +4967,57 @@ zsh with a stand-in `claude`).
 Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
 (issue #248). Rules 1310 to 1322 are this feature's; each lands with the PR that builds it.
 
+1310. **Flare ships its own private-API code for the simulator, only in `flare-sim-host`; Flare's own process never
+loads CoreSimulator or SimulatorKit.** Max, 2026-11-19 (issue #248, decision 1; reverses the 2026-11-16 "no private-API
+code of our own"). The sim host (`crates/flare-device/src/bin/flare_sim_host.rs`, code in `flare-device/src/macos/`)
+dlopens CoreSimulator from `/Library/Developer/PrivateFrameworks` and SimulatorKit from the chosen Xcode
+(`SharedFrameworks`, else the Xcode 26 `PrivateFrameworks` path; `load.rs`), reads both `CFBundleVersion`s and says
+them in its `hello`. Every class, protocol and selector it uses is listed in `load::USED` and checked before use
+(`--self-test`, and at every start: a missing one is `broken`, "<symbol> missing in CoreSimulator <version>"). Every
+private call goes through `macos::guarded`: `respondsToSelector:` first, `objc2::exception::catch` around the call, a
+5 s limit on a call that answers by callback (`answered`), plain `objc_msgSend` sends cast to the method's C signature
+(never `msg_send!`, whose debug check refuses a method a proxy only forwards, and never KVC, which throws on a
+`ROCKRemoteProxy`). Blocks handed to CoreSimulator carry their type encoding (`RcBlock::with_encoding`): without it the
+proxy refuses them ("Block is missing signature field", found by the PR 2 bench). The `flare-sim-host` bin builds on
+Windows as a stub that says "macOS only" and exits 2. Held by `a_missing_selector_is_broken_with_its_name_not_a_crash`,
+`an_objc_exception_is_caught` (`guarded.rs`), `self_test_finds_every_class_and_selector` (`load.rs`, skipped with the
+reason without an Xcode) and `the_device_list_is_read_phones_first_newest_first` (`simctl.rs`). Source: Max,
+2026-11-19.
+
+1311. **The device picture reaches Flare with no CPU copy, at most 60 frames a second, and a ring slot is never
+rewritten while Flare holds it.** Max, 2026-11-17 and 2026-11-19 (issue #248). Sim host half (device panel PR 2): per
+attached device the sim host makes a ring of `RING_SLOTS` (3) `'RGBA'` IOSurfaces wrapped as `MTLTexture`s (storage
+Shared, `ShaderRead | RenderTarget`), reads `framebufferSurface` at once (the surfaces callback does not fire on attach)
+and registers the screen callbacks on its own serial queue. Each frame callback bumps the "changed" count (sent even
+while paused), passes `cap::FrameCap` (15 ms spacing, newest wins, a lone frame never waits), takes a free slot and
+fills it with one render pass that reads the BGRA framebuffer, forces A to 255 and converts Display P3 to sRGB in linear
+light (spike S6), then sends `(device, slot, seq, t_us)`. With no free slot the frame is dropped and counted. A new
+screen size makes a new ring with a new `device` number (so a slot-done record always names its ring); the old ring is
+freed only once Flare has said every one of its slots is done (`ring::RingSet`). The rings' surfaces and the records go
+over the mach channel (`rendezvous.rs`): Flare checks in `com.flare.terminal.simhost.<pid>.<n>`, the sim host's first
+message carries a send right to its own port, and both sides check the audit-token pid of every message and
+`mach_msg_destroy` a refused one. Flare's half (wrapping the ring as wgpu textures, freeing a slot only from
+`on_submitted_work_done`) is PR 4b. Held by `an_old_ring_is_freed_only_after_every_slot_is_done`,
+`the_pass_writes_opaque_srgb_from_a_p3_bgra_framebuffer` (`ring.rs`), `ports_from_another_pid_are_refused`
+(`rendezvous.rs`), `frame_records_keep_only_the_newest_per_device` (`client.rs`) and the `cap.rs` tests; the
+`flare-sim-host --bench` numbers are in PR 2. Source: Max, 2026-11-19.
+
+1312. **The sim host is guarded and restarted at most 3 times in 5 minutes; then the panel shows still pictures.
+Flare never crashes or freezes with it.** Max, 2026-11-19 (issue #248). Sim host half (device panel PR 2):
+`client::SimSource` starts `flare-sim-host` with `flare_proc::guard::guard_command` (stdin, stdout and stderr only, no
+`pre_exec` of its own, `DEVELOPER_DIR` set to the chosen Xcode, the rendezvous name and `<profile>/logs/sim-host.log` in
+argv), so it dies with Flare (rules 1053, 1054). A sim host that ends by itself is started again and every open panel
+reattached, at most `MAX_RESTARTS` (3) times in `RESTART_WINDOW` (5 minutes); requests in flight answer `retry`. The
+fourth end, a `broken` line, a `hello` with another protocol or an Xcode under the floor (`client::check_hello`), or a
+mach channel that cannot be set up is still mode for the session: one `Broken(why)` event, a `simctl io screenshot`
+loop per attached panel at most 3 a second (`STILL_SPACING`), input and the UI tree answering `unavailable` with the
+reason, `snapshot` answering the latest still, and list, boot, shutdown, launch and install going to `simctl`. Nothing
+of it runs on the caller's thread (rule 34; `flare-device/tests/sync_calls.rs`). Flare's half (the still badge and line
+in the panel) is PR 4b. Held by `the_sim_host_is_restarted_three_times_then_broken`,
+`a_broken_sim_host_falls_back_to_still_pictures_at_three_fps_at_most`, `a_protocol_mismatch_in_hello_is_refused` and
+`the_sim_host_gets_developer_dir_and_no_extra_descriptors` (`client.rs`, a fake sim host run by the test binary).
+Source: Max, 2026-11-19.
+
 1316. **A device panel is kind `device`, target `sim/<udid>`, kept in `panels.json`; a build without its viewer keeps it
 and never shows it.** Max, 2026-11-16 and 2026-11-19 (issue #248, decisions 5 and 12 of the spec). First half (device
 panel PR 1): `PanelKind::Device` is named `"device"`, native (Slint draws it, kind 5 once built) and **not built**
