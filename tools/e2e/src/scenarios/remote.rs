@@ -551,6 +551,9 @@ fn open_on(
         hidden == 1,
         format!("the restarted host holds the one session hidden, no second one ({hidden} hidden)"),
     );
+    // The restored shell starts fresh: on a slow runner its prompt comes after the line, and typing before it lands in
+    // a shell that is not reading yet (seen on macOS CI).
+    front_rows_until(ctx, a, "the restored shell's prompt", |t| t.contains("PS "))?;
     type_line(a, &format!("echo {OPEN_MARK_2}"))?;
     let t = front_rows_until(ctx, a, "typing reaches the found session", |t| {
         t.matches(OPEN_MARK_2).count() >= 2
