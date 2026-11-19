@@ -308,5 +308,8 @@ fn the_sim_host_self_test_runs_in_ci_and_from_the_signed_bundle() {
     assert!(step < wf.find("bash tools/release/mac/pack.sh").unwrap());
     for text in [mac, &wf[step..]] {
         assert!(text.contains("::notice::flare-sim-host --self-test skipped"));
+        // A failing self-test still prints its JSON (what is missing) before it fails the step.
+        assert!(text.contains("--self-test)\" || rc=$?"));
+        assert!(text.contains("exit \"$rc\""));
     }
 }
