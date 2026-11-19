@@ -166,8 +166,8 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     `& < > ( ) @ ^ |` (cmd would strip its quotes), `" % ! $`, a backquote or a quote mark from U+2018 to U+201F is
     refused, except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, which the host's shell expands (rule 1208). The worker says `remote.hello` (90 s, PR 5), then `remote.open
     {folder, resume?, open_id}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
-    restored one, then `remote.resize` with the tab's size. Rule 1210: `open_id` is a random id the worker makes once
-    per tab and sends with every open of it, so an open whose answer a broken link lost, sent again on the next link,
+    restored one, then `remote.resize` with the tab's size. Rule 1210: `open_id` is a random id made once per tab (with
+    the tab, and saved with it since rule 1307) and sent with every open of it, so an open whose answer a broken link lost, sent again on the next link,
     is answered with the tab the first one opened; an older host refuses the unknown param (`bad_params` naming
     `open_id`) and the worker opens again without it on the same link. A `remote.attach` answered `unavailable` (a tab
     opened a moment ago whose shell is not running yet) is sent again on the same link every 250 ms for up to 10 s
@@ -207,7 +207,12 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     that answered, else with the quoting that answered (rule 1208); a refusal ends the search. On the
     host, a renamed copy (`FlareStable.exe`) started with no `--user-data-dir` serves `%APPDATA%\<its name>`, the
     profile its shortcut names. A call that fails
-    with `no_tab` ends the tab as a shell that exits; any other broken
+    with `no_tab` sends `remote.find {open_id}` once on the same link (2026-11-19, rule 1307; the open id is now made
+    with the tab and saved in `tabs.json` as `remote: {.., open_id}`): `{tab}` follows the new id from a fresh snapshot
+    and shows "Flare restarted on <machine>. The session goes on." (the kept typing is dropped); `no_tab` leaves the tab
+    with the red line "This session was ended on <machine>." and ends its link (rule 1308); `unavailable` is asked
+    again every 250 ms for up to 10 s, then the link is tried again later; `unknown_method` (an older host), or a tab
+    saved before the open id, ends the tab as a shell that exits, as before; any other broken
     call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
     (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`
     only, `FLARE_E2E_REMOTE_COMMAND` (a JSON argv) replaces ssh with a loopback `flare --serve-remote` of another profile,
@@ -1058,6 +1063,14 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   screen for it, so the host never asks (2026-11-19, rule 1305; the viewer asks first while the host's status names an
   agent). It never joins the host's Ctrl+Shift+T list. Before 2026-11-19 it closed a strip tab the way a person's close
   does, asking in the host's window while an agent worked (rule 48).
+- `remote.find {open_id}` -> `{tab}` (2026-11-19, rule 1307). The hidden session whose `remote.open` carried this
+  `open_id`, by its tab id now: after the host's Flare restarted, every hidden session comes back under a new id, and its
+  opener finds it again with the open id it saved. Only hidden sessions are searched, never a strip tab or a viewer tab.
+  `open_id` is required and checked as `remote.open`'s (1 to 64 ASCII letters, digits, `-` or `_`; anything else, or
+  another field, is `bad_params`). `no_tab` when no hidden session holds it (its shell ended on the host, or it was never
+  there); `unavailable` while the host has not restored its saved tabs yet (a passing refusal: ask again). It opens and
+  follows nothing. A short call, sent once more after a broken pipe connection (it changes nothing). A host older than
+  2026-11-19 has no such method (`unknown_method`).
 - `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, sized, working_for?, question_text?,
   failed?}], seq}` (remote sessions PR 4, rule 294; `sized` PR 7, rule 1193). Every hidden session of the host (2026-11-19, rule 1303; before, every shell tab in strip order), as the host's own
   marks say it:

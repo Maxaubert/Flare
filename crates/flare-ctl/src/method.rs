@@ -139,6 +139,10 @@ pub enum Method {
     /// One chunk of a file the viewer copies to the host (a dropped file, a pasted image; remote sessions PR 6, rule
     /// 304): written into the tab's own upload folder on the host, under a name the host cleans.
     RemotePut,
+    /// The hidden session a `remote.open` with this `open_id` made, by its tab id now (rule 1307): after the host's
+    /// Flare restarted, its opener finds the session again. Only hidden sessions are searched; `no_tab` when none holds
+    /// the id.
+    RemoteFind,
     /// Opens a tab in this Flare that shows a session on another machine (remote sessions PR 5): a machine named in
     /// `machines.json`, a folder there and an optional Claude session to resume. The agent's (owner decision: no
     /// prompt) and the `flare open --on` command's. The opened tab takes no typing from either (rule 299).
@@ -252,7 +256,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 64] = [
+    pub const ALL: [Method; 65] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -316,6 +320,7 @@ impl Method {
         Method::RemoteConvo,
         Method::RemoteFetch,
         Method::RemotePut,
+        Method::RemoteFind,
         Method::OpenRemoteSession,
     ];
 
@@ -385,6 +390,7 @@ impl Method {
             Method::RemoteConvo => "remote.convo",
             Method::RemoteFetch => "remote.fetch",
             Method::RemotePut => "remote.put",
+            Method::RemoteFind => "remote.find",
             Method::OpenRemoteSession => "open.remote",
         }
     }
@@ -450,7 +456,8 @@ impl Method {
             | Method::RemoteStatus
             | Method::RemoteConvo
             | Method::RemoteFetch
-            | Method::RemotePut => Namespace::Remote,
+            | Method::RemotePut
+            | Method::RemoteFind => Namespace::Remote,
             Method::OpenRemoteSession => Namespace::Open,
         }
     }
@@ -575,7 +582,7 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 64);
+        assert_eq!(Method::ALL.len(), 65);
         assert_eq!(Namespace::ALL.len(), 21);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
@@ -612,6 +619,7 @@ mod tests {
             Method::RemoteClose,
             Method::RemoteStatus,
             Method::RemoteConvo,
+            Method::RemoteFind,
         ] {
             assert_eq!(m.timeout(), DEFAULT_TIMEOUT, "{}", m.name());
             assert_eq!(m.namespace(), Namespace::Remote, "{}", m.name());

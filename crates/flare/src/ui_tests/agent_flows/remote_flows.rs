@@ -52,6 +52,10 @@ fn open_from(f: &Fx, cwd: &str, opener: Option<&str>, open_id: Option<&str>) -> 
     f.pump_until("the hidden session's shell", |f| {
         f.sp.made().iter().any(|m| m.spec().cwd == cwd)
     });
+    // The spawn lands on a worker: an attach before its handle is here is `unavailable` (seen under a loaded run).
+    f.pump_until("the hidden session's handle", |f| {
+        f.ctl.borrow().handle_of(&id).is_some()
+    });
     id
 }
 
@@ -718,6 +722,15 @@ fn a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed() {
             ("Mac Mini", Some("o-1"))
         );
     }
+    // Rule 1307: its opener finds it under its new id by the open id it saved.
+    let v = ask(
+        &f,
+        CtlOp::RemoteFind {
+            open_id: "o-1".into(),
+        },
+    )
+    .expect("found");
+    assert_eq!(v["tab"], id.as_str());
     f.say("C:\\h", &title(T_IDLE));
     f.say("C:\\h", Q);
     until(&f, "the question", |f| {
@@ -732,4 +745,41 @@ fn a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed() {
         f.badge.last().is_none_or(|b| b.0.is_none()),
         "no badge here"
     );
+}
+
+/// Rule 1307: `remote.find` answers only for a hidden session's open id. Before this window restored its saved tabs it
+/// is a passing `unavailable` (a session that will come back is not in the list yet); after, an unknown id, a strip
+/// tab and a session whose shell ended are `no_tab`; it never opens anything and never moves the strip.
+#[test]
+fn remote_find_answers_only_for_a_hidden_sessions_open_id() {
+    let f = Fx::new();
+    serving(&f);
+    let find = |f: &Fx, o: &str| {
+        ask(
+            f,
+            CtlOp::RemoteFind {
+                open_id: o.to_string(),
+            },
+        )
+    };
+    let e = find(&f, "o-1").expect_err("not restored yet");
+    assert_eq!(e.code, flare_ctl::code::UNAVAILABLE);
+    AppCtl::start_restore(&f.ctl);
+    f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
+    let strip = f.tabs(&["C:\\work"]);
+    let id = open_from(&f, "C:\\there", Some("Mac Mini"), Some("o-1"));
+    let other = open_from(&f, "C:\\else", Some("Mac Mini"), None);
+    let v = find(&f, "o-1").expect("found");
+    assert_eq!(v, serde_json::json!({"tab": id}));
+    for o in ["o-2", strip[0].as_str(), other.as_str()] {
+        let e = find(&f, o).expect_err(o);
+        assert_eq!(e.code, flare_ctl::code::NO_TAB, "{o}");
+    }
+    assert_eq!(f.ids(), strip, "the strip is as it was");
+    assert_eq!(hidden_ids(&f).len(), 2, "nothing opened");
+    // The session's shell ends on this machine: its opener's find hears `no_tab` (rule 1308's line there).
+    f.shell("C:\\there").exit(0);
+    f.pump_until("the session gone", |f| !hidden_ids(f).contains(&id));
+    let e = find(&f, "o-1").expect_err("ended");
+    assert_eq!(e.code, flare_ctl::code::NO_TAB);
 }

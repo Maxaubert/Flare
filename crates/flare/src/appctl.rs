@@ -2627,7 +2627,19 @@ impl AppCtl {
         for s in spawns {
             // A remote tab attaches to its host session again; it is not new work (rule 288).
             if let Some(r) = &s.remote {
-                let live = flare_term::remote_pty::RemoteLive::new(r.host_tab.clone(), r.last_seq);
+                // Rule 1307: the tab keeps its open id. A tab the host never answered gets one if it had none; a tab
+                // with a host tab and no open id is from before the key and stays without one (it ends once, as
+                // before, when its host tab is gone).
+                let open_id = r.open_id.clone().or_else(|| {
+                    r.host_tab
+                        .is_none()
+                        .then(flare_term::session::new_ctl_token)
+                });
+                let live = flare_term::remote_pty::RemoteLive::new(
+                    r.host_tab.clone(),
+                    r.last_seq,
+                    open_id,
+                );
                 self.model.set_remote_live(&s.id, live.clone());
                 self.start_remote(&s.id, &r.machine, &s.cwd, None, live);
                 continue;
@@ -2687,7 +2699,13 @@ impl AppCtl {
         resume: Option<&str>,
         front: bool,
     ) -> String {
-        let live = flare_term::remote_pty::RemoteLive::default();
+        // Rule 1307: the tab's open id is made with the tab and saved with it, so it finds its session again after the
+        // host's Flare restarted.
+        let live = flare_term::remote_pty::RemoteLive::new(
+            None,
+            0,
+            Some(flare_term::session::new_ctl_token()),
+        );
         let before = self.model.state.active_id.clone();
         let id = self
             .model
@@ -4535,7 +4553,8 @@ impl AppCtl {
             | CtlOp::RemoteResize { .. }
             | CtlOp::RemoteRelease { .. }
             | CtlOp::RemoteClose { .. }
-            | CtlOp::RemoteStatus) => self.ctl_remote(op),
+            | CtlOp::RemoteStatus
+            | CtlOp::RemoteFind { .. }) => self.ctl_remote(op),
             // Remote sessions PR 5: a tab here that shows a session on another machine (the agent's `open.remote` and
             // `flare open --on`). The worker checked the machine and the params; the link connects on its own worker.
             CtlOp::OpenRemote {

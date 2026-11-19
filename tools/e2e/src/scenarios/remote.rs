@@ -279,8 +279,19 @@ fn front_rows_until(
     what: &str,
     want: impl Fn(&str) -> bool,
 ) -> Result<String, String> {
+    front_rows_within(ctx, app, what, 30_000, want)
+}
+
+/// As [`front_rows_until`], waiting up to `ms`.
+fn front_rows_within(
+    ctx: &mut Ctx,
+    app: &mut App,
+    what: &str,
+    ms: u64,
+    want: impl Fn(&str) -> bool,
+) -> Result<String, String> {
     let mut text = String::new();
-    let ok = ctx.until(what, 30_000, &mut || {
+    let ok = ctx.until(what, ms, &mut || {
         text = super::input_b::rows(app);
         want(&text)
     });
@@ -515,11 +526,46 @@ fn open_on(
         t.matches(OPEN_MARK).count() == 2,
         "the command and its output show once each on the viewer",
     );
+
+    // Rule 1307: B's Flare quits (it saves the hidden session) and the viewer's next link starts it again, hidden. The
+    // session comes back under a new id; the viewer's tab finds it by its open id and goes on, with one line.
+    let _ = b.call(&Request::Quit { force: true });
+    drop(b);
+    ctx.until("the host's Flare to quit", 15_000, &mut || {
+        crate::session::Session::connect(&hw.profile, Duration::from_millis(200)).is_err()
+    });
+    let t = front_rows_within(ctx, a, "the restart line on the viewer", 90_000, |t| {
+        t.contains("Flare restarted on")
+    })?;
+    ctx.ok(
+        t.matches("Flare restarted on").count() == 1,
+        "the viewer's tab goes on after the host's restart, with one line (rule 1307)",
+    );
+    let mut b = crate::session::Session::connect(&hw.profile, Duration::from_secs(20))
+        .map_err(|e| format!("the restarted host's hook: {e}"))?;
+    b.hello()?;
+    let hidden = b
+        .probe("app.state", Value::Null)
+        .map_or(0, |v| v["hidden"].as_array().map_or(0, Vec::len));
+    ctx.ok(
+        hidden == 1,
+        format!("the restarted host holds the one session hidden, no second one ({hidden} hidden)"),
+    );
+    type_line(a, &format!("echo {OPEN_MARK_2}"))?;
+    let t = front_rows_until(ctx, a, "typing reaches the found session", |t| {
+        t.matches(OPEN_MARK_2).count() >= 2
+    })?;
+    ctx.ok(
+        t.matches(OPEN_MARK_2).count() == 2,
+        "the found session takes typing, and its output shows once",
+    );
     Ok(())
 }
 
 /// What is typed into the tab `remoteOpen` opens. Written here in full: nothing else is sent to the host's shell.
 const OPEN_MARK: &str = "remote-open-5";
+/// What is typed into it after the host's restart (rule 1307).
+const OPEN_MARK_2: &str = "remote-open-6";
 
 // ---- remote sessions PR 4: `remoteStatus`, the host's agent marks on the viewer ----
 

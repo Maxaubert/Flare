@@ -3032,7 +3032,7 @@ throw an error message on screen". The approved look is mockup A. Rule 1275; the
 Max's words: "from now on you can open a session on another machine but its only ever on one machine, no imports since
 that gets messy. on the machine its running on, it will be in the background, you wont see it, only on the machine that
 started it remotely." Spec: `docs/superpowers/specs/2026-11-19-remote-session-on-opener-design.md`; plan:
-`docs/superpowers/plans/2026-11-19-remote-session-on-opener.md` (this is its PR 1, the host side). Contract:
+`docs/superpowers/plans/2026-11-19-remote-session-on-opener.md` (its PR 1, the host side, and PR 2, `remote.find`). Contract:
 `docs/surfaces/protocol.md` section 5.
 
 - **Hidden on the host.** A session another machine opens (`remote.open`) runs on the host as a hidden session: a shell
@@ -3051,8 +3051,18 @@ started it remotely." Spec: `docs/superpowers/specs/2026-11-19-remote-session-on
   progress hears `unavailable`: "this session shows on <opener>; its panels cannot show there yet".
 - **"Hide here only" is gone** on the opener (Max, 2026-11-19).
 - **No list on the host** (Max, 2026-11-19): Settings > Machines shows only the machines. A hidden session whose
-  opener never comes back runs until the host's Flare quits, saved and restored hidden until then. **Not yet (PR 2,
-  released together with this one):** the opener finds its session again after a host restart (`remote.find`). Held by
+  opener never comes back runs until the host's Flare quits, saved and restored hidden until then. Held by
   `ui_tests::agent_flows::remote_flows`, `flare_tabs::model::hidden_tests`, `flare_tabs::restore::tests` (the hidden
   ones), `tab_host::tests::a_hidden_session_is_remote_sized_from_birth_and_keeps_its_size`,
   `ui_tests::term::flow::the_opener_asks_before_closing_an_idle_remote_claude_tab` and the e2e `remoteUi`.
+- **The opener finds its session after a host restart** (PR 2, released together with PR 1, rule 1307). A remote
+  tab's `open_id` is made with the tab and saved in `tabs.json`. When the host's Flare restarts (quit, update, crash),
+  each hidden session comes back under a new id; the opener's link gets `no_tab`, asks `remote.find {open_id}` once, and
+  follows the new id from a fresh snapshot with the line "Flare restarted on <machine>. The session goes on." Typing
+  kept for the lost id is dropped. The host answers `unavailable` until its saved tabs are back, so the opener asks
+  again and never ends a session that is still coming. An older host (`unknown_method`) or a tab saved before the open
+  id ends the tab as before.
+- **"Was ended on"** (rule 1308). When a hidden session's shell exits on the host, the opener's tab stays with one red
+  line, "This session was ended on <machine>.", and its link ends. Held by `remote_link::tests` (the find tests),
+  `remote_flows::remote_find_answers_only_for_a_hidden_sessions_open_id`, the `open_id` tests of
+  `flare_tabs::restore::remote_tests` and the e2e `remoteOpen` (the host's Flare quits and starts again).

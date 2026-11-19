@@ -460,6 +460,7 @@ impl TabModel {
                                 machine: m.id.clone(),
                                 host_tab: live.and_then(RemoteLive::host_tab),
                                 last_seq: live.map_or(0, RemoteLive::seq),
+                                open_id: live.and_then(RemoteLive::open_id),
                             }),
                             session: None,
                         }
@@ -798,7 +799,7 @@ mod remote_tests {
         let mut m = TabModel::empty(1);
         m.open_tab(r"C:\a");
         m.set_agent(&m.state.tabs[0].id.clone(), Some(AgentKind::Claude));
-        let live = RemoteLive::new(None, 0);
+        let live = RemoteLive::new(None, 0, Some("o-1".into()));
         let id = m.open_remote_tab(MachineTag::of_id("mac"), "/Users/max/p", live.clone());
         m.set_agent(&id, Some(AgentKind::Claude));
         assert_eq!(m.remote_of(&id).map(|t| t.id.as_str()), Some("mac"));
@@ -810,6 +811,8 @@ mod remote_tests {
         let s = m.saved();
         let r = s.tabs[1].remote.as_ref().unwrap();
         assert_eq!((r.host_tab.as_deref(), r.last_seq), (Some("t9"), 77));
+        // Rule 1307: the open id is saved with the tab.
+        assert_eq!(r.open_id.as_deref(), Some("o-1"));
         assert_eq!(s.tabs[0].agent, Some(AgentKind::Claude));
         assert_eq!(s.active, 1);
         assert!(m.close(&id));

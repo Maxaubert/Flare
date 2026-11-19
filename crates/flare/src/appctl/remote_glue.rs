@@ -384,6 +384,23 @@ impl AppCtl {
                 Ok(json!({"tab": tab, "closed": true}))
             }
             CtlOp::RemoteStatus => Ok(json!({"tabs": self.remote_status_tabs()})),
+            CtlOp::RemoteFind { open_id } => {
+                // Rule 1307: until the saved tabs are back, a hidden session that will come back is not in the list
+                // yet; a passing refusal, so the opener asks again and never ends a session that is still coming.
+                if !self.model.restore_done() {
+                    return Err(CtlError::new(
+                        code::UNAVAILABLE,
+                        "this Flare is still restoring its tabs",
+                    ));
+                }
+                // Only a hidden session answers (rule 1303): the open id is its opener's, and a strip tab has none.
+                self.model
+                    .hidden()
+                    .iter()
+                    .find(|h| h.open_id.as_deref() == Some(open_id.as_str()))
+                    .map(|h| json!({"tab": h.tab.id}))
+                    .ok_or_else(closed)
+            }
             _ => Err(CtlError::new(
                 code::INTERNAL,
                 "not a remote op reached the remote handler",

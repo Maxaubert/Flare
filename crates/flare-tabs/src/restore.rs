@@ -42,7 +42,7 @@ pub fn saved_session(s: &str) -> Option<String> {
     (s == SESSION_NEW || is_session_id(s)).then(|| s.to_string())
 }
 
-/// A remote tab as `tabs.json` keeps it: `remote: {machine, host_tab, last_seq}`.
+/// A remote tab as `tabs.json` keeps it: `remote: {machine, host_tab, last_seq, open_id}`.
 #[derive(Clone, Debug, Eq)]
 pub struct SavedRemote {
     /// The machine's id in `machines.json`.
@@ -52,12 +52,17 @@ pub struct SavedRemote {
     pub host_tab: Option<String>,
     /// The host's output number the tab had read.
     pub last_seq: u64,
+    /// The tab's `remote.open` id (rules 1210, 1307): after the host's Flare restarted, the tab finds its session by
+    /// it. None: a tab saved before the key (it ends once its host tab is gone, as before).
+    pub open_id: Option<String>,
 }
 
 /// `last_seq` is no reason to write `tabs.json` again (it moves with every poll): it is written whenever the file is.
 impl PartialEq for SavedRemote {
     fn eq(&self, other: &Self) -> bool {
-        self.machine == other.machine && self.host_tab == other.host_tab
+        self.machine == other.machine
+            && self.host_tab == other.host_tab
+            && self.open_id == other.open_id
     }
 }
 
@@ -84,10 +89,17 @@ fn parse_remote(v: Option<&Value>) -> Option<SavedRemote> {
         None | Some(Value::Null) => 0,
         Some(n) => n.as_u64()?,
     };
+    // A bad open id is dropped alone (rule 40): the tab still attaches to its host tab, it only cannot find it again.
+    let open_id = o
+        .get("open_id")
+        .and_then(Value::as_str)
+        .filter(|s| valid_open_id(s))
+        .map(str::to_string);
     Some(SavedRemote {
         machine,
         host_tab,
         last_seq,
+        open_id,
     })
 }
 
@@ -265,7 +277,8 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
 
 /// `{"tabs":[{"cwd":..,"agent":..,"session":..}],"active":n}`; the agent key is left out for a plain shell, the session
 /// key for any tab but a local Claude tab whose session is known (rule 1286). A remote tab is
-/// `{"cwd":..,"remote":{"machine":..,"host_tab":..,"last_seq":n}}` (`host_tab` left out until the host answered).
+/// `{"cwd":..,"remote":{"machine":..,"host_tab":..,"last_seq":n,"open_id":..}}` (`host_tab` left out until the host
+/// answered, `open_id` for a tab that has none).
 pub fn tabs_json(s: &SavedTabs) -> String {
     // Written by hand: the key order (cwd, agent, session; tabs, then active) is part of the file shape.
     let quote = |t: &str| Value::String(t.to_string()).to_string();
@@ -279,12 +292,18 @@ pub fn tabs_json(s: &SavedTabs) -> String {
                     .as_deref()
                     .map(|h| format!(r#","host_tab":{}"#, quote(h)))
                     .unwrap_or_default();
+                let open_id = r
+                    .open_id
+                    .as_deref()
+                    .map(|o| format!(r#","open_id":{}"#, quote(o)))
+                    .unwrap_or_default();
                 format!(
-                    r#"{{"cwd":{},"remote":{{"machine":{}{},"last_seq":{}}}}}"#,
+                    r#"{{"cwd":{},"remote":{{"machine":{}{},"last_seq":{}{}}}}}"#,
                     quote(&t.cwd),
                     quote(&r.machine),
                     host,
-                    r.last_seq
+                    r.last_seq,
+                    open_id
                 )
             }
             (None, Some(a)) => {
@@ -1761,6 +1780,7 @@ mod remote_tests {
                 machine: "mac".into(),
                 host_tab: host_tab.map(str::to_string),
                 last_seq: seq,
+                open_id: None,
             }),
             session: None,
         }
@@ -1834,6 +1854,63 @@ mod remote_tests {
         let b = remote_tab("/p", Some("t1"), 99);
         assert_eq!(a, b);
         assert_ne!(a, remote_tab("/p", Some("t2"), 10));
+        // A tab that got its open id is written again (rule 1307).
+        let mut c = remote_tab("/p", Some("t1"), 10);
+        c.remote.as_mut().unwrap().open_id = Some("o-1".into());
+        assert_ne!(a, c);
+    }
+
+    /// Rule 1307: a remote tab saves its open id and reads it back; a file from before the key reads as before (no
+    /// open id, the rest kept), and a bad open id is dropped alone (rule 40).
+    #[test]
+    fn a_remote_tab_saves_and_restores_its_open_id() {
+        let mut tab = remote_tab("/Users/max/proj", Some("t19-3"), 4096);
+        tab.remote.as_mut().unwrap().open_id = Some("o_1-A".into());
+        let saved = SavedTabs {
+            tabs: vec![tab],
+            active: 0,
+            hidden: Vec::new(),
+        };
+        let json = tabs_json(&saved);
+        assert!(
+            json.contains(
+                r#"{"cwd":"/Users/max/proj","remote":{"machine":"mac","host_tab":"t19-3","last_seq":4096,"open_id":"o_1-A"}}"#
+            ),
+            "{json}"
+        );
+        let back = parse_tabs(&json);
+        assert_eq!(back, saved);
+        assert_eq!(
+            back.tabs[0].remote.as_ref().unwrap().open_id.as_deref(),
+            Some("o_1-A")
+        );
+        for bad in [
+            r#""a b""#,
+            "5",
+            r#""""#,
+            &format!(r#""{}""#, "x".repeat(65)),
+        ] {
+            let raw = format!(
+                r#"{{"tabs":[{{"cwd":"/p","remote":{{"machine":"mac","host_tab":"t1","open_id":{bad}}}}}],"active":0}}"#
+            );
+            let s = parse_tabs(&raw);
+            let r = s.tabs[0].remote.as_ref().expect("still a remote tab");
+            assert_eq!(
+                (r.host_tab.as_deref(), r.open_id.as_deref()),
+                (Some("t1"), None),
+                "{bad}"
+            );
+        }
+    }
+
+    /// Rule 40: a `tabs.json` from before the open id reads as before.
+    #[test]
+    fn an_older_tabs_json_reads_as_before() {
+        let raw = r#"{"tabs":[{"cwd":"/Users/max/proj","remote":{"machine":"mac","host_tab":"t7","last_seq":5}}],"active":0}"#;
+        let s = parse_tabs(raw);
+        assert_eq!(s.tabs[0], remote_tab("/Users/max/proj", Some("t7"), 5));
+        assert_eq!(s.tabs[0].remote.as_ref().unwrap().open_id, None);
+        assert_eq!(s.tabs[0].remote.as_ref().unwrap().last_seq, 5);
     }
 
     /// Rules 287, 288: the restore never stats a remote tab's folder, keeps it whatever this machine has at that path,
