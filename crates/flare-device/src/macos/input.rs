@@ -275,10 +275,16 @@ impl Worker {
 
     /// An interruption since the last look: the gesture is lost, Flare hears it, the connection is made again once.
     fn check_interrupted(&mut self) -> bool {
-        let now = match &self.transport {
-            Some(Transport::Dtuhid(d, _)) => d.interruptions(),
+        let (now, invalid) = match &self.transport {
+            Some(Transport::Dtuhid(d, _)) => (d.interruptions(), d.conn.is_invalid()),
             _ => return false,
         };
+        // An invalid connection (the service went away for good) still runs its send barriers, so its sends look
+        // fine: it is lost too, not left live while every touch goes nowhere.
+        if invalid {
+            self.lost("the connection became invalid");
+            return true;
+        }
         if now == self.seen {
             return false;
         }

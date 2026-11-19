@@ -379,8 +379,38 @@ impl Drop for Conn {
     }
 }
 
-/// The mach port of a service inside the device (`-[SimDevice lookup:error:]`), or why not. BLOCKING (briefly).
+/// The mach port of a service inside the device (`-[SimDevice lookup:error:]`), or why not: one send reference the
+/// caller owns (it moves it into an endpoint, or drops it with `rendezvous::release_send`). BLOCKING (briefly).
+///
+/// `lookup:error:` leaves two user references per call on CoreSimulator 1174.21 (measured 2026-11-20: eleven
+/// lookups of one service held 22): the extra ones are dropped here, so a rotation or an orientation read does not
+/// leak a reference each time (a send right overflows at 65534). Lookups are serialised so the count is exact.
 pub fn lookup(device: *mut AnyObject, service: &str) -> Result<u32, Broken> {
+    // The name a service had last time (one right keeps one name in this task; a freed name comes back with a new
+    // generation, so a stale one counts 0), to count the references held before this lookup.
+    static NAMES: std::sync::Mutex<Option<std::collections::HashMap<(usize, String), u32>>> =
+        std::sync::Mutex::new(None);
+    let mut names = NAMES.lock().unwrap_or_else(|p| p.into_inner());
+    let key = (device as usize, service.to_string());
+    let last = names
+        .get_or_insert_with(Default::default)
+        .get(&key)
+        .map(|p| (*p, super::rendezvous::send_refs(*p)));
+    let port = lookup_raw(device, service)?;
+    let before = match last {
+        Some((p, refs)) if p == port => refs,
+        _ => 0,
+    };
+    let after = super::rendezvous::send_refs(port);
+    // Never more than this lookup added: what was held before (a live connection's) is left alone.
+    let gained = after.saturating_sub(before);
+    // At most the one extra reference measured, so a count gone wrong can never take a right someone else uses.
+    super::rendezvous::drop_send_refs(port, gained.saturating_sub(1).min(1));
+    names.get_or_insert_with(Default::default).insert(key, port);
+    Ok(port)
+}
+
+fn lookup_raw(device: *mut AnyObject, service: &str) -> Result<u32, Broken> {
     let name = NSString::from_str(service);
     let (port, err) = guarded(device, "lookup:error:", |o, s| {
         let mut err: *mut AnyObject = std::ptr::null_mut();

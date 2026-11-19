@@ -163,11 +163,19 @@ define_class!(
         #[unsafe(method(accessibilityTranslationDelegateBridgeCallbackWithToken:))]
         fn callback(&self, token: *mut AnyObject) -> *mut AnyObject {
             let token = name_of(token);
-            registry()
+            // A reference of its own, taken under the lock and autoreleased: a `forget` on another thread (the
+            // device detached mid-walk) cannot free the block before the translator has called it.
+            let block = registry()
                 .lock()
                 .ok()
-                .and_then(|r| r.get(&token).map(|e| RcBlock::as_ptr(&e.block.0).cast::<AnyObject>()))
-                .unwrap_or(std::ptr::null_mut())
+                .and_then(|r| r.get(&token).map(|e| e.block.0.clone()));
+            match block {
+                // SAFETY: a +1 block (a block is an object), handed back autoreleased (+0) as the method returns it.
+                Some(b) => unsafe {
+                    objc2::ffi::objc_autorelease(RcBlock::into_raw(b).cast::<AnyObject>())
+                },
+                None => std::ptr::null_mut(),
+            }
         }
 
         #[unsafe(method(accessibilityTranslationConvertPlatformFrameToSystem:withToken:))]

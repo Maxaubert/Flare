@@ -86,6 +86,8 @@ pub fn rotate(device: *mut AnyObject, o: Orientation) -> Result<(), Broken> {
     let port = lookup(device, PURPLE_PORT)?;
     let mut msg = purple_message(port, purple_value(o));
     let kr = super::rendezvous::send_raw(&mut msg, PURPLE_LEN, SEND_TIMEOUT_MS);
+    // The message only copied the right: ours is dropped, so each rotation leaves no reference behind.
+    super::rendezvous::release_send(port);
     if kr != 0 {
         return Err(Broken::nothing(
             PURPLE_PORT,
@@ -222,5 +224,26 @@ mod tests {
         let mut reads = vec![Ok(Rot90), Ok(Rot0), Ok(Rot0)];
         assert_eq!(poll_change(Rot0, || reads.pop().unwrap()), Ok(Rot90));
         assert!(reads.is_empty());
+    }
+
+    /// The real simulator (opt-in, `FLARE_DEVICE_REAL=1`): orientation reads and rotations hold no more send
+    /// references afterwards than before (`lookup:error:` leaves two per call; a send right overflows at 65534).
+    #[test]
+    fn reads_and_rotations_leave_no_port_reference_behind() {
+        use crate::macos::rendezvous::send_refs;
+        let Some(d) = crate::macos::simctl::TestDevice::boot("Flare Test Ports") else {
+            return;
+        };
+        let sim = crate::macos::sim::Sim::open(&d.developer_dir).expect("the device set");
+        let dev = sim.device(&d.target).expect("the device");
+        let display = lookup(dev.ptr(), DISPLAY_SERVICE).expect("the display service");
+        let purple = lookup(dev.ptr(), PURPLE_PORT).expect("the Purple port");
+        let before = (send_refs(display), send_refs(purple));
+        assert_eq!(before, (1, 1), "a lookup leaves the caller one reference");
+        for _ in 0..10 {
+            read(dev.ptr(), d.target.udid()).expect("displayinfo");
+            rotate(dev.ptr(), Orientation::Rot0).expect("the Purple send");
+        }
+        assert_eq!((send_refs(display), send_refs(purple)), before);
     }
 }
