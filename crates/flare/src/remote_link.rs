@@ -912,6 +912,7 @@ impl PtySpawner for RemoteSpawner {
             convo_off: false,
             open_id_on: true,
             restarted: false,
+            restart_line_at: None,
             kept: KeptTyping::default(),
             styled_on: true,
         };
@@ -932,6 +933,10 @@ enum Step {
     /// Never leaves [`Worker::session`].
     Gone,
 }
+
+/// How long after the snapshot of a found session the restart line waits, at least, and then for a quiet output poll
+/// (rule 1307).
+const RESTART_LINE_QUIET: Duration = Duration::from_millis(500);
 
 /// The line a remote tab shows when its session went on after the host's Flare restarted (rule 1307).
 pub fn restarted_line(machine: &str) -> String {
@@ -967,8 +972,9 @@ struct Worker {
     /// is the tab's, kept in its live state and saved with it (rule 1307).
     open_id_on: bool,
     /// The host's Flare restarted and the tab found its session under a new id: the line is shown once the new
-    /// snapshot is in (rule 1307).
+    /// snapshot is in and the host's screen went quiet, not before the time here (rule 1307).
     restarted: bool,
+    restart_line_at: Option<Instant>,
     /// The typing kept while the link is down (rule 1210).
     kept: KeptTyping,
     /// Whether the host takes `remote.snapshot {styled}` (rule 1213; an older host refuses the param).
@@ -1377,15 +1383,10 @@ impl Worker {
             return self.failed(e);
         }
         self.fresh = false;
-        // Rule 1307: said after the snapshot, which starts with a clear of the screen.
+        // Rule 1307: said once the host's screen settled after the snapshot (the polls, `RESTART_LINE_QUIET`): a
+        // Windows host's console can repaint the whole screen after the resize, which would wipe a line said at once.
         if std::mem::take(&mut self.restarted) {
-            self.io.push_output(
-                format!(
-                    "\r\n\x1b[2m{}\x1b[0m\r\n",
-                    restarted_line(&self.spec.machine)
-                )
-                .as_bytes(),
-            );
+            self.restart_line_at = Some(Instant::now() + RESTART_LINE_QUIET);
         }
         live.set_link(LinkState::Live);
         // The host's status is asked at once on every attach, and its first answer is always news (rule 294).
@@ -1791,6 +1792,17 @@ impl Worker {
             }
             if let Err(e) = self.poll_convo(link, tab) {
                 return self.failed(e);
+            }
+            // Rule 1307: the restart line, once the found session's screen is quiet.
+            if !busy && self.restart_line_at.is_some_and(|at| Instant::now() >= at) {
+                self.restart_line_at = None;
+                self.io.push_output(
+                    format!(
+                        "\r\n\x1b[2m{}\x1b[0m\r\n",
+                        restarted_line(&self.spec.machine)
+                    )
+                    .as_bytes(),
+                );
             }
             idle = if busy {
                 self.t.poll_min

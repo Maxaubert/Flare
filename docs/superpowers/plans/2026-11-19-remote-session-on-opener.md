@@ -221,6 +221,13 @@ follows the code:
 - **Kept typing** is dropped at the `no_tab`, and again for typing that came in during the find, so nothing typed for the
   lost tab reaches the found one. A size asked meanwhile is kept; a close or leave during the find is sent to the found
   tab.
+- **Hidden ids per run (found by the e2e).** The window clock starts at 0 each run, so ids repeat across restarts
+  (`t0-1`): the restarted host gave the restored session the old id, the opener attached to it without a `no_tab`, and
+  could as well have followed another tab that took the place. A hidden session's id is now `h<run>-<n>`
+  (`TabModel` `hidden_id`, a random word made with the model), so an id saved in an earlier run is always `no_tab`.
+  Strip ids are unchanged.
+- **The restart line waits** until the found session's output is quiet, at least 500 ms after the snapshot
+  (`RESTART_LINE_QUIET`): a Windows host's console can repaint after the resize and wipe a line said at once.
 - **Machine name in the lines** is the tab's machine id (`RemoteSpec.machine`), as the link's other lines use.
 - **e2e.** `remoteOpen` (not `remoteUi`) restarts the host: its host is the one the serve process starts hidden, so the
   viewer's next link starts it again the same way. The scenario asks B to quit, waits for the restart line on A, checks

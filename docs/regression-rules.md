@@ -5054,11 +5054,15 @@ machine opened never shows on this screen). Native: `crates/flare/src/ctl_app.rs
 review of PR #289, 2026-11-19.
 1307. **The opener finds its session again after the host's Flare restarted.** A restart of the host's Flare (a quit, an
 update, a crash) brings each hidden session back under a new tab id (rule 1302), so the opener's saved `host_tab` gets
-`no_tab`. The remote tab's `open_id` (rule 1210) is made with the tab on the UI thread (`AppCtl::open_remote`) and saved
+`no_tab`. That needs ids no earlier run gave: the window clock starts at 0 each run, so strip ids repeat (`t0-6` after
+every start), and a restarted host gave the same id to whatever tab took that place, which the opener then followed
+(found by the e2e). A hidden session's id is `h<run>-<n>` (`TabModel` `hidden_id`, a random word per run), so a saved
+id from an earlier run is always `no_tab`. The remote tab's `open_id` (rule 1210) is made with the tab on the UI thread (`AppCtl::open_remote`) and saved
 in `tabs.json` as `remote: {.., open_id}` (`SavedRemote.open_id`; an older file reads as before, a bad id is dropped
 alone, rule 40). On `no_tab` at attach or in the polls, the link sends `remote.find {open_id}` once per link life, on the
 same link (`Worker::find`): `{tab}` sets the new host tab, drops the typing kept for the lost one (never typed into
-another tab), takes a fresh snapshot and then says "Flare restarted on <machine>. The session goes on." in one line;
+another tab), takes a fresh snapshot and then says "Flare restarted on <machine>. The session goes on." in one line
+(once the host's screen is quiet, at least 500 ms after the snapshot: a Windows console can repaint after the resize);
 the same id (only the follow was lost) goes on from the number read, with no line. `unknown_method` (an older host) or no
 open id (a tab saved before the key, which stays without one) ends the tab as before. Any other refusal is passing:
 `unavailable` is asked again every 250 ms for up to 10 s on the same link, then the link is tried again later; it never
@@ -5080,7 +5084,8 @@ and a Mac's host name can change (rule 1199). `remote.find` is idempotent (`may_
 `ctl_app::tests::remote_find_answers_only_for_a_known_open_id`,
 `flare_tabs::restore::remote_tests::a_remote_tab_saves_and_restores_its_open_id`,
 `flare_tabs::restore::remote_tests::an_older_tabs_json_reads_as_before`,
-`flare_term::remote_pty::tests::a_tab_keeps_its_open_id_and_one_with_none_gets_one_once` and the e2e `remoteOpen` (the
+`flare_term::remote_pty::tests::a_tab_keeps_its_open_id_and_one_with_none_gets_one_once`,
+`flare_tabs::model::hidden_tests::a_hidden_sessions_id_is_never_one_an_earlier_run_gave` and the e2e `remoteOpen` (the
 host's Flare quits and starts again). Source: Max, 2026-11-19, plan `2026-11-19-remote-session-on-opener.md` PR 2.
 1308. **A remote tab whose session ended on its host says so and stays.** When a hidden session's shell exits on the
 host (rule 1302: it goes, and its followers hear `no_tab`), the opener's `remote.find` (rule 1307) finds nothing. The tab

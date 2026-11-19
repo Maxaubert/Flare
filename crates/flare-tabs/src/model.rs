@@ -34,6 +34,21 @@ pub struct TabModel {
     /// sidebar, the used list, Ctrl+Tab, Ctrl+1..9 and every front pick pass them by. Their agents and sessions live
     /// in `agents` and `sessions` as any tab's do.
     hidden: Vec<Hidden>,
+    /// A random word of this run, in every hidden session's id (rule 1307): the window clock starts at 0 each run, so a
+    /// plain id (`t0-6`) comes back after a restart naming whatever tab took that place, and an opener would follow it.
+    run: u64,
+}
+
+/// Pure: a hidden session's id, `h<run>-<n>`: unique in this run and never one an earlier run gave (rule 1307).
+fn hidden_id(run: u64, seq: &mut u64) -> String {
+    *seq += 1;
+    format!("h{run:x}-{seq}")
+}
+
+/// A random word for this run's hidden ids (no dependency: the standard hasher's seeds are random per process).
+fn new_run() -> u64 {
+    use std::hash::BuildHasher;
+    std::collections::hash_map::RandomState::new().hash_one(0x6869_6464_656e_u64) & 0xffff_ffff_ffff
 }
 
 /// A hidden session (rule 1302): a local shell tab no strip shows, kept for the machine that opened it.
@@ -71,6 +86,7 @@ impl TabModel {
             sessions: HashMap::new(),
             remotes: HashMap::new(),
             hidden: Vec::new(),
+            run: new_run(),
         }
     }
 
@@ -193,7 +209,8 @@ impl TabModel {
         size: Option<(u16, u16)>,
         now_ms: u64,
     ) -> String {
-        let id = self.new_id();
+        // Rule 1307: an id no earlier run of this Flare gave, so an opener's saved id never names another session.
+        let id = hidden_id(self.run, &mut self.seq);
         self.hidden.push(Hidden {
             tab: Tab {
                 id: id.clone(),
@@ -827,6 +844,26 @@ mod hidden_tests {
     use crate::restore::{RestoredHidden, RestoredTab, parse_tabs, tabs_json};
 
     const SID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+
+    /// Rule 1307: the window clock starts at 0 each run, so strip ids repeat across restarts (`t0-1`). A hidden
+    /// session's id carries a random word of the run: the same place in a new run (a host restart) never gives the id
+    /// an opener saved, so its attach hears `no_tab` and it finds its session by its open id instead of following
+    /// whatever tab took that place.
+    #[test]
+    fn a_hidden_sessions_id_is_never_one_an_earlier_run_gave() {
+        let mut ids = HashSet::new();
+        for _ in 0..20 {
+            let mut m = TabModel::empty(0);
+            let t = m.open_tab(r"C:\a");
+            assert_eq!(t, "t0-1", "strip ids are the clock's");
+            let h = m.open_hidden(r"C:\h", "Mac Mini", Some("o-1"), None, 0);
+            assert!(h.starts_with('h') && h.len() <= 64, "{h}");
+            assert!(ids.insert(h.clone()), "{h} came back in another run");
+            let h2 = m.open_hidden(r"C:\h2", "Mac Mini", None, None, 0);
+            assert_ne!(h, h2);
+            assert!(m.is_hidden(&h) && m.is_hidden(&h2));
+        }
+    }
 
     #[test]
     fn a_hidden_session_is_not_in_the_strip_the_walk_or_the_front_pick() {

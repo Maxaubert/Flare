@@ -1880,8 +1880,10 @@ fn a_no_tab_after_a_host_restart_finds_the_session_by_open_id_and_takes_a_snapsh
     r.live_on();
     r.host.print("h2", b"after\r\n");
     wait_for("after", || r.text().contains("after"));
-    let t = r.text();
     let line = restarted_line("mac");
+    // Said once the found session's screen is quiet (`RESTART_LINE_QUIET`).
+    wait_for("the restart line", || r.text().contains(&line));
+    let t = r.text();
     assert_eq!(t.matches(&line).count(), 1, "{t:?}");
     assert!(
         t.rfind(&line) > t.rfind("before"),
@@ -1916,7 +1918,9 @@ fn a_restored_tab_finds_its_session_after_a_host_restart_while_away() {
     wait_for("the new id", || r.live.host_tab().as_deref() == Some("h10"));
     r.live_on();
     wait_for("the screen", || r.text().contains("still here"));
-    assert!(r.text().contains(&restarted_line("mac")));
+    wait_for("the restart line", || {
+        r.text().contains(&restarted_line("mac"))
+    });
     assert_eq!(r.host.calls("remote.open"), 0);
 }
 
