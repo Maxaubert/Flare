@@ -301,7 +301,8 @@ fn a_remote_close_ends_a_hidden_session_without_asking_on_the_host() {
     assert_eq!(v["closed"], true);
     assert!(f.ctl.borrow().ask_text().is_none(), "no ask here");
     assert!(hidden_ids(&f).is_empty());
-    assert!(f.shell("C:\\there").killed(), "its shell ended");
+    // The kill reaches the shell on a worker of its own.
+    f.pump_until("its shell ended", |f| f.shell("C:\\there").killed());
     assert!(!host.is_followed(&id), "its follower hears no_tab");
     f.ctl.borrow_mut().reopen_closed_tab();
     f.pump();
