@@ -4,7 +4,10 @@ Spec: `docs/superpowers/specs/2026-11-19-remote-session-on-opener-design.md`.
 Status: draft for Max's approval, together with the spec. Not started.
 Replaces: `docs/superpowers/plans/2026-11-18-import-remote-sessions.md` (PRs #281, #282, #284, #286 closed).
 
-Three code PRs, in order. Each builds, passes its own tests and ships alone. PR 2 has a mockup step first.
+Three code PRs, in order. Each builds and passes its own tests. PR 1 and PR 2 are installed and released together:
+with PR 1 alone, a hidden session whose opener never comes back, or whose host restarted, has no way out (no
+`remote.find`, no Settings list). So PR 1 merges only after PR 2 is ready, and no release goes out between them.
+PR 3 ships alone. PR 2 has a mockup step first.
 
 ## Rule numbers
 
@@ -30,10 +33,15 @@ ask), 206 (one ring per episode), 278 (no protocol bump), 279 to 305 (remote ses
 
 - No `REMOTE_PROTOCOL` bump (rule 278). One new method, `remote.find`, added to the relayed list in
   `serve_remote.rs`. No grant change.
-- Hidden sessions live in a list of their own in the tab model (`TabModel::hidden`, not in `state.tabs`), so every
-  strip, sidebar, MRU, Ctrl+Tab and front-pick site skips them with no change. Only the sites that must see them read
-  the new list: the remote ops, `remote.status`, keep-awake, the quit ask, the install hold, save and restore, and
-  Settings. The hub, `TabHost` and the agent hooks key on the tab id and keep working.
+- Hidden sessions live in a list of their own in the tab model (`TabModel::hidden`, not in `state.tabs`). The 22
+  `state.tabs` sites in `appctl` (strip, sidebar, MRU, Ctrl+Tab, front picks, `busy_agents`, `tab_facts` and the rest)
+  then skip them. Sites that must see them read the new list: the remote ops, `remote.status`, keep-awake, the quit
+  ask, the install hold, save and restore, and Settings. The hub, `TabHost`, the agent hooks and the model's `agents`
+  and `sessions` maps key on the tab id and keep working. Id-keyed model calls that read `state.tabs` today must learn
+  the hidden list: `set_cwd` (OSC 7 and the folder `remote.status` names), the label behind `title` (`labels()` reads
+  `state.tabs`), the shell-exit path (`HostEvent::Exited` in `appctl.rs`: a hidden session whose shell ends is dropped
+  and its followers hear `no_tab`), `is_shell_tab` in the rule 1210 `open_id` check, and `request_close`/`close_now`.
+  PR 1 lists every one it touched in its body.
 - Blocking work on workers (rule 34).
 - Tests headless only. Fake connectors and links (`remote_link_tests.rs` style). No real ssh. e2e on the hidden desktop.
 - Rust worktrees share one `CARGO_TARGET_DIR` (`<repo>\.claude\targets\shared`). Touch changed files before a build.
@@ -44,7 +52,8 @@ ask), 206 (one ring per episode), 278 (no protocol bump), 279 to 305 (remote ses
 
 ## PR 1: Host side, hidden sessions
 
-Branch `feat/remote-on-opener-1`. Ships alone. An older opener keeps working (spec, "Mixed versions").
+Branch `feat/remote-on-opener-1`. Released together with PR 2 (see the top). An older opener keeps working (spec,
+"Mixed versions").
 
 **Files.**
 - `crates/flare-tabs/src/model.rs`, `tabs.rs`: `TabModel::open_hidden(cwd, opener) -> id`, `hidden()`, `hidden_of(id)`,
@@ -91,7 +100,9 @@ Branch `feat/remote-on-opener-1`. Ships alone. An older opener keeps working (sp
   - `plugins_tabs_list_and_events_leave_hidden_sessions_out`.
 - `restore.rs` and `flare-tabs`: `a_hidden_session_saves_and_restores_hidden_with_its_opener_and_open_id`;
   `an_older_tabs_json_reads_as_before`; `a_restored_hidden_session_resumes_its_used_claude_session` (rule 1286).
-- Opener side: `the_opener_asks_before_closing_a_remote_tab_with_an_agent` (holds today's behaviour that 1305 relies on).
+- Opener side: `the_opener_asks_before_closing_an_idle_remote_claude_tab` (the host's status names `kind`, the hub never
+  saw work). Files: `crates/flare/src/appctl.rs` (`agent_present`), `crates/flare/src/agent_hub.rs` (keep the
+  remote tab's last `kind`).
 - e2e `remoteUi` (`tools/e2e/src/scenarios/remote.rs`): after the open, the host's strip has the same tab count as
   before. Update `docs/e2e.md`.
 - Keep green: rules 280, 282, 288, 294, 298, 1210 tests. Tests that relied on a remote-opened tab showing in the

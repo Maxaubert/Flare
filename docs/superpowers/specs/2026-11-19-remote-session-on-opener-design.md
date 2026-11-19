@@ -64,9 +64,13 @@ Words used here:
 - When the last follower goes, the size goes back to the host window (`CtlOp::RemoteRelease`,
   `TabHost::take_size_back`).
 - `remote.close` calls `request_close`: the rule 48 ask shows in the host's window. The opener asks first as well,
-  because the host's status puts the remote agent in its `agent_ids` (`agent_present`).
+  but only after its hub saw the remote tab working or asking (see the next point).
 - `remote.status` and `remote.tabs` list every shell tab of the host, its viewer tabs too. `remote.attach`, `input`
   and `resize` check only `is_shell_tab`, so a viewer tab can be followed (the mirror chain closed PR 1 found).
+- The opener asks before a Close only once its hub has seen the remote tab working or asking: `remote_mark` puts the
+  tab in `agent_ids` only for `working` and `question`, and `start_remote` sets no agent in the model. So an idle
+  Claude tab restored on the opener closes there with no ask. The host asks instead: its own `agent_present` knows the
+  Claude tab.
 - **Host restart.** The host's `tabs.json` saves the tab as a normal local tab. The restore makes new tab ids
   (`TabModel::settle`, `make_id`). The tab comes back visible on the host, with its Claude session resumed (rule
   1286). The opener's saved remote tab attaches with the old `host_tab`, gets `no_tab` and ends as a shell that exits
@@ -95,8 +99,9 @@ The opener shows the tab as any remote tab today: live terminal at its own size,
 
 ### Close on the opener
 
-- The opener asks first while an agent is there, as it does today (rule 48 through `agent_present`). PR 1 adds a test
-  that holds this for a remote tab.
+- The opener asks first while an agent is there (rule 48). New in PR 1: the opener's `agent_present` is also true when
+  the host's last status names an agent (`kind` not null), idle or not. Today it is true only after the hub saw the tab
+  working or asking, so an idle Claude tab would close with no ask on either machine once the host stops asking.
 - The host closes a hidden session at once on `remote.close`. It never shows the rule 48 ask for a hidden session,
   since nobody sees the host's screen for it.
 - Ctrl+Shift+T on the opener reopens it as today: a new remote tab in that folder on that machine (rule 1236), which
@@ -236,7 +241,7 @@ Reused from closed PR #281 (draft rule 1289), made stricter:
 | `remote.open` | Makes a hidden session. Same params. | An older opener gets the same answer. |
 | `remote.status`, `remote.tabs` | List hidden sessions only; a hidden session says `sized: viewer` | Older opener reads its own entry by id, as before. |
 | Every op that names a tab | `no_tab` for a tab that is not a hidden session | Older opener ends the tab, as on any `no_tab`. |
-| `remote.close` | Closes a hidden session at once (no host ask) | Older opener asked already (its `agent_present`). |
+| `remote.close` | Closes a hidden session at once (no host ask) | An older opener asks only if it saw the tab working or asking, so an idle Claude tab closes unasked. Accepted: Max updates both. |
 | `remote.find {open_id}` | New method in `remote`. Answers `{tab}`, `{shown: true}` or `no_tab`. Relayed by the bridge. | Older host: `unknown_method`, the tab ends as today. |
 
 ## Security notes
