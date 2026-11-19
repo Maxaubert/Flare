@@ -638,6 +638,8 @@ struct Known {
     heard: Option<(Instant, Option<Heard>)>,
     /// When the list last asked it afresh.
     asked: Option<Instant>,
+    /// An ask of it still runs (a host stuck in its hello): no second one starts beside it.
+    running: bool,
 }
 
 /// The newest answer of each machine for the agent's list and adopt (rule 1296): the watch links' answers as the window
@@ -681,8 +683,10 @@ impl HostLists {
     }
 
     /// BLOCKING (a control call's worker, rule 34): the newest answer of each of `machines`. One older than
-    /// [`LIST_FRESH`] is asked again, at most once per machine in that time, all of them at once, each on a thread of
-    /// its own; the call waits at most `wait` for them. A machine that answered nothing, or not in time, is None.
+    /// [`LIST_FRESH`] is asked again, at most once per machine in that time and never while an ask of it still runs,
+    /// all of them at once, each on a thread of its own; the call waits at most `wait` for them. Only an answer younger
+    /// than [`LIST_FRESH`] counts: a machine that answered nothing, not in time, or only long ago is None, so a stale
+    /// listing never names a tab to adopt.
     pub fn answers(
         self: &Arc<Self>,
         machines: &[String],
@@ -699,27 +703,36 @@ impl HostLists {
                 .iter()
                 .filter(|m| {
                     let k = known.entry((*m).clone()).or_default();
-                    if young(k.heard.as_ref().map(|(at, _)| *at)) || young(k.asked) {
+                    if young(k.heard.as_ref().map(|(at, _)| *at)) || young(k.asked) || k.running {
                         return false;
                     }
                     k.asked = Some(now);
+                    k.running = true;
                     true
                 })
                 .cloned()
                 .collect()
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        for m in &ask {
-            let (me, m, tx) = (Arc::clone(self), m.clone(), tx.clone());
+        for name in &ask {
+            let (me, m, tx) = (Arc::clone(self), name.clone(), tx.clone());
             let started = std::thread::Builder::new()
                 .name("flare-remote-list".into())
                 .spawn(move || {
                     let heard = me.asker.ask(&m);
-                    me.lock().entry(m.clone()).or_default().heard = Some((now, heard));
+                    {
+                        let mut known = me.lock();
+                        let k = known.entry(m.clone()).or_default();
+                        k.heard = Some((now, heard));
+                        k.running = false;
+                    }
                     let _ = tx.send(m);
                 });
             if let Err(e) = started {
                 log::warn!("could not ask a machine for the agent's list: {e}");
+                if let Some(k) = self.lock().get_mut(name) {
+                    k.running = false;
+                }
             }
         }
         drop(tx);
@@ -745,6 +758,7 @@ impl HostLists {
                     known
                         .get(m)
                         .and_then(|k| k.heard.as_ref())
+                        .filter(|(at, _)| young(Some(*at)))
                         .and_then(|(_, h)| h.clone())
                 };
                 (m.clone(), heard)
@@ -1501,22 +1515,40 @@ mod tests {
         let a = lists.answers(&both, t0 + Duration::from_secs(22), LIST_WAIT);
         assert!(matches!(a["pc"], Some(Heard::Listed(_))));
         assert_eq!((asks_of(&ask, "mac"), asks_of(&ask, "pc")), (3, 2));
-        // A slow machine is none once the wait is over, and the next call within five seconds asks it no more.
-        *ask.slow.lock().unwrap() = Duration::from_millis(400);
+        // An answer older than five seconds is never handed out as the newest.
+        assert!(
+            lists.answers(
+                &["pc".to_string()],
+                t0 + Duration::from_secs(26),
+                Duration::ZERO
+            )["pc"]
+                .is_none(),
+            "the ask is late and the watch's answer is old"
+        );
+        wait_for("the pc's ask", || asks_of(&ask, "pc") == 3);
+        // A slow machine is none once the wait is over; the next call asks it no more while that ask runs, and gets no
+        // old listing either.
+        *ask.slow.lock().unwrap() = Duration::from_secs(3);
         let started = Instant::now();
         let a = lists.answers(
             &["mac".to_string()],
             t0 + Duration::from_secs(40),
             Duration::from_millis(50),
         );
-        assert!(started.elapsed() < Duration::from_millis(350));
+        assert!(started.elapsed() < Duration::from_secs(2));
         assert!(a["mac"].is_none(), "late");
-        lists.answers(
+        wait_for("the slow ask", || asks_of(&ask, "mac") == 4);
+        let a = lists.answers(
             &["mac".to_string()],
-            t0 + Duration::from_secs(41),
+            t0 + Duration::from_secs(47),
             Duration::ZERO,
         );
-        assert_eq!(asks_of(&ask, "mac"), 4);
+        assert!(a["mac"].is_none(), "no old listing while the slow ask runs");
+        assert_eq!(
+            asks_of(&ask, "mac"),
+            4,
+            "no second ask beside the running one"
+        );
     }
 
     /// Rule 1296: each listed tab is made field by field (no session id, question words, failure or anything else

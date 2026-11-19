@@ -33,8 +33,8 @@ use super::mini_app::{say, until_says};
 use super::web::{script, state};
 use crate::ctx::{App, Ctx, Launch};
 
-/// How many tools flare-mcp lists before any mod's (`flare_mcp`'s own list; 21 since `browser_state`).
-const BUILT_IN_TOOLS: usize = 21;
+/// How many tools flare-mcp lists before any mod's (`flare_mcp`'s own list; 25 since `list_remote_sessions`).
+const BUILT_IN_TOOLS: usize = 25;
 
 const SAMPLE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

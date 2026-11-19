@@ -5074,8 +5074,9 @@ remote link or bridge does; no grant changes. It answers, for each machine of `m
 host's own tabs (`origin: here`, rule 1289). Never a Claude session id, question words, a failure's words or screen
 text. It reads each machine's newest answer (the watch link's, rule 1291); one older than 5 s is asked again over a
 short `--no-start` link, at most once per machine per 5 s (the ask is stamped before it starts), all machines at once
-on the call's worker, and the call waits at most 10 s for them (a late one is `reachable: false`). `open.remote` with
-`tab` takes `machine` and `tab` only: `folder`, `resume` and `front` are `bad_params` with it (`open_remote` cannot
+on the call's worker, and the call waits at most 10 s for them (a late one is `reachable: false`; an answer older
+than 5 s is never handed out, so a stale listing never names a tab to adopt; no second ask starts while one of that
+machine still runs). `open.remote` with `tab` takes `machine` and `tab` only: `folder`, `resume` and `front` are `bad_params` with it (`open_remote` cannot
 tell the agent from `flare open`, and a fronted row attaches). The tab must be one the machine's newest answer lists
 as its own, else `not_found`. The window adds it as an unattached row marked `Adopted`, behind the front tab: never
 fronted, so it opens, attaches and sizes nothing on the host until the person fronts it (rule 1292). A host tab
@@ -5097,6 +5098,7 @@ or while an open on that machine waits for its host tab (`busy`): either could s
 `an_agents_adopt_makes_an_unattached_row_behind_the_front_and_sends_no_attach_or_resize`,
 `open_remote_with_a_hidden_tab_takes_it_off_the_hidden_list`,
 `an_adopted_row_stays_when_the_setting_is_off_and_is_not_saved`,
-`an_adopt_waits_while_an_open_on_that_machine_is_in_flight` (`ui_tests/term/flow/import_flows.rs`) and
+`an_adopt_waits_while_an_open_on_that_machine_is_in_flight` (`ui_tests/term/flow/import_flows.rs`),
+`an_adopt_before_the_restore_answered_is_busy` (`ui_tests/agent_flows/remote_flows.rs`) and
 `list_remote_sessions_and_open_remote_session_tab_check_their_arguments_and_route` (`flare-mcp`). Source: Max,
 2026-11-18.

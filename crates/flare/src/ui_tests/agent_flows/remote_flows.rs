@@ -609,3 +609,39 @@ fn no_import_round_runs_before_the_restore_answered() {
         f.cwds()
     );
 }
+
+/// Rule 1296: an agent's adopt waits for the restore too (a saved remote tab and its adopt never both appear): `busy`
+/// before it answered, a row after.
+#[test]
+fn an_adopt_before_the_restore_answered_is_busy() {
+    let f = Fx::new();
+    f.tabs(&["C:\\work"]);
+    {
+        let mut c = f.ctl.borrow_mut();
+        c.set_watch_port(Arc::new(HandFed));
+        c.on_msg(UiMsg::Machines(vec![crate::machines::Machine {
+            id: "mac".into(),
+            name: "Mac Mini".into(),
+            ssh: "mini".into(),
+            flare: "flare".into(),
+            ..Default::default()
+        }]));
+    }
+    let heard = crate::remote_import::Heard::Listed(serde_json::json!({"tabs": [
+        {"tab": "t1-1", "state": "idle", "folder": "/Users/max/a", "origin": "here"},
+    ]}));
+    let row = crate::remote_import::adoptable(Some(&heard), "t1-1").expect("listed");
+    assert!(!f.ctl.borrow().model().restore_done());
+    let e = f
+        .ctl
+        .borrow_mut()
+        .adopt_remote("mac", row.clone())
+        .unwrap_err();
+    assert_eq!(e.code, flare_ctl::code::BUSY);
+    assert_eq!(f.ids().len(), 1);
+    AppCtl::start_restore(&f.ctl);
+    f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
+    let v = f.ctl.borrow_mut().adopt_remote("mac", row).unwrap();
+    assert_eq!(v["added"], true);
+    assert!(f.cwds().iter().any(|c| c == "/Users/max/a"));
+}

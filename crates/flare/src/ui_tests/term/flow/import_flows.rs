@@ -615,9 +615,18 @@ fn open_remote_with_a_hidden_tab_takes_it_off_the_hidden_list() {
     let row = row_of(&w, "t1-1").unwrap();
     w.ctl.borrow_mut().hide_remote(&row);
     assert_eq!(w.ctl.borrow().hidden_of("mac"), ["t1-1"]);
+    // What the agent's list reads of this window (`open.remote.list`'s `here`).
+    assert_eq!(
+        w.ctl.borrow().remote_here(),
+        json!({"shown": {}, "hidden": {"mac": ["t1-1"]}})
+    );
     adopt(&w, "t1-1");
     assert!(row_of(&w, "t1-1").is_some());
     assert!(w.ctl.borrow().hidden_of("mac").is_empty());
+    assert_eq!(
+        w.ctl.borrow().remote_here(),
+        json!({"shown": {"mac": ["t1-1"]}, "hidden": {}})
+    );
     assert!(
         flare_settings::machine_prefs::import_hidden(&w.prefs)
             .get("mac")
