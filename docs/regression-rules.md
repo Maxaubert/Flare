@@ -4945,3 +4945,11 @@ SESSION_NEW}`, `TabModel::set_session`, `AppCtl::session_to_save`, `flare_agent:
 `a_tab_resumes_its_own_session_and_a_never_used_one_comes_back_blank`,
 `a_closed_claude_tab_never_used_comes_back_as_a_new_blank_claude` and
 `a_new_blank_claude_is_claude_with_no_session_and_not_new_work`. Source: Max, 2026-11-18.
+
+1301. **On Windows, Claude Code's macOS bullet (U+23FA) draws as a plain dot, not an emoji tile.** Max, 2026-11-19,
+screenshots of a Mac tab on the PC: each Claude reply started with a blue emoji tile instead of the dot a PC tab shows
+("it's not an emoji, it should just be a dot"), and the spinner's star (U+2733) was a green emoji tile too. Claude Code prints U+23FA on macOS and U+25CF on Windows; cosmic-text's
+fallback sent U+23FA to Segoe UI Emoji. Windows now lists Segoe UI Symbol as its text-symbol face
+(`TEXT_SYMBOL_FAMILIES` in `flare-render/src/font_catalog.rs`), so a text-presentation character the emoji face took is
+drawn from it, as rule 1131 does on macOS (the bullet, the spinner stars U+2733, U+2736, U+273B, U+273D, and marks such as U+2714 and U+26A0); with VS16, or a default emoji, it stays colour. Held by
+`a_text_presentation_symbol_draws_from_a_text_face_on_windows` (`flare-render/src/raster.rs`). Source: Max, 2026-11-19.
