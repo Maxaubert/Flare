@@ -476,7 +476,8 @@ impl Emulator {
                         data: data.to_string(),
                     }),
                     // Rule 1292: a remote tab's link, never the host's output (its link takes that out).
-                    crate::remote_pty::GRID_PIN_OSC if self.pins_on => {
+                    // Its digits exactly, as the strip matches them (`007502` is no pin).
+                    crate::remote_pty::GRID_PIN_OSC if self.pins_on && ident_text == "7502" => {
                         if data == "fit" {
                             self.pin_grid(None);
                         } else if let Some(size) = crate::remote_pty::parse_grid_pin(data) {

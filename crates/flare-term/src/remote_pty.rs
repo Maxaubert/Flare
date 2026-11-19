@@ -1393,6 +1393,11 @@ mod tests {
             (120, 30),
             "a size out of range is no pin"
         );
+        // Another spelling of the number passes the strip, and the grid does not take it either.
+        for odd in [&b"\x1b]007502;fit\x07"[..], b"\x1b]+7502;fit\x07"] {
+            remote.feed(&s.feed(odd, false));
+            assert_eq!((remote.cols(), remote.rows()), (120, 30));
+        }
         remote.feed(&grid_pin(None));
         assert_eq!((remote.cols(), remote.rows()), (100, 28));
         assert_eq!(remote.grid_pin(), None);
