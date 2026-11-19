@@ -4556,7 +4556,7 @@ the strip's right-click on +) listed folders that already had a terminal tab. No
 recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
 choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
 case. A folder below or beside it is another folder. A hidden folder brings no "No recent folders" note. (Amended by
-rule 1286 on 2026-11-18: its spot now goes to the next older recent without a tab, then to a starter; it no longer
+rule 1298 on 2026-11-18: its spot now goes to the next older recent without a tab, then to a starter; it no longer
 stays empty.) A remote tab's folder is on
 another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
 menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
@@ -4909,7 +4909,7 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
 
-1286. **Older recents fill the folder menu's spots that open tabs leave.** Max, 2026-11-18: "the new tab right click
+1298. **Older recents fill the folder menu's spots that open tabs leave.** Max, 2026-11-18: "the new tab right click
 menu only shows choose a folder on this machine or the mac, no recent folders". His `flare.recentRoots` held twelve
 folders, and the seven newest each had an open tab. Rule 1269 took the newest five first and then hid those with a
 tab, and a hidden folder's spot stayed empty, so all five spots were empty and only "Choose a folder…" and the
@@ -4921,7 +4921,7 @@ remote recents and the machine rows are as rule 1282 left them. Native: `menus_u
 `older_recents_fill_the_spots_of_folders_that_have_a_tab` (Max's twelve recents with seven open, and the starter case)
 and the rule 1269 tests (`menus_ui.rs`). Source: Max, 2026-11-18.
 
-1287. **A click in the remote folder browser only picks; a double-click goes in.** Max, 2026-11-18: "when i pick
+1299. **A click in the remote folder browser only picks; a double-click goes in.** Max, 2026-11-18: "when i pick
 choose folder on mac it shows a file picker in the users folder which is fine but clicking anything like i clicked
 documents just reopens the users folder it doesnt go into documents, and it happens on single click". Each click on
 a row called `push_rfolder`, which set new rows and crumbs models on the window. Slint then built every row again:
@@ -4937,7 +4937,7 @@ here opens the picked folder. Native: `appctl/remote_folder_glue.rs`; the window
 a fake lister that records each asked path: one click asks nothing and the list stays scrolled where it was, a
 double-click asks the child path and the crumbs follow). Source: Max, 2026-11-18.
 
-1288. **An SSH host wears the system a link said, and one that answered nothing is asked again.** Max, 2026-11-18:
+1300. **An SSH host wears the system a link said, and one that answered nothing is asked again.** Max, 2026-11-18:
 "only the mac has an icon in the machine picker, the evo x2 doesnt have one, it should have a windows icon and that
 stuff should be automatic if possible otherwise dont show any icon there, but only after its connected". The picker
 is Settings > Machines > Add a machine's Machine drop-down. The Mac there is the nearby computer, with the logo its

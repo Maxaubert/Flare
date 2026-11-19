@@ -3222,7 +3222,7 @@ mod flow {
         assert!(!w.h.comp.get_rfolder_open());
     }
 
-    /// Rule 1287 (Max, 2026-11-18: "clicking Documents just reopens the Users folder, it doesn't go into Documents,
+    /// Rule 1299 (Max, 2026-11-18: "clicking Documents just reopens the Users folder, it doesn't go into Documents,
     /// and it happens on single click"): with the real pointer in the window, one click picks the folder and nothing
     /// else (no ask, the list neither scrolls back nor is built again), and a double-click goes into it.
     #[test]

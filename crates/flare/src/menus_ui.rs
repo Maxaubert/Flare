@@ -358,7 +358,7 @@ fn starter_hint(path: &str, home: &str) -> String {
 /// After them, one row per linked machine (remote sessions PR 7, [`machine_rows`]).
 /// `open` holds the folders of the open local tabs (rule 1269): an unpinned folder among them is left out, so the
 /// menu offers only folders that have no tab yet. A pin always stays. A hidden folder's spot goes to the next older
-/// recent without a tab, then to a starter (rule 1286); no note appears for folders that are only hidden.
+/// recent without a tab, then to a starter (rule 1298); no note appears for folders that are only hidden.
 pub fn plus_menu_rows(
     prefs: &PrefStore,
     starters: &[String],
@@ -417,7 +417,7 @@ fn folder_rows(
     let known = !pinned.is_empty()
         || !history.is_empty()
         || !starter_fill(&pinned, &history, starters, RECENT_SHOWN).is_empty();
-    // Rule 1286 (Max, 2026-11-18: the menu showed no recent folder while his five newest all had a tab): the open
+    // Rule 1298 (Max, 2026-11-18: the menu showed no recent folder while his five newest all had a tab): the open
     // folders leave the history before the newest five are taken, so older recents without a tab fill their spots.
     let recent: Vec<String> = history
         .into_iter()
@@ -885,7 +885,7 @@ mod tests {
         rows.iter().map(|(_, p)| p.as_str()).collect()
     }
 
-    /// Rule 1269: a recent folder whose tab is open is left out of the folder menu (rule 1286: an older recent takes its
+    /// Rule 1269: a recent folder whose tab is open is left out of the folder menu (rule 1298: an older recent takes its
     /// spot, when there is one).
     #[test]
     fn an_open_tabs_recent_folder_is_left_out_of_the_menu() {
@@ -908,7 +908,7 @@ mod tests {
         );
     }
 
-    /// Rule 1286 (Max, 2026-11-18): his twelve recents, the seven newest each with an open tab. The menu showed "Choose
+    /// Rule 1298 (Max, 2026-11-18): his twelve recents, the seven newest each with an open tab. The menu showed "Choose
     /// a folder…" and the machine alone; the five newest recents without a tab are listed now, and a starter fills a
     /// spot only when no older recent is left.
     #[test]

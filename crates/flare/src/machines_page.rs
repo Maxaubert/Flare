@@ -560,7 +560,7 @@ impl MachinesPage {
         });
     }
 
-    /// The system Flare learnt by connecting to the computer an SSH host reaches (rule 1288; Max, 2026-11-18: the
+    /// The system Flare learnt by connecting to the computer an SSH host reaches (rule 1300; Max, 2026-11-18: the
     /// logo should come by itself once the computer is connected): a linked machine's `kind`, which its own
     /// `remote.hello` or the pairing said, for the host it names or one that reaches the same computer; else a computer
     /// that reaches this one, by the address it paired from. None while no link said it.
@@ -581,14 +581,14 @@ impl MachinesPage {
             .and_then(os_of)
     }
 
-    /// The logo an SSH host draws in the drop-down: what a link said (rule 1288), else what its greeting or `uname`
+    /// The logo an SSH host draws in the drop-down: what a link said (rule 1300), else what its greeting or `uname`
     /// said (rule 1278), else none.
     fn os_of_host(&self, h: &SshHost) -> Option<MachineOs> {
         self.os_learnt(h)
             .or_else(|| self.host_os.get(&crate::host_os::key_of(h)).copied())
     }
 
-    /// Keeps what a link said about an SSH host's computer in `host_os.json` (rule 1288), on a worker, so the logo
+    /// Keeps what a link said about an SSH host's computer in `host_os.json` (rule 1300), on a worker, so the logo
     /// stays after the machine is removed. True when something new was learnt.
     fn keep_learnt_os(&mut self) -> bool {
         let learnt: Vec<(HostKey, MachineOs)> = self
@@ -795,7 +795,7 @@ impl MachinesPage {
         };
         self.pairing.browse(true);
         // A host that answered nothing (off, or a VPN not up yet) is looked at again each time the dialog opens, so its
-        // logo comes once it can be reached (rule 1288); one with a system is not.
+        // logo comes once it can be reached (rule 1300); one with a system is not.
         let (finding, found) = (&self.finding, &self.host_os);
         self.looked
             .retain(|k| finding.contains(k) || found.contains_key(k));
@@ -958,7 +958,7 @@ impl MachinesPage {
     }
 
     /// A worker's answer. True when the page should be drawn again. A linked machine's system that a link said is
-    /// kept for its SSH host after each (rule 1288).
+    /// kept for its SSH host after each (rule 1300).
     pub fn on_msg(&mut self, m: MachinesMsg) -> bool {
         let redraw = self.take_msg(m);
         self.keep_learnt_os() || redraw
@@ -1273,7 +1273,7 @@ mod tests {
         r.page.page_shown();
         r.settle();
         let info = r.page.info();
-        // Rule 1288: the linked Mac's host wears the system its hello said.
+        // Rule 1300: the linked Mac's host wears the system its hello said.
         assert_eq!(
             info.ssh_hosts,
             [
@@ -1828,7 +1828,7 @@ mod tests {
             Some(&MachineOs::Linux)
         );
         // Opened again in the same visit: a host with a system is not looked up twice; the one that answered nothing
-        // is asked again (rule 1288), so it gets its logo once it can be reached.
+        // is asked again (rule 1300), so it gets its logo once it can be reached.
         r.page.cancel_form();
         r.page.open_form();
         r.settle();
@@ -1839,7 +1839,7 @@ mod tests {
         assert_eq!(r.io.os_asked.lock().unwrap().len(), 9);
     }
 
-    /// Rule 1288 (Max, 2026-11-18: "only the Mac has an icon in the machine picker, evo-x2 doesn't have one. It should
+    /// Rule 1300 (Max, 2026-11-18: "only the Mac has an icon in the machine picker, evo-x2 doesn't have one. It should
     /// have a Windows icon, and that should be automatic if possible; otherwise don't show any icon, but only after
     /// it's connected"). evo-x2 is off when the dialog first looks, so it has no logo; a host that answered nothing is
     /// asked again when the dialog opens again. Once a link said a computer's system (a machine added or paired, by

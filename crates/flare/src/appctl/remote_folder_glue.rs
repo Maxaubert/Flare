@@ -134,7 +134,7 @@ impl AppCtl {
     }
 
     /// Puts only the pick on the window: the picked row and the footer's path. The rows and the crumbs stay the same
-    /// models (rule 1287): a new rows model builds every row again, which scrolls the list back to its top and makes the
+    /// models (rule 1299): a new rows model builds every row again, which scrolls the list back to its top and makes the
     /// second press of a double-click land on a new row, so Slint never sees a double-click and nothing is entered.
     fn push_rfolder_pick(&self) {
         let (Some(app), Some(b)) = (self.app(), &self.rfolder) else {
@@ -144,7 +144,7 @@ impl AppCtl {
         app.set_rfolder_path(b.footer().into());
     }
 
-    /// A click on a row (rule 1287): it picks a folder and nothing else; a double-click or Enter does the rest.
+    /// A click on a row (rule 1299): it picks a folder and nothing else; a double-click or Enter does the rest.
     pub(super) fn rfolder_pick(&mut self, i: i32) {
         let Ok(i) = usize::try_from(i) else { return };
         let Some(b) = &mut self.rfolder else { return };
