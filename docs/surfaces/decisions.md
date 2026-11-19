@@ -1215,6 +1215,7 @@ Spec and plan: `docs/superpowers/specs/2026-11-11-file-link-markers.md`. Researc
 - 2026-11-11, links: the note to the session goes only to a session inside a Flare tab (the tab token is set), on
   start, resume, clear and compact, and once more in the MCP server's `instructions`. Codex and Antigravity are not told
   (no Flare plugin); any program that prints the marks gets links.
+
 ## Device panel (issue #248), 2026-11-19
 
 Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`,

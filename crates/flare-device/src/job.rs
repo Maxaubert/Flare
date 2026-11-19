@@ -25,6 +25,10 @@ pub const SETTLE_MS: u64 = 300;
 pub const TAP_MS: u64 = 50;
 /// A swipe takes this long unless the agent says.
 pub const SWIPE_MS: u64 = 300;
+/// The longest press an agent may ask for (`hold_ms`): a long press, well inside the call's time.
+pub const HOLD_MAX_MS: u64 = 10_000;
+/// The longest swipe an agent may ask for (`duration_ms`).
+pub const SWIPE_MAX_MS: u64 = 5_000;
 /// The time between two typed characters.
 pub const KEY_MS: u64 = 20;
 /// How far a swipe by direction goes: this share of the screen.
@@ -233,9 +237,17 @@ impl Job {
     }
 
     /// Starts a job. `refs` are the last look's; a ref not among them fails here with `not_found`. `screen` is the
-    /// device's screen in points (current orientation).
+    /// device's screen in points (current orientation); while it is not known yet (empty) every job is
+    /// `unavailable`. `hold_ms` and `duration_ms` are held to [`HOLD_MAX_MS`] and [`SWIPE_MAX_MS`], so an agent's
+    /// number can neither overflow the clock nor keep a finger down for ever.
     pub fn start(op: DeviceOp, refs: &RefMap, screen: Size) -> Result<Job, JobError> {
         let name = op.name();
+        if screen.is_empty() || !screen.w.is_finite() || !screen.h.is_finite() {
+            return Err(err(
+                Fail::Unavailable,
+                "the device's screen is not known yet; look again in a moment",
+            ));
+        }
         let resolve = |at: &At| -> Result<(f64, f64), JobError> {
             let p = match at {
                 At::Point(x, y) => (*x, *y),
@@ -269,7 +281,10 @@ impl Job {
                 let p = resolve(&at)?;
                 point = Some(p);
                 q.push_back((0, touch(Phase::Start, p)));
-                q.push_back((hold_ms.unwrap_or(TAP_MS).max(1), touch(Phase::End, p)));
+                q.push_back((
+                    hold_ms.unwrap_or(TAP_MS).clamp(1, HOLD_MAX_MS),
+                    touch(Phase::End, p),
+                ));
             }
             DeviceOp::Swipe {
                 from,
@@ -291,11 +306,16 @@ impl Job {
                             Direction::Left => (from.0 - dx, from.1),
                             Direction::Right => (from.0 + dx, from.1),
                         };
-                        (x.clamp(1.0, screen.w - 1.0), y.clamp(1.0, screen.h - 1.0))
+                        // `min` then `max`, never `clamp`: a screen under 2 points would make `clamp` panic.
+                        (
+                            x.min(screen.w - 1.0).max(1.0),
+                            y.min(screen.h - 1.0).max(1.0),
+                        )
                     }
                 };
                 point = Some(from);
-                let path = swipe_path(from, to, duration_ms.unwrap_or(SWIPE_MS));
+                let ms = duration_ms.unwrap_or(SWIPE_MS).min(SWIPE_MAX_MS);
+                let path = swipe_path(from, to, ms);
                 let last = path.len() - 1;
                 for (i, (x, y, t)) in path.into_iter().enumerate() {
                     let phase = match i {
@@ -627,6 +647,66 @@ mod tests {
         let e = Job::cancelled();
         assert_eq!(e.fail, Fail::Interrupted);
         assert_eq!(e.message, "the call was cancelled");
+    }
+
+    #[test]
+    fn an_unknown_screen_or_an_outsized_time_never_breaks_a_job() {
+        // Before the first `frames` event the screen is empty: refused, never a panic in the swipe's clamp.
+        for screen in [
+            Size::new(0.0, 0.0),
+            Size::new(402.0, 0.0),
+            Size::new(f64::NAN, 874.0),
+            Size::new(f64::INFINITY, 874.0),
+        ] {
+            let op = DeviceOp::Swipe {
+                from: None,
+                to: SwipeTo::Direction(Direction::Up),
+                duration_ms: None,
+            };
+            let e = Job::start(op, &refs(), screen).err().unwrap();
+            assert_eq!(e.fail, Fail::Unavailable, "{screen:?}");
+        }
+        // A tiny screen still swipes by direction without a panic.
+        let tiny = Size::new(1.5, 1.5);
+        let op = DeviceOp::Swipe {
+            from: None,
+            to: SwipeTo::Direction(Direction::Left),
+            duration_ms: None,
+        };
+        assert!(Job::start(op, &refs(), tiny).is_ok());
+        // An agent's huge hold is a long press of at most HOLD_MAX_MS, and the clock never overflows.
+        let op = DeviceOp::Tap {
+            at: At::Point(10.0, 10.0),
+            hold_ms: Some(u64::MAX),
+        };
+        let mut j = Job::start(op, &refs(), PHONE).unwrap();
+        j.take_point();
+        j.glide_for(0, 1_000);
+        sent(j.on_tick(1_000, 0));
+        assert_eq!(j.on_tick(1_000 + HOLD_MAX_MS - 1, 0), Out::Idle);
+        assert_eq!(
+            sent(j.on_tick(1_000 + HOLD_MAX_MS, 0)),
+            vec![touch(Phase::End, (10.0, 10.0))]
+        );
+        // A huge swipe time is held to SWIPE_MAX_MS.
+        let op = DeviceOp::Swipe {
+            from: Some(At::Point(10.0, 10.0)),
+            to: SwipeTo::Point(10.0, 400.0),
+            duration_ms: Some(u64::MAX),
+        };
+        let mut j = Job::start(op, &refs(), PHONE).unwrap();
+        j.take_point();
+        j.glide_for(0, 0);
+        let mut all = Vec::new();
+        for t in (0..=SWIPE_MAX_MS).step_by(100) {
+            if let Out::Send(v) = j.on_tick(t, 0) {
+                all.extend(v);
+            }
+        }
+        let Some(Input::Touch(last)) = all.last() else {
+            panic!("{all:?}")
+        };
+        assert_eq!(last.phase, Phase::End, "done by SWIPE_MAX_MS");
     }
 
     #[test]
