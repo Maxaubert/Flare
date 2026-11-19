@@ -1663,6 +1663,7 @@ mod tests {
                 st("/Users/me/ok", None),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &no_sessions);
         assert_eq!(r.tabs, vec![rt("/Users/me/ok", None, Some(7))]);
