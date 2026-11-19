@@ -125,10 +125,8 @@ impl Sink for BenchSink {
         }
     }
 
-    fn record(&self, record: Record) {
-        if let Ok(tx) = self.tx.lock() {
-            let _ = tx.send(record);
-        }
+    fn record(&self, record: Record) -> bool {
+        self.tx.lock().is_ok_and(|tx| tx.send(record).is_ok())
     }
 
     fn log(&self, line: &str) {

@@ -37,6 +37,10 @@ const MACH_RCV_TIMEOUT: i32 = 0x100;
 /// `MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) | MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT)`.
 const MACH_RCV_TRAILER_AUDIT_OPT: i32 = 3 << 24;
 const MACH_RCV_TIMED_OUT: i32 = 0x1000_4003;
+/// A send that timed out or was interrupted: the kernel hands the message back in the buffer, its rights
+/// pseudo-received (perhaps under new names), so only `mach_msg_destroy` on that buffer frees them.
+const MACH_SEND_TIMED_OUT: i32 = 0x1000_0004;
+const MACH_SEND_INTERRUPTED: i32 = 0x1000_0007;
 const MACH_MSG_TYPE_MOVE_SEND: u8 = 17;
 const MACH_MSG_TYPE_COPY_SEND: u32 = 19;
 const MACH_MSG_TYPE_MAKE_SEND: u8 = 20;
@@ -316,7 +320,9 @@ fn u32_at(b: &[u8], i: usize) -> Option<u32> {
     ))
 }
 
-/// Sends `body` (and `ports`, each with its disposition) to `remote`, within `timeout`.
+/// Sends `body` (and `ports`, each with its disposition) to `remote`, within `timeout`. On a timeout or interrupt the
+/// message came back with its rights and is destroyed here (the moved rights are gone, `remote` keeps its own); on any
+/// other error the rights were never taken and are still the caller's (see [`rights_still_ours`]).
 fn send(
     remote: Port,
     id: i32,
@@ -380,7 +386,16 @@ fn send(
             0,
         )
     };
+    if kr == MACH_SEND_TIMED_OUT || kr == MACH_SEND_INTERRUPTED {
+        // SAFETY: the kernel wrote the pseudo-received message back into our buffer; destroyed once.
+        unsafe { mach_msg_destroy(words.as_mut_ptr().cast()) };
+    }
     if kr == KERN_SUCCESS { Ok(()) } else { Err(kr) }
+}
+
+/// Whether a failed [`send`] left the rights it carried with the caller (under their old names).
+fn rights_still_ours(kr: i32) -> bool {
+    kr != MACH_SEND_TIMED_OUT && kr != MACH_SEND_INTERRUPTED
 }
 
 /// Flare's end: the checked-in service. One reader thread receives on it.
@@ -578,8 +593,10 @@ impl Link {
             &body,
             Duration::from_secs(2),
         );
-        if r.is_err() {
-            // Not sent: the rights are still ours.
+        if let Err(kr) = r
+            && rights_still_ours(kr)
+        {
+            // Never taken by the kernel: the rights are still ours.
             for (p, _) in ports {
                 drop_send(p);
             }
@@ -686,6 +703,69 @@ mod tests {
             println!("PEER-OK");
         }
         std::process::exit(0);
+    }
+
+    /// How many port names this task holds.
+    fn port_names() -> usize {
+        unsafe extern "C" {
+            fn mach_port_names(
+                task: Port,
+                names: *mut *mut Port,
+                ncnt: *mut u32,
+                types: *mut *mut u32,
+                tcnt: *mut u32,
+            ) -> i32;
+            fn mach_vm_deallocate(task: Port, addr: u64, size: u64) -> i32;
+        }
+        let (mut names, mut types) = (std::ptr::null_mut(), std::ptr::null_mut());
+        let (mut n, mut t) = (0u32, 0u32);
+        // SAFETY: out pointers to locals; the arrays the kernel hands out are freed below.
+        unsafe {
+            assert_eq!(
+                mach_port_names(task(), &mut names, &mut n, &mut types, &mut t),
+                KERN_SUCCESS
+            );
+            mach_vm_deallocate(task(), names as u64, u64::from(n) * 4);
+            mach_vm_deallocate(task(), types as u64, u64::from(t) * 4);
+        }
+        n as usize
+    }
+
+    #[test]
+    fn a_ring_that_times_out_on_a_full_port_leaks_no_rights() {
+        // Flare's end, full: a queue of one, with one message in it.
+        let flare = receive_port().unwrap();
+        let one = 1u32;
+        // SAFETY: as in `receive_port`.
+        unsafe { mach_port_set_attributes(task(), flare, MACH_PORT_LIMITS_INFO, &one, 1) };
+        let link = Link {
+            to_flare: flare,
+            mine: receive_port().unwrap(),
+            flare_pid: 1,
+        };
+        // A send right under the receive right's name, as `own_send_right` does.
+        unsafe extern "C" {
+            fn mach_port_insert_right(task: Port, name: Port, poly: Port, kind: u32) -> i32;
+        }
+        // SAFETY: a receive right we hold.
+        unsafe { mach_port_insert_right(task(), flare, flare, MACH_MSG_TYPE_MAKE_SEND_U32) };
+        let filler = Record::Changed(crate::wire::Changed {
+            device: 1,
+            count: 1,
+        });
+        assert!(link.send_record(&filler));
+        let surfaces: Vec<_> = (0..3u8).map(|i| surface(8, 4, i)).collect();
+        let refs: Vec<&IOSurfaceRef> = surfaces.iter().map(|s| &**s).collect();
+        let before = port_names();
+        assert!(link.send_ring(1, 1, &refs).is_err(), "the port is full");
+        assert_eq!(
+            port_names(),
+            before,
+            "the surfaces' send rights came back and were freed"
+        );
+        // The link drops its send right to `flare` and its own port; the receive right goes last.
+        drop(link);
+        drop_receive(flare);
     }
 
     fn spawn_peer(mode: &str, name: &str) -> std::process::Child {

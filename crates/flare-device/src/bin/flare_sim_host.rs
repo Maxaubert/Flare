@@ -252,13 +252,15 @@ mod mac {
             ));
         }
 
-        fn record(&self, record: Record) {
+        fn record(&self, record: Record) -> bool {
             let Some(h) = self.0.upgrade() else {
-                return;
+                return false;
             };
-            if !h.link.send_record(&record) {
+            let sent = h.link.send_record(&record);
+            if !sent {
                 h.records_dropped.fetch_add(1, Ordering::Relaxed);
             }
+            sent
         }
 
         fn log(&self, line: &str) {
@@ -614,7 +616,7 @@ mod mac {
 
     fn attach(host: &Arc<Host>, id: u64, target: Target) {
         if host.streams.lock().is_ok_and(|s| s.contains_key(&target)) {
-            // Attached already: the current ring again, so a restarted panel has the surfaces.
+            // Attached already (a second panel of one device): Flare holds its current ring, nothing is resent.
             host.ok(id, Value::Null);
             return;
         }

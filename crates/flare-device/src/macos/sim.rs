@@ -45,7 +45,8 @@ pub trait Sink: Send + Sync {
         screen: Screen,
         gpu_ring: &Arc<GpuRing>,
     );
-    fn record(&self, record: Record);
+    /// Sends a record: false when it did not reach the consumer (a frame's slot is then free again at once).
+    fn record(&self, record: Record) -> bool;
     fn log(&self, line: &str);
 }
 
@@ -396,7 +397,7 @@ impl Stream {
         g.stats.callbacks += 1;
         g.changed += 1;
         if let Some(c) = g.rings.current() {
-            self.sink.record(Record::Changed(Changed {
+            let _ = self.sink.record(Record::Changed(Changed {
                 device: c.device,
                 count: g.changed,
             }));
@@ -502,18 +503,27 @@ impl Stream {
                 if g.stats.fill_errors == 1 {
                     self.sink.log(&format!("{}: {e}", self.target));
                 }
+                // The slot holds an older frame: it is not sent, and is free again.
+                g.rings.done(device, slot);
+                return;
             }
         }
         if self.probe_barcode {
             g.barcode = barcode(&ring.surfaces[usize::from(slot)], self.scale);
         }
-        g.stats.sent += 1;
-        self.sink.record(Record::Frame(FrameRecord {
+        let sent = self.sink.record(Record::Frame(FrameRecord {
             device,
             slot: u32::from(slot),
             seq,
             t_us,
         }));
+        if sent {
+            g.stats.sent += 1;
+        } else {
+            // Flare never heard of it, so it never says the slot is done: it is free again now, or the ring would
+            // run out of slots for good after a few full ports (the sink counts the record it could not send).
+            g.rings.done(device, slot);
+        }
     }
 
     /// The surfaces callback (the device's queue): a new framebuffer (a new device size makes a new ring at the next
@@ -749,6 +759,54 @@ impl Attached {
 mod tests {
     use super::*;
     use crate::macos::ring::{fill_surface, rgba_surface};
+
+    /// A sink whose consumer never hears a record (Flare's port stayed full).
+    struct Deaf;
+    impl Sink for Deaf {
+        fn ring(&self, _: &Target, _: u32, _: u32, _: Screen, _: &Arc<GpuRing>) {}
+        fn record(&self, _: Record) -> bool {
+            false
+        }
+        fn log(&self, _: &str) {}
+    }
+
+    #[test]
+    fn a_frame_record_that_never_reaches_flare_frees_its_slot() {
+        let gpu = Arc::new(Gpu::new().expect("a Metal device"));
+        let fb = crate::macos::ring::surface(8, 4, u32::from_be_bytes(*b"BGRA")).unwrap();
+        let stream = Stream {
+            target: Target::sim("00000000-0000-0000-0000-000000000001").unwrap(),
+            inner: Mutex::new(Inner {
+                rings: RingSet::default(),
+                cap: FrameCap::default(),
+                fb: Some(fb),
+                seq: 0,
+                changed: 0,
+                paused: false,
+                timer: false,
+                ring_count: 0,
+                stats: Stats::default(),
+                gpu_ms: Vec::new(),
+                barcode: None,
+            }),
+            sink: Arc::new(Deaf),
+            gpu,
+            ids: Arc::new(AtomicU32::new(1)),
+            queue: DispatchQueue::new("com.flare.sim-host.test", None),
+            scale: 2.0,
+            probe_barcode: false,
+        };
+        let mut g = stream.lock();
+        for seq in 1..=10 {
+            stream.emit(&mut g, seq, seq * 16_667);
+        }
+        assert_eq!(
+            g.rings.dropped(),
+            0,
+            "no frame lacked a slot: every unheard frame gave its slot back"
+        );
+        assert_eq!(g.stats.sent, 0);
+    }
 
     #[test]
     fn the_probe_barcode_reads_from_a_slot() {
