@@ -154,6 +154,11 @@ pub struct Emulator {
     /// Bumped on every change of the selection (a copy in flight reads it). A redraw or a scroll that
     /// moves the selection does not bump it.
     sel_gen: u64,
+    /// Rule 1292: the size the window fits the grid to, the host's size a remote tab's link pinned the grid to while
+    /// it sends the host no size, and whether this grid takes pins at all (a remote tab's only).
+    fit_size: (usize, usize),
+    grid_pin: Option<(usize, usize)>,
+    pins_on: bool,
 }
 
 /// What the find bar shows: the counted matches (at most `HIGHLIGHT_LIMIT`), the active match
@@ -217,7 +222,40 @@ impl Emulator {
             dev_scanned: None,
             link_last: None,
             sel_gen: 0,
+            fit_size: (cols, rows),
+            grid_pin: None,
+            pins_on: false,
         }
+    }
+
+    /// Rule 1292: this grid is a remote tab's, so its link may pin it to the host's size (`remote_pty::grid_pin`).
+    pub fn allow_grid_pins(&mut self) {
+        self.pins_on = true;
+    }
+
+    /// The window's size for the grid: taken at once, unless the grid is pinned to the host's size (rule 1292); then
+    /// kept for when the pin goes.
+    pub fn fit(&mut self, cols: usize, rows: usize) {
+        self.fit_size = (cols, rows);
+        if self.grid_pin.is_none() {
+            self.resize(cols, rows);
+        }
+    }
+
+    /// The size the window last fitted the grid to (the pane's, also while pinned).
+    pub fn fit_size(&self) -> (usize, usize) {
+        self.fit_size
+    }
+
+    /// Rule 1292: the host's size while the link holds the size, None when the grid follows the window again.
+    pub fn grid_pin(&self) -> Option<(usize, usize)> {
+        self.grid_pin
+    }
+
+    fn pin_grid(&mut self, pin: Option<(usize, usize)>) {
+        self.grid_pin = pin;
+        let (c, r) = pin.unwrap_or(self.fit_size);
+        self.resize(c, r);
     }
 
     /// The local dev server address on the live screen (the newest), and a counter that moves only when that changes.
@@ -437,6 +475,14 @@ impl Emulator {
                         ident,
                         data: data.to_string(),
                     }),
+                    // Rule 1292: a remote tab's link, never the host's output (its link takes that out).
+                    crate::remote_pty::GRID_PIN_OSC if self.pins_on => {
+                        if data == "fit" {
+                            self.pin_grid(None);
+                        } else if let Some(size) = crate::remote_pty::parse_grid_pin(data) {
+                            self.pin_grid(Some(size));
+                        }
+                    }
                     _ => {}
                 }
             }

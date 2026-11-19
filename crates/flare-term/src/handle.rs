@@ -394,6 +394,9 @@ impl TermHandle {
             let st = reveal::start_reveal(reveal::agent_of_resume(r), self.sh.now());
             *lk(&self.sh.reveal) = Some(st);
         }
+        if opts.remote.is_some() {
+            self.emu.lock().allow_grid_pins();
+        }
         let sh = Arc::clone(&self.sh);
         // Claimed HERE, before the worker exists: a tab closed in between still finds the id and its
         // kill is remembered, so the worker starts no shell nobody can reach (review #32).
@@ -416,10 +419,13 @@ impl TermHandle {
                     };
                 if ok {
                     lk(&sh.events).push(TermEvent::Started);
-                    // After a spawn resolves, the real size is sent once more.
+                    // After a spawn resolves, the real size is sent once more: the window's, never a pin (rule 1292).
                     let (c, r) = {
                         let e = sh.emu.lock();
-                        (e.cols(), e.rows())
+                        match e.grid_pin() {
+                            Some(_) => e.fit_size(),
+                            None => (e.cols(), e.rows()),
+                        }
                     };
                     sh.mgr.resize(&sh.id, c, r);
                 } else {
@@ -480,7 +486,8 @@ impl TermHandle {
         if cols < 2 || rows < 1 {
             return;
         }
-        self.emu.lock().resize(cols, rows);
+        // A remote tab's grid pinned to the host's size keeps it; the pty still hears this size (rule 1292).
+        self.emu.lock().fit(cols, rows);
         self.sh.mgr.resize(&self.sh.id, cols, rows);
         self.sh.dirty.store(true, Ordering::SeqCst);
         lk(&self.sh.events).push(TermEvent::Resized);

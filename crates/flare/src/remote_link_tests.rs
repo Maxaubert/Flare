@@ -63,6 +63,10 @@ struct HostState {
     no_ring: bool,
     /// Every call in order, with its params (the order of a size and the typing, rule 1292).
     log: Vec<(String, Value)>,
+    /// Rule 1292: the size the host's window gives its tabs (None: 80x24), and an older host whose attach answer
+    /// names no size.
+    tab_size: Option<(u64, u64)>,
+    no_attach_size: bool,
 }
 
 #[derive(Clone, Default)]
@@ -124,7 +128,11 @@ impl FakeHost {
                 }
                 let seq = st.tabs.get(&tab).ok_or_else(no_tab)?.out.len();
                 st.attached.insert((conn, tab.clone()));
-                Ok(json!({"tab": tab, "cols": 80, "rows": 24, "seq": seq}))
+                if st.no_attach_size {
+                    return Ok(json!({"tab": tab, "seq": seq}));
+                }
+                let (c, r) = st.tab_size.unwrap_or((80, 24));
+                Ok(json!({"tab": tab, "cols": c, "rows": r, "seq": seq}))
             }
             Method::RemoteOutput => {
                 if !st.attached.contains(&(conn, tab.clone())) {
@@ -152,7 +160,8 @@ impl FakeHost {
                 let t = st.tabs.get(&tab).ok_or_else(no_tab)?;
                 let mut data = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
                 data.extend_from_slice(&t.out[t.start as usize..]);
-                let mut v = json!({"seq": t.out.len(), "cols": 80, "rows": 24, "data": enc(&data)});
+                let (c, r) = st.tab_size.unwrap_or((80, 24));
+                let mut v = json!({"seq": t.out.len(), "cols": c, "rows": r, "data": enc(&data)});
                 if styled {
                     v["styled"] = json!(true);
                 }
@@ -2020,4 +2029,125 @@ fn an_older_host_that_refuses_ring_is_attached_without_it() {
             json!({"tab": "h7"}),
         ]
     );
+}
+
+// ---- rule 1292: a held tab shows the host's grid ----
+
+/// A viewer tab's real terminal (its `TermHandle` and session) over the fake host, at this window's size, attached to
+/// the host's `h7` as an imported row (`held`: a Claude tab the host's window sizes).
+fn viewer(
+    host: &FakeHost,
+    held: bool,
+    cols: usize,
+    rows: usize,
+) -> Arc<flare_term::handle::TermHandle> {
+    let spawner = Arc::new(flare_term::pty::RoutingSpawner {
+        local: flare_term::fake::FakeSpawner::new(),
+        remote: Arc::new(RemoteSpawner::new(
+            Arc::new(FakeConnector {
+                host: host.clone(),
+                conns: AtomicU64::new(1),
+            }),
+            fast(),
+        )),
+    });
+    let mgr = flare_term::session::SessionManager::new(
+        spawner,
+        flare_term::fake::FakeShells::new(),
+        flare_term::session::SessionOptions::default(),
+    );
+    let h = flare_term::handle::TermHandle::new("v1", mgr, cols, rows);
+    h.start(flare_term::handle::StartOptions {
+        remote: Some(RemoteSpec {
+            machine: "mac".into(),
+            folder: "/Users/max/proj".into(),
+            resume: None,
+            live: flare_term::remote_pty::RemoteLive::new(Some("h7".into()), 0),
+            host_sized_start: held,
+            ring_both: true,
+        }),
+        ..Default::default()
+    });
+    h
+}
+
+/// A frame a Claude-like screen draws for its own 120 columns: a line longer than 80, text placed past column 80, and
+/// the prompt on the row below.
+fn wide_frame() -> Vec<u8> {
+    let mut f = b"\x1b[H\x1b[2J".to_vec();
+    f.extend(std::iter::repeat_n(b'a', 100));
+    f.extend_from_slice(b"\x1b[3;101HZ\x1b[4;1H> ok");
+    f
+}
+
+fn rows_of(e: &flare_term::emulator::Emulator) -> Vec<String> {
+    (0..4).map(|i| e.row_text(i)).collect()
+}
+
+fn grid(h: &flare_term::handle::TermHandle) -> (usize, usize) {
+    h.size()
+}
+
+/// Rule 1292 (Max, 2026-11-19: a tab typed in on the Mac, then fronted here, drew its lines over each other): while the
+/// size is held, the host draws for its own size, so this tab's grid takes the host's size from the attach answer and
+/// shows the host's screen cell for cell, whatever this window's size. A refit here sends nothing and keeps that grid.
+/// The first key ends the hold: this window's size goes to the host (never the host's own), and the grid follows it.
+#[test]
+fn a_held_imported_tab_draws_at_the_hosts_size_until_the_hold_ends() {
+    let host = host_with("h7");
+    lk(&host).tab_size = Some((120, 30));
+    let h = viewer(&host, true, 80, 24);
+    wait_for("the attach", || host.calls("remote.snapshot") == 1);
+    host.print("h7", &wide_frame());
+    wait_for("the frame", || {
+        h.screen_tail(4).iter().any(|l| l.contains("> ok"))
+    });
+    settle();
+    let mut want = flare_term::emulator::Emulator::new(120, 30);
+    want.feed(&wide_frame());
+    assert_eq!(grid(&h), (120, 30), "the host's grid");
+    assert_eq!(
+        h.with_emu_quiet(rows_of),
+        rows_of(&want),
+        "the host's screen, cell for cell"
+    );
+    h.resize(100, 28);
+    settle();
+    assert_eq!(
+        grid(&h),
+        (120, 30),
+        "a refit keeps the host's grid while held"
+    );
+    assert!(sizes(&host, "h7").is_empty(), "and sends nothing");
+    h.send_text("x");
+    wait_for("the key", || !host.typed("h7").is_empty());
+    assert_eq!(
+        sizes(&host, "h7"),
+        [(100, 28)],
+        "this window's size, never the host's"
+    );
+    wait_for("the grid back at this window's size", || {
+        grid(&h) == (100, 28)
+    });
+}
+
+/// Rule 1292: an older host's attach answer names no size: the held tab keeps this window's grid, as before. A tab that
+/// is not held (one opened from here, a plain shell) never takes the host's grid; nor does the host's own output pin it.
+#[test]
+fn a_tab_keeps_its_own_grid_when_the_host_names_no_size_or_it_is_not_held() {
+    let old = host_with("h7");
+    lk(&old).no_attach_size = true;
+    let h = viewer(&old, true, 80, 24);
+    wait_for("the attach", || old.calls("remote.snapshot") == 1);
+    settle();
+    assert_eq!(grid(&h), (80, 24));
+    let host = host_with("h7");
+    lk(&host).tab_size = Some((120, 30));
+    let free = viewer(&host, false, 80, 24);
+    wait_for("the size", || sizes(&host, "h7").first() == Some(&(80, 24)));
+    host.print("h7", b"\x1b]7502;40;10\x07ok");
+    wait_for("the output", || {
+        free.screen_tail(2).iter().any(|l| l.contains("ok"))
+    });
+    assert_eq!(grid(&free), (80, 24), "host output never sets the grid");
 }

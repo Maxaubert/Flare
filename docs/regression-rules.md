@@ -5010,12 +5010,20 @@ close that fronts its neighbour. Ctrl+Tab in either switch mode attaches only th
 watch's last status) starts in the host-sizes state of rule 1193: `RemoteSpec::host_sized_start`, and the worker's
 `size_held` sends no size after the attach, on a refit, a tab switch or a reconnect, until the first retake (a click
 on the fitted view) or the first typed thing here; then the newest size goes first and the typing after it (rules 282,
-1211, 1212). A plain shell sends its size on attach as a followed tab does. Native: `crates/flare/src/remote_link.rs`
-(`Worker::size_held`), `crates/flare-term/src/remote_pty.rs` (`RemoteSpec`), `crates/flare/src/appctl/import_glue.rs`
+1211, 1212). A plain shell sends its size on attach as a followed tab does. While held the host draws for its own
+size, so the tab's grid takes the host tab's size from the attach answer (an `OSC 7502` the link puts in the tab's
+output before the snapshot or catch-up; `SignalStrip` takes any from the host's output) and keeps it through refits
+(`Emulator::fit`) until the hold ends, then follows this window again after the size went; an older host that names
+no size keeps this window's grid (Max, 2026-11-19: a tab typed in on the Mac drew its lines over each other here).
+Native: `crates/flare/src/remote_link.rs` (`Worker::size_held`, `host_grid`), `crates/flare-term/src/emulator.rs`
+(`fit`, `grid_pin`), `crates/flare-term/src/remote_pty.rs` (`RemoteSpec`), `crates/flare/src/appctl/import_glue.rs`
 (`attach_front_import`, `attach_imported`), `crates/flare/src/appctl.rs`. Held by
 `an_imported_claude_tab_sends_no_size_on_attach_refit_switch_or_reconnect_and_one_before_the_first_key`,
-`a_retake_ends_an_imported_tabs_size_hold`, `an_imported_plain_shell_sends_its_size_on_attach_as_a_followed_tab_does`
-(`remote_link_tests.rs`), `an_import_adds_rows_behind_the_front_tab_and_a_click_attaches`,
+`a_retake_ends_an_imported_tabs_size_hold`, `an_imported_plain_shell_sends_its_size_on_attach_as_a_followed_tab_does`,
+`a_held_imported_tab_draws_at_the_hosts_size_until_the_hold_ends`,
+`a_tab_keeps_its_own_grid_when_the_host_names_no_size_or_it_is_not_held` (`remote_link_tests.rs`),
+`only_the_link_pins_a_remote_tabs_grid` (`remote_pty.rs`),
+`an_import_adds_rows_behind_the_front_tab_and_a_click_attaches`,
 `ctrl_tab_in_order_and_recent_modes_attaches_only_the_row_it_lands_on` and
 `a_close_that_fronts_an_imported_row_attaches_it` (`ui_tests/term/flow/import_flows.rs`). Source: Max, 2026-11-18.
 

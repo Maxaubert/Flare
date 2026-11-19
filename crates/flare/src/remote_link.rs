@@ -43,7 +43,7 @@ use flare_term::handle::RemoteIntent;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_term::remote_pty::{
     Errand, ErrandFail, Fetched, Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip,
-    Upload, UploadFolder, plain_snapshot, styled_snapshot,
+    Upload, UploadFolder, grid_pin, plain_snapshot, styled_snapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -960,6 +960,8 @@ impl PtySpawner for RemoteSpawner {
             styled_on: true,
             ring_on: true,
             size_held,
+            host_grid: None,
+            grid_pinned: false,
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -1010,6 +1012,11 @@ struct Worker {
     /// reconnect, until the first click (a retake) or the first typed thing here; the size then goes before the typing.
     /// The newest size asked meanwhile is kept in `size`.
     size_held: bool,
+    /// Rule 1292: the host tab's size, as the last attach answer named it (None: an older host that names none), and
+    /// whether the tab's grid is pinned to it: while the size is held the host draws for its own size, so this grid
+    /// takes that size until the hold ends.
+    host_grid: Option<(u16, u16)>,
+    grid_pinned: bool,
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -1062,6 +1069,13 @@ pub fn attach_params(tab: &str, ring_both: bool) -> Value {
         p["ring"] = json!(flare_ctl::remote::RING_BOTH);
     }
     p
+}
+
+/// Pure (rule 1292): the host tab's size an attach answer names, clamped as `remote.resize` clamps; None when an
+/// older host names none.
+pub fn host_size(answer: &Value) -> Option<(u16, u16)> {
+    let (c, r) = (answer["cols"].as_u64()?, answer["rows"].as_u64()?);
+    Some(flare_ctl::remote::clamp_size(c, r))
 }
 
 /// Pure: `remote.snapshot`'s params: the tab, and `styled` when the host takes it (rule 1213).
@@ -1302,6 +1316,15 @@ impl Worker {
         if self.size_held && (!self.kept.is_empty() || self.spec.live.take_retake()) {
             self.size_held = false;
         }
+        // While held, the grid takes the host's size before the snapshot or the catch-up is drawn in it.
+        if self.size_held
+            && let Some(g) = self.host_grid
+        {
+            self.io.push_output(&grid_pin(Some(g)));
+            self.grid_pinned = true;
+        } else {
+            self.unpin_grid();
+        }
         if !self.size_held
             && let Some((cols, rows)) = self.size
             && let Err(e) = link.call(
@@ -1375,7 +1398,10 @@ impl Worker {
         loop {
             let ring = self.spec.ring_both && self.ring_on;
             match link.call(Method::RemoteAttach, attach_params(tab, ring), self.t.call) {
-                Ok(_) => return None,
+                Ok(v) => {
+                    self.host_grid = host_size(&v);
+                    return None;
+                }
                 // Rule 1295: a host from before rule 1289 refuses the unknown param; the attach goes again without
                 // it, on this link, and later attaches of this tab leave it out (its question then rings only here).
                 Err(LinkError::Refused(e))
@@ -1646,6 +1672,15 @@ impl Worker {
         }
     }
 
+    /// Rule 1292: the hold ended (or the host named no size): the grid follows this window again, before any output
+    /// the host draws for the size just sent.
+    fn unpin_grid(&mut self) {
+        if self.grid_pinned {
+            self.io.push_output(&grid_pin(None));
+            self.grid_pinned = false;
+        }
+    }
+
     /// The live polls: typing and sizes as they come, output in short polls.
     fn pump(&mut self, link: &mut dyn Link, tab: &str) -> Step {
         let mut idle = self.t.poll_min;
@@ -1684,6 +1719,9 @@ impl Worker {
                 )
             {
                 return self.failed(e);
+            }
+            if !self.size_held {
+                self.unpin_grid();
             }
             for batch in input_batches(&out.intents) {
                 busy = true;
@@ -1752,6 +1790,9 @@ impl Worker {
                 )
             {
                 return self.failed(e);
+            }
+            if !self.size_held {
+                self.unpin_grid();
             }
             if let Err(e) = self.poll_convo(link, tab) {
                 return self.failed(e);

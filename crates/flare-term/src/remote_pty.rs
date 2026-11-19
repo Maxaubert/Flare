@@ -906,7 +906,8 @@ enum Strip {
 /// Takes the agent's signals (OSC 777 and OSC 7501) out of output that is replayed: the output a reconnect catches up
 /// on. A replay is the past, and the past never raises a Finished, a Question or a working mark on this machine
 /// (rule 289); the host's own state crosses the link as words instead (`remote.status`, PR 4). A signal belongs to the
-/// output it began in, so one cut across the end of the replay is still taken out whole. Everything else passes.
+/// output it began in, so one cut across the end of the replay is still taken out whole. A grid pin (rule 1292) is taken
+/// out of live output too. Everything else passes.
 #[derive(Debug)]
 pub struct SignalStrip {
     st: Strip,
@@ -960,7 +961,9 @@ impl SignalStrip {
                         Strip::Ident { replay: r }
                     } else {
                         let ident = &self.held[2..];
-                        if r && b == b';' && (ident == b"777" || ident == b"7501") {
+                        // Rule 1292: the grid pin is the link's alone, so the host's output never carries one.
+                        let pin = ident == b"7502"; // GRID_PIN_OSC
+                        if b == b';' && (pin || (r && (ident == b"777" || ident == b"7501"))) {
                             self.held.clear();
                             Strip::Drop { esc: false }
                         } else {
@@ -985,6 +988,27 @@ impl SignalStrip {
         }
         out
     }
+}
+
+/// Rule 1292: the OSC a remote tab's link puts in the tab's output to pin its grid to the host's size while it sends the
+/// host no size (`OSC 7502 ; cols ; rows`), or to let the grid follow the window again (`OSC 7502 ; fit`). Only the
+/// link writes it: [`SignalStrip`] takes it out of the host's output, and only a remote tab's grid acts on it.
+pub const GRID_PIN_OSC: u32 = 7502;
+
+/// Pure (rule 1292): the bytes that pin a remote tab's grid to `size` (cols, rows), or let it follow the window (None).
+pub fn grid_pin(size: Option<(u16, u16)>) -> Vec<u8> {
+    match size {
+        Some((c, r)) => format!("\x1b]{GRID_PIN_OSC};{c};{r}\x07"),
+        None => format!("\x1b]{GRID_PIN_OSC};fit\x07"),
+    }
+    .into_bytes()
+}
+
+/// Pure: the size a pin names, within the sizes `remote.resize` takes (2..1000 columns, 1..500 rows).
+pub fn parse_grid_pin(data: &str) -> Option<(usize, usize)> {
+    let (c, r) = data.split_once(';')?;
+    let (c, r) = (c.parse::<usize>().ok()?, r.parse::<usize>().ok()?);
+    ((2..=1000).contains(&c) && (1..=500).contains(&r)).then_some((c, r))
 }
 
 /// Pure: the end of a snapshot that puts the cursor back where the host's is (rule 293). The snapshot's last line is
@@ -1343,6 +1367,35 @@ mod tests {
         // An SGR with too many parameters is no SGR here.
         let long = format!("\x1b[{}m", "1;".repeat(40));
         assert!(!String::from_utf8_lossy(&styled_snapshot(long.as_bytes())).contains(&long));
+    }
+
+    /// Rule 1292: only the link pins a remote tab's grid. A pin in the host's output, live or replayed, is taken out;
+    /// a local tab's grid never acts on one; a remote tab's keeps the window's size while pinned and takes it back at
+    /// the `fit`.
+    #[test]
+    fn only_the_link_pins_a_remote_tabs_grid() {
+        let mut s = SignalStrip::new();
+        assert_eq!(s.feed(b"a\x1b]7502;40;10\x07b", false), b"ab");
+        assert_eq!(s.feed(b"\x1b]7502;fit\x1b\\c", true), b"c");
+        assert_eq!(s.feed(b"\x1b]75020;x\x07", false), b"\x1b]75020;x\x07");
+        let mut local = crate::emulator::Emulator::new(80, 24);
+        local.feed(&grid_pin(Some((120, 30))));
+        assert_eq!((local.cols(), local.rows()), (80, 24));
+        let mut remote = crate::emulator::Emulator::new(80, 24);
+        remote.allow_grid_pins();
+        remote.feed(&grid_pin(Some((120, 30))));
+        assert_eq!((remote.cols(), remote.rows()), (120, 30));
+        remote.fit(100, 28);
+        assert_eq!((remote.cols(), remote.rows()), (120, 30));
+        remote.feed(b"\x1b]7502;1;0\x07");
+        assert_eq!(
+            (remote.cols(), remote.rows()),
+            (120, 30),
+            "a size out of range is no pin"
+        );
+        remote.feed(&grid_pin(None));
+        assert_eq!((remote.cols(), remote.rows()), (100, 28));
+        assert_eq!(remote.grid_pin(), None);
     }
 
     #[test]
