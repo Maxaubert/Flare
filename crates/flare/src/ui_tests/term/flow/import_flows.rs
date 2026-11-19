@@ -663,6 +663,29 @@ fn an_adopted_row_stays_when_the_setting_is_off_and_is_not_saved() {
     assert!(ids(&w).contains(&row));
 }
 
+/// Rule 1293: with the setting off, Close on the last unattached adopted row asks its watch for `remote.close` before
+/// that watch is let go (the real watch then still sends it, `a_close_asked_as_the_watch_stops_*` in
+/// `remote_import.rs`).
+#[test]
+fn close_on_the_last_adopted_row_while_off_asks_the_close_before_the_watch_goes() {
+    let w = Wx::new(1.0);
+    let watches = importing(&w);
+    flare_settings::machine_prefs::set_import_remote_on(&w.prefs, false);
+    w.pump_until("the watch stops", |_| watches.live().is_empty());
+    adopt(&w, "t1-2");
+    let row = row_of(&w, "t1-2").expect("the adopted row");
+    assert_eq!(watches.live(), ["mac"]);
+    // The adopted tab is at work on the host, so the close goes past the ask (`close_now`).
+    w.ctl.borrow_mut().close_now(&row);
+    w.pump();
+    assert_eq!(row_of(&w, "t1-2"), None, "the row goes at once");
+    assert_eq!(watches.closes(), [("mac".to_string(), "t1-2".to_string())]);
+    assert!(
+        watches.live().is_empty(),
+        "no adopted row left: the watch goes"
+    );
+}
+
 /// Rule 1296: no adopt while an open on that machine waits for its host tab (the same host tab could show twice); once
 /// the open has its host tab, the adopt goes.
 #[test]

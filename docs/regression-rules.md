@@ -4981,8 +4981,10 @@ Its ssh is a tab link's with one fixed word more, `--no-start` after `--serve-re
 never starts a hidden Flare: a host with none running answers `unavailable`. It sends `remote.status` every 3 s and,
 while the machine does not answer, waits 3, 6, 12, 24, 48 and then 60 s between tries (`WatchTiming`,
 `next_backoff`). A broken link tells the window nothing; `unavailable` and a passing refusal are handed on as such.
-Dropping the watch (the setting off, the machine removed) stops its thread: no call after. Its only other call is
-`remote.close` for an unattached row (rule 1293), kept while the link is down and sent once it is up. The window
+Dropping the watch (the setting off, the machine removed) stops its thread: no `remote.status` after, and with no close
+waiting no call or link at all. Its only other call is `remote.close` for an unattached row (rule 1293), kept while the
+link is down and sent once it is up; a watch dropped with closes still waiting sends them first, over the link that is
+up or the next one within `WatchTiming::drain` (two minutes, `CLOSING_FOR`), then ends. The window
 applies no round before the restore answered. Native: `crates/flare/src/remote_import.rs` (`LinkWatchPort`,
 `heard_of`), `crates/flare/src/remote_link.rs`, `crates/flare/src/appctl/import_glue.rs` (`sync_watches`,
 `on_import`), `crates/flare/src/window.rs`. Held by `the_watch_link_runs_serve_remote_no_start_and_nothing_else_new`
@@ -5016,15 +5018,20 @@ on the fitted view) or the first typed thing here; then the newest size goes fir
 2026-11-18, import remote sessions PR 3. Close on any remote tab (imported, adopted, attached or opened from here)
 reads its host tab before the row goes and puts (machine, host tab) on the closing list, so a host that still lists
 the tab while it asks (rule 48) does not bring it back as an import. An attached tab closes over its own link as
-before; an unattached row has no link, so its `remote.close` goes over its machine's watch link. Hide here only
+before; an unattached row has no link, so its `remote.close` goes over its machine's watch link. That close is never
+lost when the watch stops right after it (the last adopted row closed while the setting is off, the machine removed):
+the stopped watch still sends it, once, when its link is up, for up to two minutes. Hide here only
 (`hide_remote`, rule 1192) detaches as before and adds (machine, host tab) to the hidden list, kept in
 `flare.machines.importHidden`, for an imported tab and for a tab opened from here alike (once detached its host lists
 it as its own). A listing that no longer names a hidden tab prunes it. Rows that go by themselves (the host tab ended,
 the setting off, the machine removed) never go through `close_now`: they detach or leave the model, and nothing is
 remembered as closed. Native: `crates/flare/src/appctl/import_glue.rs` (`closing_remote`, `hiding_remote`,
 `drop_import_row`), `crates/flare/src/appctl.rs` (`close_now`), `crates/flare/src/appctl/remote_glue.rs`
-(`hide_remote`). Held by `close_on_an_unattached_imported_row_sends_remote_close_through_the_watch_link`
-(`remote_import.rs`),
+(`hide_remote`). Held by `close_on_an_unattached_imported_row_sends_remote_close_through_the_watch_link`,
+`a_close_asked_as_the_watch_stops_is_still_sent_over_the_link_that_is_up`,
+`a_close_asked_while_down_is_sent_when_the_link_comes_back_after_the_watch_stopped`,
+`a_stopped_watch_gives_up_its_closes_after_the_drain_time` (`remote_import.rs`),
+`close_on_the_last_adopted_row_while_off_asks_the_close_before_the_watch_goes`,
 `close_on_an_unattached_imported_row_sends_remote_close_and_does_not_come_back_while_the_host_asks`,
 `closing_a_followed_remote_tab_keeps_it_out_while_the_host_asks` and
 `hide_here_only_remembers_the_host_tab_and_the_next_poll_does_not_bring_it_back`

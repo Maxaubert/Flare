@@ -82,7 +82,8 @@ impl AppCtl {
         want
     }
 
-    /// Starts and stops the watch links to match [`AppCtl::wanted_watches`]. A dropped watch stops its link.
+    /// Starts and stops the watch links to match [`AppCtl::wanted_watches`]. A dropped watch stops polling; a close it
+    /// was asked (the last adopted row closed while the setting is off) still goes once its link is up.
     pub(crate) fn sync_watches(&mut self) {
         let Some(port) = self.imports.port.clone() else {
             return;

@@ -374,9 +374,11 @@ impl std::fmt::Debug for WatchAnswer {
 /// Where a watch link hands its answers (the window's post, a test's list).
 pub type WatchPost = Arc<dyn Fn(WatchAnswer) + Send + Sync>;
 
-/// One machine's watch while it lives. Dropping it stops the link (rule 1291: no watch while the setting is off).
+/// One machine's watch while it lives. Dropping it stops the polls (rule 1291: no watch while the setting is off); the
+/// closes it was asked still go first, for up to [`WatchTiming::drain`].
 pub trait Watch {
-    /// Close on an unattached row (rule 1293): `remote.close {tab}` over this link, now or once it is up again.
+    /// Close on an unattached row (rule 1293): `remote.close {tab}` over this link, now or once it is up again, even
+    /// when the watch is dropped right after.
     fn close(&self, host_tab: &str);
 }
 
@@ -395,6 +397,9 @@ pub struct WatchTiming {
     pub backoff_max: Duration,
     /// One call's time.
     pub call: Duration,
+    /// How long a dropped watch still tries to send the closes it was asked (rule 1293). No longer than
+    /// [`CLOSING_FOR`]: past that the host tab may come back as an import anyway.
+    pub drain: Duration,
 }
 
 impl Default for WatchTiming {
@@ -404,6 +409,7 @@ impl Default for WatchTiming {
             backoff_min: Duration::from_secs(3),
             backoff_max: Duration::from_secs(60),
             call: Duration::from_secs(15),
+            drain: CLOSING_FOR,
         }
     }
 }
@@ -422,37 +428,64 @@ impl LinkWatchPort {
 
 #[derive(Default)]
 struct WatchState {
-    stop: bool,
+    /// When the window dropped the watch.
+    stopped: Option<Instant>,
     /// Host tabs to close (rule 1293), sent in order once the link is up.
     closes: Vec<String>,
 }
 
-#[derive(Default)]
 struct WatchShared {
     state: Mutex<WatchState>,
     cv: Condvar,
+    /// [`WatchTiming::drain`].
+    drain: Duration,
 }
 
 impl WatchShared {
+    fn new(drain: Duration) -> Self {
+        Self {
+            state: Mutex::new(WatchState::default()),
+            cv: Condvar::new(),
+            drain,
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, WatchState> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The window dropped the watch: no poll and no answer any more, only the closes still waiting.
     fn stopped(&self) -> bool {
-        self.lock().stop
+        self.lock().stopped.is_some()
     }
 
-    /// Waits `d`, or until the watch stops, or (`for_close`) a close is asked. False once stopped.
+    /// The worker ends: the watch was dropped and has no close left, or its closes waited [`WatchTiming::drain`].
+    fn over_in(&self, st: &WatchState, now: Instant) -> bool {
+        st.stopped.is_some_and(|at| {
+            st.closes.is_empty() || now.saturating_duration_since(at) >= self.drain
+        })
+    }
+
+    fn over(&self) -> bool {
+        self.over_in(&self.lock(), Instant::now())
+    }
+
+    /// Waits `d`, or until the watch is over, or (`for_close`) a close is asked. A dropped watch with closes left
+    /// waits no longer than its drain time. False once over.
     fn wait(&self, d: Duration, for_close: bool) -> bool {
         let end = Instant::now() + d;
         let mut st = self.lock();
         loop {
-            if st.stop {
+            let now = Instant::now();
+            if self.over_in(&st, now) {
                 return false;
             }
-            let left = end.saturating_duration_since(Instant::now());
+            let mut left = end.saturating_duration_since(now);
+            if let Some(at) = st.stopped {
+                left = left.min((at + self.drain).saturating_duration_since(now));
+            }
             if left.is_zero() || (for_close && !st.closes.is_empty()) {
                 return true;
             }
@@ -475,15 +508,16 @@ impl Watch for LinkWatch {
 }
 
 impl Drop for LinkWatch {
+    /// Never waits (the UI thread): the worker sends the closes still waiting, then ends by itself.
     fn drop(&mut self) {
-        self.0.lock().stop = true;
+        self.0.lock().stopped = Some(Instant::now());
         self.0.cv.notify_all();
     }
 }
 
 impl WatchPort for LinkWatchPort {
     fn watch(&self, machine: &str, post: WatchPost) -> Box<dyn Watch> {
-        let shared = Arc::new(WatchShared::default());
+        let shared = Arc::new(WatchShared::new(self.timing.drain));
         let worker = WatchWorker {
             machine: machine.to_string(),
             connector: Arc::clone(&self.connector),
@@ -535,10 +569,11 @@ impl WatchWorker {
         }
     }
 
-    /// BLOCKING (ssh, the polls): the watch's own thread until the window drops it.
+    /// BLOCKING (ssh, the polls): the watch's own thread until the window drops it and its closes went (or waited
+    /// [`WatchTiming::drain`]).
     fn run(self) {
         let mut backoff = self.t.backoff_min;
-        while !self.shared.stopped() {
+        while !self.shared.over() {
             match self.connector.connect(&self.machine) {
                 Ok(mut link) => {
                     backoff = self.t.backoff_min;
@@ -552,9 +587,17 @@ impl WatchWorker {
             }
             backoff = next_backoff(backoff, self.t.backoff_max);
         }
+        let left = self.shared.lock().closes.len();
+        if left > 0 {
+            log::warn!(
+                "the watch link to {} stopped with {left} close(s) it could not send",
+                self.machine
+            );
+        }
     }
 
-    /// The polls of one link: the closes asked, then `remote.status`, every `every`, until the link breaks or stops.
+    /// The polls of one link: the closes asked, then `remote.status`, every `every`, until the link breaks or the
+    /// watch is over. A dropped watch sends only its closes.
     fn polls(&self, link: &mut dyn Link) {
         loop {
             let closes = std::mem::take(&mut self.shared.lock().closes);
@@ -569,6 +612,9 @@ impl WatchWorker {
                     st.closes = again;
                     return;
                 }
+            }
+            if self.shared.stopped() {
+                return;
             }
             let Some(heard) = heard_of(link.call(Method::RemoteStatus, json!({}), self.t.call))
             else {
@@ -1314,6 +1360,7 @@ mod tests {
             backoff_min: Duration::from_millis(10),
             backoff_max: Duration::from_millis(40),
             call: Duration::from_secs(1),
+            drain: Duration::from_millis(500),
         }
     }
 
@@ -1429,6 +1476,16 @@ mod tests {
         );
     }
 
+    fn closes(m: &FakeMachine) -> Vec<Value> {
+        m.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(c, _)| *c == Method::RemoteClose)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+
     /// Rule 1293: Close on an unattached row is `remote.close {tab}` over the machine's watch link; asked while the
     /// machine is down, it goes once the link is up again.
     #[test]
@@ -1437,15 +1494,6 @@ mod tests {
         let (w, _heard) = watched(&m);
         wait_for("a poll", || statuses(&m) >= 1);
         w.close("t1-1");
-        let closes = |m: &FakeMachine| -> Vec<Value> {
-            m.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(c, _)| *c == Method::RemoteClose)
-                .map(|(_, p)| p.clone())
-                .collect()
-        };
         wait_for("the close", || !closes(&m).is_empty());
         assert_eq!(closes(&m), [json!({"tab": "t1-1"})]);
         m.down.store(true, Ordering::SeqCst);
@@ -1459,6 +1507,89 @@ mod tests {
         m.down.store(false, Ordering::SeqCst);
         wait_for("the close once up", || closes(&m).len() == 2);
         assert_eq!(closes(&m)[1], json!({"tab": "t1-2"}));
+    }
+
+    /// Rule 1293: a close asked just before the watch stops (the last adopted row closed while the setting is off, or
+    /// the machine removed) still goes over the link that is up; then the watch ends with no poll after the stop.
+    #[test]
+    fn a_close_asked_as_the_watch_stops_is_still_sent_over_the_link_that_is_up() {
+        let m = Arc::new(FakeMachine::default());
+        let (w, heard) = watched(&m);
+        wait_for("a poll", || statuses(&m) >= 1);
+        w.close("t1-1");
+        drop(w);
+        wait_for("the close", || !closes(&m).is_empty());
+        assert_eq!(closes(&m), [json!({"tab": "t1-1"})]);
+        let told = heard.lock().unwrap().len();
+        let (calls, connects) = (
+            m.calls.lock().unwrap().len(),
+            m.connects.load(Ordering::SeqCst),
+        );
+        std::thread::sleep(Duration::from_millis(100)); // sync-ok: test code only
+        assert_eq!(
+            m.calls.lock().unwrap().len(),
+            calls,
+            "no call after the close"
+        );
+        assert_eq!(
+            m.connects.load(Ordering::SeqCst),
+            connects,
+            "no link after the close"
+        );
+        assert_eq!(
+            heard.lock().unwrap().len(),
+            told,
+            "a stopped watch tells nothing"
+        );
+    }
+
+    /// Rule 1293 and the spec's failure table: a close asked while the link is down is tried once when it comes back,
+    /// even when the watch stopped in the meantime; it sends only the close, then the watch ends.
+    #[test]
+    fn a_close_asked_while_down_is_sent_when_the_link_comes_back_after_the_watch_stopped() {
+        let m = Arc::new(FakeMachine::default());
+        m.down.store(true, Ordering::SeqCst);
+        let (w, heard) = watched(&m);
+        wait_for("a try", || m.connects.load(Ordering::SeqCst) >= 1);
+        w.close("t1-2");
+        drop(w);
+        std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
+        assert!(closes(&m).is_empty(), "nothing goes while it is down");
+        m.down.store(false, Ordering::SeqCst);
+        wait_for("the close once up", || !closes(&m).is_empty());
+        assert_eq!(closes(&m), [json!({"tab": "t1-2"})]);
+        let connects = m.connects.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100)); // sync-ok: test code only
+        assert_eq!(statuses(&m), 0, "a stopped watch sends only its closes");
+        assert!(heard.lock().unwrap().is_empty());
+        assert_eq!(m.connects.load(Ordering::SeqCst), connects, "then it ends");
+    }
+
+    /// Rule 1293: a dropped watch tries its closes for [`WatchTiming::drain`] at most (two minutes by default, never
+    /// past [`CLOSING_FOR`]); a link that comes back later gets nothing, and the watch makes no link after.
+    #[test]
+    fn a_stopped_watch_gives_up_its_closes_after_the_drain_time() {
+        assert!(WatchTiming::default().drain <= CLOSING_FOR);
+        let m = Arc::new(FakeMachine::default());
+        m.down.store(true, Ordering::SeqCst);
+        let (w, _heard) = watched(&m);
+        wait_for("a try", || m.connects.load(Ordering::SeqCst) >= 1);
+        w.close("t1-3");
+        drop(w);
+        let tries = m.connects.load(Ordering::SeqCst);
+        wait_for("tries while it drains", || {
+            m.connects.load(Ordering::SeqCst) > tries
+        });
+        std::thread::sleep(quick().drain + Duration::from_millis(100)); // sync-ok: test code only
+        let connects = m.connects.load(Ordering::SeqCst);
+        m.down.store(false, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test code only
+        assert_eq!(
+            m.connects.load(Ordering::SeqCst),
+            connects,
+            "no link after the drain time"
+        );
+        assert!(closes(&m).is_empty(), "the close is given up");
     }
 
     // ---- the agent's list (rule 1296) ----
