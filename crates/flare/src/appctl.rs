@@ -2164,18 +2164,28 @@ impl AppCtl {
     /// was named and the tab's shell started with the hooks on, `new`, since a Claude names its session with the first
     /// message sent, so nothing was sent in it and it comes back as a new blank Claude. When its shell started with the
     /// hooks off (also a tab started before they were switched on) nothing is known: None.
+    /// A session id the tab already saves is never turned into `new` while its Claude stays: a session once named
+    /// was used, and a hub that holds none for a moment (it lost it, or it has not heard it again) is no proof that
+    /// nothing was sent. The kept id goes with the agent (a tab whose agent left saves no session, so a Claude
+    /// started there later starts from nothing).
     fn session_to_save(&self, id: &str, agent: Option<AgentKind>) -> Option<String> {
         if agent != Some(AgentKind::Claude) {
             return None;
         }
-        match self.hub.claude_session(id) {
-            Some(s) => Some(s.to_string()),
-            None => self
-                .deps
-                .host
-                .hooks_on_in(id)
-                .then(|| flare_tabs::restore::SESSION_NEW.to_string()),
+        if let Some(s) = self.hub.claude_session(id) {
+            return Some(s.to_string());
         }
+        if let Some(kept) = self
+            .model
+            .session(id)
+            .filter(|s| flare_agent::signal::is_session_id(s))
+        {
+            return Some(kept.to_string());
+        }
+        self.deps
+            .host
+            .hooks_on_in(id)
+            .then(|| flare_tabs::restore::SESSION_NEW.to_string())
     }
 
     /// The agent in `tab` opened its panel: the panel goes when that agent leaves.
@@ -10630,6 +10640,64 @@ two",
         flare_settings::agent_prefs::set_agent_hooks_on(&f.prefs, true);
         f.ctl.borrow_mut().sync_model_agents();
         assert_eq!(f.ctl.borrow().model().session(&id), None);
+    }
+
+    /// Rule 1286, 2026-11-19: every Claude tab came back blank after a restart. The turn's hook named the session
+    /// after the title had already shown the work, so no mark moved with it and `tabs.json` kept `new`. The id is
+    /// saved as soon as it is named; an id the tab saves is not turned back into `new` while its Claude stays, and
+    /// goes once the agent leaves (the next Claude there starts from nothing).
+    #[test]
+    fn a_session_named_after_the_work_showed_is_saved_and_kept_while_its_claude_stays() {
+        let lookup = FixedSessions::new(&[]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\d", Some(AgentKind::Claude))],
+            saved_sessions: vec![Some("new")],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            plugin_dir: Some("C:\\plugin".into()),
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.wait_made("C:\\d");
+        let id = f.ids()[0].clone();
+        let session = |f: &Fx| f.ctl.borrow().model().session(&id).map(str::to_string);
+        assert_eq!(session(&f).as_deref(), Some("new"));
+        // The work shows first (the title, here a hook with no session): the mark moves.
+        f.say("C:\\d", TITLE_IDLE);
+        f.say("C:\\d", OSC_WORKING);
+        f.tick_until("working", |f| f.ctl.borrow().hub.working(&id));
+        f.tick_until("the agent here", |f| f.agent_here(&id));
+        // An id the tab already saves stays while its Claude does, though the hub holds none.
+        assert_eq!(f.ctl.borrow().hub.claude_session(&id), None);
+        f.ctl.borrow_mut().model_mut().set_session(&id, Some(SID_B));
+        f.ctl.borrow_mut().sync_model_agents();
+        assert_eq!(session(&f).as_deref(), Some(SID_B), "not turned into new");
+        f.ctl.borrow_mut().model_mut().set_session(&id, Some("new"));
+        // Then the turn's hook names the session, and no mark moves with it: saved all the same.
+        f.say("C:\\d", &osc_session(SID_A));
+        f.tick_until("the named session saved", |f| {
+            session(f).as_deref() == Some(SID_A)
+        });
+        assert_eq!(
+            f.ctl.borrow().model().saved().tabs[0].session.as_deref(),
+            Some(SID_A)
+        );
+        // The agent leaves (the poll no longer finds it): the kept id goes with it, and a Claude started there later
+        // saves `new`.
+        let claude = Some(flare_agent::kinds::DetectedAgent::Claude);
+        f.ctl.borrow().hub.queue_poll_answer(&id, true, claude);
+        f.ctl.borrow_mut().hub_mut().drain_poll();
+        f.ctl.borrow().hub.queue_poll_answer(&id, false, None);
+        f.ctl.borrow_mut().hub_mut().drain_poll();
+        assert!(!f.agent_here(&id));
+        assert_eq!(f.ctl.borrow().hub.claude_session(&id), None);
+        f.ctl.borrow_mut().sync_model_agents();
+        assert_eq!(session(&f), None);
+        f.ctl.borrow().hub.queue_poll_answer(&id, true, claude);
+        f.ctl.borrow_mut().hub_mut().drain_poll();
+        assert!(f.agent_here(&id));
+        f.ctl.borrow_mut().sync_model_agents();
+        assert_eq!(session(&f).as_deref(), Some("new"));
     }
 
     /// Rule 1286: a Claude tab with no session left comes back as a new blank Claude (plain `claude`), not a plain

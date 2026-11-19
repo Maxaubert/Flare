@@ -99,14 +99,16 @@ impl AppCtl {
                 .saved_agent(id)
                 .or_else(|| self.model.agent_kind(id))
         };
-        let session = (agent == Some(AgentKind::Claude))
-            .then(|| self.hub.claude_session(id))
-            .flatten()
+        // What `tabs.json` would save for it (rule 1286): its session (the hub's, or the id the tab already saves), or
+        // `new` when its Claude never named a session with the hooks on.
+        let saved = self.session_to_save(id, agent);
+        let session = saved
+            .as_deref()
             .and_then(|s| valid_resume(Some(s)))
+            .filter(|s| flare_agent::signal::is_session_id(s))
             .map(str::to_string);
-        // What `tabs.json` would save for it: `new` when its Claude never named a session with the hooks on.
-        let unused = session.is_none()
-            && self.session_to_save(id, agent).as_deref() == Some(flare_tabs::restore::SESSION_NEW);
+        let unused =
+            session.is_none() && saved.as_deref() == Some(flare_tabs::restore::SESSION_NEW);
         push_closed(
             &mut self.closed,
             ClosedTab {

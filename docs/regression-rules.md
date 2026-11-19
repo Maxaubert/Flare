@@ -2672,7 +2672,7 @@ as a plain shell (Max, 2026-11-11: "claude doesnt auto resume on restart either"
 plain login command line and get the id in `FLARE_RESUME_ID`; Flare's shell integration takes it out of the
 environment before the user's startup files run, and runs `claude --resume <id>` (or `codex resume --last`,
 `agy -c`, or plain `claude` for `claude:new`, rule 1286) once those files have set PATH: zsh at the first prompt (`__flare_install` in `flare.zsh`, the id kept
-by the `.zshenv` shim), bash at the end of its `--rcfile`, fish in `flare.fish`. The script runs only an id of
+by the `.zshenv` shim; the agent runs before that prompt's OSC 7, rule 1286), bash at the end of its `--rcfile`, fish in `flare.fish`. The script runs only an id of
 hex digits and dashes, quoted. Without the integration on disk a Mac tab still comes back as a plain shell.
 `crates/flare-shells/src/resume.rs`, `crates/flare-shells/src/macos/scripts/`. Held by
 `a_mac_shell_carries_the_resume_in_its_environment`, `a_restored_zsh_or_bash_tab_resumes_claude_through_the_login_shell`
@@ -4945,3 +4945,19 @@ SESSION_NEW}`, `TabModel::set_session`, `AppCtl::session_to_save`, `flare_agent:
 `a_tab_resumes_its_own_session_and_a_never_used_one_comes_back_blank`,
 `a_closed_claude_tab_never_used_comes_back_as_a_new_blank_claude` and
 `a_new_blank_claude_is_claude_with_no_session_and_not_new_work`. Source: Max, 2026-11-18.
+Follow-up 2026-11-19, Max: "no sessions continue now, all started with an empty session". Every Claude tab saved
+`"new"` and came back blank, for two reasons. (1) The hub took a session the hooks named (`HostEvent::Osc777` in
+`agent_hub.rs`) without counting it as a change, and the window saves sessions only on `AgentHub::take_changed`
+(`sync_model_agents`). Claude's title shows the work about 25 ms before the turn's UserPromptSubmit hook names the
+session, so no mark moved with the id and `tabs.json` kept `new`. Now a session named, another session, and a session
+lost (the agent leaving, a shell started again) each count as a change, for local and remote tabs. (2) On macOS zsh,
+`__flare_install` sent the first prompt's OSC 7 just BEFORE `claude --resume`; Flare reads an OSC 7 as a prompt with
+nothing in front of it (`arm_on_prompt`, gone), so the hub dropped the session the resume had named at once, and a
+resumed tab nobody typed into again named none and saved `new`. Now zsh runs the resume first and reports the folder
+when the agent exits (bash and fish already ran it before their first prompt). Also, `session_to_save` never turns an
+id the tab already saves into `new` while its Claude stays (the hub holding none for a moment is no proof nothing was
+sent); the kept id goes when the agent leaves, so a Claude started there later still saves `new`. Ctrl+Shift+T reopens
+with the same id. Held by `a_named_session_is_a_change_even_when_no_mark_moves` (`agent_hub.rs`),
+`a_session_named_after_the_work_showed_is_saved_and_kept_while_its_claude_stays` (`appctl`) and
+`zsh_runs_a_restored_tabs_resume_before_its_first_folder_report` (`flare-term/tests/real_shells_macos.rs`, a real
+zsh with a stand-in `claude`).

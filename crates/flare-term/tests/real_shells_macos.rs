@@ -296,6 +296,57 @@ fn zsh_without_a_zdotdir_reads_home_and_leaves_none_set() {
     assert_eq!(got, "Z=unset|home");
 }
 
+/// Rule 1286, 2026-11-19: a restored tab's agent starts BEFORE zsh's first folder report. Flare reads an OSC 7 as a
+/// prompt with nothing in front of it and takes the tab's agent and its Claude session back there; zsh sent the
+/// first report just before `claude --resume`, so every restored tab lost the session it resumed and was saved as a
+/// new blank Claude. The stand-in `claude` names itself in the title, which must come before any folder report.
+#[test]
+fn zsh_runs_a_restored_tabs_resume_before_its_first_folder_report() {
+    let def = shell_def("zsh").expect("zsh ships with macOS");
+    let home = temp_dir_named("home");
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        "#!/bin/sh\nprintf '\\033]0;STAND-IN %s\\007' \"$*\"\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        home.path().join(".zshrc"),
+        format!("path=('{}' $path)\n", bin.display()),
+    )
+    .unwrap();
+    let work = temp_dir_named("work");
+    let id = "5a1d0c2e-1111-4222-8333-94445555a666";
+    let mut env = launchd_env(home.path());
+    env.push(("FLARE_RESUME_ID".to_string(), id.to_string()));
+    let rig = spawn(&def, work.path(), &env);
+    assert!(
+        wait_cwd(&rig, work.path(), 20_000),
+        "no first prompt; screen {:?}",
+        rig.screen()
+    );
+    let events = rig.events.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let want = format!("STAND-IN --resume {id}");
+    let ran = events
+        .iter()
+        .position(|e| matches!(e, TermEvent::Title(t) if *t == want))
+        .unwrap_or_else(|| panic!("the resume never ran; events {events:?}"));
+    let first_cwd = events
+        .iter()
+        .position(|e| matches!(e, TermEvent::Cwd(_)))
+        .expect("a folder report");
+    assert!(
+        ran < first_cwd,
+        "a folder report came before the resume; events {events:?}"
+    );
+}
+
 /// bash through the rcfile reads what a login bash reads: the first of ~/.bash_profile,
 /// ~/.bash_login and ~/.profile, and not ~/.bashrc on its own.
 #[test]
