@@ -152,6 +152,46 @@ fn a_closed_claude_tab_comes_back_with_its_session_and_codex_with_its_own_resume
     );
 }
 
+/// Rule 1286: a closed Claude tab in which nothing was sent (the hooks on, no session named) opens again as a new blank
+/// Claude: plain `claude`, never the folder's newest session, and no worker looks for one.
+#[test]
+fn a_closed_claude_tab_never_used_comes_back_as_a_new_blank_claude() {
+    let lookup = FixedSessions::new(&[SESSION_A, SESSION_B]);
+    let f = fx_with(Opts {
+        saved: vec![("C:\\p", None)],
+        lookup: lookup_of(&lookup),
+        shells: Some(vec![resume_pwsh()]),
+        plugin_dir: Some("C:\\plugin".into()),
+        ..Opts::default()
+    });
+    f.start_restore_and_wait();
+    f.wait_made("C:\\p");
+    f.ctl
+        .borrow_mut()
+        .closed
+        .push(crate::appctl::app_keys_glue::ClosedTab {
+            cwd: "C:\\d".into(),
+            at: 0,
+            agent: Some(AgentKind::Claude),
+            session: None,
+            unused: true,
+            machine: None,
+        });
+    f.key(shift_ctrl_key("T"));
+    f.pump_until("the reopened tab", |f| !f.made_with("C:\\d").is_empty());
+    let made = &f.made_with("C:\\d")[0];
+    assert!(env_of(made, "FLARE_RESUME_ID").is_none());
+    let line = made.spec().args.last().cloned().unwrap_or_default();
+    assert!(line.ends_with("; claude"), "{line}");
+    assert!(!lookup.asked().contains(&"C:\\d".to_string()));
+    let id = id_in(&f, "C:\\d");
+    assert_eq!(
+        f.ctl.borrow().model().agent_kind(&id),
+        Some(AgentKind::Claude)
+    );
+    assert_eq!(f.ctl.borrow().model().session(&id), Some("new"));
+}
+
 #[test]
 fn a_claude_tab_whose_session_was_never_named_takes_the_newest_session_no_open_tab_holds() {
     let lookup = FixedSessions::new(&[SESSION_A, SESSION_B]);
@@ -172,6 +212,7 @@ fn a_claude_tab_whose_session_was_never_named_takes_the_newest_session_no_open_t
             at: 0,
             agent: Some(AgentKind::Claude),
             session: None,
+            unused: false,
             machine: None,
         });
     f.key(shift_ctrl_key("T"));
@@ -204,6 +245,7 @@ fn a_named_session_an_open_tab_took_since_is_not_resumed_twice() {
             at: 0,
             agent: Some(AgentKind::Claude),
             session: Some(SESSION_A.into()),
+            unused: false,
             machine: None,
         });
     f.key(shift_ctrl_key("T"));

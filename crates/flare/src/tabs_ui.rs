@@ -977,11 +977,13 @@ mod tests {
                     cwd: r"C:\a".into(),
                     agent: Some(AgentKind::Claude),
                     remote: None,
+                    session: None,
                 },
                 SavedTab {
                     cwd: r"C:\b".into(),
                     agent: None,
                     remote: None,
+                    session: None,
                 },
             ],
             active: 0,

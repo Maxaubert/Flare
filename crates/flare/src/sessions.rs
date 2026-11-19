@@ -5,7 +5,7 @@
 //! `notes & calc.jsonl` is skipped and never takes a tab's slot. This is the first of the three
 //! places a resume id is validated (the lookup, `TabHost::spawn`, `SessionManager::spawn`).
 
-use flare_agent::resume::{claude_sessions_in, store_root, valid_resume};
+use flare_agent::resume::{claude_session_used, claude_sessions_in, store_root, valid_resume};
 use flare_tabs::restore::SessionLookup;
 use std::path::PathBuf;
 
@@ -41,6 +41,15 @@ impl SessionLookup for ClaudeSessionLookup {
             .into_iter()
             .filter(|id| valid_resume(Some(id)).is_some())
             .collect()
+    }
+
+    /// BLOCKING (the restore worker): the session's transcript is in the folder's store and holds a message the user
+    /// sent (rule 1286); the read is bounded (`claude_session_used`).
+    fn used(&self, cwd: &str, id: &str) -> bool {
+        let Some(home) = &self.home else {
+            return false;
+        };
+        claude_session_used(&store_root(home, self.config_dir.as_deref()), cwd, id)
     }
 }
 
@@ -119,5 +128,22 @@ mod tests {
         );
         let none = ClaudeSessionLookup::new(None);
         assert!(none.sessions("C:\\w").is_empty());
+    }
+
+    /// Rule 1286: the restore's question "was this session used" reads the folder's store: a transcript with a user
+    /// message is, an empty one or a missing one is not.
+    #[test]
+    fn the_claude_lookup_says_a_session_is_used_only_with_a_user_message() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dir = tmp.path().join(".claude").join("projects").join("C--w");
+        fs::create_dir_all(&dir).expect("dir");
+        fs::write(dir.join(format!("{GOOD}.jsonl")), CLI_HEAD).expect("good");
+        let empty = "0f0e0d0c-2222-4333-8444-955566667777";
+        fs::write(dir.join(format!("{empty}.jsonl")), "").expect("empty");
+        let lookup = ClaudeSessionLookup::new(Some(tmp.path().to_path_buf()));
+        assert!(lookup.used("C:\\w", GOOD));
+        assert!(!lookup.used("C:\\w", empty));
+        assert!(!lookup.used("C:\\w", "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e50"));
+        assert!(!ClaudeSessionLookup::new(None).used("C:\\w", GOOD));
     }
 }

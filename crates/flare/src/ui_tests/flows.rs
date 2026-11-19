@@ -135,6 +135,7 @@ impl Fx {
                         cwd: cwd.clone(),
                         agent: *agent,
                         remote: None,
+                        session: None,
                     })
                     .collect(),
                 active: opts.active,
@@ -1568,8 +1569,11 @@ fn the_first_frame_has_the_tabs_and_the_ring_on_agent_tabs() {
     f.park_pointer();
     let fr = f.h.render();
     let rows = f.all_rows();
-    assert!(rows.iter().all(|r| !r.loading), "the ring is gone");
-    assert_eq!(ring(&fr, &rows[1]), 0);
+    // No session in the folder: the Claude tab comes back as a new blank Claude (rule 1286), so it keeps its ring
+    // while Claude starts; the plain tab never had one.
+    assert!(!rows[0].loading, "the plain tab has no ring");
+    assert!(rows[1].loading, "the new blank Claude is still starting");
+    assert!(ring(&fr, &rows[1]) > 0);
 }
 
 #[test]

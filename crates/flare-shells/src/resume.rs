@@ -37,10 +37,12 @@ pub fn with_resume_prior(def: &ShellDef, resume: &str, prior: Option<&str>) -> L
         Some(v) if plain_switch_value(v) => format!("set {NO_CWD_EXE}={v}"),
         _ => format!("set {NO_CWD_EXE}="),
     };
-    // A marker resumes the agent's most recent session in the folder: no id travels.
+    // A marker resumes the agent's most recent session in the folder, or starts a new blank Claude (rule 1286): no id
+    // travels, and the line is a constant.
     let marker = match resume {
         "codex:last" => Some("codex resume --last"),
         "agy:last" => Some("agy -c"),
+        "claude:new" => Some("claude"),
         _ => None,
     };
     let env = if marker.is_some() {
@@ -166,7 +168,7 @@ mod tests {
 
     #[test]
     fn a_cmd_resume_clears_the_search_switch_once_the_agent_ends() {
-        for id in [A, "codex:last", "agy:last"] {
+        for id in [A, "codex:last", "agy:last", "claude:new"] {
             let r = with_resume_prior(&cmd(), id, None);
             assert!(
                 r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath="),
@@ -179,7 +181,7 @@ mod tests {
     /// A user's own value of the switch is put back, not erased (new-4 residual).
     #[test]
     fn a_cmd_resume_puts_the_users_own_switch_value_back() {
-        for id in [A, "codex:last", "agy:last"] {
+        for id in [A, "codex:last", "agy:last", "claude:new"] {
             let r = with_resume_prior(&cmd(), id, Some("1"));
             assert!(
                 r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath=1"),
@@ -206,7 +208,7 @@ mod tests {
 
     #[test]
     fn a_cmd_resume_never_searches_the_current_folder() {
-        for id in [A, "codex:last", "agy:last"] {
+        for id in [A, "codex:last", "agy:last", "claude:new"] {
             let r = with_resume_prior(&cmd(), id, None);
             assert!(
                 r.args[1].starts_with("set NoDefaultCurrentDirectoryInExePath=1& "),
@@ -261,6 +263,26 @@ mod tests {
         assert_eq!(r.env, None);
     }
 
+    /// Rule 1286: a Claude tab whose session was never used starts a new blank Claude: plain `claude`, no
+    /// `--resume` or `--continue`, and nothing in the environment on Windows.
+    #[test]
+    fn the_new_claude_marker_starts_plain_claude_on_every_windows_shell() {
+        for d in [pwsh(), powershell()] {
+            let r = with_resume(&d, "claude:new");
+            assert_eq!(r.args[3], "boot; claude", "{}", d.id);
+            assert_eq!(r.env, None, "{}", d.id);
+        }
+        let r = with_resume_prior(&cmd(), "claude:new", None);
+        assert_eq!(
+            r.args,
+            [
+                "/K",
+                "set NoDefaultCurrentDirectoryInExePath=1& claude& set NoDefaultCurrentDirectoryInExePath="
+            ]
+        );
+        assert_eq!(r.env, None);
+    }
+
     /// Rule 1133: a Mac tab that hosted Claude hands the id to its zsh, bash or fish, which the
     /// integration turns into `claude --resume <id>`; the command line stays the plain login shell.
     #[test]
@@ -273,7 +295,7 @@ mod tests {
             &["-l", "--init-command", "source '/si/fish/flare.fish'"],
         );
         for d in [zsh, bash, fish] {
-            for id in [A, "codex:last", "agy:last"] {
+            for id in [A, "codex:last", "agy:last", "claude:new"] {
                 let r = with_resume(&d, id);
                 assert_eq!(r.exe, d.exe, "{}", d.id);
                 assert_eq!(
