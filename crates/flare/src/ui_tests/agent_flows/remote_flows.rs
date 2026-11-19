@@ -393,6 +393,11 @@ fn remote_status_says_the_windows_own_marks_as_words() {
         let v = ask(f, CtlOp::RemoteStatus).expect("the status");
         v["tabs"][0]["state"] == "question" && v["tabs"][0]["question_text"] == "Pick a colour?"
     });
+    // The words go to the opener only: nothing is said to Sonara on this machine (rule 1304).
+    for _ in 0..10 {
+        f.step(100);
+    }
+    assert!(f.posts.lock().unwrap().is_empty(), "no question post here");
 }
 
 /// Rules 1302 and 280: a hidden session is born remote-sized; the opener's resize sizes it and is saved; its last
@@ -543,6 +548,21 @@ fn a_hidden_tabs_agent_cannot_open_a_panel_or_front_the_window() {
     assert_eq!(own["tabs"][0]["active"], false);
     let cwd = ask(&f, CtlOp::TabCwd { tab: id.clone() }).expect("its folder");
     assert_eq!(cwd["cwd"], "C:\\there");
+    // Its agent's `open.remote` would put a tab on this screen: refused too; `flare open --on` (no caller) is not.
+    let e = ask(
+        &f,
+        CtlOp::OpenRemote {
+            machine: "mac".into(),
+            folder: "/Users/max".into(),
+            resume: None,
+            front: false,
+            caller: Some(id.clone()),
+        },
+    )
+    .expect_err("an open from the hidden session");
+    assert_eq!(e.code, flare_ctl::code::UNAVAILABLE);
+    assert!(e.message.contains("shows on Mac Mini"), "{}", e.message);
+    assert_eq!(f.ids(), strip, "no tab opened here");
 }
 
 /// Rule 1302: plugins never see a hidden session: `tabs.list` for a plugin with `tabs` (and the `tabs` and `agent`
@@ -614,4 +634,101 @@ fn claude(f: &Fx, cwd: &str) {
         let id = f.ids()[f.cwds().iter().position(|c| c == cwd).unwrap()].clone();
         f.ctl.borrow_mut().hub_mut().agent_here(&id)
     });
+}
+
+/// Rule 1302: a hidden session whose shell never starts goes, so its opener hears `no_tab` instead of waiting for it.
+#[test]
+fn a_hidden_session_whose_shell_never_starts_goes() {
+    let f = Fx::new();
+    let strip = f.tabs(&["C:\\work"]);
+    serving(&f);
+    f.sp.fail_next_spawn();
+    ask(
+        &f,
+        CtlOp::RemoteOpen {
+            folder: "C:\\there".into(),
+            resume: None,
+            open_id: None,
+            opener: Some("Mac Mini".into()),
+        },
+    )
+    .expect("the open answers");
+    f.pump_until("the session gone", |f| hidden_ids(f).is_empty());
+    assert_eq!(f.ids(), strip);
+}
+
+/// Rules 1302 and 1286 through the window: a hidden session saved in `tabs.json` comes back hidden (no placeholder,
+/// no strip row), at its opener's saved size and remote-sized, resuming its used Claude session; `remote.status` lists
+/// it with its opener; and its question rings nowhere here.
+#[test]
+fn a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed() {
+    let lookup = FixedSessions::new(&[SESSION_A]);
+    let l: Arc<dyn SessionLookup> = lookup.clone();
+    let f = Fx::with(
+        Opts {
+            saved: vec![("C:\\p", None)],
+            hidden: vec![flare_tabs::restore::SavedHidden {
+                cwd: "C:\\h".into(),
+                agent: Some(AgentKind::Claude),
+                session: Some(SESSION_A.into()),
+                opener: "Mac Mini".into(),
+                open_id: Some("o-1".into()),
+                size: Some((61, 19)),
+            }],
+            lookup: Some(l),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        },
+        |_| {},
+    );
+    set_notify_ask_on(&f.prefs, true);
+    let got: Rc<RefCell<Vec<Toast>>> = Rc::default();
+    let sink = Rc::clone(&got);
+    f.ctl
+        .borrow_mut()
+        .set_toast_sink(Rc::new(move |t: &Toast| sink.borrow_mut().push(t.clone())));
+    serving(&f);
+    assert_eq!(f.rows(), 1, "no placeholder for the hidden session");
+    AppCtl::start_restore(&f.ctl);
+    f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
+    f.pump_until("both shells", |f| f.sp.made().len() >= 2);
+    assert_eq!(f.rows(), 1, "still one row");
+    let ids = hidden_ids(&f);
+    assert_eq!(ids.len(), 1);
+    let id = ids[0].clone();
+    assert_eq!(
+        env_of(&f.shell("C:\\h"), "FLARE_RESUME_ID").as_deref(),
+        Some(SESSION_A),
+        "its used session is resumed"
+    );
+    assert_eq!(
+        f.ctl.borrow().handle_of(&id).expect("a handle").size(),
+        (61, 19),
+        "the opener's saved size"
+    );
+    let v = ask(&f, CtlOp::RemoteStatus).expect("status");
+    assert_eq!(v["tabs"][0]["tab"], id.as_str());
+    assert_eq!(v["tabs"][0]["sized"], "viewer");
+    {
+        let c = f.ctl.borrow();
+        let h = c.model().hidden_of(&id).unwrap();
+        assert_eq!(
+            (h.opener.as_str(), h.open_id.as_deref()),
+            ("Mac Mini", Some("o-1"))
+        );
+    }
+    f.say("C:\\h", &title(T_IDLE));
+    f.say("C:\\h", Q);
+    until(&f, "the question", |f| {
+        let v = ask(f, CtlOp::RemoteStatus).expect("status");
+        v["tabs"][0]["state"] == "question"
+    });
+    for _ in 0..10 {
+        f.step(100);
+    }
+    assert!(got.borrow().is_empty(), "no notification here");
+    assert!(
+        f.badge.last().is_none_or(|b| b.0.is_none()),
+        "no badge here"
+    );
 }

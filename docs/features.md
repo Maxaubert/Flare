@@ -3050,9 +3050,9 @@ started it remotely." Spec: `docs/superpowers/specs/2026-11-19-remote-session-on
 - **Its agent's panels.** A hidden session's agent that asks for a panel, a `show_*` tool, the browser panel, a badge or
   progress hears `unavailable`: "this session shows on <opener>; its panels cannot show there yet".
 - **"Hide here only" is gone** on the opener (Max, 2026-11-19).
-- **Not yet (PR 2).** Settings > Machines on the host lists hidden sessions with Show here and End, and the opener finds
-  its session again after a host restart (`remote.find`). PR 1 and PR 2 are released together, since without
-  PR 2 a hidden session whose opener never comes back has no way out. Held by
+- **No list on the host** (Max, 2026-11-19): Settings > Machines shows only the machines. A hidden session whose
+  opener never comes back runs until the host's Flare quits, saved and restored hidden until then. **Not yet (PR 2,
+  released together with this one):** the opener finds its session again after a host restart (`remote.find`). Held by
   `ui_tests::agent_flows::remote_flows`, `flare_tabs::model::hidden_tests`, `flare_tabs::restore::tests` (the hidden
   ones), `tab_host::tests::a_hidden_session_is_remote_sized_from_birth_and_keeps_its_size`,
   `ui_tests::term::flow::the_opener_asks_before_closing_an_idle_remote_claude_tab` and the e2e `remoteUi`.

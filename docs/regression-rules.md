@@ -4985,8 +4985,9 @@ system awake, followed or not (amends 296). The quit ask and the install hold co
 <opener>)" (`busy_hidden`). Its agent's calls that would show something on this screen (a panel, a `show_*` tool, the
 browser panel, a mini-app, a mod's panel or tool, a fill, a badge or progress, the session bar) answer `unavailable`:
 "this session shows on <opener>; its panels cannot show there yet" (`AppCtl::hidden_refusal`, ahead of every handler);
-its hooks' `panel.state`, `tabs.list` of its own tab, its folder and `session.read` still answer. A hidden session whose
-shell ends goes, and its followers hear `no_tab`. `tabs.json` saves it after the strip as a tab with
+its hooks' `panel.state`, `tabs.list` of its own tab, its folder and `session.read` still answer; its `open.remote` is
+refused too (a tab it opened would show here, in front on an empty strip). A hidden session whose shell ends, or never
+starts, goes, and its followers hear `no_tab`. `tabs.json` saves it after the strip as a tab with
 `hidden: {opener, open_id, cols, rows}` (`active` counts strip tabs only); an older Flare reads it as a local tab (rule
 40). The restore brings it back hidden with a new id, its Claude session resumed as rule 1286 says. A machine holds at
 most 50 (`MAX_HIDDEN`, Max 2026-11-19): a 51st `remote.open` is refused (`busy`, said on the opener in one line), a
@@ -5002,7 +5003,9 @@ retried open (rule 1210) never is. Native: `crates/flare-tabs/src/model.rs` (`Hi
 `a_working_hidden_session_holds_the_host_awake_with_no_follower`,
 `the_quit_ask_names_a_working_hidden_session_for_its_opener`,
 `a_hidden_tabs_agent_cannot_open_a_panel_or_front_the_window`,
-`plugins_tabs_list_and_events_leave_hidden_sessions_out`, `a_hidden_session_whose_shell_ends_goes`) and the e2e
+`plugins_tabs_list_and_events_leave_hidden_sessions_out`, `a_hidden_session_whose_shell_ends_goes`,
+`a_hidden_session_whose_shell_never_starts_goes`,
+`a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed`) and the e2e
 `remoteViewer`, `remoteOpen` and `remoteUi`. Source: Max, 2026-11-19, plan `2026-11-19-remote-session-on-opener.md` PR 1.
 1303. **The remote ops answer only for hidden sessions.** `remote.status` and `remote.tabs` list only hidden sessions
 (`hidden_rows`, never `tab_facts`), and `remote.attach`, `input`, `resize`, `release` and `close` answer `no_tab` for a

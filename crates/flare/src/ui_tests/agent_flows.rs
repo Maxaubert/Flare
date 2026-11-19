@@ -149,6 +149,8 @@ impl OverlayShell for RecShell {
 struct Opts {
     scale: f32,
     saved: Vec<(&'static str, Option<AgentKind>)>,
+    /// Hidden sessions in the saved `tabs.json` (rule 1302).
+    hidden: Vec<flare_tabs::restore::SavedHidden>,
     lookup: Option<Arc<dyn SessionLookup>>,
     shells: Option<Vec<ShellDef>>,
 }
@@ -189,7 +191,7 @@ impl Fx {
     fn with(opts: Opts, prep: impl FnOnce(&PrefStore)) -> Fx {
         let scale = if opts.scale > 0.0 { opts.scale } else { 1.0 };
         let dir = tempfile::tempdir().unwrap();
-        if !opts.saved.is_empty() {
+        if !opts.saved.is_empty() || !opts.hidden.is_empty() {
             let saved = SavedTabs {
                 tabs: opts
                     .saved
@@ -202,7 +204,7 @@ impl Fx {
                     })
                     .collect(),
                 active: 0,
-                hidden: Vec::new(),
+                hidden: opts.hidden.clone(),
             };
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
         }

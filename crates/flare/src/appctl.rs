@@ -4246,13 +4246,22 @@ impl AppCtl {
             | CtlOp::Fill { tab, .. }
             | CtlOp::FillPage { tab }
             | CtlOp::BarShow { tab, .. } => tab,
+            // A tab it opens would show on this screen, and with an empty strip it would come to the front.
+            CtlOp::OpenRemote {
+                caller: Some(tab), ..
+            } => tab,
             _ => return None,
         };
         let h = self.model.hidden_of(tab)?;
-        Some(flare_ctl::CtlError::new(
-            flare_ctl::code::UNAVAILABLE,
-            remote_glue::hidden_unavailable(&h.opener),
-        ))
+        let why = if matches!(op, CtlOp::OpenRemote { .. }) {
+            format!(
+                "this session shows on {}; it cannot open a tab on this machine's screen",
+                h.opener
+            )
+        } else {
+            remote_glue::hidden_unavailable(&h.opener)
+        };
+        Some(flare_ctl::CtlError::new(flare_ctl::code::UNAVAILABLE, why))
     }
 
     /// One call of the control channel, on the UI thread. The tab is the caller's own (resolved from
@@ -4534,6 +4543,7 @@ impl AppCtl {
                 folder,
                 resume,
                 front,
+                caller: _,
             } => {
                 let tab = self.open_remote(&machine, &folder, resume.as_deref(), front);
                 Ok(json!({"tab": tab, "machine": machine, "folder": folder}))
@@ -5939,6 +5949,18 @@ impl AppCtl {
                         || code == Some(flare_win::session_end::DBG_TERMINATE_PROCESS) =>
                 {
                     self.hold_for_session_end();
+                }
+                // A hidden session whose shell never started goes (rule 1302): nobody here reads its "Could not start"
+                // line, and its opener hears `no_tab` instead of attaching to it forever.
+                HostEvent::StartFailed { id } if self.model.is_hidden(&id) => {
+                    self.note_close(&id);
+                    self.deps.host.kill(&id);
+                    self.working.remove(&id);
+                    self.term.tab_closed(&id);
+                    self.forget_tab_surfaces(&id);
+                    if self.model.close_hidden(&id) {
+                        changed = true;
+                    }
                 }
                 HostEvent::Exited { id, .. } => {
                     self.note_close(&id);

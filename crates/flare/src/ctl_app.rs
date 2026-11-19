@@ -379,6 +379,9 @@ pub enum CtlOp {
         folder: String,
         resume: Option<String>,
         front: bool,
+        /// The caller's own tab (an agent's token), None for `flare open --on`: a hidden session's agent is refused
+        /// (rule 1302), since a tab it opened would show on this screen.
+        caller: Option<String>,
     },
 }
 
@@ -607,7 +610,7 @@ impl AppDispatcher {
     /// opened here (it is the host's to check, rule 287); a resume id must pass `valid_resume`. The tab opens at once
     /// and its link connects on its own worker, so the answer never waits for ssh. Whoever calls, the opened tab takes
     /// no typing from them: the agent's grant has no `remote.*`, `shell.input` or `tabs.input` (rule 299).
-    fn open_remote(&self, params: &Value) -> Result<Value, CtlError> {
+    fn open_remote(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let machines = self.machines.as_ref().ok_or_else(|| {
             CtlError::new(code::UNAVAILABLE, "this Flare opens no remote sessions")
         })?;
@@ -664,6 +667,7 @@ impl AppDispatcher {
             folder: folder.to_string(),
             resume,
             front,
+            caller: ctx.tab.clone(),
         })
     }
 
@@ -3245,7 +3249,7 @@ impl AppDispatcher {
             | Method::RemoteConvo
             | Method::RemoteFetch
             | Method::RemotePut => self.remote_call(ctx, method, &params),
-            Method::OpenRemoteSession => self.open_remote(&params),
+            Method::OpenRemoteSession => self.open_remote(ctx, &params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?

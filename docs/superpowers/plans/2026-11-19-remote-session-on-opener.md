@@ -46,7 +46,7 @@ ask), 206 (one ring per episode), 278 (no protocol bump), 279 to 305 (remote ses
   PR 1 lists every one it touched in its body.
 - Blocking work on workers (rule 34).
 - Tests headless only. Fake connectors and links (`remote_link_tests.rs` style). No real ssh. e2e on the hidden desktop.
-- Rust worktrees share one `CARGO_TARGET_DIR` (`<repo>\target`). Touch changed files before a build.
+- Rust worktrees share one `CARGO_TARGET_DIR` (`<repo>\.claude\targets\shared`). Touch changed files before a build.
 - Each PR: build and install on this PC and confirm the version before the merge question (global rule). The by-hand
   checks in the spec need both machines: run them after PR 2.
 
@@ -135,8 +135,8 @@ Where the code disagreed with the plan, PR 1 follows the code:
 - **Lifecycle sites that read only `state.tabs`.** `sync_hub`, `sync_model_agents` and `prune_restoring` read the hidden
   list too; the hub knows hidden ids (`on_hidden_tab`) and leaves them out of `question_tabs`, `attention`, `send_tabs`
   and the screen question post; the bell flash and the dev chip skip them; `HostEvent::Exited` drops a hidden session.
-- **Close.** `close_hidden_now` (no `remember_closed`, no ask). `request_close` stays strip-only; the End ask with a
-  hidden id is PR 2's.
+- **Close.** `close_hidden_now` (no `remember_closed`, no ask). `request_close` stays strip-only (no End on the host,
+  see Max's update below).
 - **Opener ask.** `AgentHub::remote_agent` keeps the host's `kind` before `on_remote_status` returns early;
   `AppCtl::close_asks` uses it (not `agent_present`, which the install ask also reads).
 - **Opener name.** `RemoteAttach` carries `viewer_of` and renames the session's opener.
@@ -146,9 +146,9 @@ Where the code disagreed with the plan, PR 1 follows the code:
   by a viewer; the code goes in PR 3.
 
 PR 2 must also pick up: `SavedRemote.open_id` and `RemoteLive::new` / the `remote_link.rs` worker spawn carrying the
-tab's open id (the opener side is untouched in PR 1); the End ask (`request_close` labels and the dialog's yes handler
-taking a hidden id); `remote.find` as corrected above; whether `open.remote` and `notice.show` from a hidden session's
-agent should be refused (they carry no tab today; the worker knows the caller's tab).
+tab's open id (the opener side is untouched in PR 1); `remote.find` as corrected above (it reads `Hidden::open_id`).
+PR 1 refuses `open.remote` from a hidden session's agent (`CtlOp::OpenRemote.caller`); `notice.show` is a plugin's
+call only, never an agent tab token's, so it needs nothing.
 
 ## PR 2: The opener finds its session again, Settings list, Show here and End
 
