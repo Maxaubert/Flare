@@ -212,6 +212,9 @@ impl StagedFlow {
         if self.ready.is_none() || self.phase != Phase::Waiting {
             return Do::Nothing;
         }
+        // The person's click takes over an agent's ask (rule 1326): the click's rules apply from here (the close
+        // question when an agent works, else at once), so "click to install now" is never held back for idle.
+        self.disarm();
         Do::Ask
     }
 
@@ -532,6 +535,16 @@ mod tests {
         assert_eq!(f.tick(IDLE_MS + COUNTDOWN_MS), Do::Swap);
         f.swapped(false, 0);
         assert!(!f.armed(), "a failed swap ends it");
+    }
+
+    #[test]
+    fn the_persons_click_takes_over_an_agents_ask() {
+        let mut f = flow();
+        f.arm();
+        assert_eq!(f.click(), Do::Ask);
+        assert!(!f.armed(), "the click's rules apply, not the idle wait");
+        f.start_countdown(0);
+        assert_eq!(f.tick(COUNTDOWN_MS), Do::Swap);
     }
 
     #[test]

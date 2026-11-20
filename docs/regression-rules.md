@@ -4992,14 +4992,15 @@ app enter; no plugin permission, remote link or bridge reaches it. It answers at
 agent works, none waits on a question (`AgentHub::question_tabs`) and no question of Flare's own is up
 (`staged_flow::all_idle`); that must hold for `IDLE_MS` (60 s) without a break, so the calling agent's own turn ends
 first. Then the 10 s toast with Cancel; work or a question in it, or during the swap, puts it back to waiting (the swap
-is taken back), never asking the person. The person's Cancel, a failed swap or a new stage disarm it. On macOS the
+is taken back), never asking the person. The person's Cancel, a failed swap or a new stage disarm it, and the person's click on the chip takes over (the click's rules apply: the close question under a working agent, else at once). On macOS the
 call's worker runs `codesign --verify --deep --strict` and `codesign -dv` on the staged bundle and refuses an agent
 anything but a Developer ID leaf (`signing::parse_display`); the person's click installs any stage, as before. Native:
 `crates/flare-update/src/{staged_flow,signing}.rs`, `crates/flare/src/appctl/staged_glue.rs` (`staged_arm`,
 `staged_tick`), `crates/flare/src/ctl_app.rs` (`install_staged`), `crates/flare-ctl/src/{method,grant,install}.rs`,
 `crates/flare-mcp/src/lib.rs`, `crates/flare/src/cli_install.rs`. Held by
 `staged_flow::tests::an_armed_build_counts_down_only_after_a_full_minute_of_idle`,
-`work_in_the_countdown_keeps_it_armed_and_cancel_or_a_new_stage_disarm_it`, `signing::tests`,
+`work_in_the_countdown_keeps_it_armed_and_cancel_or_a_new_stage_disarm_it`,
+`the_persons_click_takes_over_an_agents_ask`, `signing::tests`,
 `grant::tests::only_the_agent_and_the_app_install_the_staged_build`,
 `ctl_app::tests::install_staged_reports_the_stage_and_its_signer_and_arms_only_a_developer_id_build` and
 `ui_tests::staged_flows::an_agents_install_waits_for_every_agent_idle_a_minute_then_installs_like_the_click`,

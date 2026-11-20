@@ -2239,7 +2239,8 @@ Max, 2026-11-20: agents can install the staged build themselves, and "always sta
   turn counts too, so it is installed after the caller ends its turn. Then the same 10 s toast with Cancel, the swap, the
   normal end of life and the restart with the sessions resumed. Nobody is asked: work or a question in the countdown (or
   during the swap) puts it back to waiting for idle, still armed. The person's Cancel on the toast, a failed swap or a
-  new stage disarm it. The chip's accessible name says it installs when every agent is idle, and an 8 s notice says
+  new stage disarm it, and the person's own click on the chip takes over (the click's rules: the close question under a
+  working agent, else at once). The chip's accessible name says it installs when every agent is idle, and an 8 s notice says
   "Build <commit> installs when every agent is idle".
 - **How an agent calls it.** The `install_staged_build` tool (`flare-mcp`, `check: true` only reports), or the command
   `/Applications/Flare.app/Contents/MacOS/Flare --install-staged [--check]` (Windows: the installed exe, for example
