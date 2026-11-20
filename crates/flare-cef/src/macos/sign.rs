@@ -13,7 +13,9 @@
 //!   hardened app without the key. Each key has its usage string in `Info.plist` (`release::app_keys`).
 //! - `Flare Helper (Renderer)` and `Flare Helper (GPU)`: `cs.allow-jit` (V8; SwiftShader's software GL in the GPU
 //!   process, Chromium's `helper-gpu-entitlements.plist`).
-//! - `Flare Helper`, `(Plugin)`, `(Alerts)`, `flare-mcp`: none. Flare has no plugins (CEF 156 has no Pepper).
+//! - `Flare Helper`, `(Plugin)`, `(Alerts)`, and the tools (`flare-mcp`, `flare-parakeet-host`, `flare-sim-host`,
+//!   `UpdateMac`): none. Flare has no plugins (CEF 156 has no Pepper). The sim host loads CoreSimulator and
+//!   SimulatorKit (Apple's own) with no key: Step 0 S3 of the device panel plan (2026-11-19).
 //!
 //! Never `allow-unsigned-executable-memory`, `disable-library-validation` or the dyld environment key: every Mach-O
 //! in the bundle is signed by the same team; a library downloaded later (the dictation engines) must be signed by the
@@ -762,6 +764,66 @@ mod tests {
         assert_eq!(
             codesign_args(&Signing::AdHoc, Role::Library, None, None),
             ["--force", "--sign", "-", "--timestamp=none"]
+        );
+    }
+
+    /// Device panel PR 6 (issue #248): `Contents/MacOS/flare-sim-host` is a tool: its own identifier, the hardened
+    /// runtime (ad hoc too) and no entitlements, the signing Step 0 S3 proved can load CoreSimulator and
+    /// SimulatorKit. A real ad-hoc sign of a stand-in Mach-O at its place in a bundle shows what `codesign` writes.
+    #[test]
+    fn the_sim_host_is_signed_as_a_tool_with_no_entitlements() {
+        let dir = std::env::temp_dir().join(format!("flare-sign-simhost-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let app = dir.join("Flare.app");
+        let macos = app.join("Contents/MacOS");
+        fs::create_dir_all(&macos).expect("dir");
+        let exe = macos.join("flare-sim-host");
+        let role = crate::macos::bundle::role_of(&app, &exe);
+        assert_eq!(role, Role::Tool);
+        assert!(entitlements(role).is_empty());
+        assert!(entitlements_plist(role).is_none());
+        let id = "com.flare.terminal.flare-sim-host";
+        let release = Signing::release(Some("Developer ID Application: X (T)"), None);
+        let a = codesign_args(&release, role, Some(id), None);
+        assert!(a.windows(2).any(|w| w == ["--options", "runtime"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["--identifier", id]), "{a:?}");
+        assert!(a.contains(&"--timestamp".to_string()), "{a:?}");
+        assert!(!a.contains(&"--entitlements".to_string()), "{a:?}");
+        assert!(adhoc_runtime(role));
+        let good = SignatureInfo {
+            team: Some(TEAM.into()),
+            runtime: true,
+            timestamp: true,
+            adhoc: false,
+            authority: Some("Developer ID Application: MAX AUBERT (WV7BY8CUM8)".into()),
+        };
+        assert!(release_faults(&good, &[], role, TEAM).is_empty());
+        let dlv = vec!["com.apple.security.cs.disable-library-validation".to_string()];
+        assert!(!release_faults(&good, &dlv, role, TEAM).is_empty());
+
+        fs::copy("/usr/bin/true", &exe).expect("a Mach-O");
+        sign(&exe, &Signing::AdHoc, role, Some(id), &dir.join("scratch")).expect("signed");
+        let shown = Command::new("/usr/bin/codesign")
+            .args(["-d", "--verbose=2"])
+            .arg(&exe)
+            .output()
+            .expect("codesign runs");
+        let info = String::from_utf8_lossy(&shown.stderr).into_owned();
+        let ents = Command::new("/usr/bin/codesign")
+            .args(["-d", "--entitlements", "-", "--xml"])
+            .arg(&exe)
+            .output()
+            .expect("codesign runs");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            info.lines().any(|l| l == format!("Identifier={id}")),
+            "{info}"
+        );
+        let s = parse_signature(&info);
+        assert!(s.runtime && s.adhoc, "{info}");
+        assert!(
+            entitlement_keys(&String::from_utf8_lossy(&ents.stdout)).is_empty(),
+            "no entitlements"
         );
     }
 
