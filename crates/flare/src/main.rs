@@ -62,6 +62,7 @@ mod plugin_refused;
 mod plugin_safe;
 mod plugin_sessions;
 mod plugin_ui;
+mod pulse_watch;
 mod quiet_context;
 mod remote_convo;
 mod remote_files;
