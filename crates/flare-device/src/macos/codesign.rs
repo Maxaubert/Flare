@@ -5,14 +5,18 @@
 //!
 //! What is checked, and how deep (measured on this Mac, Xcode 27.2, 2026-11-20):
 //! - The Xcode app against [`XCODE`] with `kSecCSDoNotValidateResources`: its main executable and sealed Info.plist,
-//!   not the hash of every file in the bundle: about 7 ms. A full check of Xcode's resources takes about 8 s of disk
-//!   reading (`codesign -v`), far too slow for every start; the code that is loaded is checked in full below.
+//!   not the hash of every file in the bundle: about 13 ms. A full check of Xcode's resources takes about 8 s of disk
+//!   reading (`codesign -v`), far too slow for every start. What Flare runs from the bundle is checked on its own:
+//!   `simctl` ([`XCODE_RUN`]) byte for byte against the app's resource seal, about 200 ms more (the Security
+//!   framework reads Xcode's 32 MB `CodeResources`), `libxcrun.dylib` and the frameworks in full below.
 //! - SimulatorKit and CoreSimulator against [`APPLE`] (`anchor apple`) in full, with `kSecCSCheckNestedCode`: the
-//!   binary, the resource seal and the nested frameworks. About 2 ms and 12 ms.
+//!   binary, the resource seal and the nested frameworks. About 2 ms and 12 ms. CoreSimulator's own `simctl` (which
+//!   Xcode's script execs) is one of its sealed resources.
 //!
-//! The times are from `the_real_xcode_and_its_frameworks_pass` (warm disk cache). The check and the dlopen are two
-//! steps; changing the files between them needs write access to `/Applications` or `/Library/Developer`, which is
-//! admin already.
+//! The times are from `the_real_xcode_and_its_frameworks_pass` (warm disk cache). Paths are resolved
+//! (`canonicalize`) before they are checked, so a symlink cannot be swapped between the check and the use. The check
+//! and the dlopen are still two steps: changing the files themselves between them needs write access to the Xcode
+//! bundle or `/Library/Developer`.
 //!
 //! BLOCKING (file reads): a worker or the sim host's start only, never the UI thread (rule 34).
 
@@ -64,6 +68,7 @@ unsafe extern "C" {
         c_str: *const c_char,
         encoding: u32,
     ) -> CFTypeRef;
+    fn CFDataCreate(allocator: CFTypeRef, bytes: *const u8, length: isize) -> CFTypeRef;
     fn CFRelease(cf: CFTypeRef);
 }
 
@@ -84,6 +89,12 @@ unsafe extern "C" {
         flags: u32,
         requirement: CFTypeRef,
     ) -> OSStatus;
+    fn SecCodeValidateFileResource(
+        static_code: CFTypeRef,
+        relative_path: CFTypeRef,
+        file_data: CFTypeRef,
+        flags: u32,
+    ) -> OSStatus;
 }
 
 /// A Core Foundation object this module made, released when dropped.
@@ -98,9 +109,19 @@ impl Drop for Owned {
     }
 }
 
-/// Checks that the code at `path` (a bundle or a binary) is validly signed and satisfies `requirement`. The error
-/// names the path and the Security framework's status. BLOCKING (it reads the code).
-pub fn check(path: &Path, requirement: &str, depth: Depth) -> Result<(), String> {
+/// A CFString of `text`, or None.
+fn cf_string(text: &str) -> Option<Owned> {
+    let c = CString::new(text).ok()?;
+    // SAFETY: a NUL-terminated UTF-8 string; returns a +1 CFString or null.
+    let s = Owned(unsafe {
+        CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), K_CF_STRING_ENCODING_UTF8)
+    });
+    (!s.0.is_null()).then_some(s)
+}
+
+/// Checks that the code at `path` (a bundle or a binary) is validly signed and satisfies `requirement`, and gives
+/// back its static code. The error names the path and the Security framework's status. BLOCKING (it reads the code).
+fn checked(path: &Path, requirement: &str, depth: Depth) -> Result<Owned, String> {
     let fail = |what: &str, status: OSStatus| {
         Err(format!(
             "{} is not signed by Apple ({what}: OSStatus {status})",
@@ -109,7 +130,6 @@ pub fn check(path: &Path, requirement: &str, depth: Depth) -> Result<(), String>
     };
     let bytes = path.as_os_str().as_bytes();
     let len = isize::try_from(bytes.len()).map_err(|_| "path too long".to_string())?;
-    let req_text = CString::new(requirement).map_err(|_| "bad requirement".to_string())?;
     // SAFETY: a valid buffer of `len` bytes; null allocator is the default one. Returns a +1 CFURL or null.
     let url = Owned(unsafe {
         CFURLCreateFromFileSystemRepresentation(std::ptr::null(), bytes.as_ptr(), len, 0)
@@ -124,17 +144,9 @@ pub fn check(path: &Path, requirement: &str, depth: Depth) -> Result<(), String>
     if status != 0 || code.0.is_null() {
         return fail("SecStaticCodeCreateWithPath", status);
     }
-    // SAFETY: a NUL-terminated UTF-8 string; returns a +1 CFString or null.
-    let text = Owned(unsafe {
-        CFStringCreateWithCString(
-            std::ptr::null(),
-            req_text.as_ptr(),
-            K_CF_STRING_ENCODING_UTF8,
-        )
-    });
-    if text.0.is_null() {
+    let Some(text) = cf_string(requirement) else {
         return fail("CFString", -1);
-    }
+    };
     let mut req: CFTypeRef = std::ptr::null();
     // SAFETY: a live CFString and an out pointer to a local; on success `req` is a +1 SecRequirement.
     let status =
@@ -152,12 +164,58 @@ pub fn check(path: &Path, requirement: &str, depth: Depth) -> Result<(), String>
     if status != 0 {
         return fail("SecStaticCodeCheckValidity", status);
     }
-    Ok(())
+    Ok(code)
 }
 
-/// The Xcode app at `app` is Apple's ([`XCODE`], executable only).
+/// Checks that the code at `path` (a bundle or a binary) is validly signed and satisfies `requirement`. The error
+/// names the path and the Security framework's status. BLOCKING (it reads the code).
+pub fn check(path: &Path, requirement: &str, depth: Depth) -> Result<(), String> {
+    checked(path, requirement, depth).map(|_| ())
+}
+
+/// The files of the Xcode app that Flare runs, relative to `Contents`: `simctl`, which `xcrun simctl` runs (Xcode
+/// 27's is a shell script that execs CoreSimulator's). [`crate::xcode::verify`] also checks `libxcrun.dylib` and
+/// that `xcrun` resolves `simctl` to this file.
+pub const XCODE_RUN: &[&str] = &["Developer/usr/bin/simctl"];
+
+/// The Xcode app at `app` is Apple's ([`XCODE`]): its executable and Info.plist, and each file in [`XCODE_RUN`]
+/// byte for byte against the app's resource seal (`SecCodeValidateFileResource`), or Apple-signed on its own, so a
+/// bundle made of Xcode's signed executable and a planted `simctl` is refused. The rest of the resources are not
+/// hashed (about 8 s).
 pub fn xcode_app(app: &Path) -> Result<(), String> {
-    check(app, XCODE, Depth::Executable)
+    let code = checked(app, XCODE, Depth::Executable)?;
+    for rel in XCODE_RUN {
+        let file = app.join("Contents").join(rel);
+        // sync-ok: the Xcode pick's worker or the sim host's start; a small file.
+        let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let len = isize::try_from(data.len()).map_err(|_| "file too long".to_string())?;
+        // SAFETY: a valid buffer of `len` bytes, copied by CFDataCreate; returns a +1 CFData or null.
+        let cf_data = Owned(unsafe { CFDataCreate(std::ptr::null(), data.as_ptr(), len) });
+        let Some(cf_rel) = cf_string(rel) else {
+            return Err(format!(
+                "{} is not sealed by Xcode's signature",
+                file.display()
+            ));
+        };
+        if cf_data.0.is_null() {
+            return Err(format!(
+                "{} is not sealed by Xcode's signature",
+                file.display()
+            ));
+        }
+        // SAFETY: a live SecStaticCode, CFString and CFData made above; the call only reads them.
+        let status = unsafe {
+            SecCodeValidateFileResource(code.0, cf_rel.0, cf_data.0, K_SEC_CS_DEFAULT_FLAGS)
+        };
+        // An older Xcode's `simctl` is a signed Mach-O of its own: Apple's signature on it is enough.
+        if status != 0 && check(&file, APPLE, Depth::Full).is_err() {
+            return Err(format!(
+                "{} is not sealed by Xcode's signature (OSStatus {status})",
+                file.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The framework at `framework` is Apple's ([`APPLE`], in full).
@@ -204,6 +262,50 @@ mod tests {
         assert!(xcode_app(Path::new("/bin/ls")).is_err());
     }
 
+    /// Rule 1325: a bundle made of the real Xcode's signed executable, Info.plist and signature, with a planted
+    /// `simctl`, meets Xcode's requirement when resources are not hashed, so [`xcode_app`] checks `simctl` against
+    /// the seal and refuses it. Skipped without `/Applications/Xcode.app`.
+    #[test]
+    fn a_planted_simctl_is_refused() {
+        let real = Path::new("/Applications/Xcode.app/Contents");
+        if !real.join("Developer/usr/bin/simctl").exists() {
+            eprintln!("skipped: no /Applications/Xcode.app");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Xcode-beta.app");
+        let contents = app.join("Contents");
+        for rel in [
+            "MacOS/Xcode",
+            "Info.plist",
+            "PkgInfo",
+            "version.plist",
+            "_CodeSignature/CodeResources",
+            "Developer/usr/bin/simctl",
+        ] {
+            let to = contents.join(rel);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(real.join(rel), &to).unwrap();
+        }
+        // The real simctl, copied: it matches the seal.
+        let t = std::time::Instant::now();
+        let shallow = check(&app, XCODE, Depth::Executable);
+        if shallow.is_err() {
+            eprintln!("note: the copied executable alone fails here too: {shallow:?}");
+        }
+        if shallow.is_ok() {
+            xcode_app(&app).unwrap();
+            eprintln!("Xcode.app (executable + simctl): {:?}", t.elapsed());
+        }
+        let simctl = contents.join("Developer/usr/bin/simctl");
+        std::fs::remove_file(&simctl).unwrap();
+        std::fs::write(&simctl, "#!/bin/bash\ntouch /tmp/flare-pwned\n").unwrap();
+        let e = xcode_app(&app).unwrap_err();
+        assert!(e.contains("simctl") || e.contains("not signed"), "{e}");
+        std::fs::remove_file(&simctl).unwrap();
+        assert!(xcode_app(&app).is_err(), "a missing simctl is refused");
+    }
+
     /// This Mac's Xcode (when it has one at `/Applications/Xcode.app`) passes, with its frameworks; the times are
     /// printed (`--nocapture`), the numbers in the module doc.
     #[test]
@@ -214,8 +316,11 @@ mod tests {
             return;
         }
         let t = std::time::Instant::now();
-        xcode_app(app).unwrap();
+        check(app, XCODE, Depth::Executable).unwrap();
         eprintln!("Xcode.app (executable): {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        xcode_app(app).unwrap();
+        eprintln!("Xcode.app (executable + simctl seal): {:?}", t.elapsed());
         let dev = app.join("Contents/Developer");
         if let Some(simkit) = super::super::load::simkit_paths(&dev)
             .into_iter()

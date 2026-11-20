@@ -5046,8 +5046,18 @@ SimulatorKit and CoreSimulator the same way before any dlopen, since `DEVELOPER_
 host is run by hand; a failure is the load error ("<path> is not signed by Apple (...)"). The checks use the Security
 framework (`SecStaticCodeCreateWithPath`, `SecRequirementCreateWithString`, `SecStaticCodeCheckValidity`) in
 `flare-device/src/macos/codesign.rs`, on the Xcode pick's worker or at the sim host's start, never the UI thread
-(rule 34). Measured 2026-11-20 on Xcode 27.2: about 7 ms for the app, 2 ms for SimulatorKit, 12 ms for CoreSimulator; a
-full resource check of Xcode.app takes about 8 s, so it is not done. Held by `pick_ignores_xcodes_outside_applications`,
+(rule 34). Measured 2026-11-20 on Xcode 27.2: about 13 ms for the app (210 ms with the `simctl` seal check below), 2 ms for SimulatorKit, 12 ms for CoreSimulator; a
+full resource check of Xcode.app takes about 8 s, so it is not done; instead the one file Flare runs from the bundle,
+`Contents/Developer/usr/bin/simctl` (a shell script in Xcode 27 that execs CoreSimulator's `simctl`), is checked byte for
+byte against the app's resource seal (`SecCodeValidateFileResource`, `codesign::XCODE_RUN`), and `verify` checks
+CoreSimulator too. `xcrun simctl` also loads the Xcode's `libxcrun.dylib` and searches its toolchains before
+`usr/bin`, and runs the Xcode's `xcodebuild`, so `verify` checks `libxcrun.dylib` and `usr/bin/xcodebuild` against `anchor
+apple` in full and refuses an Xcode where `xcrun -f
+simctl` resolves to any other file (when `xcrun -f` fails, Xcode still needs its first launch and nothing runs). The
+sim host's `load` runs the same `xcode::verify`. Every path is resolved (`canonicalize`) before it is checked and used, so `/Applications/Xcode-beta.app` symlinked to a user
+folder is dropped (`xcode::resolve_in`) and no symlink can be swapped between the check and the dlopen. Held by
+`a_symlinked_xcode_that_leaves_applications_is_dropped`, `a_planted_simctl_is_refused`,
+`pick_ignores_xcodes_outside_applications`,
 `find_takes_this_macs_signed_xcode` (`xcode.rs`, skipped without an Xcode), `a_fake_unsigned_xcode_is_refused`,
 `the_real_xcode_and_its_frameworks_pass` (`codesign.rs`, skipped without an Xcode) and
 `an_unsigned_xcode_is_never_loaded` (`load.rs`). Source: security review, 2026-11-20.
