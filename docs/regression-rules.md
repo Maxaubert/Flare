@@ -4965,7 +4965,7 @@ zsh with a stand-in `claude`).
 ## Device panel (2026-11-19)
 
 Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
-(issue #248). Rules 1310 to 1322 are this feature's; each lands with the PR that builds it.
+(issue #248). Rules 1310 to 1322 and 1325 are this feature's; each lands with the PR that builds it.
 
 1310. **Flare ships its own private-API code for the simulator, only in `flare-sim-host`; Flare's own process never
 loads CoreSimulator or SimulatorKit.** Max, 2026-11-19 (issue #248, decision 1; reverses the 2026-11-16 "no private-API
@@ -5079,3 +5079,23 @@ reads the unknown kind as nothing and never writes it back (rule 40). Second hal
 boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
 `a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
 (`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+
+1325. **The device panel runs code only from an Xcode in `/Applications` (or the one `xcode-select` names) that Apple
+signed, and checks CoreSimulator and SimulatorKit before it dlopens them.** Security review of the device panel stack,
+2026-11-20 (finding HIGH, untrusted code loading): the Xcode pick used `mdfind` for any app with Xcode's identifier and
+took the newest, so an `Xcode.app` left in Downloads could have its SimulatorKit loaded by `flare-sim-host`.
+`flare_device::xcode::find` now looks at the `xcode-select -p` app and the top-level `/Applications/Xcode*.app` only (no
+Spotlight, no `~/Applications`), and `pick` ignores any other path however new its version (`in_applications`). Every
+candidate passes `xcode::verify`: the app against `codesign::XCODE` (Xcode's own designated requirement with `anchor
+apple`, since a Mac App Store Xcode is `anchor apple generic` with the App Store leaf) with
+`kSecCSDoNotValidateResources`, and its SimulatorKit against `anchor apple` in full with `kSecCSCheckNestedCode`; one
+that fails is skipped with a log line, and none left is the panel's no-Xcode state. `macos::load::load` checks the app,
+SimulatorKit and CoreSimulator the same way before any dlopen, since `DEVELOPER_DIR` can name any folder when the sim
+host is run by hand; a failure is the load error ("<path> is not signed by Apple (...)"). The checks use the Security
+framework (`SecStaticCodeCreateWithPath`, `SecRequirementCreateWithString`, `SecStaticCodeCheckValidity`) in
+`flare-device/src/macos/codesign.rs`, on the Xcode pick's worker or at the sim host's start, never the UI thread
+(rule 34). Measured 2026-11-20 on Xcode 27.2: about 7 ms for the app, 2 ms for SimulatorKit, 12 ms for CoreSimulator; a
+full resource check of Xcode.app takes about 8 s, so it is not done. Held by `pick_ignores_xcodes_outside_applications`,
+`find_takes_this_macs_signed_xcode` (`xcode.rs`, skipped without an Xcode), `a_fake_unsigned_xcode_is_refused`,
+`the_real_xcode_and_its_frameworks_pass` (`codesign.rs`, skipped without an Xcode) and
+`an_unsigned_xcode_is_never_loaded` (`load.rs`). Source: security review, 2026-11-20.
