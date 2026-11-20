@@ -309,6 +309,10 @@ pub struct PanelCtl {
     click_epoch: std::time::Instant,
     /// Where the pointer is while a drag selects, in the view's coordinates: past an edge, the view scrolls toward it.
     drag_at: Option<(f32, f32)>,
+    /// This build offers the device panel (a device source exists: the fake under `--e2e` and in tests; the
+    /// simulator from PR 4b). Where it does not, a stored device panel is kept in the file and not shown, like an
+    /// unbuilt kind (rule 1316).
+    device_offered: bool,
 }
 
 fn click_counter(dbl: flare_win::dblclick::DoubleClick) -> flare_term::sel_machine::ClickCounter {
@@ -363,6 +367,11 @@ fn target_ok(kind: &PanelKind, target: &str) -> bool {
         PanelKind::Web => flare_surfaces::web::normalize_url(target).as_deref() == Ok(target),
         // The conversation panels read no file: their target is the kind's own name, nothing else.
         PanelKind::Changes => kind.fixed_target() == Some(target),
+        // A device is checked by the shape of its target alone (`sim/<udid>`, lower-cased): no file is read and no
+        // simulator is asked on the UI thread (rules 34, 1316). `device` is a panel whose device is not chosen yet.
+        PanelKind::Device => {
+            flare_device::target::target_ok(target) || target == crate::device_ctl::CHOOSE
+        }
         _ => preview::loadable(target, kind),
     }
 }
@@ -424,7 +433,49 @@ impl PanelCtl {
             clicks: click_counter(flare_win::dblclick::FALLBACK),
             click_epoch: std::time::Instant::now(),
             drag_at: None,
+            device_offered: false,
         }
+    }
+
+    /// This build offers the device panel (startup: a device source exists).
+    pub fn set_device_offered(&mut self, on: bool) {
+        self.device_offered = on;
+    }
+
+    /// Whether this build draws `kind`: a built kind, and the device only where it is offered.
+    fn built(&self, kind: &PanelKind) -> bool {
+        kind.is_built() && (*kind != PanelKind::Device || self.device_offered)
+    }
+
+    /// Every tab's device panel (open or closed), with its target and whether it is open.
+    pub fn device_panels(&self) -> Vec<(String, String, bool)> {
+        if !self.device_offered {
+            return Vec::new();
+        }
+        self.panels
+            .iter()
+            .filter(|(_, p)| p.kind == PanelKind::Device)
+            .map(|(t, p)| (t.clone(), p.target.clone(), p.open))
+            .collect()
+    }
+
+    /// The tab's device panel shows another device (a pick in its list).
+    pub fn set_device_target(&mut self, tab: &str, target: &str) -> bool {
+        if self.panels.get(tab).map(|p| &p.kind) != Some(&PanelKind::Device)
+            || !target_ok(&PanelKind::Device, target)
+        {
+            return false;
+        }
+        self.panels.set_target(tab, target)
+    }
+
+    /// The tab's device panel goes (its device no longer exists).
+    pub fn drop_device(&mut self, tab: &str) -> bool {
+        if self.panels.get(tab).map(|p| &p.kind) != Some(&PanelKind::Device) {
+            return false;
+        }
+        self.titles.remove(tab);
+        self.panels.forget(tab)
     }
 
     /// The system's double-click time and distance, for counting clicks in the text.
@@ -512,7 +563,7 @@ impl PanelCtl {
         for ((id, _), panel) in tabs.iter().zip(found) {
             // A restored target is checked as a click's is: the file is anyone's to edit.
             if let Some(p) = panel
-                && (!p.kind.is_built() || target_ok(&p.kind, &p.target))
+                && (!self.built(&p.kind) || target_ok(&p.kind, &p.target))
                 && !app::is_app_url(&p.target)
                 && !flare_surfaces::modview::is_mod_url(&p.target)
             {
@@ -525,6 +576,9 @@ impl PanelCtl {
 
     /// Shows `kind` / `target` on the tab and opens it. False for a target the panel will not load.
     pub fn show(&mut self, tab: &str, kind: PanelKind, target: &str) -> bool {
+        if !self.built(&kind) && kind == PanelKind::Device {
+            return false;
+        }
         if kind.is_built() && !target_ok(&kind, target) {
             return false;
         }
@@ -756,7 +810,7 @@ impl PanelCtl {
 
     /// The tab has a panel (open or closed) of a kind this build draws.
     pub fn has_built(&self, tab: &str) -> bool {
-        self.panels.get(tab).is_some_and(|p| p.kind.is_built())
+        self.panels.get(tab).is_some_and(|p| self.built(&p.kind))
     }
 
     /// The address of the tab's OPEN web panel.
@@ -874,6 +928,7 @@ impl PanelCtl {
         let module = self.mods.get(tab).and_then(|s| s.module.as_ref());
         let web = p.kind == PanelKind::Web && app.is_none() && module.is_none();
         let convo = p.kind.is_convo();
+        let device = p.kind == PanelKind::Device;
         Some(PanelSnap {
             kind: if let Some(m) = module {
                 PanelKind::Mod(m.id.clone()).name()
@@ -888,11 +943,13 @@ impl PanelCtl {
                     flare_surfaces::web::host_label(&p.target)
                 } else if convo {
                     convo_title(&p.kind).to_string()
+                } else if device {
+                    "Device".to_string()
                 } else {
                     file_name(&p.target).to_string()
                 }
             }),
-            path: (!inline && !web && !convo && app.is_none() && module.is_none())
+            path: (!inline && !web && !convo && !device && app.is_none() && module.is_none())
                 .then(|| p.target.clone()),
             url: web.then(|| p.target.clone()),
             open: p.open,
@@ -926,6 +983,8 @@ impl PanelCtl {
                         !p.target.starts_with(INLINE)
                             && !self.apps.contains_key(id)
                             && !self.mods.contains_key(id)
+                            // A device panel whose device was never chosen has nothing to bring back.
+                            && !(p.kind == PanelKind::Device && p.target == crate::device_ctl::CHOOSE)
                     })
                     .cloned(),
             })
@@ -953,7 +1012,7 @@ impl PanelCtl {
     /// The window shows the front tab's panel (or none). Starts the read when the front panel is not
     /// the one on show.
     pub fn sync(&mut self, app: &AppWindow, front: Option<&str>) {
-        let open = front.and_then(|t| self.panels.open_on(t).filter(|p| p.kind.is_built()));
+        let open = front.and_then(|t| self.panels.open_on(t).filter(|p| self.built(&p.kind)));
         app.set_panel_open(open.is_some());
         app.set_panel_share(open.and_then(|p| p.width).unwrap_or(0.0));
         app.set_panel_wrap_on(self.wrap);
@@ -967,7 +1026,13 @@ impl PanelCtl {
         let want = front.and_then(|t| {
             self.panels
                 .open_on(t)
-                .filter(|p| p.kind.is_built() && p.kind != PanelKind::Web && !p.kind.is_convo())
+                // Nor is a device: the device controller owns its content (rule 1316).
+                .filter(|p| {
+                    p.kind.is_built()
+                        && p.kind != PanelKind::Web
+                        && p.kind != PanelKind::Device
+                        && !p.kind.is_convo()
+                })
                 .map(|p| {
                     (
                         t.to_string(),
@@ -2205,6 +2270,185 @@ mod tests {
         assert_eq!(file_name(r"C:\a\b\pic.png"), "pic.png");
         assert_eq!(file_name("C:/a/b/pic.png"), "pic.png");
         assert_eq!(file_name("pic.png"), "pic.png");
+    }
+
+    // ---- the device panel (issue #248, rule 1316) ----
+
+    use crate::device_ctl::{CHOOSE, DeviceCtl, Effect, Setup, SetupButton};
+    use flare_device::fake::{FakeSource, Recorded};
+    use flare_device::source::{DeviceSource, DeviceState};
+
+    const UDID: &str = "00000000-0000-4000-8000-000000000001";
+
+    fn device_target() -> String {
+        format!("sim/{UDID}")
+    }
+
+    fn post() -> Post {
+        Arc::new(|_| {})
+    }
+
+    fn device_panels(store: Option<Arc<PanelStore>>) -> PanelCtl {
+        let mut p = PanelCtl::new(post());
+        p.set_device_offered(true);
+        if let Some(s) = store {
+            p.set_store(s);
+        }
+        p
+    }
+
+    fn device_ctl(fake: FakeSource) -> DeviceCtl {
+        DeviceCtl::new(post(), Rc::new(|| 0), Some(fake))
+    }
+
+    #[test]
+    fn device_panels_are_persisted_and_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("panels.json");
+        let store = || Arc::new(PanelStore::new(file.clone(), std::time::Duration::ZERO));
+        let s1 = store();
+        let mut p = device_panels(Some(Arc::clone(&s1)));
+        assert!(p.show("t1", PanelKind::Device, &device_target()));
+        assert!(p.set_share("t1", 0.35));
+        // A panel whose device was never chosen has nothing to bring back.
+        assert!(p.show("t2", PanelKind::Device, CHOOSE));
+        p.persist(&[("t1".into(), "C:\\a".into()), ("t2".into(), "C:\\b".into())]);
+        s1.flush();
+        // A new run: the tab of the same folder gets its device panel back, open, its width kept.
+        let mut q = device_panels(Some(store()));
+        q.restore(&[("n1".into(), "C:\\a".into()), ("n2".into(), "C:\\b".into())]);
+        assert_eq!(
+            q.device_panels(),
+            [("n1".to_string(), device_target(), true)]
+        );
+        assert_eq!(
+            q.snap("n1").map(|s| (s.kind, s.path, s.width)),
+            Some(("device".into(), None, Some(0.35)))
+        );
+        // A build that offers no device keeps it in the file and shows nothing (rule 1316, like an unbuilt kind).
+        let s3 = store();
+        let mut r = PanelCtl::new(post());
+        r.set_store(Arc::clone(&s3));
+        r.restore(&[("m1".into(), "C:\\a".into())]);
+        assert!(r.device_panels().is_empty());
+        assert!(!r.has_built("m1"), "not drawn where not offered");
+        assert!(!r.show("m2", PanelKind::Device, &device_target()));
+        r.persist(&[("m1".into(), "C:\\a".into())]);
+        s3.flush();
+        let back = store().load();
+        assert_eq!(back.len(), 1);
+        assert_eq!(
+            back[0].panel.as_ref().map(|p| p.target.clone()),
+            Some(device_target())
+        );
+    }
+
+    #[test]
+    fn a_device_target_is_checked_by_shape_not_as_a_file() {
+        let k = PanelKind::Device;
+        assert!(target_ok(&k, &device_target()));
+        assert!(
+            target_ok(&k, CHOOSE),
+            "the list of a panel with no device chosen yet"
+        );
+        // simctl's upper case reads as a device, but only the lower-cased name is a stored target.
+        let hex = "sim/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+        assert!(target_ok(&k, hex));
+        assert!(!target_ok(
+            &k,
+            &hex.to_ascii_uppercase().replace("SIM/", "sim/")
+        ));
+        // A real file is no device: the preview's check is never asked.
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("a.png");
+        std::fs::write(&png, b"x").unwrap(); // sync-ok: test code only
+        for bad in [
+            png.to_string_lossy().into_owned(),
+            "https://a.example/".into(),
+            "changes".into(),
+            "sim/x".into(),
+        ] {
+            assert!(!target_ok(&k, &bad), "{bad}");
+        }
+        let mut p = device_panels(None);
+        assert!(!p.show("t", k.clone(), &png.to_string_lossy()));
+        assert!(p.show("t", k, &device_target()));
+        // A file kind is still read as a file.
+        assert!(!target_ok(&PanelKind::Image, &device_target()));
+    }
+
+    #[test]
+    fn restore_shows_boot_and_never_boots() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("panels.json");
+        let s = Arc::new(PanelStore::new(file.clone(), std::time::Duration::ZERO));
+        let mut p = device_panels(Some(Arc::clone(&s)));
+        p.show("t1", PanelKind::Device, &device_target());
+        p.persist(&[("t1".into(), "C:\\a".into())]);
+        s.flush();
+        let mut q = device_panels(Some(Arc::new(PanelStore::new(
+            file,
+            std::time::Duration::ZERO,
+        ))));
+        q.restore(&[("n1".into(), "C:\\a".into())]);
+        let mut d = device_ctl(FakeSource::default());
+        let effects = d.update(&q, Some("n1"), false, HashMap::new());
+        assert!(effects.is_empty(), "{effects:?}");
+        let setup = d.setup_of("n1").unwrap();
+        assert_eq!(
+            setup,
+            Setup::ShutDown {
+                name: "iPhone 18 Pro".into(),
+                again: false
+            }
+        );
+        assert_eq!(setup.view(false).button, Some(SetupButton::Boot));
+        assert_eq!(setup.view(false).line, "iPhone 18 Pro is shut down.");
+        // Again and again: still shut down, nothing booted, nothing attached, nothing sent.
+        for _ in 0..3 {
+            d.update(&q, Some("n1"), false, HashMap::new());
+        }
+        let fake = d.fake_mut().unwrap();
+        fake.list();
+        let listed: Vec<_> = fake.events().try_iter().collect();
+        assert!(listed.iter().any(|e| matches!(e,
+            flare_device::source::SourceEvent::Answer { result: Ok(flare_device::source::Answer::Devices(v)), .. }
+                if v[0].state == DeviceState::Shutdown && !v[0].booted_by_flare)));
+        assert!(
+            fake.inputs()
+                .iter()
+                .all(|r| !matches!(r, Recorded::Touch(..)))
+        );
+    }
+
+    #[test]
+    fn a_deleted_device_drops_the_panel_once_the_list_is_read() {
+        let gone = "sim/00000000-0000-4000-8000-0000000000ee";
+        let mut p = device_panels(None);
+        p.show("t1", PanelKind::Device, gone);
+        p.show("t2", PanelKind::Device, &device_target());
+        // The list fails first: nothing is dropped on a guess, the panel says why.
+        let mut fake = FakeSource::default();
+        fake.fail_next(
+            flare_device::job::Fail::Unavailable,
+            "simctl did not answer",
+        );
+        let mut d = device_ctl(fake);
+        let effects = d.update(&p, Some("t1"), false, HashMap::new());
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(
+            d.setup_of("t1"),
+            Some(Setup::Failed {
+                why: "simctl did not answer".into()
+            })
+        );
+        // Try again reads the list: now the gone device's panel goes, the other stays.
+        d.setup_clicked();
+        let effects = d.update(&p, Some("t1"), false, HashMap::new());
+        assert_eq!(effects, [Effect::Drop("t1".into())]);
+        assert!(p.drop_device("t1"));
+        assert!(d.update(&p, Some("t2"), false, HashMap::new()).is_empty());
+        assert_eq!(p.device_panels().len(), 1);
     }
 
     #[test]

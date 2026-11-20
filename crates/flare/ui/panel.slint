@@ -625,11 +625,43 @@ component PanelNote inherits Rectangle {
     }
 }
 
+// One device of the device panel's list (kind 5, state 2): its name, its system and whether it runs now.
+export struct DeviceRow {
+    name: string,
+    os: string,
+    booted: bool,
+}
+
+// A row of the device panel's More menu (Shake, Volume, Choose device, Shut down).
+component DeviceMenuRow inherits Rectangle {
+    in property <string> text;
+    callback activated();
+    height: Px.snap(28px);
+    background: ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.activated(); }
+    Text {
+        x: Px.snap(12px);
+        width: parent.width - Px.snap(24px);
+        height: parent.height;
+        vertical-alignment: center;
+        text: root.text;
+        font-family: Theme.font-ui;
+        font-size: 12.5px;
+        color: Theme.side-text;
+        overflow: elide;
+    }
+    ta := TouchArea {
+        clicked => { root.activated(); }
+    }
+}
+
 export component PanelSlot inherits Rectangle {
     // The slot is drawn only while open. Everything else is set by app.slint from the controller.
     in property <bool> open;
     // 0 nothing yet (a note), 1 image, 2 text, 3 a web page (the browser's own window covers the box),
-    // 4 the Changes of the conversation (stage 6).
+    // 4 the Changes of the conversation (stage 6), 5 a device (a phone simulator, issue 248).
     in property <int> kind;
     in property <string> title;
     in property <string> sub;
@@ -722,6 +754,65 @@ export component PanelSlot inherits Rectangle {
     callback web-download();
     public function focus-address() { web-bar.focus-address(); }
 
+    // The device panel (kind 5, issue 248, mockup A of 2026-11-19): the device's screen bare with its corner
+    // radius, letterboxed to its aspect, and the person's pointer, wheel and keys over it handed to the controller
+    // (`device_ctl.rs`), which maps them to device points. Nothing here moves on its own: the booting line's seconds
+    // come from the controller.
+    in property <image> device-frame;
+    in property <bool> device-has-frame;
+    // The screen in device points in its current orientation (0 while unknown), and its corner radius in points.
+    in property <float> device-pt-w;
+    in property <float> device-pt-h;
+    in property <float> device-radius-pt;
+    // 0 the picture, 1 one line and at most one button (a setup state, rule 1318), 2 the device list, 3 booting.
+    in property <int> device-state;
+    in property <string> device-line;
+    in property <string> device-button;
+    in property <[DeviceRow]> device-rows;
+    // Still pictures: the line under the badge ("" while live). The slow mark: why the view is slow ("" none).
+    in property <string> device-still;
+    in property <string> device-slow;
+    // A line along the bottom of the picture: "Connecting touch...", "Driven from <tab>. View only here."
+    in property <string> device-foot;
+    // The header's device buttons (a device the tab drives is on show).
+    in property <bool> device-controls;
+    // kind: 0 down, 1 up, 2 move, 3 leave; button: 0 left, 1 middle, 2 right, 3 other; mods: 1 shift, 2 ctrl,
+    // 4 alt, 8 cmd. Points are in the device box (`device-box`), the controller letterboxes them.
+    callback device-pointer(int, length, length, int, int);
+    callback device-wheel(length, length, length, length, int);
+    callback device-key(bool, string, int, bool);
+    // A header button or a menu row: home, lock, rotate_left, rotate_right, shake, volume_up, volume_down,
+    // choose, shutdown.
+    callback device-act(string);
+    // The setup state's one button (Get Xcode, Open Xcode, Boot, Boot again).
+    callback device-setup();
+    callback device-pick(int);
+    property <bool> device-menu-open: false;
+    out property <bool> device-menu-shown: root.open && root.kind == 5 && root.device-menu-open;
+    out property <bool> device-focused: root.open && root.kind == 5 && device-keys.has-focus;
+    public function focus-device() { device-keys.focus(); }
+    // Where the device box and the letterboxed picture are in the window, for the controller, ui.rect and the tests.
+    out property <length> device-x: device-box.absolute-position.x;
+    out property <length> device-y: device-box.absolute-position.y;
+    out property <length> device-w: device-box.width;
+    out property <length> device-h: device-box.height;
+    property <float> device-fit: (root.device-pt-w > 0 && root.device-pt-h > 0) ? min(device-box.width / 1px / root.device-pt-w, device-box.height / 1px / root.device-pt-h) : 0;
+    out property <length> device-pic-w: root.device-pt-w * root.device-fit * 1px;
+    out property <length> device-pic-h: root.device-pt-h * root.device-fit * 1px;
+    out property <length> device-pic-x: device-box.absolute-position.x + (device-box.width - root.device-pic-w) / 2;
+    out property <length> device-pic-y: device-box.absolute-position.y + (device-box.height - root.device-pic-h) / 2;
+    out property <length> device-button-x: device-setup-btn.absolute-position.x;
+    out property <length> device-button-y: device-setup-btn.absolute-position.y;
+    out property <length> device-button-w: device-setup-btn.width;
+    out property <length> device-button-h: device-setup-btn.height;
+    out property <bool> device-button-shown: root.open && root.kind == 5 && (root.device-state == 1 || root.device-state == 3) && root.device-button != "";
+    out property <bool> device-slow-shown: root.open && root.kind == 5 && root.device-slow != "";
+    out property <bool> device-still-shown: root.open && root.kind == 5 && root.device-still != "";
+    out property <bool> device-controls-shown: root.open && root.kind == 5 && root.device-controls;
+    out property <length> device-rotate-x: device-rotr-btn.absolute-position.x;
+    out property <length> device-home-x: device-home-btn.absolute-position.x;
+    out property <length> device-head-y: device-home-btn.absolute-position.y;
+
     // The panel's own pieces in the window, for ui.rect and the tests.
     out property <length> header-h: root.bar-only ? 0px : Px.snap(32px);
     out property <length> body-x: body.absolute-position.x;
@@ -760,7 +851,7 @@ export component PanelSlot inherits Rectangle {
     out property <length> wrap-button-y: wrap-btn.absolute-position.y;
     out property <length> wrap-button-w: wrap-btn.width;
     // The slot holds the keys (the controller moves them here on a click or the focus chord).
-    out property <bool> has-focus: root.open && keys.has-focus;
+    out property <bool> has-focus: root.open && (keys.has-focus || (root.kind == 5 && device-keys.has-focus));
 
     // The header's wrap button (a text file): the setting, and a press to flip it. `wrapped` says the rows are wrapped now.
     in property <bool> wrap-on;
@@ -791,7 +882,11 @@ export component PanelSlot inherits Rectangle {
     property <length> head-wrap: root.kind == 2 ? Px.snap(28px) : 0px;
     property <length> head-md: root.md-file ? md-switch.width + Px.snap(6px) : 0px;
     property <length> head-draw: root.draw-shown ? Px.snap(24px + 4px) : 0px;
-    property <length> head-extra: root.head-wrap + root.head-draw + root.head-md;
+    // The device's buttons (Home, Lock, Rotate left, Rotate right, More, each 24 px with 2 px between, and the
+    // rule before the close) and the slow mark.
+    property <length> head-device: root.kind == 5 && root.device-controls ? 5 * Px.snap(24px) + 4 * Px.snap(2px) + Px.snap(10px) : 0px;
+    property <length> head-slow: root.kind == 5 && root.device-slow != "" ? slow-mark.width + Px.snap(6px) : 0px;
+    property <length> head-extra: root.head-wrap + root.head-draw + root.head-md + root.head-device + root.head-slow;
     callback wrap-toggled();
     callback close();
     callback escape();
@@ -916,6 +1011,80 @@ export component PanelSlot inherits Rectangle {
                 current: root.md-view;
                 compact: root.width < 460px;
                 picked(i) => { root.md-view-picked(i); }
+            }
+            // The device's buttons, right to left from the close: a rule, More, Rotate right, Rotate left, Lock, Home.
+            Rectangle {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(6px);
+                y: (parent.height - self.height) / 2;
+                width: Px.hair();
+                height: Px.snap(14px);
+                visible: root.kind == 5 && root.device-controls;
+                background: Theme.divider;
+            }
+            device-more-btn := WebButton {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(10px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.kind == 5 && root.device-controls;
+                path: Glyphs.device-more;
+                label: "More";
+                on: root.device-menu-open;
+                activated => { root.device-menu-open = !root.device-menu-open; }
+            }
+            device-rotr-btn := WebButton {
+                x: device-more-btn.x - Px.snap(2px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.kind == 5 && root.device-controls;
+                path: Glyphs.device-rotate-right;
+                label: "Rotate right";
+                activated => { root.device-act("rotate_right"); }
+            }
+            device-rotl-btn := WebButton {
+                x: device-rotr-btn.x - Px.snap(2px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.kind == 5 && root.device-controls;
+                path: Glyphs.device-rotate-left;
+                label: "Rotate left";
+                activated => { root.device-act("rotate_left"); }
+            }
+            device-lock-btn := WebButton {
+                x: device-rotl-btn.x - Px.snap(2px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.kind == 5 && root.device-controls;
+                path: Glyphs.badge-lock;
+                label: "Lock";
+                activated => { root.device-act("lock"); }
+            }
+            device-home-btn := WebButton {
+                x: device-lock-btn.x - Px.snap(2px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.kind == 5 && root.device-controls;
+                path: Glyphs.home;
+                label: "Home";
+                activated => { root.device-act("home"); }
+            }
+            // The slow mark (the CPU path): a small word, its reason under it while the pointer rests on it.
+            slow-mark := Rectangle {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-device - self.width;
+                y: (parent.height - self.height) / 2;
+                width: Px.snap(slow-text.preferred-width + 10px);
+                height: Px.snap(17px);
+                visible: root.kind == 5 && root.device-slow != "";
+                border-radius: Theme.radius-button;
+                border-width: Px.hair();
+                border-color: Theme.widget-warn.with-alpha(0.35);
+                accessible-role: text;
+                accessible-label: "Slow view: " + root.device-slow;
+                slow-text := Text {
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    text: "slow";
+                    font-family: Theme.font-ui;
+                    font-size: 10.5px;
+                    color: Theme.widget-warn;
+                }
+                slow-ta := TouchArea {}
             }
             close-btn := PanelClose {
                 x: parent.width - self.width - Px.snap(8px);
@@ -1066,6 +1235,252 @@ export component PanelSlot inherits Rectangle {
                     close => { root.web-find-close(); }
                 }
             }
+            device-box := Rectangle {
+                x: Px.snap(4px);
+                width: parent.width - Px.snap(4px);
+                height: parent.height;
+                visible: root.kind == 5;
+                // The screen: bare, the device's corner radius, letterboxed (no bezel, spec "Non-goals").
+                device-pic := Rectangle {
+                    x: (parent.width - root.device-pic-w) / 2;
+                    y: (parent.height - root.device-pic-h) / 2;
+                    width: root.device-pic-w;
+                    height: root.device-pic-h;
+                    visible: root.device-state == 0 && root.device-has-frame;
+                    border-radius: root.device-radius-pt * root.device-fit * 1px;
+                    clip: true;
+                    background: black;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.device-frame;
+                        image-fit: fill;
+                    }
+                }
+                device-keys := FocusScope {
+                    width: parent.width;
+                    height: parent.height;
+                    enabled: root.kind == 5 && root.device-state == 0 && root.device-has-frame;
+                    key-pressed(e) => {
+                        // The window's chords (Cmd or Ctrl held) stay the window's.
+                        if e.modifiers.control || e.modifiers.meta {
+                            return reject;
+                        }
+                        root.device-key(true, e.text, (e.modifiers.shift ? 1 : 0) + (e.modifiers.alt ? 4 : 0), e.repeat);
+                        accept
+                    }
+                    key-released(e) => {
+                        if e.modifiers.control || e.modifiers.meta {
+                            return reject;
+                        }
+                        root.device-key(false, e.text, (e.modifiers.shift ? 1 : 0) + (e.modifiers.alt ? 4 : 0), false);
+                        accept
+                    }
+                    if root.device-state == 0 && root.device-has-frame: TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                device-keys.focus();
+                                root.device-menu-open = false;
+                            }
+                            root.device-pointer(
+                                e.kind == PointerEventKind.down ? 0 : (e.kind == PointerEventKind.up ? 1 : (e.kind == PointerEventKind.move ? 2 : 3)),
+                                self.mouse-x, self.mouse-y,
+                                e.button == PointerEventButton.left ? 0 : (e.button == PointerEventButton.middle ? 1 : (e.button == PointerEventButton.right ? 2 : 3)),
+                                (e.modifiers.shift ? 1 : 0) + (e.modifiers.control ? 2 : 0) + (e.modifiers.alt ? 4 : 0) + (e.modifiers.meta ? 8 : 0));
+                        }
+                        changed has-hover => {
+                            if !self.has-hover {
+                                root.device-pointer(3, self.mouse-x, self.mouse-y, 0, 0);
+                            }
+                        }
+                        scroll-event(e) => {
+                            root.device-wheel(self.mouse-x, self.mouse-y, e.delta-x, e.delta-y, (e.modifiers.shift ? 1 : 0) + (e.modifiers.control ? 2 : 0) + (e.modifiers.alt ? 4 : 0) + (e.modifiers.meta ? 8 : 0));
+                            accept
+                        }
+                    }
+                }
+                // Still pictures: the badge at the top left of the panel (spec "Fallbacks", rule 1312).
+                if root.device-still != "": Rectangle {
+                    x: Px.snap(8px);
+                    y: Px.snap(10px);
+                    width: Px.snap(still-text.preferred-width + 26px);
+                    height: Px.snap(20px);
+                    border-radius: Px.snap(10px);
+                    background: Theme.side-flat;
+                    border-width: Px.hair();
+                    border-color: Theme.divider;
+                    accessible-role: text;
+                    accessible-label: "Still pictures";
+                    Rectangle {
+                        x: Px.snap(8px);
+                        y: (parent.height - self.height) / 2;
+                        width: Px.snap(6px);
+                        height: Px.snap(6px);
+                        border-radius: Px.snap(3px);
+                        background: Theme.widget-warn;
+                    }
+                    still-text := Text {
+                        x: Px.snap(20px);
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: "Still";
+                        font-family: Theme.font-ui;
+                        font-size: 11px;
+                        color: Theme.text-soft;
+                    }
+                }
+                // One line along the bottom: the still line, or "Connecting touch...", or "Driven from ...".
+                if (root.device-state == 0) && (root.device-still != "" || root.device-foot != ""): Rectangle {
+                    y: parent.height - self.height;
+                    width: parent.width;
+                    height: Px.snap(foot-text.preferred-height + 16px);
+                    background: Theme.ground.with-alpha(0.9);
+                    Rectangle {
+                        width: parent.width;
+                        height: Px.hair();
+                        background: Theme.divider;
+                    }
+                    foot-text := Text {
+                        x: Px.snap(12px);
+                        width: parent.width - Px.snap(24px);
+                        height: parent.height;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        text: root.device-still != "" ? root.device-still : root.device-foot;
+                        font-family: Theme.font-ui;
+                        font-size: 11.5px;
+                        color: Theme.dim;
+                    }
+                }
+                // A setup state (rule 1318): one line and at most one button; booting adds a still ring (nothing
+                // here moves on its own: the seconds in the line come from the controller).
+                Rectangle {
+                    visible: root.device-state == 1 || root.device-state == 3;
+                    VerticalLayout {
+                    x: Px.snap(16px);
+                    width: parent.width - Px.snap(32px);
+                    alignment: center;
+                    spacing: Px.snap(12px);
+                    if root.device-state == 3: HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: Px.snap(18px);
+                            height: Px.snap(18px);
+                            border-radius: Px.snap(9px);
+                            border-width: Px.snap(2px);
+                            border-color: Theme.accent-solid;
+                        }
+                    }
+                    Text {
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        text: root.device-line;
+                        font-family: Theme.font-ui;
+                        font-size: 12.5px;
+                        color: Theme.dim;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        height: root.device-button != "" ? Px.snap(28px) : 0px;
+                        device-setup-btn := Rectangle {
+                            width: root.device-button != "" ? Px.snap(setup-text.preferred-width + 28px) : 0px;
+                            height: Px.snap(28px);
+                            border-radius: Theme.radius-button;
+                            background: setup-ta.has-hover ? Theme.hover : transparent;
+                            border-width: Px.hair();
+                            border-color: Theme.divider;
+                            accessible-role: button;
+                            accessible-label: root.device-button;
+                            accessible-action-default => { root.device-setup(); }
+                            setup-text := Text {
+                                width: parent.width;
+                                height: parent.height;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                text: root.device-button;
+                                font-family: Theme.font-ui;
+                                font-size: 12px;
+                                color: Theme.text;
+                            }
+                            setup-ta := TouchArea {
+                                clicked => { root.device-setup(); }
+                            }
+                        }
+                    }
+                    }
+                }
+                // Choose a device: the list (iPhones first, newest first, a dot on the ones that run).
+                if root.device-state == 2: VerticalLayout {
+                    x: (parent.width - self.width) / 2;
+                    width: min(parent.width - Px.snap(32px), Px.snap(260px));
+                    alignment: center;
+                    spacing: Px.snap(12px);
+                    Text {
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        text: root.device-line;
+                        font-family: Theme.font-ui;
+                        font-size: 12.5px;
+                        color: Theme.dim;
+                    }
+                    Rectangle {
+                        height: Px.snap(34px) * root.device-rows.length;
+                        border-radius: Theme.radius-button;
+                        border-width: Px.hair();
+                        border-color: Theme.divider;
+                        clip: true;
+                        for row[i] in root.device-rows: Rectangle {
+                            y: Px.snap(34px) * i;
+                            height: Px.snap(34px);
+                            background: row-ta.has-hover ? Theme.hover : transparent;
+                            accessible-role: button;
+                            accessible-label: row.name;
+                            accessible-action-default => { root.device-pick(i); }
+                            if i > 0: Rectangle {
+                                width: parent.width;
+                                height: Px.hair();
+                                background: Theme.divider;
+                            }
+                            if row.booted: Rectangle {
+                                x: Px.snap(10px);
+                                y: (parent.height - self.height) / 2;
+                                width: Px.snap(6px);
+                                height: Px.snap(6px);
+                                border-radius: Px.snap(3px);
+                                background: Theme.accent;
+                            }
+                            Text {
+                                x: Px.snap(22px);
+                                width: parent.width * 0.6 - Px.snap(22px);
+                                height: parent.height;
+                                vertical-alignment: center;
+                                text: row.name;
+                                font-family: Theme.font-ui;
+                                font-size: 12.5px;
+                                color: Theme.text;
+                                overflow: elide;
+                            }
+                            Text {
+                                x: parent.width * 0.6;
+                                width: parent.width * 0.4 - Px.snap(10px);
+                                height: parent.height;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                text: row.booted ? row.os + ", on" : row.os;
+                                font-family: Theme.font-ui;
+                                font-size: 11.5px;
+                                color: Theme.dim;
+                                overflow: elide;
+                            }
+                            row-ta := TouchArea {
+                                clicked => { root.device-pick(i); }
+                            }
+                        }
+                    }
+                }
+            }
             img := ImageView {
                 width: parent.width;
                 height: parent.height;
@@ -1139,6 +1554,64 @@ export component PanelSlot inherits Rectangle {
                 dl-ta := TouchArea {
                     clicked => { root.web-download(); }
                 }
+            }
+        }
+        // The device's More menu, under its button; a press outside it closes it.
+        if root.device-menu-shown: TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.device-menu-open = false; }
+        }
+        if root.device-menu-shown: Rectangle {
+            x: parent.width - self.width - Px.snap(30px);
+            y: root.header-h - Px.snap(2px);
+            width: Px.snap(170px);
+            height: menu-col.preferred-height;
+            border-radius: Theme.radius-button;
+            background: Theme.side-flat;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            drop-shadow-offset-y: Px.snap(6px);
+            drop-shadow-blur: Px.snap(18px);
+            drop-shadow-color: black.with-alpha(0.5);
+            menu-col := VerticalLayout {
+                padding-top: Px.snap(4px);
+                padding-bottom: Px.snap(4px);
+                for item in [
+                    { act: "shake", text: "Shake" },
+                    { act: "volume_up", text: "Volume up" },
+                    { act: "volume_down", text: "Volume down" },
+                    { act: "choose", text: "Choose device" },
+                    { act: "shutdown", text: "Shut down" },
+                ]: DeviceMenuRow {
+                    text: item.text;
+                    activated => {
+                        root.device-menu-open = false;
+                        root.device-act(item.act);
+                    }
+                }
+            }
+        }
+        // The slow mark's reason, under it while the pointer rests on it.
+        if root.kind == 5 && root.device-slow != "" && slow-ta.has-hover: Rectangle {
+            x: max(Px.snap(8px), parent.width - Px.snap(260px) - Px.snap(8px));
+            y: root.header-h + Px.snap(4px);
+            width: Px.snap(260px);
+            height: Px.snap(slow-tip.preferred-height + 12px);
+            border-radius: Theme.radius-button;
+            background: Theme.side-flat;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            slow-tip := Text {
+                x: Px.snap(8px);
+                width: parent.width - Px.snap(16px);
+                height: parent.height;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                text: root.device-slow;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                color: Theme.side-text;
             }
         }
         // The slot's left edge: a hairline, the splitter's visible part.

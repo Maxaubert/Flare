@@ -5,6 +5,7 @@ mod app;
 mod chip;
 mod convo;
 mod decor;
+mod device_panel;
 mod dialog;
 mod dictation_page;
 mod dictation_pill;

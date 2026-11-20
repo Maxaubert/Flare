@@ -1325,6 +1325,30 @@ impl GlueCtx {
         Ok(())
     }
 
+    /// `DeviceOpen`: the device panel on the front tab (the panel menu's entry, PR 4b).
+    fn device_open(&self, target: Option<&str>) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        let tab = c.front_id().ok_or("no tab in front")?;
+        if c.device_open(&tab, target) {
+            Ok(())
+        } else {
+            Err("the device panel did not open".into())
+        }
+    }
+
+    /// `DeviceUserInput`: the person pressed in the front device panel.
+    fn device_user_input(&self) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        c.device_user_input();
+        Ok(())
+    }
+
     /// `WebUserInput`: the person took over the front web page.
     fn web_user_input(&self) -> Result<(), String> {
         let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
@@ -2037,6 +2061,8 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
         Request::DictRouted { result } => crate::dictation_ctl::e2e_routed(&result),
         Request::WebScript { js } => ctx.web_script(&js),
         Request::WebUserInput => ctx.web_user_input(),
+        Request::DeviceOpen { target } => ctx.device_open(target.as_deref()),
+        Request::DeviceUserInput => ctx.device_user_input(),
         Request::WebZoom { factor } => ctx.web_zoom(factor),
         Request::ToastClick { tab } => ctx.toast_click(&tab),
     };

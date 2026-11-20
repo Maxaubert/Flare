@@ -1876,6 +1876,7 @@ dependencies = [
  "flare-cef",
  "flare-convo",
  "flare-ctl",
+ "flare-device",
  "flare-diag",
  "flare-dictation",
  "flare-e2e-proto",
