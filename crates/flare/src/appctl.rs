@@ -4228,8 +4228,14 @@ impl AppCtl {
     /// Rule 1302: a call from a hidden session's agent that would show something on this machine's screen (a panel,
     /// a `show_*` tool, the browser panel, a mini-app, a plugin's page, a fill, a badge or progress) answers
     /// `unavailable`, naming the opener. None for every other call.
+    ///
+    /// Rule 1306: only a call made with the hidden tab's own token hears that. A caller that named the tab (a plugin
+    /// with `tabs`, a click scope, a tool scope) gets None here, so its op goes on to its own handler, which answers a
+    /// hidden tab exactly as a tab that does not exist (`is_shell_tab` is false for it). It learns neither that the
+    /// session exists nor its opener's name.
     fn hidden_refusal(&self, op: &CtlOp) -> Option<flare_ctl::CtlError> {
-        let tab = match op {
+        let (tab, own) = match op {
+            // These take their tab from the caller's token (`tab_of_call`), so the caller is always the tab's own.
             CtlOp::PanelClose { tab }
             | CtlOp::ShowFile { tab, .. }
             | CtlOp::ShowText { tab, .. }
@@ -4239,19 +4245,23 @@ impl AppCtl {
             | CtlOp::BrowserNavigate { tab, .. }
             | CtlOp::BrowserAgent { tab, .. }
             | CtlOp::BrowserPoint { tab, .. }
-            | CtlOp::ShowMod { tab, .. }
-            | CtlOp::ModTool { tab, .. }
-            | CtlOp::BadgeSet { tab, .. }
-            | CtlOp::ProgressSet { tab, .. }
-            | CtlOp::Fill { tab, .. }
-            | CtlOp::FillPage { tab }
-            | CtlOp::BarShow { tab, .. } => tab,
+            | CtlOp::ModTool { tab, .. } => (tab, true),
+            // These may carry a tab the caller named (`scoped_tab`, `fill_tab`).
+            CtlOp::ShowMod { tab, own, .. }
+            | CtlOp::BadgeSet { tab, own, .. }
+            | CtlOp::ProgressSet { tab, own, .. }
+            | CtlOp::Fill { tab, own, .. }
+            | CtlOp::FillPage { tab, own }
+            | CtlOp::BarShow { tab, own, .. } => (tab, *own),
             // A tab it opens would show on this screen, and with an empty strip it would come to the front.
             CtlOp::OpenRemote {
                 caller: Some(tab), ..
-            } => tab,
+            } => (tab, true),
             _ => return None,
         };
+        if !own {
+            return None;
+        }
         let h = self.model.hidden_of(tab)?;
         let why = if matches!(op, CtlOp::OpenRemote { .. }) {
             format!(
@@ -4421,6 +4431,7 @@ impl AppCtl {
                 tip,
                 tone,
                 generation,
+                own: _,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
@@ -4460,6 +4471,7 @@ impl AppCtl {
                 value,
                 label,
                 generation,
+                own: _,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
@@ -4508,6 +4520,7 @@ impl AppCtl {
                 plugin,
                 tab,
                 generation,
+                own: _,
             } => self.ctl_bar_show(plugin, tab, generation),
             CtlOp::BarHide { plugin, tab } => self.ctl_bar_hide(plugin, tab),
             // The agents' icon motions (owner 2026-10-26): checked on the worker, applied in `plugins_glue`.
@@ -4526,7 +4539,7 @@ impl AppCtl {
                 generation,
             } => self.ctl_notice_show(&plugin, &text, error, generation),
             // The address of a page to fill (the `fill` permission), applied in `ask_glue`.
-            CtlOp::FillPage { tab } => self.ctl_fill_page(&tab),
+            CtlOp::FillPage { tab, own: _ } => self.ctl_fill_page(&tab),
             // Remote sessions (PR 2): checked on the worker, applied in `remote_glue`.
             op @ (CtlOp::RemoteOpen { .. }
             | CtlOp::RemoteTabs
@@ -10018,6 +10031,7 @@ two",
             tip: tip.into(),
             tone: flare_tabs::decor::Tone::Ink,
             generation: 0,
+            own: true,
         }
     }
 
@@ -10029,6 +10043,7 @@ two",
             value,
             label: "Review".into(),
             generation: 0,
+            own: true,
         }
     }
 
@@ -10172,6 +10187,7 @@ two",
             tip: String::new(),
             tone: flare_tabs::decor::Tone::Ink,
             generation: 0,
+            own: true,
         };
         ctl_call(&f, op).unwrap();
         assert!(f.ctl.borrow().has_decor(&a));

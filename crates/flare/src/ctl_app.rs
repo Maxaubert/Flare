@@ -180,6 +180,9 @@ pub enum CtlOp {
         /// A plugin's generation ([`Hub::generation`]) when the call was checked (0 for the agent): a plugin
         /// switched off since, even if on again, is refused.
         generation: u64,
+        /// The tab is the caller's own (its token's). A hidden session answers a call on it as `unavailable`, naming
+        /// its opener, only when this is true; any other caller gets the answer an unknown tab gets (rule 1306).
+        own: bool,
     },
     BadgeClear {
         tab: String,
@@ -195,6 +198,8 @@ pub enum CtlOp {
         label: String,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     ProgressClear {
         tab: String,
@@ -245,6 +250,8 @@ pub enum CtlOp {
         tab: String,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `bar.hide`: the plugin's bar leaves the tab (another plugin's stays).
     BarHide {
@@ -269,6 +276,8 @@ pub enum CtlOp {
     /// plugin's page). Answered with `{tab, url, host}`.
     FillPage {
         tab: String,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `browser.fill`: checked on the call's thread (the plugin, the params, the tab it may fill, its asks); the window
     /// checks the page's site against the login's addresses, asks the person in its own dialog and on Allow types
@@ -284,6 +293,8 @@ pub enum CtlOp {
         via_call: bool,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `secret.ask`: Flare's own masked field, titled with the plugin's name. Answered with `{text}` (to this
     /// plugin only, never logged) or `{cancelled: true}`.
@@ -697,6 +708,12 @@ impl AppDispatcher {
         }
     }
 
+    /// Whether `tab` is the caller's own (the tab of the token it called with). Only then may a hidden session answer
+    /// as one (rule 1306); any other caller naming it gets the answer an unknown tab gets.
+    fn owns(ctx: &CallContext, tab: &str) -> bool {
+        ctx.tab.as_deref() == Some(tab)
+    }
+
     /// Whether the person's click on one of the calling plugin's actions or sidebar items gave it scope on `tab`.
     fn clicked_on(&self, ctx: &CallContext, tab: &str) -> bool {
         match (&ctx.grant, &self.mods) {
@@ -811,6 +828,7 @@ impl AppDispatcher {
         // Read before anything is checked, so a switch off during the checks is seen by the window.
         let generation = self.generation_of(ctx);
         let (tab, source) = self.decor_target(ctx, params)?;
+        let own = Self::owns(ctx, &tab);
         let spend = (tab.clone(), source.clone());
         let key = str_param(params, "key")?
             .ok_or_else(|| bad("key is required".into()))?
@@ -865,6 +883,7 @@ impl AppDispatcher {
                     tip: line("tip")?,
                     tone,
                     generation,
+                    own,
                 }
             }
             Method::TabsBadgeClear => CtlOp::BadgeClear { tab, source, key },
@@ -885,6 +904,7 @@ impl AppDispatcher {
                     value,
                     label: line("label")?,
                     generation,
+                    own,
                 }
             }
             Method::TabsProgressClear => CtlOp::ProgressClear { tab, source, key },
@@ -1128,7 +1148,7 @@ impl AppDispatcher {
             "session.read calls for one tab",
         )?;
         // A hidden session answers only a call made with its own tab token (rule 1306).
-        let hidden_ok = ctx.tab.as_deref() == Some(tab.as_str());
+        let hidden_ok = Self::owns(ctx, &tab);
         let at = self.ask(CtlOp::SessionOf {
             tab: tab.clone(),
             hidden_ok,
@@ -1224,6 +1244,7 @@ impl AppDispatcher {
         self.ask(if method == Method::BarShow {
             CtlOp::BarShow {
                 plugin,
+                own: Self::owns(ctx, &tab),
                 tab,
                 generation,
             }
@@ -1478,7 +1499,8 @@ impl AppDispatcher {
         Self::plugin_caller(ctx, "the address of a page to fill")?;
         only_fields(params, &["tab"], "browser.fill.page")?;
         let tab = self.fill_tab(ctx, params)?;
-        self.ask(CtlOp::FillPage { tab })
+        let own = Self::owns(ctx, &tab);
+        self.ask(CtlOp::FillPage { tab, own })
     }
 
     /// `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`: checked here (the params, the tab,
@@ -1488,6 +1510,7 @@ impl AppDispatcher {
         let (plugin, plugin_name, generation) = self.fill_caller(ctx, "filling a login")?;
         let tab = self.fill_tab(ctx, params)?;
         let via_call = !self.may_see_tab(ctx, &tab);
+        let own = Self::owns(ctx, &tab);
         let req = flare_mods::fill::parse_fill(params)?;
         let hub = self.hub()?;
         hub.asks().admit(&plugin, Instant::now())?;
@@ -1500,6 +1523,7 @@ impl AppDispatcher {
             values: req.values,
             via_call,
             generation,
+            own,
         };
         self.ask_by(op, Instant::now() + ASK_CALL_WAIT)
     }
@@ -1594,7 +1618,7 @@ impl AppDispatcher {
                 ));
             }
         }
-        let own = ctx.tab.as_deref() == Some(tab.as_str());
+        let own = Self::owns(ctx, &tab);
         self.ask(CtlOp::ShowMod {
             tab,
             mod_id: mod_id.to_string(),
