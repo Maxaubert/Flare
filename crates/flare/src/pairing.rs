@@ -417,7 +417,19 @@ pub fn host_session(
     if ctx.stopped() {
         return done(None, false);
     }
-    let before = ctx.io.list_in();
+    // Audit #3: a record that cannot be read is never saved over, so no key goes in that it would not list.
+    let before = match ctx.io.load_in() {
+        Ok(list) => list,
+        Err(e) => {
+            log::warn!("pairing: {e}");
+            refuse(
+                &mut ch,
+                s,
+                "This computer's list of linked computers could not be read.",
+            );
+            return done(None, false);
+        }
+    };
     // The same key paired before: it is in already, so a failure later leaves it there.
     let was_in = before.iter().any(|m| m.key == key_field);
     let admin = match crate::sharing::install_key(&*ctx.os, &line) {
@@ -622,6 +634,12 @@ pub fn viewer_session(
             }
         }
     };
+    // Audit #3: the list is read before the other computer adds this one's key, and a file that cannot be read whole is
+    // never saved over.
+    let mut list = match ctx.io.load() {
+        Ok(list) => list,
+        Err(e) => return fail(e),
+    };
     let public = match ctx.files.ensure_key(&ctx.me.name) {
         Ok(k) => k,
         Err(e) => return fail(e),
@@ -678,7 +696,6 @@ pub fn viewer_session(
     } else {
         host_name
     };
-    let mut list = ctx.io.list();
     // Pairing a machine again keeps its id (and its tabs). It is the same machine only when it proves the same SSH host
     // key: a name or an address the other computer says could be anyone's, so neither ever picks an entry to replace.
     let old = list

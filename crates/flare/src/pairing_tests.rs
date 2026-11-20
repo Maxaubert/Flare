@@ -1058,6 +1058,47 @@ fn nothing_goes_in_when_the_answer_cannot_be_made() {
     }
 }
 
+/// Audit #3: a list file that cannot be read whole is never saved over. The host refuses before the key goes in; the
+/// viewer stops before it sends its key. Neither side saves anything, and the files keep what they held.
+#[test]
+fn a_broken_list_file_stops_pairing_and_is_not_saved_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let why = "the file was not changed: it is not valid JSON".to_string();
+    for side in ["host", "viewer"] {
+        let os = Arc::new(FakeOs::new(Platform::Windows));
+        let (host_io, view_io) = (Arc::new(FakeIo::default()), Arc::new(FakeIo::default()));
+        let broken = if side == "host" { &host_io } else { &view_io };
+        *broken.broken.lock().unwrap() = Some(why.clone());
+        let (v, host_events, ht) = host_thread(Arc::clone(&os), Arc::clone(&host_io));
+        let (codes, view_events, vt) =
+            viewer_thread(v, Arc::clone(&view_io), PairFiles::new(dir.path()));
+        let HostEvent::Ask { code, .. } = next(&host_events) else {
+            panic!("ask");
+        };
+        next(&view_events);
+        codes.send(code).unwrap();
+        let ViewerEvent::Failed(line) = next(&view_events) else {
+            panic!("{side}: the viewer fails");
+        };
+        if side == "viewer" {
+            assert_eq!(line, why, "the viewer says why");
+        }
+        vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        assert!(
+            os.user_keys.lock().unwrap().is_empty(),
+            "{side}: no key went in"
+        );
+        for io in [&host_io, &view_io] {
+            assert_eq!(
+                io.saves.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{side}"
+            );
+        }
+    }
+}
+
 /// Rule 1258: when sharing turns off while a request adds its key, the key comes out again and no entry stays; an
 /// admin key is noted for the clean up at once, and the clean up (not a second prompt) removes it.
 #[test]

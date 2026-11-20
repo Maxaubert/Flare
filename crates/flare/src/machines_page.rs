@@ -31,7 +31,7 @@ use crate::appctl::{Post, UiMsg};
 use crate::host_os::HostKey;
 use crate::machines::{
     FLARE_CANDIDATES, FileMachines, Incoming, Machine, MachinesPort, failure_line, incoming_file,
-    incoming_json, machine_id, os_of_hello, parse_incoming, probe_kinds, saved_kind,
+    incoming_json, load_incoming, machine_id, os_of_hello, parse_incoming, probe_kinds, saved_kind,
 };
 use crate::remote_link::LinkError;
 use crate::settings_ctl::SettingsMsg;
@@ -45,7 +45,14 @@ pub struct HelloFacts {
 
 /// The page's disk and links. BLOCKING, every call: a worker's.
 pub trait MachinesIo: Send + Sync {
+    /// The machines to show or use. A broken file shows what can be read of it.
     fn list(&self) -> Vec<Machine>;
+    /// Audit #3: the machines for a read that is saved back. A file that cannot be read, or that holds an entry Flare
+    /// leaves out, is the line that says so (no file is an empty list), so a save never wipes what it holds.
+    fn load(&self) -> Result<Vec<Machine>, String> {
+        Ok(self.list())
+    }
+    /// Saves the whole list. The real one refuses to write over a file [`MachinesIo::load`] refuses (audit #3).
     fn save(&self, list: &[Machine]) -> Result<(), String>;
     /// The plain hosts of `~/.ssh/config`.
     fn ssh_hosts(&self) -> Vec<String>;
@@ -59,6 +66,10 @@ pub trait MachinesIo: Send + Sync {
     /// The computers paired to reach this one (machine pairing PR 3, rule 1260).
     fn list_in(&self) -> Vec<Incoming> {
         Vec::new()
+    }
+    /// Audit #3: [`MachinesIo::load`] for the computers paired to reach this one.
+    fn load_in(&self) -> Result<Vec<Incoming>, String> {
+        Ok(self.list_in())
     }
     fn save_in(&self, _list: &[Incoming]) -> Result<(), String> {
         Ok(())
@@ -112,7 +123,13 @@ impl MachinesIo for RealMachinesIo {
         self.file.list()
     }
 
+    fn load(&self) -> Result<Vec<Machine>, String> {
+        self.file.load()
+    }
+
     fn save(&self, list: &[Machine]) -> Result<(), String> {
+        // Never over a file that could not be read whole (audit #3): the user's hand edit stays to be fixed.
+        self.file.load()?;
         self.file
             .save(list)
             .map_err(|e| format!("machines.json could not be saved: {e}"))
@@ -120,11 +137,17 @@ impl MachinesIo for RealMachinesIo {
 
     fn list_in(&self) -> Vec<Incoming> {
         std::fs::read_to_string(&self.in_file) // sync-ok: a worker's call
-            .map(|raw| parse_incoming(&raw))
+            .map(|raw| parse_incoming(raw.strip_prefix('\u{feff}').unwrap_or(&raw)))
             .unwrap_or_default()
     }
 
+    fn load_in(&self) -> Result<Vec<Incoming>, String> {
+        load_incoming(&self.in_file)
+    }
+
     fn save_in(&self, list: &[Incoming]) -> Result<(), String> {
+        // Never over a file that could not be read whole (audit #3): it is the record of the keys added.
+        load_incoming(&self.in_file)?;
         flare_settings::atomic::write_atomic(&self.in_file, &incoming_json(list))
             .map_err(|e| format!("machines_in.json could not be saved: {e}"))
     }
@@ -226,6 +249,9 @@ pub enum MachinesMsg {
         incoming: Vec<Incoming>,
         hosts: Vec<SshHost>,
         known_os: HashMap<HostKey, MachineOs>,
+        /// Audit #3: why `machines.json` or `machines_in.json` cannot be saved over (a hand edit that broke it), shown
+        /// as a notice. The lists show what could be read.
+        problem: Option<String>,
     },
     /// One SSH host's system was looked up (rule 1278): what was found, None when nothing answered.
     HostOs { key: HostKey, os: Option<MachineOs> },
@@ -240,8 +266,8 @@ pub enum MachinesMsg {
     },
     /// The add form's check and save: the new list, or the form's red line.
     Added(Result<(Vec<Machine>, String), String>),
-    /// A machine was removed: the new list.
-    Removed(Vec<Machine>),
+    /// A machine was removed: the new list, or the line that says why it stays (audit #43).
+    Removed(Result<Vec<Machine>, String>),
     /// The Computer sharing switch's worker (machine pairing PR 2).
     Sharing(crate::sharing::SharingMsg),
 }
@@ -546,6 +572,7 @@ impl MachinesPage {
         worker("flare-machines-read", move || {
             let machines = io.list();
             let incoming = io.list_in();
+            let problem = io.load().err().or_else(|| io.load_in().err());
             let hosts = io.named_ssh_hosts();
             let known_os = io.known_os();
             Self::say(
@@ -555,6 +582,7 @@ impl MachinesPage {
                     incoming,
                     hosts,
                     known_os,
+                    problem,
                 },
             );
         });
@@ -711,12 +739,11 @@ impl MachinesPage {
                 let admin = gone.admin.unwrap_or_else(|| {
                     flare_settings::machine_prefs::admin_keys(&prefs) || os.windows_admin()
                 });
-                let answer = crate::sharing::remove_key(&*os, &gone.key, admin).and_then(|()| {
-                    let list: Vec<Incoming> = io
-                        .list_in()
-                        .into_iter()
-                        .filter(|m| m.id != gone.id)
-                        .collect();
+                // The list is read before the key goes (audit #3): a file that cannot be read is never saved over,
+                // and the key stays with its record.
+                let answer = io.load_in().and_then(|all| {
+                    crate::sharing::remove_key(&*os, &gone.key, admin)?;
+                    let list: Vec<Incoming> = all.into_iter().filter(|m| m.id != gone.id).collect();
                     io.save_in(&list).map(|()| list)
                 });
                 Self::say(&post, MachinesMsg::RemovedIn(answer));
@@ -726,14 +753,16 @@ impl MachinesPage {
         let (io, post) = (Arc::clone(&self.io), Arc::clone(&self.post));
         let id = id.to_string();
         worker("flare-machines-save", move || {
-            let list: Vec<Machine> = io.list().into_iter().filter(|m| m.id != id).collect();
-            match io.save(&list) {
-                Ok(()) => {
-                    post(UiMsg::Machines(list.clone()));
-                    Self::say(&post, MachinesMsg::Removed(list));
-                }
+            // Audit #3 and #43: a file that cannot be read is never saved over, and a failed save is shown.
+            let answer = io.load().and_then(|all| {
+                let list: Vec<Machine> = all.into_iter().filter(|m| m.id != id).collect();
+                io.save(&list).map(|()| list)
+            });
+            match &answer {
+                Ok(list) => post(UiMsg::Machines(list.clone())),
                 Err(e) => log::warn!("{e}"),
             }
+            Self::say(&post, MachinesMsg::Removed(answer));
         });
     }
 
@@ -874,7 +903,8 @@ impl MachinesPage {
             };
             match io.probe(&probe) {
                 Ok(facts) => {
-                    let mut list = io.list();
+                    // Audit #3: a file that cannot be read is the dialog's line, never saved over.
+                    let mut list = io.load()?;
                     let taken: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
                     let id = machine_id(name, &taken);
                     list.push(Machine {
@@ -911,8 +941,12 @@ impl MachinesPage {
                 incoming,
                 hosts,
                 known_os,
+                problem,
             } => {
                 self.loading = false;
+                if let Some(line) = problem {
+                    self.sharing.notice(line);
+                }
                 self.machines = machines;
                 self.incoming = incoming;
                 self.hosts = hosts;
@@ -966,9 +1000,12 @@ impl MachinesPage {
                 self.add.busy = false;
                 self.add.error = Some(line);
             }
-            MachinesMsg::Removed(list) => {
+            MachinesMsg::Removed(Ok(list)) => {
                 self.checks.retain(|id, _| list.iter().any(|m| &m.id == id));
                 self.machines = list;
+            }
+            MachinesMsg::Removed(Err(line)) => {
+                self.sharing.notice(line);
             }
             MachinesMsg::RemovedIn(Ok(list)) => self.incoming = list,
             MachinesMsg::RemovedIn(Err(line)) => {
@@ -1066,13 +1103,45 @@ pub(crate) mod fake {
         /// The systems kept (the cache), and the hosts looked up, in order.
         pub known: Mutex<HashMap<HostKey, MachineOs>>,
         pub os_asked: Mutex<Vec<String>>,
+        /// Audit #3: the files cannot be read whole (a hand edit broke them): this line, and no save lands.
+        pub broken: Mutex<Option<String>>,
+        /// Audit #43: every save fails with this line (a locked file, a full disk).
+        pub save_fails: Mutex<Option<String>>,
+        /// The saves that landed, of both lists.
+        pub saves: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeIo {
+        fn may_save(&self) -> Result<(), String> {
+            if let Some(e) = self.broken.lock().unwrap().clone() {
+                return Err(e);
+            }
+            if let Some(e) = self.save_fails.lock().unwrap().clone() {
+                return Err(e);
+            }
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     impl MachinesIo for FakeIo {
         fn list(&self) -> Vec<Machine> {
             self.list.lock().unwrap().clone()
         }
+        fn load(&self) -> Result<Vec<Machine>, String> {
+            match self.broken.lock().unwrap().clone() {
+                Some(e) => Err(e),
+                None => Ok(self.list()),
+            }
+        }
+        fn load_in(&self) -> Result<Vec<Incoming>, String> {
+            match self.broken.lock().unwrap().clone() {
+                Some(e) => Err(e),
+                None => Ok(self.list_in()),
+            }
+        }
         fn save(&self, list: &[Machine]) -> Result<(), String> {
+            self.may_save()?;
             *self.list.lock().unwrap() = list.to_vec();
             Ok(())
         }
@@ -1106,6 +1175,7 @@ pub(crate) mod fake {
             self.incoming.lock().unwrap().clone()
         }
         fn save_in(&self, list: &[Incoming]) -> Result<(), String> {
+            self.may_save()?;
             *self.incoming.lock().unwrap() = list.to_vec();
             Ok(())
         }
@@ -1679,6 +1749,88 @@ mod tests {
         assert!(r.io.list().is_empty());
         assert!(r.page.machines().is_empty());
         assert!(r.page.info().machines.is_empty());
+    }
+
+    /// Runs `remove(id)` and waits for its worker's answer (a notice, or the row gone).
+    fn remove_and_wait(r: &mut Rig, id: &str) -> Vec<Vec<Machine>> {
+        r.page.remove(id);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut lists = Vec::new();
+        while r.page.sharing.ask().is_none()
+            && r.page.machines().iter().any(|m| m.id == id)
+            && std::time::Instant::now() < deadline
+        {
+            lists.extend(r.settle());
+            std::thread::sleep(std::time::Duration::from_millis(5)); // sync-ok: a test waits for its worker
+        }
+        lists
+    }
+
+    fn notice(r: &Rig) -> Option<String> {
+        match r.page.sharing.ask() {
+            Some(crate::sharing::SharingAsk::Notice(line)) => Some(line.clone()),
+            _ => None,
+        }
+    }
+
+    /// Audit #43: a Remove whose save fails says so in a notice; the row stays and the window hears no new list.
+    #[test]
+    fn a_remove_that_cannot_save_shows_a_notice_and_keeps_the_row() {
+        let io = FakeIo::default();
+        *io.list.lock().unwrap() = vec![mac()];
+        *io.save_fails.lock().unwrap() = Some("machines.json could not be saved: locked".into());
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        let lists = remove_and_wait(&mut r, "mac-mini");
+        assert_eq!(
+            notice(&r).as_deref(),
+            Some("machines.json could not be saved: locked")
+        );
+        assert!(lists.is_empty(), "the window keeps its list");
+        assert_eq!(r.page.machines(), [mac()]);
+        assert_eq!(r.io.list(), [mac()]);
+    }
+
+    /// Audit #3: a machines.json that cannot be read whole is never saved over. The page says so when it is shown;
+    /// Remove and Add save nothing and say why.
+    #[test]
+    fn a_broken_machines_file_is_never_saved_over() {
+        let mut io = FakeIo {
+            hosts: vec!["studio".into()],
+            ..FakeIo::default()
+        };
+        io.answers.insert(
+            ("studio".into(), "flare".into()),
+            facts("0.2.0", Some(Os::Mac)),
+        );
+        *io.list.get_mut().unwrap() = vec![mac()];
+        let why = "machines.json was not changed: it is not valid JSON. Fix the file or move it away, then try again.";
+        *io.broken.get_mut().unwrap() = Some(why.into());
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        assert_eq!(notice(&r).as_deref(), Some(why), "shown with the page");
+        assert_eq!(r.page.machines(), [mac()], "what could be read shows");
+        r.page
+            .sharing
+            .button(flare_settings::page::machines::SHARING_PRIMARY);
+        assert!(notice(&r).is_none());
+        let lists = remove_and_wait(&mut r, "mac-mini");
+        assert_eq!(notice(&r).as_deref(), Some(why));
+        assert!(lists.is_empty());
+        assert_eq!(r.page.machines(), [mac()]);
+        r.page.open_form();
+        r.page.set_pick("studio");
+        r.page.submit();
+        let lists = r.settle();
+        assert!(lists.is_empty());
+        assert_eq!(r.page.info().add.error.as_deref(), Some(why));
+        assert_eq!(
+            r.io.saves.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing was saved"
+        );
     }
 
     /// Rule 1278 (Max, 2026-11-17: "id like it to show either the windows, linux or mac icon automatically depending

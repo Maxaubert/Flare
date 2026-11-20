@@ -5025,3 +5025,33 @@ reads the unknown kind as nothing and never writes it back (rule 40). Second hal
 boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
 `a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
 (`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+
+1337. **A machines list that cannot be read whole is never saved over.** Audit 2026-11-21, finding #3 (issue #306). A
+read that is saved back uses `load_machines` / `load_incoming` (`crates/flare/src/machines.rs`), never the lenient
+`read_machines` or `list_in`. No file and a blank file are an empty list, so a first run works. A file that cannot be
+read, is not JSON, has no `machines` (or `linked_in`) list, or holds an entry Flare leaves out (rule 290) is an
+error that says "<file> was not changed". The real `save` and `save_in` refuse to write over such a file. Add,
+Remove and both pairing sides read with `MachinesIo::load` / `load_in` before they change anything: the host
+refuses before the key goes in, the viewer stops before it sends its key, and Remove reads before the key comes out.
+The page shows the line as a notice when it is shown. Held by
+`a_broken_list_file_is_an_error_and_no_file_is_an_empty_list`, `a_broken_machines_file_is_never_saved_over` and
+`a_broken_list_file_stops_pairing_and_is_not_saved_over`.
+
+1338. **A machine Remove whose save fails shows a notice.** Audit 2026-11-21, finding #43 (issue #306).
+`MachinesMsg::Removed` carries `Result<Vec<Machine>, String>`; an error shows as the page's notice, the same way
+`RemovedIn(Err)` does. The row stays and the window hears no new list. `crates/flare/src/machines_page.rs`. Held by
+`a_remove_that_cannot_save_shows_a_notice_and_keeps_the_row`.
+
+1339. **An atomic write flushes its temp file to the disk before the rename.** Audit 2026-11-21, finding #14 (issue
+#306). After a power loss NTFS can keep a rename but not the data, which left settings or tabs empty or full of NULs.
+`write_atomic`, the background `run` and `save_now_numbered` all write through `fs_write`, which creates the
+`.tmp`, writes it, calls `sync_all` and closes it before the rename. A failed flush is a failed write: the old file
+stays and no `.tmp` is left. `crates/flare-settings/src/atomic.rs`. Held by
+`each_temp_file_is_flushed_before_the_rename` and `a_failed_flush_keeps_the_old_file`.
+
+1340. **A dictation Remove that leaves a file on disk keeps the model and says so.** Audit 2026-11-21, finding #33
+(issue #306). `Store::remove` answers `Err(Disk)` when a file is still held. `finish_remove`
+(`crates/flare/src/dictation_ctl.rs`) then keeps the run with that failure and the active model id, and the row says
+"It could not be removed. A file is still in use." A lost answer counts as that failure. Only a remove that worked
+forgets the run and clears the active model. The store's tombstone stays either way (it only stops reuse from Prism
+Terminal). Held by `a_remove_that_left_a_file_keeps_the_model_and_says_so`.
