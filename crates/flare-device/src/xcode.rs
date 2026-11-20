@@ -3,8 +3,9 @@
 //!
 //! The order: `xcode-select -p` when it points inside an `.app`; else the newest `Xcode*.app` at the top of
 //! `/Applications`. Nothing else is looked at (rule 1325): not `~/Applications`, not Spotlight, so an `Xcode.app`
-//! someone left in Downloads is never a candidate. Every candidate must also be signed by Apple
-//! ([`crate::macos::codesign`]); one that is not is skipped with a log line, and with none left Flare has no Xcode.
+//! someone left in Downloads is never a candidate, and a `/Applications/Xcode*.app` symlink that leads out of
+//! `/Applications` is dropped. Every candidate must also be signed by Apple ([`crate::macos::codesign`]), with the
+//! `simctl` Flare runs from it; one that is not is skipped with a log line, and with none left Flare has no Xcode.
 //! The Command Line Tools alone count as no Xcode (they have no simulator). Flare never runs `xcode-select -s` (it
 //! needs admin).
 //!
@@ -51,11 +52,24 @@ pub const APPLICATIONS: &str = "/Applications";
 
 /// True for `/Applications/Xcode*.app`, at the top of the folder (never one inside another folder).
 pub fn in_applications(app: &Path) -> bool {
-    app.parent() == Some(Path::new(APPLICATIONS))
+    in_folder(app, Path::new(APPLICATIONS))
+}
+
+/// True for `<folder>/Xcode*.app`, at the top of `folder`.
+fn in_folder(app: &Path, folder: &Path) -> bool {
+    app.parent() == Some(folder)
         && app
             .file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("Xcode") && n.ends_with(".app"))
+}
+
+/// A `folder/Xcode*.app` entry resolved (`canonicalize`), when it is still a top-level `Xcode*.app` of `folder`
+/// afterwards: `/Applications/Xcode-beta.app` symlinked to a user folder is dropped (rule 1325); one symlinked to
+/// `/Applications/Xcode.app` becomes that app. BLOCKING (a file-system call).
+pub fn resolve_in(entry: &Path, folder: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(entry).ok()?; // sync-ok: the Xcode pick's worker
+    in_folder(&real, folder).then_some(real)
 }
 
 /// The Xcode to use. `selected` is what `xcode-select -p` printed (None when it printed nothing); `found` are the
@@ -111,16 +125,22 @@ pub fn find() -> Option<Xcode> {
     .ok()
     .map(|o| PathBuf::from(String::from_utf8_lossy(&o).trim()))
     .filter(|p| !p.as_os_str().is_empty());
+    // Every path is resolved, so the app that is checked is the app that is used (no symlink in between).
+    let selected = selected
+        .as_deref()
+        .and_then(app_of)
+        .and_then(|a| std::fs::canonicalize(a).ok()); // sync-ok: the Xcode pick's worker
     let mut apps: Vec<PathBuf> = Vec::new();
-    if let Some(app) = selected.as_deref().and_then(app_of) {
-        apps.push(app);
+    if let Some(app) = &selected {
+        apps.push(app.clone());
     }
     if let Ok(rd) = std::fs::read_dir(APPLICATIONS) {
         // sync-ok: the Xcode pick's worker
         apps.extend(
             rd.flatten()
                 .map(|e| e.path())
-                .filter(|p| in_applications(p)),
+                .filter(|p| in_applications(p))
+                .filter_map(|p| resolve_in(&p, Path::new(APPLICATIONS))),
         );
     }
     apps.sort();
@@ -139,18 +159,51 @@ pub fn find() -> Option<Xcode> {
     pick(selected.as_deref(), &found)
 }
 
-/// The Xcode app at `app` and the SimulatorKit in it are Apple's (rule 1325). BLOCKING (it reads the code).
+/// The Xcode app at `app`, what `xcrun simctl` runs from it, the SimulatorKit in it and CoreSimulator are Apple's
+/// (rule 1325): [`crate::macos::codesign::xcode_app`] (the app, and `simctl` against its seal), its `libxcrun.dylib`
+/// and `xcodebuild` (which `/usr/bin/xcrun` loads and runs) in full, the `simctl` that `xcrun -f simctl` resolves to must be that checked one
+/// (not one planted in a toolchain, which `xcrun` searches first), then SimulatorKit and CoreSimulator in full.
+/// `app` is resolved (no symlinks). The SimulatorKit checked, for the dlopen. BLOCKING (it reads the code and runs
+/// `xcrun -f`, at most 5 s).
 #[cfg(target_os = "macos")]
-pub fn verify(app: &Path) -> Result<(), String> {
-    use crate::macos::{codesign, load};
+pub fn verify(app: &Path) -> Result<PathBuf, String> {
+    use std::time::Duration;
+
+    use crate::macos::{codesign, load, simctl};
 
     codesign::xcode_app(app)?;
     let dev = app.join("Contents").join("Developer");
+    // `/usr/bin/xcrun` loads `libxcrun.dylib` and runs `xcodebuild` from the Xcode: both are checked before it runs.
+    codesign::apple_framework(&dev.join("usr/lib/libxcrun.dylib"))?;
+    codesign::apple_framework(&dev.join("usr/bin/xcodebuild"))?;
+    // When `xcrun` cannot resolve it (Xcode still needs its first launch or licence), `xcrun simctl` runs nothing
+    // either: that is the panel's not-set-up state, not a refusal.
+    if let Ok(out) = simctl::run(
+        // sync-ok: the Xcode pick's worker or the sim host's start, at most 5 s
+        std::process::Command::new("/usr/bin/xcrun")
+            .args(["-f", "simctl"])
+            .env("DEVELOPER_DIR", &dev),
+        None,
+        Duration::from_secs(5),
+    ) {
+        let found = PathBuf::from(String::from_utf8_lossy(&out).trim());
+        let want = app.join("Contents").join(codesign::XCODE_RUN[0]);
+        let same = std::fs::canonicalize(&found).ok() == std::fs::canonicalize(&want).ok(); // sync-ok: the same worker
+        if !same {
+            return Err(format!(
+                "xcrun runs {} instead of {}",
+                found.display(),
+                want.display()
+            ));
+        }
+    }
     let simkit = load::simkit_paths(&dev)
         .into_iter()
         .find(|p| p.exists())
         .ok_or_else(|| format!("SimulatorKit missing in {}", app.display()))?;
-    codesign::apple_framework(&simkit)
+    codesign::apple_framework(&simkit)?;
+    codesign::apple_framework(Path::new(load::CORESIM))?;
+    Ok(simkit)
 }
 
 #[cfg(test)]
@@ -224,7 +277,9 @@ mod tests {
             return;
         }
         let x = find().expect("a signed Xcode in /Applications is found");
+        let t = std::time::Instant::now();
         verify(&x.app).unwrap();
+        eprintln!("verify {}: {:?}", x.app.display(), t.elapsed());
     }
 
     /// Rule 1325: an Xcode anywhere but the top of `/Applications` is never picked by version, however new; the
@@ -250,5 +305,30 @@ mod tests {
         assert!(!in_applications(Path::new(
             "/Applications/Xcode.app/Contents"
         )));
+    }
+
+    /// Rule 1325: a top-level `Xcode*.app` symlink that leads out of the folder is dropped; one to an app in the
+    /// folder resolves to that app.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_xcode_that_leaves_applications_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let apps = root.join("Applications");
+        let user = root.join("Users/max/Downloads/Xcode.app");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(apps.join("Xcode.app")).unwrap();
+        let out = apps.join("Xcode-beta.app");
+        std::os::unix::fs::symlink(&user, &out).unwrap();
+        let back = apps.join("Xcode-26.app");
+        std::os::unix::fs::symlink(apps.join("Xcode.app"), &back).unwrap();
+        assert_eq!(resolve_in(&out, &apps), None);
+        assert_eq!(resolve_in(&back, &apps), Some(apps.join("Xcode.app")));
+        assert_eq!(
+            resolve_in(&apps.join("Xcode.app"), &apps),
+            Some(apps.join("Xcode.app"))
+        );
+        assert_eq!(resolve_in(&apps.join("Xcode-gone.app"), &apps), None);
     }
 }
