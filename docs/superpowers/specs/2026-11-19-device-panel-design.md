@@ -471,8 +471,10 @@ All drawn by Slint over the picture, from `flare-device/src/indicator.rs` (pure 
 Panel states, each one line plus at most one button, in the panel body:
 1. **Not a Mac / Intel Mac**: the device panel is not offered (no menu entry, no tools in `capabilities()`).
 2. **No Xcode.app**: "The device panel needs Xcode." [Get Xcode] opens the App Store page. Flare picks the Xcode on a
-   worker, in order: `xcode-select -p` when it points inside an `.app`; else the newest `/Applications/Xcode*.app`
-   (Launch Services lookup of `com.apple.dt.Xcode`). Command Line Tools alone count as no Xcode. The chosen path is
+   worker, in order: `xcode-select -p` when it points inside an `.app`; else the newest top-level
+   `/Applications/Xcode*.app`, nothing else (no Spotlight lookup, rule 1325). A candidate whose app or SimulatorKit is
+   not signed by Apple is skipped with a log line; none left is this state. Command Line Tools alone count as no
+   Xcode. The chosen path is
    logged and shown in `device_state`; Flare never runs `xcode-select -s` (it needs admin).
 3. **Xcode not set up** (`simctl` says the licence is not accepted or first launch is needed): "Open Xcode once to
    finish its setup." [Open Xcode].
