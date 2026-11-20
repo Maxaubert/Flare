@@ -15,6 +15,7 @@ const HOOKS: &str = "flare.term.agentHooks";
 const TASKBAR_BADGE: &str = "flare.window.taskbarBadge";
 const AGENT_GUARD: &str = "flare.window.agentGuard";
 const NOTIFY_ASK: &str = "flare.window.notifyAsk";
+const DEVICE_SHUTDOWN: &str = "flare.device.shutdown_on_quit";
 
 /// The look keys the marks follow, for one subscription: M4's four plus M6's three attention
 /// switches and the rainbow.
@@ -87,6 +88,16 @@ pub fn notify_ask_on(s: &PrefStore) -> bool {
 
 pub fn set_notify_ask_on(s: &PrefStore, on: bool) {
     bool_pref_set(s, NOTIFY_ASK, on);
+}
+
+/// "Shut down simulators Flare started when Flare quits" (device panel PR 4b, rule 1319). Default on; a simulator
+/// the person started is never shut down by Flare either way.
+pub fn device_shutdown_on_quit(s: &PrefStore) -> bool {
+    bool_pref_get(s, DEVICE_SHUTDOWN, true)
+}
+
+pub fn set_device_shutdown_on_quit(s: &PrefStore, on: bool) {
+    bool_pref_set(s, DEVICE_SHUTDOWN, on);
 }
 
 /// Keep agent sessions open: with an agent in the front tab Ctrl+D never reaches it.

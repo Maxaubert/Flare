@@ -461,6 +461,39 @@ pub fn read_pixels(s: &IOSurfaceRef, points: &[(usize, usize)]) -> Option<Vec<[u
     }
 }
 
+/// Copies the whole of a 4-byte surface into `out` (tightly packed, `width * height * 4` bytes), locked read-only
+/// for the copy: Flare's CPU path when the GPU import is refused (spec "Fallbacks", 1). False when `out` has another
+/// size or the lock fails.
+pub fn copy_rgba(s: &IOSurfaceRef, out: &mut [u8]) -> bool {
+    let (w, h) = (s.width(), s.height());
+    let row = w * 4;
+    if out.len() != row * h {
+        return false;
+    }
+    // SAFETY: the surface is locked read-only for the copy; each source row lies inside it (bytes per row is at least
+    // width * 4 for a 4-byte format) and each destination row inside `out` (its length checked above).
+    unsafe {
+        if s.lock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()) != 0 {
+            return false;
+        }
+        let base: NonNull<u8> = s.base_address().cast();
+        let bpr = s.bytes_per_row();
+        if bpr == row {
+            std::ptr::copy_nonoverlapping(base.as_ptr(), out.as_mut_ptr(), row * h);
+        } else {
+            for y in 0..h {
+                std::ptr::copy_nonoverlapping(
+                    base.as_ptr().add(y * bpr),
+                    out.as_mut_ptr().add(y * row),
+                    row,
+                );
+            }
+        }
+        s.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut());
+    }
+    true
+}
+
 /// Writes `px` (4 bytes) over the whole of a 4-byte surface (tests and the self-test).
 pub fn fill_surface(s: &IOSurfaceRef, px: [u8; 4]) {
     // SAFETY: locked for writing; every write lies inside height x bytes per row.

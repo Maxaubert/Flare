@@ -459,7 +459,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 23] = [
+pub const APP_OPTIONS: [RowDef; 24] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -724,6 +724,21 @@ pub const APP_OPTIONS: [RowDef; 23] = [
         source: Source::App,
         only_nvidia: false,
     },
+    // Device panel PR 4b (rule 1319): the shutdown at quit, in the Agents page's last section, macOS only (the Agents
+    // page and Find leave it out elsewhere).
+    RowDef {
+        id: "device-shutdown",
+        label: "Shut down simulators Flare started when Flare quits",
+        sub: "Simulators you started yourself are never shut down.",
+        section: "device",
+        page: "agents",
+        icon: "device",
+        keywords: "simulator iphone device xcode ios quit shutdown",
+        keys: &["flare.device.shutdown_on_quit"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
     // Machine pairing PR 2 (rule 1252): the Machines page's This computer switch. Its subtext is fixed (approved
     // mockup 2026-11-14): it never changes to say what the setup is doing.
     RowDef {
@@ -771,7 +786,7 @@ pub const APP_OPTIONS: [RowDef; 23] = [
 ];
 
 /// The row ids in draw order (Appendix C, the `#` column), with Flare's own rows where their pages draw them.
-pub const ROW_ORDER: [&str; 53] = [
+pub const ROW_ORDER: [&str; 54] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -809,6 +824,7 @@ pub const ROW_ORDER: [&str; 53] = [
     "agent-done-color",
     "agent-question-color",
     "notify-ask",
+    "device-shutdown",
     "dictation-enabled",
     "dictation-mode",
     "dictation-hotkey",
@@ -889,14 +905,14 @@ mod tests {
     #[test]
     fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 53);
+        assert_eq!(ids.len(), 54);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 53);
+        assert_eq!(distinct.len(), 54);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -1028,12 +1044,13 @@ mod tests {
                 "dev-preview=flare.window.devPreview",
                 "taskbar-badge=flare.window.taskbarBadge",
                 "notify-ask=flare.window.notifyAsk",
+                "device-shutdown=flare.device.shutdown_on_quit",
                 "machines-sharing=flare.machines.sharing",
                 "machines-add=",
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 23);
+        assert_eq!(app.len(), 24);
     }
 
     #[test]
@@ -1141,6 +1158,7 @@ mod tests {
                     "theme",
                     "marks",
                     "notify",
+                    "device",
                     "this-computer",
                     "machines",
                     "about"

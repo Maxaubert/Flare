@@ -764,6 +764,9 @@ export component PanelSlot inherits Rectangle {
     in property <float> device-pt-w;
     in property <float> device-pt-h;
     in property <float> device-radius-pt;
+    // The ring's picture is portrait (the framebuffer never turns, spike S5): Slint turns it clockwise by this many
+    // degrees for the interface's orientation. A CPU picture comes already turned (0).
+    in property <int> device-turn;
     // 0 the picture, 1 one line and at most one button (a setup state, rule 1318), 2 the device list, 3 booting.
     in property <int> device-state;
     in property <string> device-line;
@@ -1251,8 +1254,13 @@ export component PanelSlot inherits Rectangle {
                     clip: true;
                     background: black;
                     Image {
-                        width: parent.width;
-                        height: parent.height;
+                        // A quarter turn lays the portrait picture across: its own size is the box's, swapped.
+                        property <bool> across: root.device-turn == 90 || root.device-turn == 270;
+                        width: self.across ? parent.height : parent.width;
+                        height: self.across ? parent.width : parent.height;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        transform-rotation: root.device-turn * 1deg;
                         source: root.device-frame;
                         image-fit: fill;
                     }

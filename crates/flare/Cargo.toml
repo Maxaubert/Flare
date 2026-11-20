@@ -65,6 +65,10 @@ libc.workspace = true
 objc2.workspace = true
 objc2-foundation.workspace = true
 objc2-app-kit.workspace = true
+# The device panel's ring (PR 4b, rule 1311): each IOSurface slot wrapped as an MTLTexture on wgpu's own device.
+objc2-core-foundation.workspace = true
+objc2-io-surface.workspace = true
+objc2-metal = { workspace = true, features = ["objc2-io-surface", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "MTLTypes"] }
 
 [features]
 default = []

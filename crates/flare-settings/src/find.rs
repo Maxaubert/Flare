@@ -131,6 +131,10 @@ fn drawn(row: &RowDef, env: &IndexEnv) -> bool {
     if row.id.starts_with("dictation-") && !env.dictation_wired {
         return false;
     }
+    // The device panel's row is drawn on macOS only (`page::agents::device_section_drawn`).
+    if row.section == "device" && !crate::page::agents::device_section_drawn() {
+        return false;
+    }
     true
 }
 
@@ -264,7 +268,11 @@ mod tests {
             mark_colours: true,
         })
         .len();
-        assert_eq!(n, 52);
+        // The device panel's row is drawn on macOS only.
+        assert_eq!(
+            n,
+            52 + usize::from(crate::page::agents::device_section_drawn())
+        );
         assert!(
             settings_index(&IndexEnv {
                 nvidia: false,
@@ -314,6 +322,25 @@ mod tests {
             assert_eq!(first.id, "machines-sharing", "{q}");
             assert_eq!(first.page, "machines");
             assert_eq!(first.section, "This computer");
+        }
+    }
+
+    /// Rule 1319: the device panel's shutdown switch is found by its words on macOS, under Device panel on the Agents
+    /// page; elsewhere it is not drawn, so Find never leads to it.
+    #[test]
+    fn find_device_shutdown_row() {
+        let index = index_all();
+        let names = page_names();
+        for q in ["simulator", "iphone", "device", "shut down simulators"] {
+            let found = search_settings(&index, q, &names);
+            if cfg!(target_os = "macos") {
+                let first = found.first().unwrap_or_else(|| panic!("{q} found nothing"));
+                assert_eq!(first.id, "device-shutdown", "{q}");
+                assert_eq!(first.page, "agents");
+                assert_eq!(first.section, "Device panel");
+            } else {
+                assert!(found.iter().all(|e| e.id != "device-shutdown"), "{q}");
+            }
         }
     }
 

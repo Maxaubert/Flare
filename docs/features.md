@@ -3059,3 +3059,29 @@ carries the sim host, nothing starts it before PR 4b.
   and SimulatorKit with none). `pack.sh` checks it like the other tools, ad hoc too.
 - **Checked in CI.** The ci macos job runs `flare-sim-host --self-test`, and the release workflow runs the signed
   bundle's copy before vpk packs it; both pass with the reason when the runner's Xcode cannot be tested.
+
+## Device panel (issue #248), PR 4b: see and use a simulator, 2026-11-20
+
+Issue #248, spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan
+`docs/superpowers/plans/2026-11-19-device-panel.md` (PR 4b). The first visible change: on a Mac with Apple silicon and
+Xcode, a tab can show a live iPhone simulator beside it and the person can use it. The agent's tools come in PR 5.
+
+- **Opening it.** The tab menu (right-click a tab) has **Device panel** for a local shell tab once Flare found an Xcode
+  (`xcode-select -p` inside an app, else the newest `Xcode*.app`, read on a worker at startup). It opens on the device
+  list; one click shows a device and boots it, headless (no Simulator.app, no prompt; rule 1323). A restored panel
+  shows its device with Boot and boots nothing.
+- **The picture, zero copy.** The sim host is started by the first device panel and stops two minutes after the last
+  one. Its frames reach the window as the ring's IOSurfaces themselves, wrapped once as wgpu textures and shown by the
+  render notifier, newest wins, at most 60 a second; a slot goes back to the sim host only once the GPU is done with it
+  (rule 1311). Landscape turns the picture in Slint. If the GPU import is refused the frames are copied by the CPU at
+  most 30 a second and the header wears the "slow" mark; if the sim host keeps failing the panel shows still pictures
+  with the still badge and its reason (rule 1312).
+- **Quit.** Flare shuts down the simulators it booted, with one detached `simctl shutdown` it never waits for, also
+  after a crash (`<profile>/device/booted.json`). A simulator the person started is never shut down. The switch is in
+  Settings > Agents > Device panel, "Shut down simulators Flare started when Flare quits" (default on, macOS only;
+  rule 1319).
+- **Diagnostics.** `cargo diag -- --device` shows the sim host's facts (`device-hello`), the frame path
+  (`device-path`) and still mode (`device-still`, also a problem line), then the end of `sim-host.log`.
+- **Tests.** `cargo nextest run -p flare -E 'test(device)'`; the opt-in e2e `deviceReal` boots a simulator it makes
+  on the GitHub macOS runner (`gh workflow run ci --ref <branch> -f e2e_only=true -f e2e_filter='deviceReal'`).
+

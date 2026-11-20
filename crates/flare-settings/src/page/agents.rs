@@ -14,7 +14,7 @@ use super::{
 };
 use crate::agent_prefs::{
     agent_done_on, agent_failed_on, agent_hooks_on, agent_question_on, agent_rainbow,
-    notify_ask_on, taskbar_badge_on,
+    device_shutdown_on_quit, notify_ask_on, taskbar_badge_on,
 };
 use crate::look::{AgentColourState, AgentIndicator};
 use crate::rows::{RowDef, row};
@@ -41,6 +41,9 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
         sections.push(colours_section(env));
     }
     sections.push(notify_section(env));
+    if device_section_drawn() {
+        sections.push(device_section(env));
+    }
     PageModel {
         id: PAGE_ID,
         label: "Agents",
@@ -112,6 +115,23 @@ fn notify_section(env: &PageEnv<'_>) -> SectionModel {
         vec![BlockModel::Row(switch_row(
             def("notify-ask"),
             notify_ask_on(env.prefs),
+        ))],
+    )
+}
+
+/// The Device panel section (device panel PR 4b, rule 1319): drawn only on macOS, where the simulator runs (open
+/// check 13: a row can be macOS only; Find leaves it out elsewhere too).
+pub const fn device_section_drawn() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// The Device panel section: the switch for shutting down at quit the simulators Flare booted.
+fn device_section(env: &PageEnv<'_>) -> SectionModel {
+    section(
+        "device",
+        vec![BlockModel::Row(switch_row(
+            def("device-shutdown"),
+            device_shutdown_on_quit(env.prefs),
         ))],
     )
 }
@@ -245,23 +265,59 @@ mod tests {
         with_env(&prefs, &look, ["#ff0000", "#00ff00", "#0000ff"], |env| {
             let page = build(env);
             let ids: Vec<&str> = page.sections.iter().map(|s| s.id).collect();
-            assert_eq!(ids, ["marks", "claude", "colours", "notify"]);
+            let mut want = vec!["marks", "claude", "colours", "notify"];
+            if device_section_drawn() {
+                want.push("device");
+            }
+            assert_eq!(ids, want);
+            let mut rows = vec![
+                "agent-indicator",
+                "agent-done-on",
+                "agent-rainbow",
+                "agent-question-on",
+                "agent-failed-on",
+                "taskbar-badge",
+                "agent-hooks",
+                "agent-color",
+                "agent-done-color",
+                "agent-question-color",
+                "notify-ask",
+            ];
+            if device_section_drawn() {
+                rows.push("device-shutdown");
+            }
+            assert_eq!(all_row_ids(&page), rows);
+        });
+    }
+
+    /// Rule 1319: on macOS the Agents page ends with the Device panel section, its one switch on by default and
+    /// stored under `flare.device.shutdown_on_quit`; elsewhere the section is not drawn.
+    #[test]
+    fn the_device_section_ends_the_page_on_macos_only() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(PrefStore::memory());
+        with_env(&prefs, &look, ["", "", ""], |env| {
+            let page = build(env);
+            if !device_section_drawn() {
+                assert!(page.sections.iter().all(|s| s.id != "device"));
+                return;
+            }
+            assert_eq!(page.sections.last().map(|s| s.id), Some("device"));
+            let row = the_row(&page, "device-shutdown");
+            assert_eq!(row.control, Control::Switch { on: true });
             assert_eq!(
-                all_row_ids(&page),
-                [
-                    "agent-indicator",
-                    "agent-done-on",
-                    "agent-rainbow",
-                    "agent-question-on",
-                    "agent-failed-on",
-                    "taskbar-badge",
-                    "agent-hooks",
-                    "agent-color",
-                    "agent-done-color",
-                    "agent-question-color",
-                    "notify-ask",
-                ]
+                def("device-shutdown").keys,
+                &["flare.device.shutdown_on_quit"]
             );
+        });
+        crate::agent_prefs::set_device_shutdown_on_quit(&prefs, false);
+        with_env(&prefs, &look, ["", "", ""], |env| {
+            if device_section_drawn() {
+                assert_eq!(
+                    the_row(&build(env), "device-shutdown").control,
+                    Control::Switch { on: false }
+                );
+            }
         });
     }
 
@@ -524,7 +580,11 @@ mod tests {
         fresh(|env| {
             let page = build(env);
             let ids: Vec<&str> = page.sections.iter().map(|s| s.id).collect();
-            assert_eq!(ids, ["marks", "claude", "notify"]);
+            let mut want = vec!["marks", "claude", "notify"];
+            if device_section_drawn() {
+                want.push("device");
+            }
+            assert_eq!(ids, want);
             for id in ["agent-color", "agent-done-color", "agent-question-color"] {
                 assert!(row_of(&page, id).is_none(), "{id} is not drawn with Ring");
             }

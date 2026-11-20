@@ -207,6 +207,7 @@ fn switch(ctx: &Ctx, row: &str, on: bool) -> Vec<Effect> {
         "app-network" => term_prefs::set_app_network(p, on),
         "dev-preview" => term_prefs::set_dev_preview(p, on),
         "notify-ask" => agent_prefs::set_notify_ask_on(p, on),
+        "device-shutdown" => agent_prefs::set_device_shutdown_on_quit(p, on),
         "help-enabled" => help_prefs::set_help_enabled(p, on),
         "term-caret-blink" => ctx.look.set_caret_blink(on),
         _ => {}
