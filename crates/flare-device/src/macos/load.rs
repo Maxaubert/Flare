@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use objc2::runtime::{AnyClass, AnyProtocol, Bool, Sel};
 use objc2_foundation::{NSBundle, NSString};
 
-use super::codesign;
 use super::guarded::{Broken, class, sel};
 use crate::versions::{self, InputPath};
 use crate::wire::{Hello, PROTOCOL};
@@ -87,17 +86,14 @@ fn open(framework: &Path) -> Result<(), String> {
 /// host's start only. Nothing is opened unless the Xcode app, SimulatorKit and CoreSimulator are all Apple's
 /// (rule 1325, [`super::codesign`]): `DEVELOPER_DIR` may name any folder when the sim host is run by hand.
 pub fn load(developer_dir: &Path) -> Result<Loaded, String> {
-    let app = xcode::app_of(developer_dir)
-        .ok_or_else(|| format!("no Xcode at {}", developer_dir.display()))?;
+    // Resolved first, so the files checked below are the files opened (no symlink to swap in between).
+    let real = std::fs::canonicalize(developer_dir) // sync-ok: the sim host's start
+        .map_err(|_| format!("no Xcode at {}", developer_dir.display()))?;
+    let app =
+        xcode::app_of(&real).ok_or_else(|| format!("no Xcode at {}", developer_dir.display()))?;
     let xcode_version = xcode::version_of(&app)
         .ok_or_else(|| format!("no Xcode at {}", developer_dir.display()))?;
-    let simkit_path = simkit_paths(developer_dir)
-        .into_iter()
-        .find(|p| p.exists())
-        .ok_or_else(|| format!("SimulatorKit missing in Xcode {xcode_version}"))?;
-    codesign::xcode_app(&app)?;
-    codesign::apple_framework(&simkit_path)?;
-    codesign::apple_framework(Path::new(CORESIM))?;
+    let simkit_path = xcode::verify(&app)?;
     open(Path::new(CORESIM))?;
     open(&simkit_path)?;
     let coresim_version = bundle_version(Path::new(CORESIM)).unwrap_or_default();
