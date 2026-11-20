@@ -321,6 +321,11 @@ export component AppWindow inherits Window {
     in property <string> overlay-text;
     out property <int> grid-phys-width: round(grid-box.width / 1phx);
     out property <int> grid-phys-height: round(grid-box.height / 1phx);
+    // The grid's box in device pixels, fractions kept: the pulse watch logs it per frame (rule 1324).
+    out property <float> grid-box-x-phx: grid-box.absolute-position.x / 1phx;
+    out property <float> grid-box-y-phx: grid-box.absolute-position.y / 1phx;
+    out property <float> grid-box-w-phx: grid-box.width / 1phx;
+    out property <float> grid-box-h-phx: grid-box.height / 1phx;
     out property <float> scale: 1px / 1phx;
     // The hairline the chrome draws, in device pixels (`Px.hair()`: the strip's bottom line, the
     // tab separators and the sidebar's edge all use it). The DPI probe reads it.

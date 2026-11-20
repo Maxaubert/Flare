@@ -4961,3 +4961,23 @@ with the same id. Held by `a_named_session_is_a_change_even_when_no_mark_moves` 
 `a_session_named_after_the_work_showed_is_saved_and_kept_while_its_claude_stays` (`appctl`) and
 `zsh_runs_a_restored_tabs_resume_before_its_first_folder_report` (`flare-term/tests/real_shells_macos.rs`, a real
 zsh with a stand-in `claude`).
+
+1324. **A pulse on screen leaves evidence in the diagnostics log: a row or the frame's geometry that flips and back
+is logged.** Max, 2026-11-20, a screenshot of Claude Code's status line: "the shell flickering is not fixed these
+bars will pulsate ... i fix it by shrinknign the window then maximizing again". No cause was proven. Headless runs
+showed the grid painter, the atlas, a resize and a femtovg composite give the same pixels frame after frame. A
+recording of Claude Code 2.1.329 (fullscreen renderer, idle and working), fed chunk by chunk through the emulator,
+never showed the status row in another state: Claude re-emits a bar only when it changes. So the app now watches the
+two places a flip can come from (`pulse_watch.rs`). Each painted frame's rows: a row that reads A, B, then A again
+within 300 ms logs `row-flip` with its column span, what changed (char, fg, bg) and the backgrounds of both looks. No
+text is logged. Each presented frame's geometry: the window, the grid box in device pixels (fractions kept, new
+`grid-box-*-phx` properties), the grid texture, the frozen width and on macOS the `CAMetalLayer`'s drawable against
+bounds x scale (`flare_win::metal_layer`). It logs `present-geom` on a change (at most every 5 s, the last one kept)
+and `present-flip` when it goes back within 300 ms. A further pulse then shows in `diag.jsonl` as one of three cases.
+A `row-flip` with `bg: true` on the status row means the cells really changed. A `present-flip`, `layerScaled`,
+`stretched` or `offPixel` means the frame is moved or scaled. Neither means the pixels Flare presents are steady and
+the cause is in the window server or the display. Held by
+`a_status_bar_drawn_blank_for_one_frame_is_logged_with_its_colours` and
+`a_grid_box_that_jumps_half_a_pixel_and_back_is_a_present_flip` (`pulse_watch.rs`),
+`the_pulse_watch_reads_the_grid_box_where_the_image_is_drawn` (`ui_tests/app.rs`) and
+`metal_layer_reads_its_drawable_against_its_bounds` (`flare-win/tests/appkit.rs`).
