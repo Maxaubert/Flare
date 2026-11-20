@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use objc2::runtime::{AnyClass, AnyProtocol, Bool, Sel};
 use objc2_foundation::{NSBundle, NSString};
 
+use super::codesign;
 use super::guarded::{Broken, class, sel};
 use crate::versions::{self, InputPath};
 use crate::wire::{Hello, PROTOCOL};
@@ -74,23 +75,30 @@ fn open(framework: &Path) -> Result<(), String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     let bin = framework.join(&name);
-    // SAFETY: an Apple-signed framework; its initialisers only register its classes.
+    // SAFETY: a framework `load` checked as Apple-signed just before (rule 1325); its initialisers only register its
+    // classes.
     let lib = unsafe { libloading::Library::new(&bin) }
         .map_err(|e| format!("{name} did not load: {e}"))?;
     std::mem::forget(lib);
     Ok(())
 }
 
-/// Loads CoreSimulator and the Xcode's SimulatorKit. BLOCKING (dlopen): the sim host's start only.
+/// Loads CoreSimulator and the Xcode's SimulatorKit. BLOCKING (dlopen, and the signature checks before it): the sim
+/// host's start only. Nothing is opened unless the Xcode app, SimulatorKit and CoreSimulator are all Apple's
+/// (rule 1325, [`super::codesign`]): `DEVELOPER_DIR` may name any folder when the sim host is run by hand.
 pub fn load(developer_dir: &Path) -> Result<Loaded, String> {
-    let xcode_version = xcode::app_of(developer_dir)
-        .and_then(|app| xcode::version_of(&app))
+    let app = xcode::app_of(developer_dir)
         .ok_or_else(|| format!("no Xcode at {}", developer_dir.display()))?;
-    open(Path::new(CORESIM))?;
+    let xcode_version = xcode::version_of(&app)
+        .ok_or_else(|| format!("no Xcode at {}", developer_dir.display()))?;
     let simkit_path = simkit_paths(developer_dir)
         .into_iter()
         .find(|p| p.exists())
         .ok_or_else(|| format!("SimulatorKit missing in Xcode {xcode_version}"))?;
+    codesign::xcode_app(&app)?;
+    codesign::apple_framework(&simkit_path)?;
+    codesign::apple_framework(Path::new(CORESIM))?;
+    open(Path::new(CORESIM))?;
     open(&simkit_path)?;
     let coresim_version = bundle_version(Path::new(CORESIM)).unwrap_or_default();
     let simkit_version = bundle_version(&simkit_path).unwrap_or_default();
@@ -374,6 +382,24 @@ mod tests {
         assert!(check(Owner::Class("NSObject"), "description").is_ok());
         assert!(check(Owner::ClassMethod("NSObject"), "new").is_ok());
         assert!(check(Owner::Protocol("NSObject"), "isEqual:").is_ok());
+    }
+
+    /// Rule 1325: a `DEVELOPER_DIR` inside an unsigned `Xcode.app` is refused before anything is opened.
+    #[test]
+    fn an_unsigned_xcode_is_never_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = dir.path().join("Xcode.app/Contents");
+        let simkit = contents.join("SharedFrameworks/SimulatorKit.framework");
+        std::fs::create_dir_all(&simkit).unwrap();
+        std::fs::create_dir_all(contents.join("Developer")).unwrap();
+        std::fs::write(simkit.join("SimulatorKit"), [0u8; 64]).unwrap();
+        std::fs::write(
+            contents.join("version.plist"),
+            "<plist><dict><key>CFBundleShortVersionString</key><string>99.0</string></dict></plist>",
+        )
+        .unwrap();
+        let e = load(&contents.join("Developer")).unwrap_err();
+        assert!(e.contains("is not signed by Apple"), "{e}");
     }
 
     /// CI's macOS runner (and this Mac): with an Xcode, every class and selector is there; without one, skipped with
