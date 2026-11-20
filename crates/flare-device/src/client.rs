@@ -247,7 +247,7 @@ pub fn text_steps(text: &str) -> Vec<TextStep> {
 }
 
 #[cfg(target_os = "macos")]
-pub use mac::{Shoot, SimConfig, SimSource};
+pub use mac::{OnEvent, Shoot, SimConfig, SimFrames, SimSource};
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -279,6 +279,10 @@ mod mac {
     /// A stand-in for `simctl io screenshot` (tests): a PNG of the target's screen.
     pub type Shoot = Arc<dyn Fn(&Target) -> Result<Vec<u8>, String> + Send + Sync>;
 
+    /// Called on the source's own threads after each event is queued (Flare posts one coalesced wake to its UI thread,
+    /// which then drains [`DeviceSource::events`]). Never blocks.
+    pub type OnEvent = Arc<dyn Fn() + Send + Sync>;
+
     /// How Flare starts its sim host.
     #[derive(Clone)]
     pub struct SimConfig {
@@ -297,6 +301,8 @@ mod mac {
         pub max_restarts: usize,
         /// Tests: the still pictures' source instead of `simctl`.
         pub shoot: Option<Shoot>,
+        /// Told after each event (Flare's wake, PR 4b).
+        pub on_event: Option<OnEvent>,
     }
 
     impl SimConfig {
@@ -310,6 +316,7 @@ mod mac {
                 restart_delay: Duration::from_millis(500),
                 max_restarts: super::MAX_RESTARTS,
                 shoot: None,
+                on_event: None,
             }
         }
     }
@@ -378,6 +385,9 @@ mod mac {
     impl Shared {
         fn event(&self, e: SourceEvent) {
             let _ = lock(&self.tx).send(e);
+            if let Some(wake) = &self.cfg.on_event {
+                wake();
+            }
         }
 
         fn answer(&self, id: ReqId, result: Result<Answer, SourceError>) {
@@ -826,6 +836,31 @@ mod mac {
         }
     }
 
+    /// The frame half of a [`SimSource`], for the render notifier (PR 4b): the newest frame, the ring's surfaces and
+    /// the slot-done record. Cheap to clone and `Send`, so a GPU work-done callback can free a slot from any thread.
+    #[derive(Clone)]
+    pub struct SimFrames {
+        sh: Arc<Shared>,
+    }
+
+    impl SimFrames {
+        /// See [`SimSource::take_frame`].
+        pub fn take_frame(&self, target: &Target) -> Option<(u32, FrameRecord)> {
+            let device = *lock(&self.sh.current).get(target)?;
+            lock(&self.sh.mailbox).take(device).map(|f| (device, f))
+        }
+
+        /// See [`SimSource::ring`].
+        pub fn ring(&self, device: u32) -> Option<Vec<CFRetained<IOSurfaceRef>>> {
+            lock(&self.sh.rings).get(&device).cloned()
+        }
+
+        /// See [`SimSource::slot_done`].
+        pub fn slot_done(&self, device: u32, slot: u32) {
+            self.sh.slot_done(SlotDone { device, slot });
+        }
+    }
+
     /// The device source behind the real simulator.
     pub struct SimSource {
         sh: Arc<Shared>,
@@ -898,19 +933,25 @@ mod mac {
         /// The newest frame of `target`'s current ring, taken: its ring number and record. The slot is Flare's until
         /// [`SimSource::slot_done`].
         pub fn take_frame(&self, target: &Target) -> Option<(u32, FrameRecord)> {
-            let device = *lock(&self.sh.current).get(target)?;
-            lock(&self.sh.mailbox).take(device).map(|f| (device, f))
+            self.frames().take_frame(target)
         }
 
-        /// The surfaces of ring `device` (slot order), to be wrapped as textures (PR 4b).
+        /// The surfaces of ring `device` (slot order), wrapped as textures by Flare's `DeviceFrames`.
         pub fn ring(&self, device: u32) -> Option<Vec<CFRetained<IOSurfaceRef>>> {
-            lock(&self.sh.rings).get(&device).cloned()
+            self.frames().ring(device)
         }
 
         /// The GPU work that sampled `slot` of ring `device` is done (or Flare skipped it): the slot is free again.
         /// Never blocks: a full port is tried again by the reader.
         pub fn slot_done(&self, device: u32, slot: u32) {
-            self.sh.slot_done(SlotDone { device, slot });
+            self.frames().slot_done(device, slot);
+        }
+
+        /// The frame half, for the render notifier.
+        pub fn frames(&self) -> SimFrames {
+            SimFrames {
+                sh: Arc::clone(&self.sh),
+            }
         }
 
         fn still_or<F: FnOnce(&Simctl) -> Result<Answer, String> + Send + 'static>(
@@ -1194,6 +1235,10 @@ mod mac {
 
         fn events(&self) -> &Receiver<SourceEvent> {
             &self.rx
+        }
+
+        fn hello(&self) -> Option<Hello> {
+            SimSource::hello(self)
         }
     }
 }

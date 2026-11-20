@@ -6,17 +6,26 @@
 //! the picture as touches in device points. The source answers through its event channel (rule 34); every request
 //! here returns at once.
 //!
-//! Frames take the CPU path here: a source's picture (RGBA) is turned to the interface's orientation and handed to
-//! Slint as a `SharedPixelBuffer`, and the header wears the "slow" mark. PR 4b adds the zero-copy ring for the real
-//! simulator. Only the front tab's open panel is live; every other attached device is paused (the tab behind, the
-//! panel closed, the window minimised or occluded) and resumes with its current frame.
+//! Frames: the real simulator's go through the zero-copy ring (`DeviceFrames`, PR 4b, rule 1311), shown by the render
+//! notifier; the controller only says which device the window shows and turns the picture by the interface's
+//! orientation (`panel-device-turn`). A source's CPU picture (the fake source, and the still mode's screenshots) is
+//! turned here and handed to Slint as a `SharedPixelBuffer`, and the header wears the "slow" mark, as it does when the
+//! ring's import is refused. Only the front tab's open panel is live; every other attached device is paused (the tab
+//! behind, the panel closed, the window minimised or occluded) and resumes with its current frame.
 //!
 //! The device kind is offered only where a source exists: the fake source under `--e2e` and in tests (PR 4a), the
-//! simulator on a Mac with Xcode from PR 4b. A build that offers none keeps a stored device panel in the file and
-//! shows nothing (rule 1316). Restore never boots a device: it shows Boot.
+//! simulator on macOS on Apple silicon (PR 4b), started by the first device panel once the Xcode pick (a worker) found
+//! an Xcode, and stopped two minutes after the last device panel goes. A build that offers none keeps a stored device
+//! panel in the file and shows nothing (rule 1316). Restore never boots a device: it shows Boot. At quit, Flare shuts
+//! down the simulators it booted (rule 1319), remembered in `<profile>/device/booted.json`, with one detached
+//! `simctl shutdown` it never waits for.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use flare_device::fake::FakeSource;
 use flare_device::geom::{Letterbox, Orientation, Size};
@@ -31,6 +40,7 @@ use flare_device::target::{self, Target};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::appctl::Post;
+use crate::device_frames::{DeviceFrames, FramePath};
 use crate::panel_ctl::PanelCtl;
 use crate::{AppWindow, DeviceRow};
 
@@ -56,19 +66,212 @@ pub const XCODE_STORE: &str = "https://apps.apple.com/app/xcode/id497799835";
 pub const CPU_SLOW: &str =
     "The picture is copied by the CPU: this renderer cannot show the device's own frames.";
 
+/// The timer that stops the sim host once no device panel is left for [`IDLE_MS`].
+pub const IDLE_TICK: &str = "device.idle";
+
+/// The sim host stops this long after the last device panel goes (spec "Parts").
+pub const IDLE_MS: u64 = 2 * 60 * 1000;
+
+/// The timer that reads the list again while Xcode still needs its setup (open check 5).
+pub const RELIST_TICK: &str = "device.relist";
+
+/// While Xcode still needs its first launch or licence, the list is read again at most this often (never in a loop:
+/// each failed list's answer refreshes the window, which would ask for the list at once).
+pub const NOT_SET_UP_RETRY_MS: u64 = 5_000;
+
+/// The words `simctl` uses when Xcode still needs its first launch or its licence (open check 5): the list fails with
+/// one of them, and the panel then says "Open Xcode once to finish its setup."
+const NOT_SET_UP_WORDS: &[&str] = &[
+    "runfirstlaunch",
+    "first launch",
+    "license",
+    "licence",
+    "xcodebuild -license",
+];
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
 /// What the window asks of the device controller.
 #[derive(Debug)]
 pub enum DeviceMsg {
-    /// The source has events waiting (a reader thread's wake, PR 4b).
-    #[allow(dead_code)] // the simulator source's reader posts it (PR 4b)
+    /// The source has events waiting (its threads' wake, at most one queued).
     Wake,
     /// A second passed while the front panel shows a boot.
     Tick,
+    /// The Xcode pick answered (a worker, at startup).
+    Xcode(XcodeAnswer),
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
+/// The Xcode pick's answer: the Xcode found, and the simulators Flare booted in an earlier run (`booted.json`).
+#[derive(Debug, Default)]
+pub struct XcodeAnswer {
+    pub xcode: Option<flare_device::xcode::Xcode>,
+    pub booted: Booted,
+}
+
+/// What a source message asks of the window: nothing, a redraw (only frames came), or a refresh (the panel changed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Woken {
+    Nothing,
+    Redraw,
+    Refresh,
+}
+
+/// The simulators Flare booted itself (rule 1319): only these are shut down at quit, also after a crash, since the
+/// list lives in `<profile>/device/booted.json`. An entry goes when its device is seen shut down or is gone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Booted {
+    /// udid (lower case) and when Flare booted it (Unix ms).
+    pub devices: Vec<(String, u64)>,
+}
+
+impl Booted {
+    pub fn has(&self, udid: &str) -> bool {
+        self.devices.iter().any(|(u, _)| u == udid)
+    }
+
+    /// Flare booted `udid` at `at_ms`. True when the list changed.
+    pub fn record(&mut self, udid: &str, at_ms: u64) -> bool {
+        if self.has(udid) {
+            return false;
+        }
+        self.devices.push((udid.to_string(), at_ms));
+        true
+    }
+
+    /// `udid` is no longer Flare's to shut down. True when the list changed.
+    pub fn forget(&mut self, udid: &str) -> bool {
+        let n = self.devices.len();
+        self.devices.retain(|(u, _)| u != udid);
+        n != self.devices.len()
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
+    /// The file, read leniently: a missing or broken file is an empty list (rule 41).
+    pub fn load(path: &Path) -> Booted {
+        let Some(v) = std::fs::read_to_string(path) // sync-ok: the Xcode pick's worker
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        else {
+            return Booted::default();
+        };
+        Booted::from_json(&v)
+    }
+
+    /// `{"devices": [{"udid": "...", "booted_ms": 0}]}`; an entry that is not a device's is skipped.
+    pub fn from_json(v: &serde_json::Value) -> Booted {
+        let mut b = Booted::default();
+        for d in v["devices"].as_array().into_iter().flatten() {
+            if let Some(u) = d["udid"].as_str()
+                && let Some(t) = Target::sim(u)
+            {
+                b.record(t.udid(), d["booted_ms"].as_u64().unwrap_or(0));
+            }
+        }
+        b
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "devices": self
+                .devices
+                .iter()
+                .map(|(u, t)| serde_json::json!({"udid": u, "booted_ms": t}))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    /// Writes the file (its folder made). BLOCKING: a worker, or the quit (a file of a few lines).
+    pub fn save(&self, path: &Path) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir); // sync-ok: a worker or the quit, a tiny file
+        }
+        let text = serde_json::to_string_pretty(&self.to_json()).unwrap_or_default();
+        if let Err(e) = std::fs::write(path, text) {
+            // sync-ok: a worker or the quit, a tiny file
+            log::warn!("device: booted.json not written: {e}");
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
+/// `<profile>/device/booted.json`.
+pub fn booted_file(profile: &Path) -> PathBuf {
+    profile.join("device").join("booted.json")
+}
+
+/// Where the device panel is offered with the real simulator: macOS on Apple silicon (spec "Setup", state 1), and
+/// its menu entry once the Xcode pick found an Xcode.
+pub fn menu_entry_offered(macos: bool, apple_silicon: bool, xcode: Option<Xcode>) -> bool {
+    macos && apple_silicon && matches!(xcode, Some(Xcode::Ready | Xcode::NotSetUp))
+}
+
+/// This Mac can run the real simulator source (macOS on Apple silicon).
+pub const fn real_platform() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
+/// The detached shutdown at quit (rule 1319): one `/bin/sh` that runs `simctl shutdown` for each device in turn,
+/// with the chosen Xcode. Not guarded, so it outlives Flare; quit never waits for it.
+pub fn shutdown_command(developer_dir: &Path, udids: &[String]) -> std::process::Command {
+    let mut c = std::process::Command::new("/bin/sh"); // sync-ok: builds the command; spawned detached
+    c.arg("-c")
+        .arg(r#"for u in "$@"; do /usr/bin/xcrun simctl shutdown "$u" >/dev/null 2>&1; done"#)
+        .arg("flare-device-shutdown")
+        .args(udids)
+        .env("DEVELOPER_DIR", developer_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    c
+}
+
+/// Starts `cmd` and lets it go: never waited for (a thread reaps it, so no zombie is left while Flare runs on).
+pub fn spawn_detached(mut cmd: std::process::Command) -> bool {
+    match cmd.spawn() {
+        // sync-ok: a spawn returns at once; the child is reaped on its own thread
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait(); // sync-ok: its own reaper thread, never the UI thread
+            });
+            true
+        }
+        Err(e) => {
+            log::warn!("device: the shutdown at quit did not start: {e}");
+            false
+        }
+    }
+}
+
+/// The real source, made by the first device panel: the source and its frame half (macOS).
+pub struct Started {
+    pub source: Box<dyn DeviceSource>,
+    #[cfg(target_os = "macos")]
+    pub ring: Option<std::sync::Arc<dyn crate::device_frames::RingSource>>,
+}
+
+/// Makes the real source (the sim host) for an Xcode.
+pub type Starter = Box<dyn FnMut(&flare_device::xcode::Xcode) -> Started>;
+
+/// Shuts devices down at quit, detached (tests record it).
+pub type ShutdownSpawn = Rc<dyn Fn(&Path, &[String])>;
+
+/// The real simulator's half of the controller (PR 4b).
+struct Real {
+    starter: Starter,
+    /// The Xcode pick's answer: None while it runs.
+    xcode: Option<Option<flare_device::xcode::Xcode>>,
+    /// The source runs (started by a device panel).
+    running: bool,
+    /// No device panel since then (ms on the clock): the sim host stops after `IDLE_MS`.
+    idle_since: Option<u64>,
+    booted_path: Option<PathBuf>,
+    spawn: ShutdownSpawn,
 }
 
 /// Whether Xcode can run a simulator here (spec "Setup", states 2 and 3). The fake source says Ready.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // the Xcode pick answers them (PR 4b); tests set them now
 pub enum Xcode {
     Ready,
     Missing,
@@ -233,6 +436,8 @@ struct Dev {
     attaching: bool,
     attached: bool,
     paused: bool,
+    /// A ring frame came since attach (the picture shows; the notifier draws it).
+    ring_frame: bool,
     input: Option<InputState>,
     /// The tab whose panel drives it; another tab showing it is view only.
     driver: Option<String>,
@@ -279,6 +484,13 @@ impl Src {
             Src::Other(s) => s.events(),
         }
     }
+
+    fn get_ref(&self) -> &dyn DeviceSource {
+        match self {
+            Src::Fake(f) => f.as_ref(),
+            Src::Other(s) => s.as_ref(),
+        }
+    }
 }
 
 /// What the window showed last (to set only what changed).
@@ -300,6 +512,8 @@ pub struct DeviceCtl {
     listing: bool,
     /// The list could not be read: why (the panel says it and offers Try again; nothing is dropped meanwhile).
     list_error: Option<String>,
+    /// Xcode still needs its setup: the list is read again no sooner than this (ms on the clock).
+    relist_at: Option<u64>,
     pending: HashMap<ReqId, Pending>,
     devs: HashMap<Target, Dev>,
     tabs: HashMap<String, TabDev>,
@@ -325,6 +539,21 @@ pub struct DeviceCtl {
     frames_shown: u64,
     person_inputs: u64,
     takeovers: u64,
+    /// The zero-copy ring's frames, shared with the render notifier (rule 1311).
+    frames: Rc<RefCell<DeviceFrames>>,
+    /// The real simulator (macOS on Apple silicon), once installed.
+    real: Option<Real>,
+    /// The simulators Flare booted (rule 1319).
+    booted: Booted,
+    /// A source event changed what the panel shows since the last wake (else only frames came).
+    state_changed: bool,
+    /// One wake queued at most however fast the source's threads post (the `WakeGate` pattern).
+    wake_gate: Arc<AtomicBool>,
+    /// A ring frame came since the last wake (a redraw draws it).
+    new_frame: bool,
+    /// The sim host's facts were logged (`device-hello`), and the frame path last logged (`device-path`).
+    hello_logged: bool,
+    path_logged: FramePath,
 }
 
 /// The sort of the device list: iPhones first, then the newest system, then the name, newest first.
@@ -378,6 +607,29 @@ pub fn turn_rgba(w: usize, h: usize, rgba: &[u8], o: Orientation) -> (usize, usi
     (nw, nh, out)
 }
 
+/// The turn Slint gives the portrait ring picture for the interface's orientation, in degrees clockwise (`Rot90` is a
+/// quarter clockwise, as `turn_rgba` turns a CPU picture).
+pub fn turn_degrees(o: Orientation) -> i32 {
+    match o {
+        Orientation::Rot0 => 0,
+        Orientation::Rot90 => 90,
+        Orientation::Rot180 => 180,
+        Orientation::Rot270 => 270,
+    }
+}
+
+/// `simctl`'s error asks for Xcode's first launch or its licence (open check 5).
+pub fn not_set_up(message: &str) -> bool {
+    let m = message.to_lowercase();
+    NOT_SET_UP_WORDS.iter().any(|w| m.contains(w))
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 /// The HID usage of a named key as Slint names it (the arrows are its private-use characters).
 fn named_usage(text: &str) -> Option<u32> {
     Some(match text {
@@ -405,6 +657,7 @@ impl DeviceCtl {
             devices: None,
             listing: false,
             list_error: None,
+            relist_at: None,
             pending: HashMap::new(),
             devs: HashMap::new(),
             tabs: HashMap::new(),
@@ -423,18 +676,170 @@ impl DeviceCtl {
             frames_shown: 0,
             person_inputs: 0,
             takeovers: 0,
+            frames: Rc::new(RefCell::new(DeviceFrames::default())),
+            real: None,
+            booted: Booted::default(),
+            state_changed: false,
+            wake_gate: Arc::new(AtomicBool::new(false)),
+            new_frame: false,
+            hello_logged: false,
+            path_logged: FramePath::None,
         }
     }
 
-    /// Another source (the simulator, PR 4b).
-    #[allow(dead_code)] // PR 4b hands the simulator's source over
+    /// Another source (tests: a source of their own).
+    #[allow(dead_code)]
     pub fn set_source(&mut self, source: Box<dyn DeviceSource>) {
         self.src = Some(Src::Other(source));
     }
 
-    /// This build offers the device panel (a source exists).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
+    /// The real simulator (macOS on Apple silicon): `starter` makes the sim host when a device panel first needs it,
+    /// once the Xcode pick (`DeviceMsg::Xcode`) found an Xcode. `booted` is `<profile>/device/booted.json`; `spawn`
+    /// shuts devices down at quit, detached.
+    pub fn install_real(
+        &mut self,
+        starter: Starter,
+        booted_path: Option<PathBuf>,
+        spawn: ShutdownSpawn,
+    ) {
+        self.src = None;
+        self.real = Some(Real {
+            starter,
+            xcode: None,
+            running: false,
+            idle_since: None,
+            booted_path,
+            spawn,
+        });
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
+    /// The wake the source's threads call after each event: one `UiMsg::Device(Wake)` queued at most.
+    pub fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let gate = Arc::clone(&self.wake_gate);
+        let post = self.post.clone();
+        Arc::new(move || {
+            if !gate.swap(true, Ordering::SeqCst) {
+                post(crate::appctl::UiMsg::Device(DeviceMsg::Wake));
+            }
+        })
+    }
+
+    /// The ring's frames, for the render notifier's weak slot.
+    pub fn frames(&self) -> Rc<RefCell<DeviceFrames>> {
+        Rc::clone(&self.frames)
+    }
+
+    /// This build offers the device panel (a source exists, or the real one can be started).
     pub fn offered(&self) -> bool {
-        self.src.is_some()
+        self.src.is_some() || self.real.is_some()
+    }
+
+    /// The tab menu's Device panel entry: the fake source (`--e2e`), or the real one where Xcode was found.
+    pub fn menu_offered(&self) -> bool {
+        if matches!(self.src, Some(Src::Fake(_))) {
+            return true;
+        }
+        let xcode = self.real.as_ref().and_then(|r| r.xcode.as_ref()).map(|x| {
+            if x.is_some() {
+                self.xcode
+            } else {
+                Xcode::Missing
+            }
+        });
+        self.real.is_some() && menu_entry_offered(cfg!(target_os = "macos"), real_platform(), xcode)
+    }
+
+    /// The Xcode pick answered: the setup state follows, and the simulators booted in an earlier run are known.
+    pub fn on_xcode(&mut self, answer: XcodeAnswer) {
+        let Some(real) = self.real.as_mut() else {
+            return;
+        };
+        match &answer.xcode {
+            Some(x) => {
+                log::info!(
+                    "device: Xcode {} at {} (DEVELOPER_DIR {})",
+                    x.version,
+                    x.app.display(),
+                    x.developer_dir().display()
+                );
+                self.xcode = Xcode::Ready;
+            }
+            None => {
+                log::info!("device: no Xcode found: the device panel says it needs Xcode");
+                self.xcode = Xcode::Missing;
+            }
+        }
+        real.xcode = Some(answer.xcode);
+        for (u, at) in answer.booted.devices {
+            self.booted.record(&u, at);
+        }
+    }
+
+    /// The Xcode app the pick chose ("Open Xcode").
+    pub fn xcode_app(&self) -> Option<PathBuf> {
+        Some(self.real.as_ref()?.xcode.clone()??.app)
+    }
+
+    /// Starts the real source if it is installed, found an Xcode and is not running.
+    fn ensure_source(&mut self) {
+        if self.src.is_some() {
+            return;
+        }
+        let Some(real) = self.real.as_mut() else {
+            return;
+        };
+        let Some(Some(xcode)) = real.xcode.clone() else {
+            return;
+        };
+        let started = (real.starter)(&xcode);
+        real.running = true;
+        real.idle_since = None;
+        #[cfg(target_os = "macos")]
+        self.frames.borrow_mut().set_source(started.ring);
+        self.src = Some(Src::Other(started.source));
+        log::info!("device: the sim host is started");
+    }
+
+    /// No device panel for `IDLE_MS`: the sim host stops (it is told `quit`; the guard ends it either way).
+    fn idle(&mut self, has_panels: bool) {
+        let now = self.now();
+        let Some(real) = self.real.as_mut() else {
+            return;
+        };
+        if has_panels || !real.running {
+            real.idle_since = None;
+            return;
+        }
+        let since = *real.idle_since.get_or_insert_with(|| {
+            let post = self.post.clone();
+            crate::timer_registry::set(IDLE_TICK, IDLE_MS, false, move || {
+                post(crate::appctl::UiMsg::Device(DeviceMsg::Tick));
+            });
+            now
+        });
+        if now.saturating_sub(since) < IDLE_MS {
+            return;
+        }
+        real.running = false;
+        real.idle_since = None;
+        self.stop_source();
+        log::info!("device: no device panel for two minutes: the sim host stops");
+    }
+
+    /// Drops the running source (its `Drop` tells the sim host to quit) and what it held.
+    fn stop_source(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.frames.borrow_mut().set_source(None);
+        self.src = None;
+        self.hello_logged = false;
+        self.pending.clear();
+        self.devs.clear();
+        self.devices = None;
+        self.listing = false;
+        self.relist_at = None;
+        self.broken = None;
     }
 
     /// The fake source, when it is the one in use (tests and the e2e probe).
@@ -493,8 +898,13 @@ impl DeviceCtl {
         names: HashMap<String, String>,
     ) -> Vec<Effect> {
         self.names = names;
-        self.drain();
         let list = panels.device_panels();
+        // The real source starts with the first device panel and stops two minutes after the last one.
+        if !list.is_empty() {
+            self.ensure_source();
+        }
+        self.idle(!list.is_empty());
+        self.drain();
         let live: HashSet<&str> = list.iter().map(|(t, ..)| t.as_str()).collect();
         self.tabs.retain(|t, _| live.contains(t.as_str()));
         self.jobs.retain(|t, _| live.contains(t.as_str()));
@@ -515,7 +925,12 @@ impl DeviceCtl {
             self.press = None;
         }
         // The list is read once a device panel exists (on a worker for the simulator).
-        if !list.is_empty() && self.devices.is_none() && !self.listing && self.list_error.is_none()
+        let now = self.now();
+        if !list.is_empty()
+            && self.devices.is_none()
+            && !self.listing
+            && self.list_error.is_none()
+            && self.relist_at.is_none_or(|t| now >= t)
         {
             self.list();
         }
@@ -623,17 +1038,83 @@ impl DeviceCtl {
         self.devices.as_ref()?.iter().find(|d| &d.target == t)
     }
 
-    /// Reads every event the source has (the fake answers at once; the simulator's reader wakes the window).
+    /// Reads every event the source has (the fake answers at once; the simulator's threads wake the window).
     pub fn drain(&mut self) {
-        loop {
-            let Some(ev) = self.src.as_ref().and_then(|s| s.events().try_recv().ok()) else {
-                return;
-            };
+        while let Some(ev) = self.src.as_ref().and_then(|s| s.events().try_recv().ok()) {
             self.on_event(ev);
+        }
+        if !self.hello_logged
+            && let Some(h) = self.src.as_ref().and_then(|s| s.get_ref().hello())
+        {
+            self.hello_logged = true;
+            use flare_diag::agent_diag::DiagValue as V;
+            crate::diag_ctl::agent_sink().record(
+                "device-hello",
+                &[
+                    ("version", V::Str(h.version.clone())),
+                    ("xcode", V::Str(h.xcode_version.clone())),
+                    ("coresim", V::Str(h.coresim_version.clone())),
+                    ("simkit", V::Str(h.simkit_version.clone())),
+                    (
+                        "input",
+                        V::Str(format!("{:?}", h.input_path).to_lowercase()),
+                    ),
+                    ("ax", V::Bool(h.ax)),
+                ],
+                0,
+            );
         }
     }
 
+    /// The frame path changed (GPU, CPU): one `device-path` line, with why the import was refused.
+    fn log_path(&mut self) {
+        let (path, why) = {
+            let f = self.frames.borrow();
+            (f.path(), f.refused().unwrap_or("").to_string())
+        };
+        if path == self.path_logged || path == FramePath::None {
+            return;
+        }
+        self.path_logged = path;
+        log::info!(
+            "device panel: frames by {}{}",
+            path.name(),
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(" ({why})")
+            }
+        );
+        use flare_diag::agent_diag::DiagValue as V;
+        crate::diag_ctl::agent_sink().record(
+            "device-path",
+            &[("route", V::Str(path.name().into())), ("why", V::Str(why))],
+            0,
+        );
+    }
+
+    /// Saves `booted.json` on a worker (rule 34).
+    fn save_booted(&self) {
+        let Some(path) = self.real.as_ref().and_then(|r| r.booted_path.clone()) else {
+            return;
+        };
+        let b = self.booted.clone();
+        std::thread::spawn(move || b.save(&path));
+    }
+
     fn on_event(&mut self, ev: SourceEvent) {
+        // Only a frame (or the changed count) leaves the panel as it is: the notifier draws it.
+        let quiet = match &ev {
+            SourceEvent::Frame { target, .. } => self
+                .devs
+                .get(target)
+                .is_some_and(|d| d.ring_frame || !d.attached),
+            SourceEvent::Changed { .. } => true,
+            _ => false,
+        };
+        if !quiet {
+            self.state_changed = true;
+        }
         match ev {
             SourceEvent::Answer { id, result } => {
                 let Some(p) = self.pending.remove(&id) else {
@@ -642,14 +1123,46 @@ impl DeviceCtl {
                 match (p, result) {
                     (Pending::List, Ok(Answer::Devices(mut d))) => {
                         sort_devices(&mut d);
+                        // Rule 1319: a device Flare booted stays Flare's until it is seen shut down or gone.
+                        let mut forgot = false;
+                        for (u, _) in self.booted.devices.clone() {
+                            let seen = d.iter().find(|x| x.target.udid() == u);
+                            if seen.is_none_or(|x| x.state == DeviceState::Shutdown) {
+                                forgot |= self.booted.forget(&u);
+                            }
+                        }
+                        for x in &mut d {
+                            x.booted_by_flare = self.booted.has(x.target.udid());
+                        }
+                        if forgot {
+                            self.save_booted();
+                        }
                         self.devices = Some(d);
                         self.listing = false;
+                        if self.xcode == Xcode::NotSetUp {
+                            self.xcode = Xcode::Ready;
+                        }
+                        self.relist_at = None;
                     }
                     (Pending::List, Ok(_)) => self.listing = false,
                     (Pending::List, Err(e)) => {
                         self.listing = false;
                         log::warn!("device list: {}", e.message);
-                        self.list_error = Some(e.message);
+                        if not_set_up(&e.message) {
+                            // Open check 5: simctl asks for Xcode's first launch or its licence. The list is read
+                            // again in a while (the person may finish the setup), never at once in a loop.
+                            self.xcode = Xcode::NotSetUp;
+                            self.relist_at = Some(self.now() + NOT_SET_UP_RETRY_MS);
+                            let post = self.post.clone();
+                            crate::timer_registry::set(
+                                RELIST_TICK,
+                                NOT_SET_UP_RETRY_MS,
+                                false,
+                                move || post(crate::appctl::UiMsg::Device(DeviceMsg::Tick)),
+                            );
+                        } else {
+                            self.list_error = Some(e.message);
+                        }
                     }
                     (Pending::Attach(t), r) => {
                         if let Some(d) = self.devs.get_mut(&t) {
@@ -668,8 +1181,21 @@ impl DeviceCtl {
                     }
                     (Pending::Boot(t), r) => {
                         self.booting.remove(&t);
-                        if let Err(e) = r {
-                            self.fail(&t, e.message);
+                        match r {
+                            Err(e) => self.fail(&t, e.message),
+                            Ok(_) => {
+                                // Flare booted it: shut down at quit (rule 1319), also after a crash.
+                                if self.real.is_some() && self.booted.record(t.udid(), unix_ms()) {
+                                    self.save_booted();
+                                }
+                                if let Some(x) = self
+                                    .devices
+                                    .as_mut()
+                                    .and_then(|l| l.iter_mut().find(|d| d.target == t))
+                                {
+                                    x.booted_by_flare = true;
+                                }
+                            }
                         }
                     }
                     (Pending::Shutdown(t), r) => {
@@ -700,8 +1226,15 @@ impl DeviceCtl {
                     d.raw = Some(RawPicture { seq, size_px, rgba });
                 }
             }
-            // The ring's frames are PR 4b's (the zero-copy path).
-            SourceEvent::Frame { .. } => {}
+            // A ring frame: the notifier takes the newest in its next render (`DeviceFrames`).
+            SourceEvent::Frame { target, .. } => {
+                if let Some(d) = self.devs.get_mut(&target)
+                    && d.attached
+                {
+                    d.ring_frame = true;
+                    self.new_frame = true;
+                }
+            }
             SourceEvent::Changed { target, count } => {
                 if let Some(d) = self.devs.get_mut(&target) {
                     d.changed = count;
@@ -723,9 +1256,13 @@ impl DeviceCtl {
                     }
                     DeviceState::Shutdown | DeviceState::ShuttingDown => {
                         self.booting.remove(&target);
+                        if state == DeviceState::Shutdown && self.booted.forget(target.udid()) {
+                            self.save_booted();
+                        }
                         if let Some(d) = self.devs.get_mut(&target) {
                             d.attached = false;
                             d.attaching = false;
+                            d.ring_frame = false;
                             d.picture = None;
                             d.raw = None;
                             d.input = None;
@@ -738,7 +1275,15 @@ impl DeviceCtl {
                     d.input = Some(state);
                 }
             }
-            SourceEvent::Broken(why) => self.broken = Some(why),
+            SourceEvent::Broken(why) => {
+                use flare_diag::agent_diag::DiagValue as V;
+                crate::diag_ctl::agent_sink().record(
+                    "device-still",
+                    &[("why", V::Str(why.clone()))],
+                    0,
+                );
+                self.broken = Some(why);
+            }
         }
     }
 
@@ -754,6 +1299,10 @@ impl DeviceCtl {
     /// What the tab's device panel shows now.
     pub fn setup_of(&self, tab: &str) -> Option<Setup> {
         let t = self.tabs.get(tab)?;
+        // The Xcode pick has not answered yet.
+        if self.real.as_ref().is_some_and(|r| r.xcode.is_none()) {
+            return Some(Setup::Reading);
+        }
         match self.xcode {
             Xcode::Missing => return Some(Setup::NoXcode),
             Xcode::NotSetUp => return Some(Setup::NotSetUp),
@@ -829,12 +1378,14 @@ impl DeviceCtl {
                 }
                 app.set_panel_device_frame(Image::default());
                 app.set_panel_device_has_frame(false);
+                app.set_panel_device_turn(0);
                 app.set_panel_device_rows(ModelRc::default());
                 app.set_panel_device_controls(false);
                 app.set_panel_device_still("".into());
                 app.set_panel_device_slow("".into());
                 app.set_panel_device_foot("".into());
             }
+            self.frames.borrow_mut().show(None);
             return;
         };
         let Some(setup) = self.setup_of(&tab) else {
@@ -843,9 +1394,16 @@ impl DeviceCtl {
         let target = self.target_of(&tab);
         // The newest picture of the shown device, turned and handed over (the CPU path).
         let mut pictured = false;
+        let mut ring = None;
+        let mut turn = 0;
         if let Some(t) = &target
             && let Some(d) = self.devs.get_mut(t)
         {
+            // The ring's frames: the notifier draws them; Slint turns the portrait picture (spike S5).
+            if d.ring_frame && d.attached && !d.paused && self.broken.is_none() {
+                ring = Some(t.clone());
+                turn = d.screen.map_or(0, |s| turn_degrees(s.orientation));
+            }
             if let Some(raw) = d.raw.take() {
                 let o = d.screen.map(|s| s.orientation).unwrap_or_default();
                 let (w, h, px) =
@@ -856,8 +1414,9 @@ impl DeviceCtl {
                     d.picture = Some((raw.seq, Image::from_rgba8(buf)));
                 }
             }
-            pictured = d.picture.is_some() && d.attached;
-            if let Some((seq, img)) = &d.picture
+            pictured = (d.picture.is_some() || d.ring_frame) && d.attached;
+            if ring.is_none()
+                && let Some((seq, img)) = &d.picture
                 && self.pushed.seq.as_ref() != Some(&(tab.clone(), *seq))
             {
                 app.set_panel_device_frame(img.clone());
@@ -865,6 +1424,14 @@ impl DeviceCtl {
                 self.frames_shown += 1;
             }
         }
+        if ring.is_none() && self.frames.borrow().path() != FramePath::None {
+            // Back from the ring to a CPU picture (still mode): the picture shows again.
+            self.pushed.seq = None;
+        }
+        self.log_path();
+        let ring_path = ring.as_ref().map(|_| self.frames.borrow().path());
+        self.frames.borrow_mut().show(ring);
+        app.set_panel_device_turn(turn);
         if pictured && let Some(t) = self.tabs.get_mut(&tab) {
             t.seen_live = true;
         }
@@ -916,14 +1483,14 @@ impl DeviceCtl {
             _ => String::new(),
         };
         app.set_panel_device_still(still.into());
-        app.set_panel_device_slow(
-            if live && self.broken.is_none() {
-                CPU_SLOW
-            } else {
-                ""
-            }
-            .into(),
-        );
+        // The slow mark: a CPU picture (the fake source), or the ring's import refused. Never on the zero-copy path.
+        let slow = live
+            && self.broken.is_none()
+            && match ring_path {
+                Some(p) => p == FramePath::Cpu,
+                None => true,
+            };
+        app.set_panel_device_slow(if slow { CPU_SLOW } else { "" }.into());
         app.set_panel_device_foot(self.foot(&tab).into());
         app.set_panel_device_controls(live && self.drives(&tab).is_some());
     }
@@ -1282,9 +1849,63 @@ impl DeviceCtl {
         }]
     }
 
-    /// A message for the controller (the window's turn follows and pushes).
-    pub fn on_msg(&mut self, _msg: DeviceMsg) {
+    /// A message for the controller. A frame alone asks only for a redraw (the notifier draws it); anything else
+    /// asks for the window's turn (which pushes).
+    pub fn on_msg(&mut self, msg: DeviceMsg) -> Woken {
+        match msg {
+            DeviceMsg::Wake => {
+                self.wake_gate.store(false, Ordering::SeqCst);
+            }
+            DeviceMsg::Tick => {
+                self.state_changed = true;
+            }
+            DeviceMsg::Xcode(a) => {
+                self.on_xcode(a);
+                self.state_changed = true;
+            }
+        }
         self.drain();
+        let framed = std::mem::take(&mut self.new_frame);
+        if std::mem::take(&mut self.state_changed) {
+            Woken::Refresh
+        } else if framed {
+            Woken::Redraw
+        } else {
+            Woken::Nothing
+        }
+    }
+
+    /// Quit (rule 1319): the sim host is told to quit, and with the setting on the simulators Flare booted are shut
+    /// down by one detached `simctl shutdown` that quit never waits for. A device Flare did not boot is never shut
+    /// down. Returns the udids handed to it.
+    pub fn quit(&mut self, shutdown_on: bool) -> Vec<String> {
+        let Some(real) = self.real.as_ref() else {
+            return Vec::new();
+        };
+        let dev_dir = real.xcode.clone().flatten().map(|x| x.developer_dir());
+        let spawn = Rc::clone(&real.spawn);
+        let path = real.booted_path.clone();
+        self.stop_source();
+        if !shutdown_on {
+            return Vec::new();
+        }
+        let Some(dev_dir) = dev_dir else {
+            return Vec::new();
+        };
+        let udids: Vec<String> = self.booted.devices.iter().map(|(u, _)| u.clone()).collect();
+        if udids.is_empty() {
+            return udids;
+        }
+        log::info!(
+            "device: shutting down {} simulator(s) Flare booted",
+            udids.len()
+        );
+        spawn(&dev_dir, &udids);
+        self.booted = Booted::default();
+        if let Some(p) = path {
+            self.booted.save(&p);
+        }
+        udids
     }
 
     // ---- the probe ------------------------------------------------------------------------------------
@@ -1313,8 +1934,21 @@ impl DeviceCtl {
                 other => json!({"other": format!("{other:?}")}),
             })
             .collect();
+        let fr = self.frames.borrow();
         json!({
             "offered": self.offered(),
+            "menu": self.menu_offered(),
+            "path": fr.path().name(),
+            "ring_showing": target.as_ref().is_some_and(|t| fr.showing(t)),
+            "refused": fr.refused(),
+            "hello": self
+                .src
+                .as_ref()
+                .and_then(|s| s.get_ref().hello())
+                .and_then(|h| serde_json::to_value(h).ok()),
+            "ring_frames": fr.frames(),
+            "slots_held": fr.held(),
+            "booted_by_flare": self.booted.devices.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>(),
             "tab": tab,
             "state": setup.as_ref().map(Setup::name),
             "target": target.map(|t| t.name()),
@@ -1322,7 +1956,7 @@ impl DeviceCtl {
             "paused": dev.is_some_and(|d| d.paused),
             "driver": dev.and_then(|d| d.driver.clone()),
             "screen": screen.map(|s| json!({"w": s.w, "h": s.h})),
-            "frames_shown": self.frames_shown,
+            "frames_shown": self.frames_shown + fr.frames(),
             "person_inputs": self.person_inputs,
             "takeovers": self.takeovers,
             "devices": self.devices.as_ref().map_or(0, Vec::len),
@@ -1384,7 +2018,7 @@ mod tests {
 
     #[test]
     fn a_build_with_no_source_offers_no_device_panel() {
-        // A release build of PR 4a (no `--e2e`): nothing new shows (rule 1318).
+        // A build with no source (Windows, an Intel Mac, no `--e2e`): nothing new shows (rule 1318).
         let post: Post = std::sync::Arc::new(|_| {});
         let d = DeviceCtl::new(post.clone(), Rc::new(|| 0), None);
         assert!(!d.offered());
@@ -1406,6 +2040,261 @@ mod tests {
         let (_, _, out) = turn_rgba(2, 1, &px, Orientation::Rot180);
         assert_eq!(&out[..4], &[0, 255, 0, 255]);
         assert_eq!(turn_rgba(2, 2, &px, Orientation::Rot0).0, 0, "too short");
+    }
+
+    fn post() -> Post {
+        std::sync::Arc::new(|_| {})
+    }
+
+    fn found_xcode() -> flare_device::xcode::Xcode {
+        flare_device::xcode::Xcode {
+            app: PathBuf::from("/Applications/Xcode.app"),
+            version: "27.2".into(),
+        }
+    }
+
+    /// The real source's place taken by a fake (no sim host): what `install_real` starts.
+    fn starter_of(fake: FakeSource) -> Starter {
+        let mut fake = Some(fake);
+        Box::new(move |_| Started {
+            source: Box::new(fake.take().expect("started once")),
+            #[cfg(target_os = "macos")]
+            ring: None,
+        })
+    }
+
+    type Spawned = Rc<RefCell<Vec<(PathBuf, Vec<String>)>>>;
+
+    fn recorder() -> (Spawned, ShutdownSpawn) {
+        let spawned: Spawned = Rc::default();
+        let s = Rc::clone(&spawned);
+        let spawn: ShutdownSpawn = Rc::new(move |dir: &Path, udids: &[String]| {
+            s.borrow_mut().push((dir.to_path_buf(), udids.to_vec()));
+        });
+        (spawned, spawn)
+    }
+
+    #[test]
+    fn quit_shuts_down_only_devices_flare_booted_and_does_not_wait() {
+        let (a, b, c) = (
+            "00000000-0000-4000-8000-00000000000a",
+            "00000000-0000-4000-8000-00000000000b",
+            "00000000-0000-4000-8000-00000000000c",
+        );
+        let iphone = flare_device::fake::iphone;
+        // A runs, booted by someone else; B is shut down; C runs, booted by Flare in a run that crashed.
+        let fake = FakeSource::new(vec![
+            iphone(a, "iPhone A", DeviceState::Booted).unwrap(),
+            iphone(b, "iPhone B", DeviceState::Shutdown).unwrap(),
+            iphone(c, "iPhone C", DeviceState::Booted).unwrap(),
+        ]);
+        let (spawned, spawn) = recorder();
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        d.install_real(starter_of(fake), None, spawn);
+        assert!(
+            d.offered(),
+            "the kind is offered before the pick answers (restore keeps the panel)"
+        );
+        d.on_xcode(XcodeAnswer {
+            xcode: Some(found_xcode()),
+            booted: Booted {
+                devices: vec![(c.into(), 1)],
+            },
+        });
+        d.ensure_source();
+        d.list();
+        let tb = Target::sim(b).unwrap();
+        d.boot(&tb);
+        d.drain();
+        assert_eq!(d.state_of(&tb), Some(DeviceState::Booted));
+        let flags: Vec<(String, bool)> = d
+            .devices
+            .iter()
+            .flatten()
+            .map(|x| (x.name.clone(), x.booted_by_flare))
+            .collect();
+        assert!(flags.contains(&("iPhone A".into(), false)), "{flags:?}");
+        assert!(flags.contains(&("iPhone B".into(), true)), "{flags:?}");
+        assert!(flags.contains(&("iPhone C".into(), true)), "{flags:?}");
+
+        let t0 = std::time::Instant::now();
+        let mut udids = d.quit(true);
+        udids.sort();
+        assert_eq!(udids, vec![b.to_string(), c.to_string()], "never A");
+        let got = spawned.borrow().clone();
+        assert_eq!(got.len(), 1, "one detached shutdown for all of them");
+        assert_eq!(
+            got[0].0,
+            PathBuf::from("/Applications/Xcode.app/Contents/Developer"),
+            "with the chosen Xcode"
+        );
+        assert!(d.src.is_none(), "the sim host is told to go");
+        assert!(d.booted.devices.is_empty());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+
+        // The setting off: nothing is shut down.
+        let fake = FakeSource::new(vec![iphone(b, "iPhone B", DeviceState::Shutdown).unwrap()]);
+        let (spawned, spawn) = recorder();
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        d.install_real(starter_of(fake), None, spawn);
+        d.on_xcode(XcodeAnswer {
+            xcode: Some(found_xcode()),
+            booted: Booted::default(),
+        });
+        d.ensure_source();
+        d.list();
+        d.boot(&tb);
+        d.drain();
+        assert!(d.quit(false).is_empty());
+        assert!(spawned.borrow().is_empty());
+
+        // The real spawn never waits for its child: a command that takes 5 s returns at once.
+        let mut slow = std::process::Command::new("/bin/sleep");
+        slow.arg("5")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let t0 = std::time::Instant::now();
+        assert!(spawn_detached(slow));
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(1),
+            "quit does not wait"
+        );
+        // And the command it runs: simctl shutdown per device, with the chosen Xcode, nothing on the console.
+        let cmd = shutdown_command(
+            Path::new("/X.app/Contents/Developer"),
+            &[b.into(), c.into()],
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args[1].contains("simctl shutdown"), "{args:?}");
+        assert_eq!(&args[3..], &[b.to_string(), c.to_string()]);
+        assert!(
+            cmd.get_envs()
+                .any(|(k, v)| k == "DEVELOPER_DIR"
+                    && v == Some("/X.app/Contents/Developer".as_ref()))
+        );
+    }
+
+    #[test]
+    fn booted_json_round_trips_and_skips_what_is_no_device() {
+        let mut b = Booted::default();
+        assert!(b.record("00000000-0000-4000-8000-00000000000b", 7));
+        assert!(!b.record("00000000-0000-4000-8000-00000000000b", 8), "once");
+        let v = b.to_json();
+        assert_eq!(Booted::from_json(&v), b);
+        let odd = serde_json::json!({"devices": [{"udid": "../etc"}, {"udid": 3}, {"udid": "00000000-0000-4000-8000-00000000000c"}]});
+        assert_eq!(Booted::from_json(&odd).devices.len(), 1);
+        assert_eq!(
+            Booted::from_json(&serde_json::json!("nonsense")),
+            Booted::default()
+        );
+        assert!(b.forget("00000000-0000-4000-8000-00000000000b"));
+        assert!(b.devices.is_empty());
+    }
+
+    /// Open check 5: a list that fails because Xcode needs its setup is not asked again at once. Each answer refreshes
+    /// the window, so an unthrottled relist would run `simctl list` in a loop while the panel is open.
+    #[test]
+    fn a_not_set_up_list_is_read_again_only_after_a_while() {
+        let now = Rc::new(std::cell::Cell::new(1_000u64));
+        let clock = {
+            let now = Rc::clone(&now);
+            Rc::new(move || now.get())
+        };
+        let mut fake = FakeSource::new(vec![
+            flare_device::fake::iphone(
+                "00000000-0000-4000-8000-00000000000a",
+                "iPhone A",
+                DeviceState::Shutdown,
+            )
+            .unwrap(),
+        ]);
+        fake.fail_next(
+            flare_device::job::Fail::Unavailable,
+            "xcrun: error: run xcodebuild -runFirstLaunch to install the required components",
+        );
+        let mut d = DeviceCtl::new(post(), clock, Some(fake));
+        let mut panels = crate::panel_ctl::PanelCtl::new(post());
+        panels.set_device_offered(true);
+        assert!(panels.show("t1", flare_surfaces::PanelKind::Device, CHOOSE));
+        let _ = d.update(&panels, Some("t1"), false, HashMap::new());
+        d.drain();
+        assert_eq!(d.xcode, Xcode::NotSetUp);
+        assert_eq!(d.setup_of("t1").map(|s| s.name()), Some("not_set_up"));
+        // The answer's refresh runs the update again: no new list yet.
+        let _ = d.update(&panels, Some("t1"), false, HashMap::new());
+        d.drain();
+        assert!(d.devices.is_none() && !d.listing, "not read again at once");
+        assert_eq!(d.xcode, Xcode::NotSetUp);
+        // After the retry spacing the list is read again; it works now, so the setup state goes.
+        now.set(1_000 + NOT_SET_UP_RETRY_MS);
+        let _ = d.update(&panels, Some("t1"), false, HashMap::new());
+        d.drain();
+        assert_eq!(d.xcode, Xcode::Ready);
+        assert!(d.devices.as_ref().is_some_and(|l| l.len() == 1));
+        assert!(d.relist_at.is_none());
+    }
+
+    #[test]
+    fn the_menu_entry_is_offered_only_on_apple_silicon_with_xcode() {
+        assert!(menu_entry_offered(true, true, Some(Xcode::Ready)));
+        assert!(menu_entry_offered(true, true, Some(Xcode::NotSetUp)));
+        assert!(
+            !menu_entry_offered(true, true, Some(Xcode::Missing)),
+            "no Xcode"
+        );
+        assert!(
+            !menu_entry_offered(true, true, None),
+            "the pick has not answered"
+        );
+        assert!(
+            !menu_entry_offered(true, false, Some(Xcode::Ready)),
+            "an Intel Mac"
+        );
+        assert!(
+            !menu_entry_offered(false, true, Some(Xcode::Ready)),
+            "not a Mac"
+        );
+        // The controller: no source offers nothing; the real one once the pick found Xcode, on Apple silicon only.
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        assert!(!d.menu_offered());
+        d.install_real(starter_of(FakeSource::default()), None, recorder().1);
+        assert!(!d.menu_offered(), "before the pick answers");
+        d.on_xcode(XcodeAnswer {
+            xcode: Some(found_xcode()),
+            booted: Booted::default(),
+        });
+        assert_eq!(d.menu_offered(), real_platform());
+        assert_eq!(
+            d.xcode_app(),
+            Some(PathBuf::from("/Applications/Xcode.app"))
+        );
+        let mut none = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        none.install_real(starter_of(FakeSource::default()), None, recorder().1);
+        none.on_xcode(XcodeAnswer::default());
+        assert!(!none.menu_offered(), "no Xcode, no entry");
+        assert_eq!(none.xcode, Xcode::Missing);
+        // The fake (`--e2e`) offers it everywhere.
+        assert!(DeviceCtl::new(post(), Rc::new(|| 0), Some(FakeSource::default())).menu_offered());
+        // simctl asking for the first launch is "not set up" (open check 5).
+        assert!(not_set_up(
+            "xcrun: error: run xcodebuild -runFirstLaunch to install the required components"
+        ));
+        assert!(not_set_up(
+            "You have not agreed to the Xcode license agreements."
+        ));
+        assert!(!not_set_up("Invalid device: 1234"));
+    }
+
+    #[test]
+    fn the_ring_picture_turns_clockwise_with_the_interface() {
+        assert_eq!(turn_degrees(Orientation::Rot0), 0);
+        assert_eq!(turn_degrees(Orientation::Rot90), 90);
+        assert_eq!(turn_degrees(Orientation::Rot180), 180);
+        assert_eq!(turn_degrees(Orientation::Rot270), 270);
     }
 
     #[test]

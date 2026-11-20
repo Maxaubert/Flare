@@ -4965,7 +4965,8 @@ zsh with a stand-in `claude`).
 ## Device panel (2026-11-19)
 
 Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
-(issue #248). Rules 1310 to 1322 and 1325 are this feature's; each lands with the PR that builds it.
+(issue #248). Rules 1310 to 1322 and 1325 are this feature's; each lands with the PR that builds it. Open PR #293 took
+1317 first, so this feature's 1317 is **1323** (device panel PR 4b, 2026-11-20).
 
 1310. **Flare ships its own private-API code for the simulator, only in `flare-sim-host`; Flare's own process never
 loads CoreSimulator or SimulatorKit.** Max, 2026-11-19 (issue #248, decision 1; reverses the 2026-11-16 "no private-API
@@ -4996,11 +4997,27 @@ screen size makes a new ring with a new `device` number (so a slot-done record a
 freed only once Flare has said every one of its slots is done (`ring::RingSet`). The rings' surfaces and the records go
 over the mach channel (`rendezvous.rs`): Flare checks in `com.flare.terminal.simhost.<pid>.<n>`, the sim host's first
 message carries a send right to its own port, and both sides check the audit-token pid of every message and
-`mach_msg_destroy` a refused one. Flare's half (wrapping the ring as wgpu textures, freeing a slot only from
-`on_submitted_work_done`) is PR 4b. Held by `an_old_ring_is_freed_only_after_every_slot_is_done`,
+`mach_msg_destroy` a refused one. Flare's half (device panel PR 4b, `crates/flare/src/device_frames.rs`): the sim
+host's events wake the UI thread with one coalesced `UiMsg::Device(Wake)` (`SimConfig::on_event`, a gate like
+`WakeGate`); a ring frame alone only asks for a redraw, never a whole refresh. In the render notifier's
+`BeforeRendering` `DeviceFrames::frame_image` takes the newest record of the front panel's device
+(`SimFrames::take_frame`), wraps each surface of its ring once on wgpu's own `MTLDevice`
+(`newTextureWithDescriptor:iosurface:plane:`, storage Shared, `ShaderRead | RenderTarget`, then
+`wgpu::hal::metal::Device::texture_from_raw` and `create_texture_from_hal`, `Rgba8Unorm`,
+`TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC`; again after a `RenderingSetup`, dropped at `RenderingTeardown`) and
+sets `panel-device-frame` to `Image::try_from(texture)`. The slot shown before is retired and, in `AfterRendering`,
+freed only from `Queue::on_submitted_work_done` (so it comes back one frame late); a slot whose frame Flare never
+shows, a ring that is gone and the CPU copy are freed at once. The notifier reaches `DeviceFrames` through a weak slot
+and `try_borrow_mut` only, never the `AppCtl`. The picture stays portrait and Slint turns it by the interface's
+orientation (`panel-device-turn`, `transform-rotation`). An import that is refused (Metal refuses the surface,
+`Image::try_from` fails) is the CPU path for the session: the slot locked read-only (`IOSurfaceLock`,
+`ring::copy_rgba`), copied into a `SharedPixelBuffer`, freed, at most 30 a second (`CPU_FPS`), with the slow mark; a
+renderer with no wgpu device copies each frame the same way. Held by
+`an_iosurface_imports_as_a_slint_image_and_reads_back`, `a_slot_is_freed_only_from_the_work_done_callback` and
+`a_refused_import_falls_back_to_the_cpu_path` (`device_frames.rs`), `an_old_ring_is_freed_only_after_every_slot_is_done`,
 `the_pass_writes_opaque_srgb_from_a_p3_bgra_framebuffer` (`ring.rs`), `ports_from_another_pid_are_refused`
-(`rendezvous.rs`), `frame_records_keep_only_the_newest_per_device` (`client.rs`) and the `cap.rs` tests; the
-`flare-sim-host --bench` numbers are in PR 2. Source: Max, 2026-11-19.
+(`rendezvous.rs`), `frame_records_keep_only_the_newest_per_device` (`client.rs`), the `cap.rs` tests and the opt-in
+e2e `deviceReal`; the `flare-sim-host --bench` numbers are in PR 2. Source: Max, 2026-11-19.
 
 1312. **The sim host is guarded and restarted at most 3 times in 5 minutes; then the panel shows still pictures.
 Flare never crashes or freezes with it.** Max, 2026-11-19 (issue #248). Sim host half (device panel PR 2):
@@ -5012,8 +5029,13 @@ fourth end, a `broken` line, a `hello` with another protocol or an Xcode under t
 mach channel that cannot be set up is still mode for the session: one `Broken(why)` event, a `simctl io screenshot`
 loop per attached panel at most 3 a second (`STILL_SPACING`), input and the UI tree answering `unavailable` with the
 reason, `snapshot` answering the latest still, and list, boot, shutdown, launch and install going to `simctl`. Nothing
-of it runs on the caller's thread (rule 34; `flare-device/tests/sync_calls.rs`). Flare's half (the still badge and line
-in the panel) is PR 4b. Held by `the_sim_host_is_restarted_three_times_then_broken`,
+of it runs on the caller's thread (rule 34; `flare-device/tests/sync_calls.rs`). Flare's half (device panel PR 4b):
+`DeviceCtl` starts the sim host only when a device panel first needs it, on macOS on Apple silicon once the Xcode
+pick (`flare_device::xcode::find`, on a worker at startup) found an Xcode, and drops it (it is told `quit`; the guard
+ends it either way) two minutes after the last device panel goes (`IDLE_MS`) and at quit. The still mode shows as the
+still badge and line (rule 1318) and one `device-still` line in the diagnostics log (a problem for `cargo diag`); the
+sim host's `hello` is logged once (`device-hello`) and the frame path when it changes (`device-path`), and
+`cargo diag -- --device` prints them with the end of `sim-host.log`. Held by `the_sim_host_is_restarted_three_times_then_broken`,
 `a_broken_sim_host_falls_back_to_still_pictures_at_three_fps_at_most`, `a_protocol_mismatch_in_hello_is_refused` and
 `the_sim_host_gets_developer_dir_and_no_extra_descriptors` (`client.rs`, a fake sim host run by the test binary).
 Source: Max, 2026-11-19.
@@ -5109,6 +5131,20 @@ before PR 4b (only the fake source under `--e2e`). Held by `each_setup_state_sho
 `the_picture_is_letterboxed_to_the_device_aspect` (`flare/src/ui_tests/device_panel.rs`), the `device_ctl.rs` unit tests,
 and the e2e `devicePanel`. Source: Max, 2026-11-19.
 
+1319. **Flare shuts down at quit only the simulators it booted, remembered across a crash, and quit never waits for
+them.** Max, 2026-11-19 (issue #248, decision 6). Device panel PR 4b (`device_ctl.rs`): a boot the person asked for
+that answers done records the device in `<profile>/device/booted.json` (`Booted`, written on a worker, read with the
+Xcode pick at startup; a broken file is an empty list, rule 41), and the device list marks it `booted_by_flare`. An
+entry goes when its device is seen shut down or is gone from the list. At quit (`AppCtl::finish`, after the web panel
+closes) the sim host is dropped and, with the setting `flare.device.shutdown_on_quit` on (default; Settings > Agents >
+Device panel, macOS only, "Shut down simulators Flare started when Flare quits"), one detached `/bin/sh` runs
+`xcrun simctl shutdown <udid>` for each recorded device with the chosen Xcode (`shutdown_command`, `spawn_detached`:
+not guarded, so it outlives Flare; nothing waits for it). A device Flare did not boot is never shut down. Held by
+`quit_shuts_down_only_devices_flare_booted_and_does_not_wait` and
+`booted_json_round_trips_and_skips_what_is_no_device` (`device_ctl.rs`), `find_device_shutdown_row` (`flare-settings`
+`find.rs`), `the_device_section_ends_the_page_on_macos_only` (`page/agents.rs`) and the opt-in e2e `deviceReal`, which
+checks the simulator it booted is shut down after the quit. Source: Max, 2026-11-19.
+
 1320. **The person's press, key or scroll in the device panel ends a running agent call with `interrupted`; not while the
 splitter is held.** Max, 2026-11-16 (issue #248, "Takeover"). Person half (device panel PR 4a): every press inside the
 screen, key and wheel over the panel first calls `DeviceCtl::person_input(tab)`, which ends the tab's running agent call
@@ -5124,6 +5160,19 @@ picture streams only while its tab is in front with the panel open and the windo
 `points_outside_the_screen_are_dropped`, `holding_the_splitter_is_not_a_takeover` and
 `the_stream_pauses_when_the_tab_goes_behind_and_resumes_with_the_current_frame`
 (`flare/src/appctl/tests/device_input_tests.rs`), and the e2e `devicePanel`. Source: Max, 2026-11-16 and 2026-11-19.
+
+1323. **The device panel never opens Simulator.app, Device Hub or a permission prompt; simulators boot headless; Flare
+never boots a device on its own.** Max, 2026-11-16 and 2026-11-19 (issue #248; the plan's 1317, renumbered because open
+PR #293 took 1317). Device panel PR 4b: the sim host boots with `simctl boot` and `bootstatus -b` only (never `open -a
+Simulator`), and its private frame and input paths need no window; Flare runs `open` only for the Xcode the pick chose
+(the "Open Xcode" button, never under `--e2e`). Restore and open show the device with Boot and boot nothing; only the
+person's Boot, Boot again or a pick in the list boots (the agent's `device_boot` is PR 5). The device panel is offered
+on macOS on Apple silicon only (`device_ctl::real_platform`), its tab menu entry ("Device panel") only once the Xcode
+pick found an Xcode (`menu_entry_offered`) and never for a remote tab. The sim host never calls `AXIsProcessTrusted`
+(rule 1315). Held by `the_menu_entry_is_offered_only_on_apple_silicon_with_xcode` (`device_ctl.rs`),
+`restore_shows_boot_and_never_boots` (`panel_ctl.rs`) and the opt-in e2e `deviceReal`, which checks the simulator it
+made is still shut down after the panel opened on it. Remote and hidden sessions answering `unavailable` is PR 5.
+Source: Max, 2026-11-19.
 
 1325. **The device panel runs code only from an Xcode in `/Applications` (or the one `xcode-select` names) that Apple
 signed, and checks CoreSimulator and SimulatorKit before it dlopens them.** Security review of the device panel stack,

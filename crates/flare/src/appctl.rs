@@ -3197,6 +3197,13 @@ impl AppCtl {
             hide.icon = crate::menus_ui::GLYPH_PANEL;
             rows.insert(1, (hide, String::new()));
         }
+        // The device panel (PR 4b): a local shell tab, on macOS on Apple silicon with Xcode (rule 1317: never for a
+        // remote tab).
+        if shell && !remote && self.device_menu_offered(id) {
+            let mut device = MenuRowData::plain(device_glue::DEVICE_MENU_ROW);
+            device.icon = crate::menus_ui::GLYPH_PANEL;
+            rows.push((device, String::new()));
+        }
         // The plugins' actions for a shell tab, one flyout under each plugin's name (plugins phase 4).
         if shell {
             self.plugin_menu_rows(id, &mut rows);
@@ -3320,6 +3327,11 @@ impl AppCtl {
                 "Close tab" => self.request_close(id),
                 crate::menus_ui::HIDE_HERE => self.hide_remote(&id.clone()),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
+                device_glue::DEVICE_MENU_ROW => {
+                    // The device panel on this tab, on its device list (device panel PR 4b).
+                    let id = id.clone();
+                    self.device_open(&id, None);
+                }
                 _ => {}
             },
             MenuKind::Term { tab } if row.label == ASK_AGENT_ROW => {
@@ -5489,6 +5501,8 @@ impl AppCtl {
         // while the window and the COM apartment are still up, so no callback lands during the teardown.
         self.mods_shutdown();
         self.web.close_all();
+        // The sim host goes, and the simulators Flare booted are shut down, detached (rule 1319).
+        self.device_quit();
         self.downloads.drain();
         self.app_asks.drain();
         (self.deps.hide)();

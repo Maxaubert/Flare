@@ -565,6 +565,8 @@ export component AppWindow inherits Window {
     in property <float> panel-device-pt-w;
     in property <float> panel-device-pt-h;
     in property <float> panel-device-radius-pt;
+    // The ring's portrait picture turned clockwise by the interface's orientation (0, 90, 180, 270; PR 4b).
+    in property <int> panel-device-turn;
     in property <int> panel-device-state;
     in property <string> panel-device-line;
     in property <string> panel-device-button;
@@ -1483,6 +1485,7 @@ export component AppWindow inherits Window {
                         device-pt-w: root.panel-device-pt-w;
                         device-pt-h: root.panel-device-pt-h;
                         device-radius-pt: root.panel-device-radius-pt;
+                        device-turn: root.panel-device-turn;
                         device-state: root.panel-device-state;
                         device-line: root.panel-device-line;
                         device-button: root.panel-device-button;

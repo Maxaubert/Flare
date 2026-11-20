@@ -35,7 +35,7 @@ New rules go in a section `## Device panel (2026-11-19)` at the end of the file.
 | 1314 | Typing never touches the Mac's clipboard: keymap text goes as HID key usages; other text through the simulator's own pasteboard (`simctl pbcopy`) and Cmd-V. | 3 |
 | 1315 | UI-tree text is untrusted: cleaned, fenced in the page-content markers, filtered (zero-size and unlabelled full-screen wrappers dropped), at most 300 refs. | 3, 5 |
 | 1316 | A device panel is kind `device` (Slint kind 5), target `sim/<udid>`, saved in `panels.json`; restore never boots a device, it shows Boot; `target_ok` checks only the target's shape. Older Flare drops the unknown kind (rule 40). | 1, 4a |
-| 1317 | The device panel never opens Simulator.app, Device Hub or a permission prompt; simulators boot headless; Flare never boots a device no window of its own shows (remote and hidden sessions answer `unavailable`). | 4b, 5 |
+| 1317 (now 1323, #293 took 1317) | The device panel never opens Simulator.app, Device Hub or a permission prompt; simulators boot headless; Flare never boots a device no window of its own shows (remote and hidden sessions answer `unavailable`). | 4b, 5 |
 | 1318 | Setup states each say one line with at most one button: no Xcode, Xcode not set up, no runtime, choose device, booting, live, still, shut down outside Flare. Not offered on Windows or Intel Macs (only the fake source under `--e2e`). | 4a |
 | 1319 | Flare shuts down at quit only the simulators it booted (setting `flare.device.shutdown_on_quit`, default on), remembered across a crash in `device/booted.json`; quit never waits for it (a detached `simctl shutdown`). | 4b |
 | 1320 | The person's press, key or scroll in the device panel ends a running agent call with `interrupted`; not while the splitter is held. | 4a, 5 |
@@ -614,4 +614,18 @@ Also from S1: the Alt-drag two-finger pinch ships in v1.
     Flare (Chromium's rendezvous does it; S2 and S3 together answer it). Answered 2026-11-19: yes (kr 0, Developer ID
     and ad hoc parent).
 12. Whether `RING_SLOTS` 3 is enough with the one-frame-late release (PR 2 bench with a late consumer, PR 4b trace).
-13. Whether a Settings row can be macOS only today, or the row shows on Windows greyed with a note.
+13. Whether a Settings row can be macOS only today, or the row shows on Windows greyed with a note. Answered 2026-11-20 (PR 4b): yes,
+    with `cfg!(target_os = "macos")` in the Agents page's builder and in Find's `drawn` (`device_section_drawn`).
+
+PR 4b answers (2026-11-20, Mac mini, Xcode 27.2):
+- 5: not reproducible here (this Xcode is set up). The list's error is read as "not set up" when it names
+  `runFirstLaunch`, "first launch" or the licence (`device_ctl::not_set_up`); anything else is the Failed state.
+- 6: `deviceReal` checks it on the runner (an Xcode selected, an iOS runtime, else it skips with the reason); not run
+  yet from this branch.
+- 7: yes. `IOSurfaceLock` plus a copy of a full 1206 x 2622 frame took 0.31 ms a frame here (a debug build,
+  `a_full_frame_copies_inside_the_cpu_budget`), far inside the CPU path's 33 ms.
+- The zero-copy import on a real ring: `a_real_simulator_ring_imports_with_no_copy` (opt-in, `FLARE_DEVICE_REAL=1`)
+  booted a simulator made for it and showed 5 ring frames (1206 x 2622) as Slint images on the GPU path, no refusal.
+- 8: 1317 was taken by open PR #293, so this plan's 1317 is **1323**; 1311, 1312 (Flare halves) and 1319 are in.
+- 12: not measured in Flare yet: it needs the staged build's `FLARE_TRACE_FRAME=1` run with the probe app, which
+  needs the owner's screen (see PR 4b "Before merge").

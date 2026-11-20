@@ -283,6 +283,20 @@ thread_local! {
 }
 
 type CtlRc = Rc<RefCell<AppCtl>>;
+
+/// The render notifier's weak slot for the device panel's ring frames (like `slide_ctl`).
+type DeviceFramesSlot =
+    Rc<RefCell<Option<std::rc::Weak<RefCell<crate::device_frames::DeviceFrames>>>>>;
+
+/// Runs `f` on the device frames when they exist and are free (`try_borrow_mut` only: the notifier never waits).
+fn with_device_frames<R>(
+    slot: &DeviceFramesSlot,
+    f: impl FnOnce(&mut crate::device_frames::DeviceFrames) -> R,
+) -> Option<R> {
+    let rc = slot.borrow().as_ref().and_then(std::rc::Weak::upgrade)?;
+    let mut frames = rc.try_borrow_mut().ok()?;
+    Some(f(&mut frames))
+}
 /// The shell the grid shows now: kept by the `set_grid_source` dependency, read by the filter.
 pub(crate) type FrontCell = Rc<RefCell<Option<Arc<TermHandle>>>>;
 
@@ -902,10 +916,13 @@ pub fn run_window(
 
     // The controller, once made: the GPU path's frames step the sidebar's slide (audit V3).
     let slide_ctl: Rc<RefCell<Option<std::rc::Weak<RefCell<AppCtl>>>>> = Rc::default();
+    // The device panel's ring frames (PR 4b, rule 1311): the controller's `DeviceFrames`, set once it is made.
+    let device_frames: DeviceFramesSlot = Rc::default();
     let notifier_result = {
         let host = host.clone();
         let note = note.clone();
         let slide_ctl = slide_ctl.clone();
+        let device_frames = device_frames.clone();
         let weak = app.as_weak();
         let front = front.clone();
         let caret = caret.clone();
@@ -920,9 +937,11 @@ pub fn run_window(
                 RenderingState::RenderingSetup => {
                     if let GraphicsAPI::WGPU30 { device, queue, .. } = api {
                         host.borrow_mut().attach_gpu(device, queue);
+                        with_device_frames(&device_frames, |f| f.attach_gpu(device, queue));
                         *note.borrow_mut() = None;
                     } else {
                         host.borrow_mut().detach_gpu();
+                        with_device_frames(&device_frames, |f| f.detach_gpu());
                         *note.borrow_mut() = Some("Slint renderer has no wgpu device".to_string());
                         log::warn!("renderer: grid on the CPU (Slint renderer has no wgpu device)");
                     }
@@ -953,6 +972,19 @@ pub fn run_window(
                         }
                     }
                     let Some(app) = weak.upgrade() else { return };
+                    // The device panel's newest ring frame, the slot itself as the image (no CPU copy).
+                    let now_ms = crate::ui_clock::monotonic_ms_f64() as u64;
+                    let device = with_device_frames(&device_frames, |f| {
+                        (f.frame_image(now_ms), f.wants_redraw())
+                    });
+                    if let Some((image, again)) = device {
+                        if let Some(image) = image {
+                            app.set_panel_device_frame(image);
+                        }
+                        if again {
+                            app.window().request_redraw();
+                        }
+                    }
                     sync_caret_shape(&app, &host);
                     if host.borrow().is_dirty() {
                         let image = host.borrow_mut().render();
@@ -967,6 +999,8 @@ pub fn run_window(
                     }
                 }
                 RenderingState::AfterRendering => {
+                    // The slots this frame no longer samples go back once its GPU work is done.
+                    with_device_frames(&device_frames, |f| f.after_render());
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
                     let trace = FrameTrace::global();
                     if trace.on() {
@@ -983,7 +1017,10 @@ pub fn run_window(
                         log::info!("first frame after {} ms", start.elapsed().as_millis());
                     }
                 }
-                RenderingState::RenderingTeardown => host.borrow_mut().detach_gpu(),
+                RenderingState::RenderingTeardown => {
+                    host.borrow_mut().detach_gpu();
+                    with_device_frames(&device_frames, |f| f.detach_gpu());
+                }
                 _ => {}
             })
     };
@@ -1482,6 +1519,9 @@ pub fn run_window(
                 old_web_dir.clone(),
                 Some(plugin_limits),
             ));
+        // The device panel's real simulator (PR 4b): macOS on Apple silicon, the Xcode pick on a worker.
+        #[cfg(target_os = "macos")]
+        rc.borrow_mut().install_device(&inst.profile.dir);
         // An app link the person allowed opens through the Windows shell; under --e2e the recorder stays and nothing
         // opens outside the app (rule 252).
         if !args.e2e {
@@ -1495,6 +1535,7 @@ pub fn run_window(
         rc.borrow_mut()
             .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));
         *slide_ctl.borrow_mut() = Some(Rc::downgrade(&rc));
+        *device_frames.borrow_mut() = Some(Rc::downgrade(&rc.borrow().device_frames()));
         crate::dictation_ctl::install(&app, &rc, args);
         // What this run is: installed or not, e2e or not (M9 Task 32). The verb and the update
         // engine follow from it.

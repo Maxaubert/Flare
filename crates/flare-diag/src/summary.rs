@@ -31,6 +31,10 @@ const SINK_KINDS: &[&str] = &[
     "agent-poll",
     "agent-poll-failing",
     "frame-slow",
+    // The device panel (PR 4b): the sim host's facts, the frame path, still mode.
+    "device-hello",
+    "device-path",
+    "device-still",
 ];
 const DAY_MS: u64 = 86_400_000;
 /// A time this far in the future is taken as the clock's own time, not as a stamp.

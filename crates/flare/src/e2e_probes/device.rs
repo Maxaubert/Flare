@@ -4,6 +4,8 @@
 //! drives it), how many frames were handed to Slint (the e2e reads frames here, not from pixels: a Mac e2e window
 //! may get no frames while it counts as occluded, rule 1117), the person's inputs and takeovers, every input the
 //! fake source was given (in device points), and where the window drew the box, the picture and the setup button.
+//! PR 4b adds the real source's facts: the frame path (`gpu`, `cpu`), the ring frames drawn and the slots held, the
+//! sim host's hello, the devices Flare booted, whether the menu entry shows, and the picture's turn.
 
 use serde_json::{Value, json};
 
@@ -33,6 +35,7 @@ fn device_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     v["foot"] = json!(a.get_panel_device_foot().to_string());
     v["controls"] = json!(a.get_panel_device_controls_shown());
     v["has_frame"] = json!(a.get_panel_device_has_frame());
+    v["turn"] = json!(a.get_panel_device_turn());
     v["box"] = rect(
         a.get_panel_device_x(),
         a.get_panel_device_y(),

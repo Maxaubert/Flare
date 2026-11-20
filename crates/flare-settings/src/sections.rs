@@ -29,6 +29,8 @@ pub const APP_SECTIONS: &[(&str, &str)] = &[
     // Surfaces stage 7: the notification switch, last on the Agents page (Prism Terminal's sections there are
     // marks, Claude Code and the mark colours, and each has the rows it measured).
     ("notify", "Notifications"),
+    // Device panel PR 4b (rule 1319): the shutdown at quit, last on the Agents page, macOS only.
+    ("device", "Device panel"),
     // Machine pairing PR 2 (rule 1252): the Machines page's first section, the Computer sharing switch.
     ("this-computer", "This computer"),
     // Remote sessions PR 7: the Machines page's table (its rows are the machines this Flare links to).

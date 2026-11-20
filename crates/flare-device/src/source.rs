@@ -252,6 +252,10 @@ pub trait DeviceSource {
     fn launch(&mut self, target: &Target, bundle_id: &str) -> ReqId;
     fn install(&mut self, target: &Target, app: &Path) -> ReqId;
     fn events(&self) -> &Receiver<SourceEvent>;
+    /// The sim host's facts (its `hello`), for the log and `device_state`; None for a source that has none.
+    fn hello(&self) -> Option<crate::wire::Hello> {
+        None
+    }
 }
 
 #[cfg(test)]
