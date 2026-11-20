@@ -3187,9 +3187,8 @@ mod tests {
     }
 
     #[test]
-    fn a_session_end_flushes_the_panels_and_plugin_storage_files_too() {
-        // Rule 36: a panel change still inside its debounce must be on the disk at logoff. Rule 1328: so must a
-        // plugin's storage.set that waits out its write spacing.
+    fn a_session_end_flushes_the_panels_file_too() {
+        // Rule 36: a panel change still inside its debounce must be on the disk at logoff.
         let dir = tempfile::tempdir().unwrap();
         let long = Duration::from_secs(60);
         let tabs = TabsStore::new(dir.path().join("tabs.json"), long);
@@ -3205,6 +3204,20 @@ mod tests {
             ),
         }]);
         assert!(!file.exists(), "inside the debounce nothing is written yet");
+        let plugins = flare_mods::storage::Storage::new(dir.path().join("plugins-storage"));
+        flush_stores(&tabs, &window, &prefs, &panels, &plugins);
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn a_session_end_flushes_a_plugin_storage_set_that_waits_for_its_spacing() {
+        // Rule 1328: a plugin's storage.set that waits out its write spacing must be on the disk at quit and logoff.
+        let dir = tempfile::tempdir().unwrap();
+        let long = Duration::from_secs(60);
+        let tabs = TabsStore::new(dir.path().join("tabs.json"), long);
+        let window = WindowStateStore::new(dir.path().join("window.json"), long);
+        let prefs = PrefStore::memory();
+        let panels = flare_surfaces::store::PanelStore::new(dir.path().join("panels.json"), long);
         let plugins = flare_mods::storage::Storage::new(dir.path().join("plugins-storage"))
             .with_write_every(long);
         // The first set is written at once; the next waits out the spacing.
@@ -3225,7 +3238,6 @@ mod tests {
             .set("todo", Some("n"), serde_json::json!(2))
             .unwrap();
         flush_stores(&tabs, &window, &prefs, &panels, &plugins);
-        assert!(file.exists());
         assert_eq!(read(), r#"{"n":2}"#);
     }
 

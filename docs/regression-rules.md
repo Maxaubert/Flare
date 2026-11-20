@@ -4998,7 +4998,7 @@ inside the window lost it. Now `Storage::flush_all` writes every store with a ch
 the logoff) calls it. A per-store io lock covers taking the state and writing it, for the writer and the flush, so an
 older write never lands over a newer one and they never share the `.tmp` file. Held by
 `a_flush_writes_a_set_still_waiting_for_its_spacing_at_once` (`flare-mods/src/storage.rs`) and
-`a_session_end_flushes_the_panels_and_plugin_storage_files_too` (`flare/src/window.rs`).
+`a_session_end_flushes_a_plugin_storage_set_that_waits_for_its_spacing` (`flare/src/window.rs`).
 
 1329. **Install's folders inside a stage are named outside the id alphabet (`_zip`, `_replaced`).** Audit
 2026-11-18 (issue #273, finding 35). The staged plugin sits at `<stage>\<id>`, beside the unpacked zip
