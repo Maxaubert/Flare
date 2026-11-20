@@ -11,6 +11,7 @@ mod badge;
 mod caret_blink;
 mod chords;
 mod chrome_apply;
+mod cli_install;
 mod cli_open;
 mod clip_flow;
 mod config;
@@ -149,6 +150,13 @@ fn main() {
     if let Some(open) = &args.open_on {
         attach_parent_console();
         std::process::exit(cli_open::run(open, args.user_data_dir.as_deref(), args.e2e));
+    }
+
+    // `flare --install-staged [--check]` (rule 1326): a command, not a launch. It asks the running Flare to install its
+    // staged build once every agent is idle and exits; it takes no lock, starts no Flare and opens no window.
+    if let Some(check) = args.install_staged {
+        attach_parent_console();
+        std::process::exit(cli_install::run(check, args.user_data_dir.as_deref()));
     }
 
     // macOS: the shared application is CEF's kind before winit makes it, so the web panel's engine can start
@@ -464,6 +472,25 @@ mod serve_order_tests {
             assert!(
                 serve < at(later),
                 "the serve branch must come before {later}"
+            );
+        }
+    }
+
+    /// Rule 1326: `flare --install-staged` is a command that exits before the lock, the hand-off and the window.
+    #[test]
+    fn install_staged_branches_before_the_hand_off_and_the_window() {
+        let src = include_str!("main.rs");
+        let at = |s: &str| src.find(s).unwrap_or_else(|| panic!("{s} is in main.rs"));
+        let install = at("if let Some(check) = args.install_staged {");
+        for later in [
+            "flare_web::host::prepare_app()",
+            "e2e::init(args.e2e)",
+            "startup::launch(&profile",
+            "window::run_window(",
+        ] {
+            assert!(
+                install < at(later),
+                "the install branch must come before {later}"
             );
         }
     }
