@@ -606,7 +606,9 @@ Also from S1: the Alt-drag two-finger pinch ships in v1.
 7. Whether `IOSurfaceLock` on the RGBA ring is fast enough for the CPU fallback at 30 fps (about 12 MB a frame).
 8. Rule numbers 1310 to 1322 still free on origin/main.
 9. S5: rotation, headless set and read, and whether the framebuffer changes size. Answered 2026-11-19: Purple
-   GSEvent 50 sets it, `displayinfo` reads it, the framebuffer stays portrait. Touch un-rotation still open (PR 3).
+   GSEvent 50 sets it, `displayinfo` reads it, the framebuffer stays portrait. Touch un-rotation answered 2026-11-19
+   (PR 3 `--input-bench`): landscape points are turned back to portrait (`geom::to_portrait_ratio`), 20 of 20 taps in
+   rot90 and rot270 landed within 0.17 pt.
 10. S6: the framebuffer's colour space. Answered 2026-11-19: Display P3.
 11. Whether `bootstrap_check_in` of an undeclared per-pid name works from a hardened-runtime, Developer ID signed
     Flare (Chromium's rendezvous does it; S2 and S3 together answer it). Answered 2026-11-19: yes (kr 0, Developer ID

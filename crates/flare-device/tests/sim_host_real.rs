@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use flare_device::client::{SimConfig, SimSource};
 use flare_device::macos::simctl::Simctl;
-use flare_device::source::{Answer, DeviceSource, SourceEvent};
+use flare_device::source::{Answer, DeviceSource, InputState, Phase, SourceEvent, Touch};
 
 /// Not a test on its own: a guard started by this binary runs as this test.
 #[test]
@@ -75,6 +75,7 @@ fn a_real_sim_host_streams_frames_and_takes_slots_back() {
     let end = Instant::now() + Duration::from_secs(60);
     let (mut listed, mut attached, mut ring, mut frames, mut changed) =
         (false, false, None, 0u32, 0u64);
+    let (mut live, mut size_pt) = (false, None);
     while Instant::now() < end && !(listed && attached && frames >= 30) {
         let Ok(e) = src.events().recv_timeout(Duration::from_millis(200)) else {
             continue;
@@ -105,6 +106,11 @@ fn a_real_sim_host_streams_frames_and_takes_slots_back() {
                     "{screen:?}"
                 );
                 ring = Some(r);
+                size_pt = Some(screen.size_pt);
+            }
+            SourceEvent::Input { state, .. } => {
+                assert!(!matches!(state, InputState::Broken { .. }), "{state:?}");
+                live |= state == InputState::Live;
             }
             SourceEvent::Frame { target: t, .. } => {
                 assert_eq!(t, target);
@@ -138,6 +144,68 @@ fn a_real_sim_host_streams_frames_and_takes_slots_back() {
     assert_eq!(src.starts(), 1, "no restart");
     let hello = src.hello().unwrap();
     assert!(!hello.coresim_version.is_empty());
+    assert!(hello.ax, "the UI tree is there");
+    // PR 3: input goes live, a tap goes through, a snapshot and the UI tree come back over the same channel.
+    let end = Instant::now() + Duration::from_secs(60);
+    while !live && Instant::now() < end {
+        if let Ok(SourceEvent::Input { state, .. }) =
+            src.events().recv_timeout(Duration::from_millis(200))
+        {
+            live = state == InputState::Live;
+        }
+    }
+    assert!(live, "input went live");
+    let size = size_pt.expect("the screen's size");
+    src.touch(
+        &target,
+        Touch::one(Phase::Start, size.w / 2.0, size.h / 2.0),
+    );
+    src.touch(&target, Touch::one(Phase::End, size.w / 2.0, size.h / 2.0));
+    let look = src.snapshot(&target);
+    let tree = src.ui_tree(&target);
+    let (mut png, mut nodes) = (None, None);
+    let end = Instant::now() + Duration::from_secs(30);
+    while (png.is_none() || nodes.is_none()) && Instant::now() < end {
+        if let Ok(SourceEvent::Answer { id, result }) =
+            src.events().recv_timeout(Duration::from_millis(200))
+        {
+            if id == look {
+                png = Some(result.clone());
+            }
+            if id == tree {
+                nodes = Some(result);
+            }
+        }
+    }
+    let log = std::fs::read_to_string(logs.path().join("sim-host.log")).unwrap_or_default();
+    let Some(Ok(Answer::Png(png))) = png else {
+        panic!(
+            "no snapshot: {png:?}
+{log}"
+        );
+    };
+    let (shown, _) = flare_device::client::decode_png(&png).expect("a PNG");
+    assert_eq!(
+        (shown.w, shown.h),
+        (size.w.floor(), size.h.floor()),
+        "point size"
+    );
+    let Some(Ok(Answer::Tree(root))) = nodes else {
+        panic!(
+            "no UI tree: {nodes:?}
+{log}"
+        );
+    };
+    fn count(n: &flare_device::tree::UiNode) -> usize {
+        1 + n.children.iter().map(count).sum::<usize>()
+    }
+    assert!(count(&root) >= 1, "{root:?}");
+    eprintln!(
+        "UI tree: {} elements, root {} {:?}",
+        count(&root),
+        root.role,
+        root.frame
+    );
     src.detach(&target);
     drop(src);
 }
