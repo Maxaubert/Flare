@@ -78,7 +78,10 @@ printf '{\n  "commit": "%s",\n  "built_at": "%s",\n  "files": {%s\n  }\n}\n' "$C
 mv "$STAGED/staged.json.tmp" "$STAGED/staged.json"
 say "staged ${COMMIT:0:7} for $ROOT ($COUNT files); click Build ready in Flare to install it"
 # Rule 1326: an agent installs only a Developer ID stage (Flare --install-staged); say which this is.
-if codesign -dv --verbose=2 "$STAGED/Flare.app" 2>&1 | grep -q '^Authority=Developer ID Application:'; then
+# Read codesign's whole output first: `grep -q` quits at the first match, and under pipefail the SIGPIPE codesign then
+# gets (141) would turn every signed stage into "not signed".
+SIGN_INFO="$(codesign -dv --verbose=2 "$STAGED/Flare.app" 2>&1 || true)"
+if printf '%s\n' "$SIGN_INFO" | grep '^Authority=Developer ID Application:' >/dev/null; then
   say "the stage is signed with Developer ID: an agent may install it (Flare --install-staged)"
 else
   say "the stage is not signed with Developer ID: only a click on Build ready installs it (set FLARE_MAC_SIGN_IDENTITY)"
