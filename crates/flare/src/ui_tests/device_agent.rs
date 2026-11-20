@@ -335,6 +335,24 @@ fn the_persons_press_ends_the_agent_call_interrupted_and_hides_the_dot() {
     assert_eq!(st["took_over_last"], true);
 }
 
+/// Rule 1321: the person's touch hides the indicators at once even after the agent's call answered, while the dot and
+/// the glow still hold; it is no takeover (no call was running).
+#[test]
+fn the_persons_press_during_the_hold_hides_the_dot_at_once() {
+    let mut r = Rig::new();
+    let (rx, _) = r.call(tap(120.0, 240.0));
+    answer(&mut r, &rx, 2_000).expect("the tap answers");
+    assert!(r.dot().is_some(), "the dot holds after the call");
+    assert!(r.h.comp.get_panel_device_glow() > 0.0, "and the glow");
+    let (bw, bh) = (r.h.comp.get_panel_device_w(), r.h.comp.get_panel_device_h());
+    r.dev.page_pointer(&r.h.comp, 0, bw / 2.0, bh / 2.0, 0, 0);
+    r.show();
+    assert_eq!(r.dot(), None, "the dot is hidden at once");
+    assert_eq!(r.h.comp.get_panel_device_glow(), 0.0, "and the glow");
+    assert_eq!(r.dev.probe()["takeovers"], 0, "no call was running");
+    assert_eq!(r.dev.agent_state("t1")["took_over_last"], false);
+}
+
 #[test]
 fn indicators_are_never_in_the_look_picture() {
     let mut r = Rig::new();

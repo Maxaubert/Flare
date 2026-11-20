@@ -7,6 +7,8 @@
 //! labels and values, the device's name) is untrusted text: cleaned once more here, written as quoted strings and
 //! fenced between two marker lines that say it is the device's content and not instructions (rule 1315).
 
+use std::sync::LazyLock;
+
 use flare_ctl::Method;
 use serde_json::{Map, Value, json};
 
@@ -53,26 +55,29 @@ fn point_schema(what: &str) -> Value {
     })
 }
 
+/// The three descriptions that carry [`TAKEOVER`], built once: `tools()` runs for every `tools/list` and every device
+/// call, so a description made there with `Box::leak` would leak on each one.
+static TAP_DESC: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Tap the phone simulator in Flare's device panel beside this terminal tab, as a finger would. Pass ref (from the last device_look) to tap that element's middle, or x and y in device points from the top left of the screen (the points device_look lists; the screenshot is at point size, so a position read off it is in points already). hold_ms makes it a long press (at most 10000). The screen changes after a tap, so call device_look again before using any ref. {TAKEOVER}"
+    )
+});
+static SWIPE_DESC: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Drag a finger across the phone simulator in Flare's device panel: from {{x, y}} to {{x, y}} in device points, or a direction (up, down, left, right: half the screen that way) from the middle, from a ref or from from. The content follows the finger as on a phone: swipe up to scroll down. duration_ms is how long the drag takes (default 300, at most 5000; slower drags scroll less). Look again afterwards: what is on screen has changed. {TAKEOVER}"
+    )
+});
+static TYPE_DESC: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Type text into the phone simulator in Flare's device panel. Pass ref (from the last device_look) to tap that field first; without one the text goes where the keyboard already is. submit presses Return after it. Text is typed as key presses (or pasted through the simulator's own pasteboard when the keys cannot type it; the Mac's clipboard is never used). {TAKEOVER}"
+    )
+});
+
 /// The device tools, written for the agent that reads them.
 pub fn tools() -> Vec<ToolDef> {
-    let tap_desc: &'static str = Box::leak(
-        format!(
-            "Tap the phone simulator in Flare's device panel beside this terminal tab, as a finger would. Pass ref (from the last device_look) to tap that element's middle, or x and y in device points from the top left of the screen (the points device_look lists; the screenshot is at point size, so a position read off it is in points already). hold_ms makes it a long press (at most 10000). The screen changes after a tap, so call device_look again before using any ref. {TAKEOVER}"
-        )
-        .into_boxed_str(),
-    );
-    let swipe_desc: &'static str = Box::leak(
-        format!(
-            "Drag a finger across the phone simulator in Flare's device panel: from {{x, y}} to {{x, y}} in device points, or a direction (up, down, left, right: half the screen that way) from the middle, from a ref or from from. The content follows the finger as on a phone: swipe up to scroll down. duration_ms is how long the drag takes (default 300, at most 5000; slower drags scroll less). Look again afterwards: what is on screen has changed. {TAKEOVER}"
-        )
-        .into_boxed_str(),
-    );
-    let type_desc: &'static str = Box::leak(
-        format!(
-            "Type text into the phone simulator in Flare's device panel. Pass ref (from the last device_look) to tap that field first; without one the text goes where the keyboard already is. submit presses Return after it. Text is typed as key presses (or pasted through the simulator's own pasteboard when the keys cannot type it; the Mac's clipboard is never used). {TAKEOVER}"
-        )
-        .into_boxed_str(),
-    );
+    let tap_desc: &'static str = TAP_DESC.as_str();
+    let swipe_desc: &'static str = SWIPE_DESC.as_str();
+    let type_desc: &'static str = TYPE_DESC.as_str();
     vec![
         ToolDef {
             name: "device_list",
@@ -690,6 +695,11 @@ mod tests {
             assert!(is_device_tool(n));
         }
         assert!(!is_device_tool("device_fly"));
+        // The descriptions are built once, not leaked anew on each listing or call.
+        let again = tools();
+        for (a, b) in list.iter().zip(&again) {
+            assert!(std::ptr::eq(a.description, b.description), "{}", a.name);
+        }
     }
 
     #[test]

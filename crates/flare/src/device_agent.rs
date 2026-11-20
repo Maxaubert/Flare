@@ -1047,16 +1047,18 @@ impl DeviceCtl {
     /// The person took over the tab's panel: its running input call ends `interrupted`, what it held is let go of
     /// and the indicators go at once (rule 1320). True when a call was running.
     pub(super) fn agent_takeover(&mut self, tab: &str) -> bool {
-        if !self.agent.jobs.contains_key(tab) {
-            return false;
+        let running = self.agent.jobs.contains_key(tab);
+        if running {
+            self.finish_job(tab, Err(Job::interrupted()));
+            self.agent.took_over.insert(tab.to_string());
         }
-        self.finish_job(tab, Err(Job::interrupted()));
-        self.agent.took_over.insert(tab.to_string());
+        // Rule 1321: the person's touch hides the indicators at once, also while they hold after the agent's last
+        // call (the dot and glow would otherwise linger over the person's own finger for 1.5 s).
         if self.agent.ind_tab.as_deref() == Some(tab) {
             self.agent.ind.hide();
             self.agent.held = false;
         }
-        true
+        running
     }
 
     /// A tab's panel closed or its device changed: its calls end, its refs go.

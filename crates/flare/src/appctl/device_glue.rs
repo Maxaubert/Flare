@@ -35,7 +35,12 @@ impl AppCtl {
         if changed {
             // A dropped panel or a new target: the panels sync again before the device pushes.
             self.panels.sync(app, front);
-            let _ = self.device.update(&self.panels, front, splitting, names);
+            // An agent call the first pass let go (a boot waiting on the list) may ask for its panel here: carried
+            // out too, with one more sync, rather than dropped.
+            let more = self.device.update(&self.panels, front, splitting, names);
+            if self.apply_device(more) {
+                self.panels.sync(app, front);
+            }
         }
         self.device.push(app);
         self.sync_device_gate();
