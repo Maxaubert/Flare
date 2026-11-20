@@ -17,6 +17,7 @@ members = [
     "crates/flare-tabs",
     "crates/flare-help",
     "crates/flare-surfaces",
+    "crates/flare-device",
     "crates/flare-web",
     "crates/flare-cef",
     "crates/flare-ctl",

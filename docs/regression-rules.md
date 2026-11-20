@@ -4961,3 +4961,22 @@ with the same id. Held by `a_named_session_is_a_change_even_when_no_mark_moves` 
 `a_session_named_after_the_work_showed_is_saved_and_kept_while_its_claude_stays` (`appctl`) and
 `zsh_runs_a_restored_tabs_resume_before_its_first_folder_report` (`flare-term/tests/real_shells_macos.rs`, a real
 zsh with a stand-in `claude`).
+
+## Device panel (2026-11-19)
+
+Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
+(issue #248). Rules 1310 to 1322 are this feature's; each lands with the PR that builds it.
+
+1316. **A device panel is kind `device`, target `sim/<udid>`, kept in `panels.json`; a build without its viewer keeps it
+and never shows it.** Max, 2026-11-16 and 2026-11-19 (issue #248, decisions 5 and 12 of the spec). First half (device
+panel PR 1): `PanelKind::Device` is named `"device"`, native (Slint draws it, kind 5 once built) and **not built**
+(`is_built` false), so `PanelCtl::restore` and `show` keep a stored device panel in the file and never hand its
+`sim/<udid>` target to `preview::loadable` (a file check) or the file preview. The target is
+`flare_device::target`: `sim/` and a 36-character UUID (`8-4-4-4-12` hex), lower-cased; `simctl`'s upper case reads as
+the same device, only the lower-cased name is a stored target, and the limits of `flare_surfaces::state::clean_target`
+apply first. `flare_device::target::target_ok` checks the shape only (no file, no `simctl`, rule 34). An older Flare
+reads the unknown kind as nothing and never writes it back (rule 40). Second half (PR 4a): `is_built` turns true,
+`target_ok` in `panel_ctl.rs` gets a `Device` arm calling `flare_device::target::target_ok`, restore shows Boot and never
+boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
+`a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
+(`flare-device/src/target.rs`). Source: Max, 2026-11-19.
