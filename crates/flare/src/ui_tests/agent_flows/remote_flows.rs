@@ -518,6 +518,7 @@ fn a_hidden_tabs_agent_cannot_open_a_panel_or_front_the_window() {
             tip: "t".into(),
             tone: flare_tabs::decor::Tone::Ink,
             generation: 0,
+            own: true,
         },
         CtlOp::PanelClose { tab: id.clone() },
     ];
@@ -568,6 +569,96 @@ fn a_hidden_tabs_agent_cannot_open_a_panel_or_front_the_window() {
     assert_eq!(e.code, flare_ctl::code::UNAVAILABLE);
     assert!(e.message.contains("shows on Mac Mini"), "{}", e.message);
     assert_eq!(f.ids(), strip, "no tab opened here");
+}
+
+/// The ops a plugin may aim at a tab it named, on `tab`; `own` says whether it called with that tab's own token.
+fn named_ops(tab: &str, own: bool) -> Vec<CtlOp> {
+    let plugin = flare_tabs::decor::Source::Plugin("p".into());
+    vec![
+        CtlOp::BadgeSet {
+            tab: tab.into(),
+            source: plugin.clone(),
+            key: "k".into(),
+            icon: "star".into(),
+            tip: "t".into(),
+            tone: flare_tabs::decor::Tone::Ink,
+            generation: 0,
+            own,
+        },
+        CtlOp::ProgressSet {
+            tab: tab.into(),
+            source: plugin,
+            key: "k".into(),
+            value: Some(0.5),
+            label: String::new(),
+            generation: 0,
+            own,
+        },
+        CtlOp::ShowMod {
+            tab: tab.into(),
+            mod_id: "p".into(),
+            own,
+            generation: 0,
+        },
+        CtlOp::BarShow {
+            plugin: "p".into(),
+            tab: tab.into(),
+            generation: 0,
+            own,
+        },
+        CtlOp::FillPage {
+            tab: tab.into(),
+            own,
+        },
+        CtlOp::Fill {
+            plugin: "p".into(),
+            plugin_name: "P".into(),
+            tab: tab.into(),
+            login_name: "x".into(),
+            login_uris: vec!["https://example.com/".into()],
+            values: flare_mods::fill::Values::default(),
+            via_call: false,
+            generation: 0,
+            own,
+        },
+    ]
+}
+
+/// Rule 1306: a plugin that names a hidden session in a badge, progress, panel, bar or fill call gets the very answer a
+/// tab that does not exist gets, byte for byte, so it learns neither that the session exists nor its opener's name.
+/// Only a call made with the session's own token hears `unavailable` naming the opener.
+#[test]
+fn a_plugin_naming_a_hidden_tab_hears_what_an_unknown_tab_hears() {
+    let f = Fx::new();
+    let strip = f.tabs(&["C:\\work"]);
+    serving(&f);
+    let id = hidden(&f, "C:\\there");
+    for (on_hidden, on_unknown) in named_ops(&id, false)
+        .into_iter()
+        .zip(named_ops("no-such-tab", false))
+    {
+        let what = format!("{on_hidden:?}");
+        let e = ask(&f, on_hidden).expect_err(&what);
+        let unknown = ask(&f, on_unknown).expect_err(&what);
+        assert_eq!(e, unknown, "{what}");
+        assert!(!e.message.contains("Mac Mini"), "{what}: {}", e.message);
+    }
+    // The first two reach the tab check first: the plain `no_tab`.
+    for op in named_ops(&id, false).into_iter().take(2) {
+        assert_eq!(
+            ask(&f, op).unwrap_err(),
+            flare_ctl::CtlError::new(flare_ctl::code::NO_TAB, "that tab is closed")
+        );
+    }
+    // Its own token: `unavailable`, naming the opener.
+    for op in named_ops(&id, true) {
+        let what = format!("{op:?}");
+        let e = ask(&f, op).expect_err(&what);
+        assert_eq!(e.code, flare_ctl::code::UNAVAILABLE, "{what}");
+        assert!(e.message.contains("shows on Mac Mini"), "{}", e.message);
+    }
+    assert!(!f.ctl.borrow().has_decor(&id));
+    assert_eq!(f.ids(), strip);
 }
 
 /// Rule 1302: plugins never see a hidden session: `tabs.list` for a plugin with `tabs` (and the `tabs` and `agent`
