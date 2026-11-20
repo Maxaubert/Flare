@@ -5039,7 +5039,12 @@ status names an agent, idle or not (`AgentHub::remote_agent`, kept before any ea
 1306. **A hidden session is no plugin's to read, and its opener's name passes one check everywhere.** A plugin's
 `session.read` that names a hidden session (rule 1302) gets `no_tab` "that tab is closed", the answer a tab that does not
 exist gets, so it learns nothing (`CtlOp::SessionOf { hidden_ok }`, `AppCtl::ctl_session_of`). Only a call made with
-that session's own tab token, and its opener's `remote.fetch` and `remote.convo`, read it. An opener's name is checked
+that session's own tab token, and its opener's `remote.fetch` and `remote.convo`, read it. The same holds for a call
+that would show something on a hidden session (rule 1302): only its own token hears `unavailable` naming the opener. A
+plugin that names it (a badge, progress, its panel, its bar, a fill or `browser.fill.page`) gets the answer a tab that
+does not exist gets, byte for byte: `AppCtl::hidden_refusal` passes it by (the op's `own` is false, set by the worker
+from `AppDispatcher::owns`, the one "own" check), and the op's own handler answers a hidden tab as an unknown one,
+`is_shell_tab` false for it, its earlier checks in the same order. An opener's name is checked
 the same way when the session opens (`open_hidden`), when the opener names itself again (`set_hidden_opener`, a name it
 refuses changes nothing), at restore and in `viewer_of`: trimmed, not empty, at most `MAX_OPENER_NAME` (256, the same as
 `flare_ctl::session::MAX_MACHINE_NAME`, a compile-time check holds them equal) characters, no control character
@@ -5049,6 +5054,7 @@ machine opened never shows on this screen). Native: `crates/flare/src/ctl_app.rs
 `appctl/sessions_glue.rs`, `appctl/remote_glue.rs`, `crates/flare-tabs/src/restore.rs` (`valid_opener`, `parse_hidden`),
 `model.rs`. Held by
 `mods_tests::plugin_sessions::session_read_never_gives_a_plugin_a_hidden_session_but_its_own_token_reads_it`,
+`remote_flows::a_plugin_naming_a_hidden_tab_hears_what_an_unknown_tab_hears`,
 `flare_tabs::restore::tests::a_hidden_entry_with_a_bad_opener_restores_hidden_and_unnamed` and
 `flare_tabs::model::hidden_tests::an_opener_name_is_checked_the_same_at_open_rename_and_restore`. Source: the security
 review of PR #289, 2026-11-19.
