@@ -369,6 +369,28 @@ mod tests {
     }
 
     #[test]
+    fn a_device_panel_round_trips_in_panels_json() {
+        // A phone simulator (issue #248, rule 1316): kind "device", target "sim/<udid>", its open state and width.
+        // The store keeps it whatever this build can draw; its target is never read as a file here.
+        let target = "sim/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+        let raw = format!(
+            r#"{{"version":1,"tabs":[
+            {{"cwd":"C:\\a","panel":{{"kind":"device","target":"{target}","open":false,"width":0.4}}}},
+            {{"cwd":"C:\\b","panel":{{"kind":"text","target":"a.txt"}}}}]}}"#
+        );
+        let got = parse_panels(&raw);
+        assert_eq!(got.len(), 2);
+        let p = got[0].panel.clone().unwrap();
+        assert_eq!(p.kind, PanelKind::Device);
+        assert_eq!(p.target, target);
+        assert!(!p.open);
+        assert_eq!(p.width, Some(0.4));
+        let written = panels_json(&got);
+        assert!(written.contains(r#""kind":"device""#), "{written}");
+        assert_eq!(parse_panels(&written), got, "written back unchanged");
+    }
+
+    #[test]
     fn a_stored_tasks_panel_is_dropped_on_load() {
         // The Tasks panel was removed (owner, 2026-10-26). A panels.json an older build wrote still has it: it
         // reads as an unknown kind and that one panel is dropped (rule 40), the tab and its neighbour stay.
