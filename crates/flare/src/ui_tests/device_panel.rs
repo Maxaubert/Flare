@@ -474,3 +474,23 @@ fn a_second_tab_on_the_same_device_is_view_only() {
         "t2 drives it once t1 lets go"
     );
 }
+
+#[test]
+fn a_refresh_keeps_the_device_list_rows_under_the_pointer() {
+    // The window refreshes often (terminal output, timers): the list's rows must not be made again each time, or a
+    // refresh between the press and the release on a row rebuilds its TouchArea and the pick is lost.
+    use slint::Model as _;
+    let mut r = Rig::new(FakeSource::default());
+    r.panels
+        .show("t1", PanelKind::Device, crate::device_ctl::CHOOSE);
+    r.front("t1");
+    assert_eq!(r.h.comp.get_panel_device_state(), 2, "the list");
+    let first = r.h.comp.get_panel_device_rows();
+    assert!(first.row_count() > 0);
+    r.front("t1");
+    r.front("t1");
+    assert!(
+        r.h.comp.get_panel_device_rows() == first,
+        "the same rows model after a refresh"
+    );
+}

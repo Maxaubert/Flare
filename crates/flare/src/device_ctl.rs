@@ -286,6 +286,9 @@ impl Src {
 struct Pushed {
     owned: bool,
     seq: Option<(String, u64)>,
+    /// The device list's rows on show (name, system, booted): a new model only when they change, so a refresh
+    /// between a press and its release on a row never rebuilds the rows under the pointer (and loses the click).
+    rows: Vec<(String, String, bool)>,
 }
 
 pub struct DeviceCtl {
@@ -884,20 +887,27 @@ impl DeviceCtl {
         app.set_panel_device_pt_w(pt.map_or(0.0, |s| s.w as f32));
         app.set_panel_device_pt_h(pt.map_or(0.0, |s| s.h as f32));
         app.set_panel_device_radius_pt(RADIUS_PT as f32);
-        let rows: Vec<DeviceRow> = if view.state == 2 {
+        let rows: Vec<(String, String, bool)> = if view.state == 2 {
             self.devices
                 .iter()
                 .flatten()
-                .map(|d| DeviceRow {
-                    name: d.name.as_str().into(),
-                    os: d.os.as_str().into(),
-                    booted: d.state == DeviceState::Booted,
-                })
+                .map(|d| (d.name.clone(), d.os.clone(), d.state == DeviceState::Booted))
                 .collect()
         } else {
             Vec::new()
         };
-        app.set_panel_device_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+        if rows != self.pushed.rows {
+            let model: Vec<DeviceRow> = rows
+                .iter()
+                .map(|(name, os, booted)| DeviceRow {
+                    name: name.as_str().into(),
+                    os: os.as_str().into(),
+                    booted: *booted,
+                })
+                .collect();
+            app.set_panel_device_rows(ModelRc::from(Rc::new(VecModel::from(model))));
+            self.pushed.rows = rows;
+        }
         let live = view.state == 0;
         let still = match (&self.broken, live) {
             (Some(why), true) => {
