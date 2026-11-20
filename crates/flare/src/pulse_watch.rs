@@ -145,6 +145,12 @@ impl RowWatch {
         }
         let mut out = Vec::new();
         for (r, slot) in self.rows.iter_mut().enumerate() {
+            // The usual frame repaints most rows unchanged: a compare against the kept row is about
+            // five times cheaper than hashing it (a maximised window holds 10k cells or more), and
+            // the watch would do nothing with the same look anyway.
+            if slot.cur.len() == cols && (0..cols).all(|c| grid.cell(c, r) == &slot.cur[c]) {
+                continue;
+            }
             let h = row_hash(grid, r);
             let changed = slot.watch.cur != Some(h);
             let flip = slot.watch.observe(h, now);
