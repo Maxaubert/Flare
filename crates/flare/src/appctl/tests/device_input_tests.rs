@@ -168,10 +168,21 @@ fn holding_the_splitter_is_not_a_takeover() {
     let (f, a, _) = live_device();
     let (x, y, w, h) = pic(&f);
     let (bx, by) = (f.h.comp.get_panel_device_x(), f.h.comp.get_panel_device_y());
+    // A long press of the agent's runs in the tab (PR 5): it holds its finger down for 5 s.
+    let (tx, rx) = std::sync::mpsc::channel();
     f.ctl
         .borrow_mut()
         .device_mut()
-        .job_started(&a, "device_tap");
+        .start_agent(crate::device_ctl::AgentCall {
+            tab: a.clone(),
+            req: crate::device_ctl::AgentReq::Act(flare_device::job::DeviceOp::Tap {
+                at: flare_device::job::At::Point(100.0, 100.0),
+                hold_ms: Some(5_000),
+            }),
+            reply: tx,
+            cancel: flare_ctl::CancelFlag::default(),
+            label: "Claude".into(),
+        });
     // The splitter is held: a press in the panel ends nothing.
     f.h.comp.set_panel_splitting(true);
     f.ctl.borrow_mut().refresh();
@@ -179,15 +190,13 @@ fn holding_the_splitter_is_not_a_takeover() {
         .invoke_panel_device_pointer(0, x - bx + w / 2.0, y - by + h / 2.0, 0, 0);
     f.h.comp
         .invoke_panel_device_pointer(1, x - bx + w / 2.0, y - by + h / 2.0, 0, 0);
-    assert!(f.ctl.borrow_mut().device_mut().take_ended().is_empty());
+    assert!(rx.try_recv().is_err(), "the call still runs");
     // Let go: the person's press takes over, and the call ends `interrupted`.
     f.h.comp.set_panel_splitting(false);
     f.ctl.borrow_mut().refresh();
     f.h.click(x + w / 2.0, y + h / 2.0);
-    let ended = f.ctl.borrow_mut().device_mut().take_ended();
-    assert_eq!(ended.len(), 1, "{ended:?}");
-    assert_eq!(ended[0].0, a);
-    assert_eq!(ended[0].1.fail, flare_device::job::Fail::Interrupted);
+    let ended = rx.try_recv().expect("the call was answered");
+    assert_eq!(ended.unwrap_err().code, "interrupted");
     assert_eq!(f.ctl.borrow().device_probe()["takeovers"], 1);
 }
 

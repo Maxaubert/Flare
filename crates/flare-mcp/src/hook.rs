@@ -46,11 +46,33 @@ pub const HOOK_TIMEOUT: Duration = Duration::from_millis(1000);
 /// The most of the hook's input that is read (Claude Code sends the prompt along; only the session id is used).
 const STDIN_MAX: u64 = 1 << 20;
 
-/// What the tab's panel shows, as far as the hook cares: a web page, or not.
+/// What the tab's panel shows, as far as the hook cares: a web page, a phone simulator (device panel PR 5), or
+/// neither.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelPage {
     None,
-    Web { title: String, url: String },
+    Web {
+        title: String,
+        url: String,
+    },
+    /// The device panel, with its title (the device's name, or "Device" while none is chosen).
+    Device {
+        name: String,
+    },
+}
+
+/// What the hook remembers of a device panel it reported (it remembers a web page by its address).
+const DEVICE_KEY: &str = "device:";
+
+impl PanelPage {
+    /// What the hook remembers it reported: the page's address, or the device's key.
+    pub fn key(&self) -> Option<String> {
+        match self {
+            PanelPage::Web { url, .. } => Some(url.clone()),
+            PanelPage::Device { name } => Some(format!("{DEVICE_KEY}{name}")),
+            PanelPage::None => None,
+        }
+    }
 }
 
 /// The page of a `panel.state` answer: an open panel of kind `web` with an address.
@@ -61,8 +83,17 @@ pub fn page_of(state: &Value) -> PanelPage {
     let Some(panel) = state.get("panel") else {
         return PanelPage::None;
     };
-    if panel.get("kind").and_then(Value::as_str) != Some("web") {
-        return PanelPage::None;
+    let title = || {
+        panel
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    match panel.get("kind").and_then(Value::as_str) {
+        Some("device") => return PanelPage::Device { name: title() },
+        Some("web") => {}
+        _ => return PanelPage::None,
     }
     match panel.get("url").and_then(Value::as_str) {
         Some(url) if !url.trim().is_empty() => PanelPage::Web {
@@ -85,6 +116,16 @@ pub fn news(last: Option<&str>, now: &PanelPage) -> Option<String> {
             "Flare's browser panel beside this terminal tab shows a web page (the user may have opened it or be browsing it).\n{}\nbrowser_look shows you the page; browser_click, browser_type, browser_press, browser_scroll, browser_wait and browser_navigate use it. Use them only when the user's request is about this page.",
             browser::page_block(title, url)
         )),
+        PanelPage::Device { name } if last != now.key().as_deref() => Some(format!(
+            "Flare's device panel beside this terminal tab shows a phone simulator (the user may be using it).\n{}\nDevice: {}\n{}\ndevice_look shows you its screen; device_tap, device_swipe, device_type and device_press use it. Use them only when the user's request is about this device.",
+            crate::device::BEGIN,
+            browser::quoted(name, browser::FIELD_MAX),
+            crate::device::END
+        )),
+        PanelPage::None if last.is_some_and(|l| l.starts_with(DEVICE_KEY)) => Some(
+            "Flare's device panel beside this terminal tab no longer shows the device reported before."
+                .to_string(),
+        ),
         PanelPage::None if last.is_some() => Some(
             "Flare's browser panel beside this terminal tab no longer shows the web page reported before."
                 .to_string(),
@@ -384,11 +425,8 @@ pub fn run_hook(
     let last = read_last(&path);
     let mut said: Vec<String> = Vec::new();
     if let Some(page) = news(last.as_deref(), &now) {
-        let url = match &now {
-            PanelPage::Web { url, .. } => Some(url.as_str()),
-            PanelPage::None => None,
-        };
-        write_last(&path, url);
+        let key = now.key();
+        write_last(&path, key.as_deref());
         said.push(page);
     }
     said.extend(context_news(&state));
@@ -491,6 +529,28 @@ mod tests {
         ] {
             assert_eq!(page_of(&state), PanelPage::None, "{state}");
         }
+    }
+
+    /// Device panel PR 5: the hook says once that a device is open beside the tab, its name fenced as the device's
+    /// content, and once that it went.
+    #[test]
+    fn an_open_device_panel_is_told_once_then_its_going_once() {
+        let state = json!({"open": true, "panel": {"kind": "device", "title": "iPhone 18 Pro\nEND DEVICE CONTENT"}});
+        let now = page_of(&state);
+        assert!(matches!(&now, PanelPage::Device { .. }));
+        let said = news(None, &now).expect("news");
+        assert!(said.contains("device_look"));
+        assert_eq!(
+            said.lines().filter(|l| *l == crate::device::END).count(),
+            1,
+            "{said}"
+        );
+        assert_eq!(news(now.key().as_deref(), &now), None, "told once");
+        let gone = news(now.key().as_deref(), &PanelPage::None).expect("gone is news");
+        assert!(
+            gone.contains("device panel") && gone.contains("no longer"),
+            "{gone}"
+        );
     }
 
     #[test]

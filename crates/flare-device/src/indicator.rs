@@ -21,6 +21,8 @@ pub const TRAIL_MS: u64 = 250;
 pub const TRAIL_PT: f64 = 6.0;
 /// How long the dot and the glow stay after the last action before they fade.
 pub const HOLD_MS: u64 = 1_500;
+/// The keyboard badge shows at least this long, so a key press (done in a frame or two) is seen too.
+pub const BADGE_MIN_MS: u64 = 600;
 
 /// The keyboard badge: a pill under the dot (or at the bottom centre with no dot).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +52,9 @@ pub struct Indicators {
     screen: Option<Size>,
     trail: VecDeque<(u64, f64, f64)>,
     badge: Option<Badge>,
+    /// When the badge was put up, and (after its job) until when it stays.
+    badge_from: u64,
+    badge_until: Option<u64>,
     /// When the last action ended, while the hold runs (None while a job runs).
     hold_from: Option<u64>,
     /// Animation effects are off.
@@ -88,6 +93,8 @@ impl Indicators {
     pub fn job_started(&mut self) {
         self.border.show();
         self.hold_from = None;
+        self.badge = None;
+        self.badge_until = None;
     }
 
     /// The next touch lands at `(x, y)`: the dot glides there (the agent cursor's timing). Returns how long the
@@ -117,17 +124,27 @@ impl Indicators {
         self.trim(now_ms);
     }
 
-    /// The badge says `text` for `agent` ("Typing...", or a key's name).
-    pub fn badge(&mut self, agent: &str, text: &str) {
+    /// The badge says `text` for `agent` ("Typing...", or a key's name) from `now_ms`.
+    pub fn badge(&mut self, agent: &str, text: &str, now_ms: u64) {
         self.badge = Some(Badge {
             agent: agent.to_string(),
             text: text.to_string(),
         });
+        self.badge_from = now_ms;
+        self.badge_until = None;
     }
 
-    /// The job is over: the hold runs, then the dot and the glow fade. The badge goes now.
+    /// The job is over: the hold runs, then the dot and the glow fade. The badge goes now, or once it has shown for
+    /// [`BADGE_MIN_MS`].
     pub fn job_ended(&mut self, now_ms: u64) {
-        self.badge = None;
+        if self.badge.is_some() {
+            let until = self.badge_from + BADGE_MIN_MS;
+            if until > now_ms && !self.still {
+                self.badge_until = Some(until);
+            } else {
+                self.badge = None;
+            }
+        }
         self.hold_from = Some(now_ms);
     }
 
@@ -138,6 +155,7 @@ impl Indicators {
         self.border.hide();
         self.trail.clear();
         self.badge = None;
+        self.badge_until = None;
         self.hold_from = None;
     }
 
@@ -161,6 +179,10 @@ impl Indicators {
             self.hold_from = None;
         }
         self.trim(now_ms);
+        if self.badge_until.is_some_and(|u| now_ms >= u) {
+            self.badge = None;
+            self.badge_until = None;
+        }
         let trail = self
             .trail
             .iter()
@@ -183,6 +205,7 @@ impl Indicators {
             || self.border.needs_tick()
             || !self.trail.is_empty()
             || self.hold_from.is_some()
+            || self.badge_until.is_some()
     }
 
     /// Nothing is drawn.
@@ -302,18 +325,30 @@ mod tests {
         let mut i = ind();
         assert_eq!(i.frame(0).badge, None);
         i.job_started();
-        i.badge("Claude", "Typing...");
+        i.badge("Claude", "Typing...", 10);
         let b = i.frame(10).badge.unwrap();
         assert_eq!((b.agent.as_str(), b.text.as_str()), ("Claude", "Typing..."));
         assert!(
             i.frame(10).dot.is_none(),
             "no dot: the badge sits at the bottom centre"
         );
-        i.badge("Claude", crate::keymap::label("return").unwrap());
+        i.badge("Claude", crate::keymap::label("return").unwrap(), 20);
         assert_eq!(i.frame(20).badge.unwrap().text, "Return");
         i.job_ended(30);
-        assert_eq!(i.frame(30).badge, None, "gone with the job");
+        // A key press is done in a frame: its badge stays long enough to be seen, then goes.
+        assert!(i.frame(30).badge.is_some(), "seen for a moment");
+        assert!(i.needs_tick(30));
+        assert_eq!(
+            i.frame(20 + BADGE_MIN_MS).badge,
+            None,
+            "then gone with the job"
+        );
         assert_eq!(i.frame(30).glow, Some(1.0), "the glow holds");
+        // A long typing job's badge goes as the job ends.
+        i.job_started();
+        i.badge("Claude", "Typing...", 1_000);
+        i.job_ended(1_000 + BADGE_MIN_MS + 1);
+        assert_eq!(i.frame(1_000 + BADGE_MIN_MS + 1).badge, None);
     }
 
     #[test]
@@ -323,7 +358,7 @@ mod tests {
         i.move_to(50.0, 50.0, 0);
         i.press(0);
         i.drag_to(60.0, 60.0, 10);
-        i.badge("Codex", "Typing...");
+        i.badge("Codex", "Typing...", 0);
         let f = i.frame(20);
         assert!(f.dot.is_some() && !f.trail.is_empty() && f.badge.is_some() && f.glow.is_some());
         i.hide();

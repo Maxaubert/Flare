@@ -512,6 +512,12 @@ Keep green: `agentBrowser`, `mcpBrowser`, rule 229 and 254 tests, every grant it
 **Before merge.** Max's by-hand checks 4 and 5 from the spec, on a staged build on the Mac mini (not over his
 running `Flare.app`), with Claude in a tab.
 
+Done 2026-11-20 (PR 5, branch `feat/device-pr5`): every file and test above, rules 1315 (tool half), 1320 (agent half),
+1321 and 1322 (1323's agent half too). Deviations are in the spec's "Update, Claude (device panel PR 5)": the `Ui`
+grant closed, `device_launch` without `args`, no front app in a look, the badge's 600 ms minimum. The agent's half of
+the controller is its own file, `crates/flare/src/device_agent.rs` (a child module of `device_ctl.rs`), and the call's
+thread checks live in `crates/flare/src/ctl_device.rs` (a child module of `ctl_app.rs`).
+
 ---
 
 ## Docs

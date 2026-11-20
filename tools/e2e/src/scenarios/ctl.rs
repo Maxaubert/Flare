@@ -719,13 +719,26 @@ fn mcp_on(
                 "browser_eval",
                 "browser_point",
                 "browser_state",
+                // Device panel PR 5: listed because `--e2e` has the fake device source.
+                "device_list",
+                "device_boot",
+                "device_shutdown",
+                "device_look",
+                "device_ui",
+                "device_tap",
+                "device_swipe",
+                "device_type",
+                "device_press",
+                "device_launch",
+                "device_install",
+                "device_state",
                 "set_tab_badge",
                 "clear_tab_badge",
                 "set_tab_progress",
                 "clear_tab_progress",
                 "open_remote_session",
             ],
-        format!("tools/list names the eight show tools, the ten browser tools, the four tab tools and the remote session tool ({names:?})"),
+        format!("tools/list names the eight show tools, the ten browser tools, the twelve device tools (the fake under --e2e), the four tab tools and the remote session tool ({names:?})"),
     );
     ctx.ok(
         replies

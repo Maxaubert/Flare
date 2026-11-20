@@ -197,7 +197,9 @@ impl Grant {
     pub fn may_enter(&self, ns: Namespace) -> bool {
         use Namespace as N;
         match self {
-            Grant::Ui => true,
+            // The device tools act on the caller's own tab's panel (rule 1322): the agent's only, never the app's own
+            // interface (the person drives the panel directly).
+            Grant::Ui => ns != N::Device,
             // A remote link reaches its own namespace and nothing else: not even `hello` or `tabs.list`, so nothing the
             // pipe offers rides on it (rule 276).
             Grant::Remote => ns == N::Remote,
@@ -221,6 +223,9 @@ impl Grant {
                 // decision, remote sessions PR 5). The tab it opens takes no typing from it: `remote.*`, `shell.input`
                 // and `tabs.input` stay closed to it (rule 299).
                 N::Open => true,
+                // The device panel's tools (issue #248 PR 5): the agent's own, on its own tab's panel only (rule
+                // 1322). No permission maps to it, so no mod reaches it.
+                N::Device => true,
                 // The plugin surfaces and a plugin's store are a plugin's; reading a session is not the agent's, and
                 // typing into a shell is never the agent's (rules 2 and 188).
                 // How agent icons move is a plugin's choice (`agent-looks`), never the agent's own. Filling a login
@@ -376,7 +381,12 @@ mod tests {
             }
         }
         for m in Method::ALL {
-            assert!(Grant::Ui.may_call(m));
+            assert_eq!(
+                Grant::Ui.may_call(m),
+                m.namespace() != Namespace::Device,
+                "{}",
+                m.name()
+            );
         }
     }
 
@@ -652,6 +662,17 @@ mod tests {
                         );
                         continue;
                     }
+                    // The agent's only; no permission name stands for it (rule 1322).
+                    Namespace::Device => {
+                        assert_eq!(
+                            g.may_call(m),
+                            matches!(g, Grant::Agent { .. }),
+                            "{} {}",
+                            g.kind(),
+                            m.name()
+                        );
+                        continue;
+                    }
                     // The remote link and the app reach it; no manifest permission stands for it.
                     Namespace::Remote => {
                         assert_eq!(
@@ -690,9 +711,11 @@ mod tests {
                 let g = mod_with(&[p]);
                 let want = match ns {
                     Namespace::Hello | Namespace::Tabs | Namespace::Storage => true,
-                    Namespace::AgentTools | Namespace::Ui | Namespace::Remote | Namespace::Open => {
-                        false
-                    }
+                    Namespace::AgentTools
+                    | Namespace::Ui
+                    | Namespace::Remote
+                    | Namespace::Open
+                    | Namespace::Device => false,
                     _ => ns.permission() == Some(p),
                 };
                 assert_eq!(g.may_enter(ns), want, "{ns:?} with {}", p.name());
@@ -749,6 +772,7 @@ mod tests {
             Namespace::AgentTools,
             Namespace::Remote,
             Namespace::Open,
+            Namespace::Device,
         ] {
             assert!(!all.may_enter(ns), "{ns:?}");
         }
@@ -783,7 +807,7 @@ mod tests {
             }
         }
         for ns in Namespace::ALL {
-            assert!(Grant::Ui.may_enter(ns), "{ns:?}");
+            assert_eq!(Grant::Ui.may_enter(ns), ns != Namespace::Device, "{ns:?}");
         }
     }
 
@@ -1033,5 +1057,66 @@ mod tests {
             .filter(|p| *p != P::Tabs)
             .collect();
         assert!(!mod_with(&rest).may_act_on_any_tab());
+    }
+
+    /// Device panel PR 5 (rule 1322): only the agent grant enters `device`; the app's own interface drives the panel
+    /// directly and never calls the agent's tools.
+    #[test]
+    fn only_the_agent_grant_enters_device() {
+        for g in [Grant::agent(), Grant::Agent { eval: true }] {
+            assert!(g.may_enter(Namespace::Device));
+            for m in Method::ALL
+                .into_iter()
+                .filter(|m| m.namespace() == Namespace::Device)
+            {
+                assert!(g.may_call(m), "{}", m.name());
+                assert!(g.check(m).is_ok());
+            }
+        }
+        for g in [Grant::Ui, Grant::Remote, Grant::Bridge, mod_with(&[])] {
+            assert!(!g.may_enter(Namespace::Device), "{}", g.kind());
+        }
+        // The agent's permission names stay as they were: no name stands for the device tools.
+        assert_eq!(
+            Grant::agent().permission_names(),
+            vec!["panel", "view", "browser", "convo", "decorate"]
+        );
+    }
+
+    /// No permission a plugin can hold, alone or all together, opens `device` (plugins have no device access, rule
+    /// 1322 and decision 7).
+    #[test]
+    fn no_permission_opens_device_for_a_mod() {
+        assert_eq!(Namespace::Device.permission(), None);
+        for p in Permission::ALL {
+            assert!(!mod_with(&[p]).may_enter(Namespace::Device), "{}", p.name());
+            assert!(
+                !v1_mod_with(&[p]).may_enter(Namespace::Device),
+                "{}",
+                p.name()
+            );
+        }
+        let all = mod_with(&Permission::ALL);
+        for m in Method::ALL
+            .into_iter()
+            .filter(|m| m.namespace() == Namespace::Device)
+        {
+            assert!(!all.may_call(m), "{}", m.name());
+            assert_eq!(all.check(m).unwrap_err().code, code::FORBIDDEN);
+        }
+    }
+
+    /// A remote link and the host bridge never reach the device tools: a device never boots for a session on
+    /// another machine (rule 1323).
+    #[test]
+    fn remote_and_host_grants_never_enter_device() {
+        for g in [Grant::Remote, Grant::Bridge] {
+            for m in Method::ALL
+                .into_iter()
+                .filter(|m| m.namespace() == Namespace::Device)
+            {
+                assert!(!g.may_call(m), "{} {}", g.kind(), m.name());
+            }
+        }
     }
 }
