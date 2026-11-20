@@ -81,6 +81,7 @@ use crate::agent_hub::{AgentHub, HubDeps, e2e_sonara_post, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
 use crate::convo_ctl::{ConvoCtl, ConvoMsg, ConvoMsgBox, Want};
 use crate::ctl_app::{CtlOp, CtlRequestBox};
+use crate::device_ctl::{DeviceCtl, DeviceMsg};
 use crate::font_ctl::FontCtl;
 use crate::help_ctl::{HelpCtl, next_open_seq};
 use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
@@ -197,11 +198,14 @@ pub enum UiMsg {
     Reopen(app_keys_glue::Reopen),
     /// A worker listed a folder on a machine for the remote folder browser (rule 1282), or said why not.
     RemoteFolder(crate::remote_folder::FolderMsg),
+    /// The device panel's source has events waiting, or a boot's second passed (issue #248).
+    Device(DeviceMsg),
 }
 
 mod app_keys_glue;
 mod ask_glue;
 mod bar_glue;
+mod device_glue;
 mod install_glue;
 mod mods_glue;
 mod notice_glue;
@@ -671,6 +675,8 @@ pub struct AppCtl {
     convo: ConvoCtl,
     /// The web panel's browser (made by the first web panel; nothing exists while none is open).
     web: WebCtl,
+    /// The device panel (issue #248): offered only where a device source exists (the fake under `--e2e`).
+    device: DeviceCtl,
     /// The downloads of web pages waiting for a yes (S6).
     downloads: crate::download_ask::DownloadQueue,
     /// The app links of web pages waiting for the person's Open (rule 252).
@@ -1067,6 +1073,13 @@ impl AppCtl {
         panels.set_double_click(deps.term.dbl);
         let convo = ConvoCtl::new(Arc::clone(&deps.post));
         let web = WebCtl::new(Arc::clone(&deps.post));
+        // The device panel (PR 4a): the fake source under `--e2e` and in tests only, so a release shows nothing new.
+        let device = DeviceCtl::new(
+            Arc::clone(&deps.post),
+            Rc::clone(&deps.clock),
+            deps.e2e.then(flare_device::fake::FakeSource::default),
+        );
+        panels.set_device_offered(device.offered());
         Self::push_rainbow(app, &marks);
         let frame_clock: Rc<dyn Fn() -> f64> = {
             let clock = Rc::clone(&deps.clock);
@@ -1192,6 +1205,7 @@ impl AppCtl {
             panels,
             convo,
             web,
+            device,
             downloads: crate::download_ask::DownloadQueue::default(),
             app_asks: crate::app_ask::AppAsks::default(),
             app_launcher: Rc::new(crate::app_ask::RecordingLauncher::default()),
@@ -1672,6 +1686,30 @@ impl AppCtl {
             .page_find_step(false));
         bind!(app, rc, on_panel_web_find_close, |c| c.page_find_close());
         bind!(app, rc, on_overlay_changed, |c| c.web_moved());
+        // The device panel (issue #248): the pointer, the wheel and the keys over the picture, the header and the
+        // setup state's button.
+        bind!(
+            app,
+            rc,
+            on_panel_device_pointer,
+            |c, k: i32, x: f32, y: f32, b: i32, m: i32| c.device_pointer(k, x, y, b, m)
+        );
+        bind!(
+            app,
+            rc,
+            on_panel_device_wheel,
+            |c, x: f32, y: f32, dx: f32, dy: f32, _m: i32| c.device_wheel(x, y, dx, dy)
+        );
+        bind!(
+            app,
+            rc,
+            on_panel_device_key,
+            |c, d: bool, t: slint::SharedString, m: i32, r: bool| c.device_key(d, &t, m, r)
+        );
+        bind!(app, rc, on_panel_device_act, |c, a: SharedString| c
+            .device_act(&a));
+        bind!(app, rc, on_panel_device_setup, |c| c.device_setup());
+        bind!(app, rc, on_panel_device_pick, |c, i: i32| c.device_pick(i));
     }
 
     /// The terminal controller over this window: its closures reach the window only through a weak
@@ -2413,6 +2451,8 @@ impl AppCtl {
             return;
         }
         self.minimised = minimised;
+        self.device.set_minimised(minimised);
+        self.refresh();
         let now = self.now();
         self.clock.pause.borrow_mut().set_minimized(minimised, now);
         self.update_clock();
@@ -3810,6 +3850,7 @@ impl AppCtl {
         self.push_bar(app);
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.sync_device(app, front.as_deref());
         self.push_draw_arrow(app, front.as_deref());
         self.md_page_fallback(app);
         self.sync_bar_views(app);
@@ -4943,6 +4984,11 @@ impl AppCtl {
         if !self.key_from_page && self.page_has_keys() {
             return KeyOutcome::Slint;
         }
+        // The device panel has the keys: a plain key goes to the device (the panel's own scope); a chord with Cmd or
+        // Ctrl stays the window's.
+        if !ev.ctrl && !ev.meta && self.app().is_some_and(|a| a.get_panel_device_focused()) {
+            return KeyOutcome::Slint;
+        }
         let mut ctx = self.key_context();
         // A text field of the window (the find bar, the sidebar find box, the help search) or the panel has the
         // keys: Ctrl+C and Ctrl+D there are the field's or the panel's (a copy), never the agent guard's.
@@ -5594,6 +5640,7 @@ impl AppCtl {
             UiMsg::Picked(None) => {}
             UiMsg::Reopen(r) => self.reopened(r),
             UiMsg::RemoteFolder(m) => self.rfolder_answered(m),
+            UiMsg::Device(m) => self.device_msg(m),
             UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::Machines(list) => self.set_machines(list),
             UiMsg::HostConvo(read) => self.on_host_convo(read),
@@ -6070,6 +6117,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     mod ctl_socket_tests;
+    mod device_input_tests;
     mod key_release_tests;
     mod md_tests;
     mod mods_tests;

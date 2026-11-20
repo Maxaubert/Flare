@@ -217,15 +217,15 @@ release build went from about 9 minutes from scratch to about 5. Batch several f
 
 ### Which scenarios run on a Mac
 
-72 of the table's scenarios run on the macOS runner: spawn, hookSmoke, cwdLabel, indicator, attention, agentHooks,
+73 of the table's scenarios run on the macOS runner: spawn, hookSmoke, cwdLabel, indicator, attention, agentHooks,
 agentDiag, theme, newTabFolder, caretHold, mouseReport, clickCaret, selectionEdit, findKey, scrollbar, paste,
 tabDragFirst, tabWidth, tabLooks, tabSwitch, indicatorStyles, verticalTabs, windowColoursSave, tooltips, manyTabs,
 backgroundWork, agentKeys, cogToggle, accentAsk, titleBar, settingsPage, restore, handoff, quitManyShells, lastTab,
 powerlineGlyphs, markerLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
 reviewKeys, dropAndMenu, helpPanel, options, diagLog, settingsLook, settingsSearch, settingsKeys, themeEditorLive,
 themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, seeThrough, themeCards, edges, accent,
-exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, ctlChannel, mcpRoundTrip,
-convoPanels, questionToast.
+exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, ctlChannel,
+mcpRoundTrip, convoPanels, questionToast.
 
 Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
 
@@ -483,3 +483,24 @@ cargo run -p flare-e2e --bin flare-e2e --release --target-dir <TARGET> -- --exe 
 ## The panel splitter (Surfaces, round 9)
 
 `tools/e2e/src/scenarios/panel_split.rs`: `panelSplitter`, at 100 and 225 percent, GPU renderer, its own world and profile, offscreen. It opens a picture and then a long-lined text file in the panel and drives the splitter with real pointer events (`Pointer` Down, Move, Up and Leave): a slow pull wider, a quick pull narrower, past the widest limit and back, past the narrowest and back, a shaky hand. After every step it reads `panel.state` (`visible_w`, `drag_w`, `splitting`, `grid_phys_w`, `grid_fits`) and `ui.rect` (`splitter`, `panel`, `grid`); at a few steps and after the release it takes a picture of the window and reads pixels (the picture's colour in its box, lit pixels in the text body, the strip beside a narrower slot against the terminal's ground). One check per drag lists every invariant that failed (rule 218). A last drag leaves the window (`Leave`): the grab is let go, a later move and release drag nothing (rule 219). The probes gained `wrap_cols`, `wrapped`, `wrap_on`, `wrap_runs`, `splitting`, `visible_w`, `drag_w` and `grid_fits` on `panel.state` and the `ui.rect` name `panel-wrap` (the header's wrap button).
+
+## Device panel (issue #248)
+
+`tools/e2e/src/scenarios/device.rs`: `devicePanel` (device panel PR 4a), its own world and profile, offscreen, on the
+Windows and the Mac jobs (the panel is Slint, not CEF, so the `WEB` gate does not apply). Under `--e2e` the app's device
+source is the fake (`flare_device::fake::FakeSource`, one shut-down iPhone 18 Pro, pictures at 1x on the CPU path); no
+simulator is touched. The scenario opens the panel with the hook's `DeviceOpen {target}` (the stand-in for the panel
+menu's Device entry, PR 4b; `target: null` opens the device list), checks that the panel says "is shut down" with Boot
+and boots nothing, presses Boot with a real click, waits for frames handed to Slint, clicks the picture's middle and
+reads the fake's touch start and end at the screen's middle in device points, clicks the letterbox's bar (nothing sent),
+sends `DeviceUserInput` (the stand-in for the person's press, the takeover of rule 1320) and closes the panel with the
+toggle chord.
+
+The probe `device.state` answers what the front device panel shows: `offered`, `tab`, `state` (`no_xcode`,
+`not_set_up`, `no_runtime`, `reading`, `choose`, `booting`, `live`, `shut_down`, `failed`), `target`, `attached`,
+`paused`, `driver`, `screen` (points, current orientation), `frames_shown` (pictures handed to Slint: frames are read
+here, not from pixels, since a Mac e2e window may count as occluded, rule 1117), `person_inputs`, `takeovers`,
+`devices`, `inputs` (every input the fake was given, touches in device points), the window's `kind`, `title`, `line`,
+`button`, `button_shown`, `slow`, `still`, `foot`, `controls`, `has_frame`, and the rects `box`, `picture` and
+`button_rect` in css px.
+

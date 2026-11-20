@@ -38,6 +38,7 @@ pub mod chrome;
 pub mod closeask;
 pub mod convo;
 pub mod ctl;
+pub mod device;
 pub mod diag;
 #[cfg(windows)]
 pub mod dictation;
@@ -583,6 +584,12 @@ pub const ALL: &[Scenario] = &[
         group: "panel",
         run: panel::panel_image,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "devicePanel",
+        group: "panel",
+        run: device::device_panel,
+        limit_secs: 120,
     },
     Scenario {
         name: "panelSplitter",

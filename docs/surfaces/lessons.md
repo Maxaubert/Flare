@@ -794,3 +794,16 @@ A review by many agents (flag, verify, then fix) of the newest Surfaces work: th
 ### By hand, not machine-tested
 
 - A real WebView2 page during a real drag: that a bounds change of position alone does not reflow, and that the page clips cleanly at the window's right edge. The tests use the fake browser.
+
+## Device panel, PR 4a (the person's half, fake source), 2026-11-20
+
+### By hand, not machine-tested
+
+- The look of the header buttons, the setup states, the still badge and the slow mark on a real screen at 100% and
+  200%, light and dark (the tests read the layout and a few pixels in the software renderer).
+- A trackpad's scroll over the picture as a drag (its momentum phase is not told apart in PR 4a: a long fling sends a
+  drag per event), and the Alt-drag pinch on a real simulator (PR 4b).
+- Keys typed into the focused panel on a Mac keyboard layout other than US (the keymap is US, rule 1314): what a
+  Norwegian layout's keys send.
+- The device panel itself is not offered outside `--e2e` until PR 4b: none of this is visible in a release build.
+

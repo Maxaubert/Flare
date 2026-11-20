@@ -1297,3 +1297,20 @@ research `research/flare/2026-11-19-ios-simulator-input.md` (spikes S1 to S6).
 - 2026-11-19, device PR 3: the touch probe app (`tools/device-probe/TouchProbe-App.swift`, moved in from spike S1)
   draws its barcode band as wide as the short side and centred, so in landscape it stays clear of the Dynamic Island,
   which hid a block at the band's end in the first landscape run.
+- 2026-11-20, device PR 4a: the header is mockup A (`docs/superpowers/specs/2026-11-19-device-panel-mockup.html`):
+  Home, Lock, Rotate left, Rotate right and More as the panel's own header buttons, left of the close, the way the text
+  panel shows its wrap button. Picked by Claude under Max's delegation over B (a pill floating over the picture, which
+  hides the screen the agent's indicators are drawn on) and C (a rail that takes width from an already narrow picture).
+- 2026-11-20, device PR 4a: the device kind is drawn only where a source is offered (`PanelCtl::set_device_offered`):
+  the fake under `--e2e` and in tests now, the simulator from PR 4b. Why: PR 4a ships alone, so a release build must
+  show nothing new, and a `panels.json` with a device panel must stay in the file there (rule 1316).
+- 2026-11-20, device PR 4a: a device panel with no device chosen has the fixed target `device` (the list), like
+  Changes' fixed target; it is never stored. The picking of a row sets the panel's target to `sim/<udid>`.
+- 2026-11-20, device PR 4a: the CPU path turns the portrait picture to the interface's orientation in Rust when it
+  copies it into the `SharedPixelBuffer` (the copy is made anyway), so Slint shows an upright image and the letterbox
+  needs only the oriented point size. PR 4b's GPU path turns it when it draws.
+- 2026-11-20, device PR 4a: one driver per device: the first tab whose open panel shows it; another tab shows it view
+  only. The driver lets go when its panel closes or shows another device, so the next tab that shows it drives it.
+- 2026-11-20, device PR 4a: the booting line's seconds come from a 1 s `timer_registry` timer (`device.boot`) that runs
+  only while the front panel shows a boot; the ring beside it is still. Why: the panel files run no animation or timer of
+  their own (`the_panel_files_use_no_animation_and_no_timer`).

@@ -18,6 +18,7 @@ pub mod agent_misc;
 pub mod chrome;
 pub mod closeask;
 pub mod core;
+pub mod device;
 pub mod diag;
 pub mod dictation;
 pub mod dpi;
@@ -119,6 +120,7 @@ pub fn register_all(r: &mut ProbeRegistry) {
     update::register(r);
     vertical::register(r);
     web::register(r);
+    device::register(r);
     surf7::register(r);
     mods::register(r);
 }

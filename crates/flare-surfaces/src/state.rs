@@ -51,6 +51,11 @@ pub struct TabPanels {
 }
 
 impl TabPanels {
+    /// Every tab's panel, in no order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &TabPanel)> {
+        self.by_tab.iter()
+    }
+
     pub fn get(&self, tab: &str) -> Option<&TabPanel> {
         self.by_tab.get(tab)
     }
