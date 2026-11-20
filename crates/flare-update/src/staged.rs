@@ -546,6 +546,7 @@ fn run_lock_path(layout: &Layout, commit: &str) -> PathBuf {
 
 /// Removes the run locks of other builds (one held by a run still up stays on Windows; nothing waits on it).
 fn sweep_run_locks(layout: &Layout, keep: Option<&Path>) {
+    // sync-ok: at start, under the install's lock; one small folder
     let Ok(dir) = fs::read_dir(layout.root()) else {
         return;
     };
