@@ -4982,6 +4982,31 @@ the cause is in the window server or the display. Held by
 `the_pulse_watch_reads_the_grid_box_where_the_image_is_drawn` (`ui_tests/app.rs`) and
 `metal_layer_reads_its_drawable_against_its_bounds` (`flare-win/tests/appkit.rs`).
 
+1327. **A plugin helper's restart runs in a loop on its thread, never by recursion, and the ended child is dropped
+before the next start.** Audit 2026-11-18 (issue #273, finding 6). `wait_for_end` called `launch`, which called
+`wait_for_end` again, on the same thread. Each restart kept one more stack frame pair and the ended `Child` (a process
+and a thread handle). The policy allows 3 ends in 5 minutes, so a helper that ends every few minutes restarts forever,
+and over hours the 2 MB thread stack would overflow and Flare would abort. Now `launch` loops over `launch_once`, and
+`wait_for_end` drops the child and answers the next start number. Held by
+`a_restart_runs_on_the_same_stack_depth_and_does_not_recurse` (`flare-mods/src/helper.rs`, Windows): every `Started`
+note of 6 restarts comes from one thread at one stack depth.
+
+1328. **A quit or a session end writes every plugin's storage change that is still waiting.** Audit 2026-11-18 (issue
+#273, finding 32). `storage.set` answers at once and a writer thread writes later, at most every 500 ms. A second set
+inside that spacing waited on a sleeping writer, and `flush_stores` never flushed the plugins' storage, so a quit
+inside the window lost it. Now `Storage::flush_all` writes every store with a change, and `flush_stores` (the quit and
+the logoff) calls it. A per-store io lock covers taking the state and writing it, for the writer and the flush, so an
+older write never lands over a newer one and they never share the `.tmp` file. Held by
+`a_flush_writes_a_set_still_waiting_for_its_spacing_at_once` (`flare-mods/src/storage.rs`) and
+`a_session_end_flushes_the_panels_and_plugin_storage_files_too` (`flare/src/window.rs`).
+
+1329. **Install's folders inside a stage are named outside the id alphabet (`_zip`, `_replaced`).** Audit
+2026-11-18 (issue #273, finding 35). The staged plugin sits at `<stage>\<id>`, beside the unpacked zip
+(`<stage>\zip`) and the copy an update moves aside (`<stage>\replaced`). A plugin with id `replaced` could never be
+updated (its old copy could not move onto its own new copy), and a plugin with id `zip` in a top folder could never be
+installed. `_` is not allowed in an id, so no id meets them. Not led by a dot: on macOS the aside copy goes to the
+Trash, where Finder hides such names. Held by `the_staging_names_never_match_a_plugin_id` (`flare-mods/src/install.rs`).
+
 ## Device panel (2026-11-19)
 
 Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
