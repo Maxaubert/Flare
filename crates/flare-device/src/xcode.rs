@@ -1,9 +1,12 @@
 //! Which Xcode the device panel uses (spec "Setup", state 2). Flare picks it on a worker and starts the sim host with
 //! `DEVELOPER_DIR` set to it, so the sim host's `simctl` calls and its dlopen use one Xcode.
 //!
-//! The order: `xcode-select -p` when it points inside an `.app`; else the newest `Xcode*.app` found (in
-//! `/Applications`, `~/Applications`, and by Launch Services for `com.apple.dt.Xcode`). The Command Line Tools alone
-//! count as no Xcode (they have no simulator). Flare never runs `xcode-select -s` (it needs admin).
+//! The order: `xcode-select -p` when it points inside an `.app`; else the newest `Xcode*.app` at the top of
+//! `/Applications`. Nothing else is looked at (rule 1325): not `~/Applications`, not Spotlight, so an `Xcode.app`
+//! someone left in Downloads is never a candidate. Every candidate must also be signed by Apple
+//! ([`crate::macos::codesign`]); one that is not is skipped with a log line, and with none left Flare has no Xcode.
+//! The Command Line Tools alone count as no Xcode (they have no simulator). Flare never runs `xcode-select -s` (it
+//! needs admin).
 //!
 //! [`pick`] is pure; [`find`] (macOS) asks the system, BLOCKING, on a worker (rule 34). Used by Flare's side in PR 4b.
 
@@ -43,8 +46,21 @@ pub fn app_of(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The folder whose top-level `Xcode*.app` apps are candidates (rule 1325).
+pub const APPLICATIONS: &str = "/Applications";
+
+/// True for `/Applications/Xcode*.app`, at the top of the folder (never one inside another folder).
+pub fn in_applications(app: &Path) -> bool {
+    app.parent() == Some(Path::new(APPLICATIONS))
+        && app
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("Xcode") && n.ends_with(".app"))
+}
+
 /// The Xcode to use. `selected` is what `xcode-select -p` printed (None when it printed nothing); `found` are the
-/// Xcode apps found, each with its version (the selected app among them when it was readable).
+/// Xcode apps found, each with its version (the selected app among them when it was readable). Only the selected app
+/// and `/Applications/Xcode*.app` are ever picked (rule 1325); any other path in `found` is ignored.
 pub fn pick(selected: Option<&Path>, found: &[Xcode]) -> Option<Xcode> {
     if let Some(app) = selected.and_then(app_of)
         && let Some(x) = found.iter().find(|x| x.app == app)
@@ -53,6 +69,7 @@ pub fn pick(selected: Option<&Path>, found: &[Xcode]) -> Option<Xcode> {
     }
     found
         .iter()
+        .filter(|x| in_applications(&x.app))
         .filter_map(|x| Version::parse(&x.version).map(|v| (v, x)))
         .max_by(|(a, xa), (b, xb)| a.cmp(b).then_with(|| xb.app.cmp(&xa.app)))
         .map(|(_, x)| x.clone())
@@ -75,20 +92,21 @@ pub fn version_of(app: &Path) -> Option<String> {
     plist_string(&xml, "CFBundleShortVersionString")
 }
 
-/// Asks this Mac which Xcode to use. BLOCKING (`xcode-select`, `mdfind` and file reads, each with a limit): call it
-/// on a worker, never on the UI thread (rule 34).
+/// Asks this Mac which Xcode to use. BLOCKING (`xcode-select`, file reads and the signature checks, each bounded):
+/// call it on a worker, never on the UI thread (rule 34). Candidates are the `xcode-select` app and
+/// `/Applications/Xcode*.app` only; each must pass [`crate::macos::codesign::xcode_app`] and its SimulatorKit
+/// [`crate::macos::codesign::apple_framework`], or it is skipped with a warning (rule 1325).
 #[cfg(target_os = "macos")]
 pub fn find() -> Option<Xcode> {
     use std::time::Duration;
 
     use crate::macos::simctl::run;
 
-    let limit = Duration::from_secs(5);
     let selected = run(
         // sync-ok: the Xcode pick's worker, at most 5 s
         std::process::Command::new("/usr/bin/xcode-select").arg("-p"),
         None,
-        limit,
+        Duration::from_secs(5),
     )
     .ok()
     .map(|o| PathBuf::from(String::from_utf8_lossy(&o).trim()))
@@ -97,35 +115,12 @@ pub fn find() -> Option<Xcode> {
     if let Some(app) = selected.as_deref().and_then(app_of) {
         apps.push(app);
     }
-    let mut dirs = vec![PathBuf::from("/Applications")];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join("Applications"));
-    }
-    for d in dirs {
-        let Ok(rd) = std::fs::read_dir(&d) else {
-            continue; // sync-ok: the Xcode pick's worker
-        };
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("Xcode") && name.ends_with(".app") {
-                apps.push(e.path());
-            }
-        }
-    }
-    // Launch Services' list of every app with Xcode's identifier (an Xcode kept elsewhere).
-    if let Ok(o) = run(
-        // sync-ok: the Xcode pick's worker, at most 5 s
-        std::process::Command::new("/usr/bin/mdfind")
-            .arg("kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"),
-        None,
-        limit,
-    ) {
+    if let Ok(rd) = std::fs::read_dir(APPLICATIONS) {
+        // sync-ok: the Xcode pick's worker
         apps.extend(
-            String::from_utf8_lossy(&o)
-                .lines()
-                .map(str::trim)
-                .filter(|l| l.ends_with(".app"))
-                .map(PathBuf::from),
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| in_applications(p)),
         );
     }
     apps.sort();
@@ -134,10 +129,28 @@ pub fn find() -> Option<Xcode> {
         .into_iter()
         .filter_map(|app| {
             let version = version_of(&app)?;
+            if let Err(e) = verify(&app) {
+                log::warn!("device panel: skipping Xcode {version}: {e}");
+                return None;
+            }
             Some(Xcode { app, version })
         })
         .collect();
     pick(selected.as_deref(), &found)
+}
+
+/// The Xcode app at `app` and the SimulatorKit in it are Apple's (rule 1325). BLOCKING (it reads the code).
+#[cfg(target_os = "macos")]
+pub fn verify(app: &Path) -> Result<(), String> {
+    use crate::macos::{codesign, load};
+
+    codesign::xcode_app(app)?;
+    let dev = app.join("Contents").join("Developer");
+    let simkit = load::simkit_paths(&dev)
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| format!("SimulatorKit missing in {}", app.display()))?;
+    codesign::apple_framework(&simkit)
 }
 
 #[cfg(test)]
@@ -197,5 +210,45 @@ mod tests {
         );
         assert_eq!(plist_string(plist, "ProductBuildVersion"), None);
         assert_eq!(plist_string("<key>A</key><integer>1</integer>", "A"), None);
+    }
+
+    /// This Mac's Xcode (when `/Applications` has one) is found and passes the signature checks.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn find_takes_this_macs_signed_xcode() {
+        let any = std::fs::read_dir(APPLICATIONS)
+            .map(|rd| rd.flatten().any(|e| in_applications(&e.path())))
+            .unwrap_or(false);
+        if !any {
+            eprintln!("skipped: no Xcode in /Applications");
+            return;
+        }
+        let x = find().expect("a signed Xcode in /Applications is found");
+        verify(&x.app).unwrap();
+    }
+
+    /// Rule 1325: an Xcode anywhere but the top of `/Applications` is never picked by version, however new; the
+    /// `xcode-select` app (chosen by an admin) still is.
+    #[test]
+    fn pick_ignores_xcodes_outside_applications() {
+        let found = [
+            x("/Applications/Xcode.app", "27.2"),
+            x("/Users/max/Downloads/Xcode.app", "99.0"),
+            x("/Users/max/Applications/Xcode.app", "98.0"),
+            x("/Applications/Old/Xcode.app", "97.0"),
+            x("/Volumes/Ext/Xcode-beta.app", "96.0"),
+            x("/Applications/NotXcode.app", "95.0"),
+        ];
+        assert_eq!(pick(None, &found), Some(found[0].clone()));
+        let clt = Path::new("/Library/Developer/CommandLineTools");
+        assert_eq!(pick(Some(clt), &found), Some(found[0].clone()));
+        assert_eq!(pick(None, &found[1..]), None);
+        let sel = Path::new("/Volumes/Ext/Xcode-beta.app/Contents/Developer");
+        assert_eq!(pick(Some(sel), &found), Some(found[4].clone()));
+        assert!(in_applications(Path::new("/Applications/Xcode-26.app")));
+        assert!(!in_applications(Path::new("/Applications/Old/Xcode.app")));
+        assert!(!in_applications(Path::new(
+            "/Applications/Xcode.app/Contents"
+        )));
     }
 }
