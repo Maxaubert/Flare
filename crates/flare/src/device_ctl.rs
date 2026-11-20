@@ -72,6 +72,13 @@ pub const IDLE_TICK: &str = "device.idle";
 /// The sim host stops this long after the last device panel goes (spec "Parts").
 pub const IDLE_MS: u64 = 2 * 60 * 1000;
 
+/// The timer that reads the list again while Xcode still needs its setup (open check 5).
+pub const RELIST_TICK: &str = "device.relist";
+
+/// While Xcode still needs its first launch or licence, the list is read again at most this often (never in a loop:
+/// each failed list's answer refreshes the window, which would ask for the list at once).
+pub const NOT_SET_UP_RETRY_MS: u64 = 5_000;
+
 /// The words `simctl` uses when Xcode still needs its first launch or its licence (open check 5): the list fails with
 /// one of them, and the panel then says "Open Xcode once to finish its setup."
 const NOT_SET_UP_WORDS: &[&str] = &[
@@ -505,6 +512,8 @@ pub struct DeviceCtl {
     listing: bool,
     /// The list could not be read: why (the panel says it and offers Try again; nothing is dropped meanwhile).
     list_error: Option<String>,
+    /// Xcode still needs its setup: the list is read again no sooner than this (ms on the clock).
+    relist_at: Option<u64>,
     pending: HashMap<ReqId, Pending>,
     devs: HashMap<Target, Dev>,
     tabs: HashMap<String, TabDev>,
@@ -648,6 +657,7 @@ impl DeviceCtl {
             devices: None,
             listing: false,
             list_error: None,
+            relist_at: None,
             pending: HashMap::new(),
             devs: HashMap::new(),
             tabs: HashMap::new(),
@@ -828,6 +838,7 @@ impl DeviceCtl {
         self.devs.clear();
         self.devices = None;
         self.listing = false;
+        self.relist_at = None;
         self.broken = None;
     }
 
@@ -914,7 +925,12 @@ impl DeviceCtl {
             self.press = None;
         }
         // The list is read once a device panel exists (on a worker for the simulator).
-        if !list.is_empty() && self.devices.is_none() && !self.listing && self.list_error.is_none()
+        let now = self.now();
+        if !list.is_empty()
+            && self.devices.is_none()
+            && !self.listing
+            && self.list_error.is_none()
+            && self.relist_at.is_none_or(|t| now >= t)
         {
             self.list();
         }
@@ -1126,14 +1142,24 @@ impl DeviceCtl {
                         if self.xcode == Xcode::NotSetUp {
                             self.xcode = Xcode::Ready;
                         }
+                        self.relist_at = None;
                     }
                     (Pending::List, Ok(_)) => self.listing = false,
                     (Pending::List, Err(e)) => {
                         self.listing = false;
                         log::warn!("device list: {}", e.message);
                         if not_set_up(&e.message) {
-                            // Open check 5: simctl asks for Xcode's first launch or its licence.
+                            // Open check 5: simctl asks for Xcode's first launch or its licence. The list is read
+                            // again in a while (the person may finish the setup), never at once in a loop.
                             self.xcode = Xcode::NotSetUp;
+                            self.relist_at = Some(self.now() + NOT_SET_UP_RETRY_MS);
+                            let post = self.post.clone();
+                            crate::timer_registry::set(
+                                RELIST_TICK,
+                                NOT_SET_UP_RETRY_MS,
+                                false,
+                                move || post(crate::appctl::UiMsg::Device(DeviceMsg::Tick)),
+                            );
                         } else {
                             self.list_error = Some(e.message);
                         }
@@ -2167,6 +2193,49 @@ mod tests {
         );
         assert!(b.forget("00000000-0000-4000-8000-00000000000b"));
         assert!(b.devices.is_empty());
+    }
+
+    /// Open check 5: a list that fails because Xcode needs its setup is not asked again at once. Each answer refreshes
+    /// the window, so an unthrottled relist would run `simctl list` in a loop while the panel is open.
+    #[test]
+    fn a_not_set_up_list_is_read_again_only_after_a_while() {
+        let now = Rc::new(std::cell::Cell::new(1_000u64));
+        let clock = {
+            let now = Rc::clone(&now);
+            Rc::new(move || now.get())
+        };
+        let mut fake = FakeSource::new(vec![
+            flare_device::fake::iphone(
+                "00000000-0000-4000-8000-00000000000a",
+                "iPhone A",
+                DeviceState::Shutdown,
+            )
+            .unwrap(),
+        ]);
+        fake.fail_next(
+            flare_device::job::Fail::Unavailable,
+            "xcrun: error: run xcodebuild -runFirstLaunch to install the required components",
+        );
+        let mut d = DeviceCtl::new(post(), clock, Some(fake));
+        let mut panels = crate::panel_ctl::PanelCtl::new(post());
+        panels.set_device_offered(true);
+        assert!(panels.show("t1", flare_surfaces::PanelKind::Device, CHOOSE));
+        let _ = d.update(&panels, Some("t1"), false, HashMap::new());
+        d.drain();
+        assert_eq!(d.xcode, Xcode::NotSetUp);
+        assert_eq!(d.setup_of("t1").map(|s| s.name()), Some("not_set_up"));
+        // The answer's refresh runs the update again: no new list yet.
+        let _ = d.update(&panels, Some("t1"), false, HashMap::new());
+        d.drain();
+        assert!(d.devices.is_none() && !d.listing, "not read again at once");
+        assert_eq!(d.xcode, Xcode::NotSetUp);
+        // After the retry spacing the list is read again; it works now, so the setup state goes.
+        now.set(1_000 + NOT_SET_UP_RETRY_MS);
+        let _ = d.update(&panels, Some("t1"), false, HashMap::new());
+        d.drain();
+        assert_eq!(d.xcode, Xcode::Ready);
+        assert!(d.devices.as_ref().is_some_and(|l| l.len() == 1));
+        assert!(d.relist_at.is_none());
     }
 
     #[test]
