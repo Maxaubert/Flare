@@ -954,6 +954,49 @@ fn removing_a_computer_that_reaches_this_one_removes_its_key() {
     );
 }
 
+/// Audit #3: when `machines_in.json` cannot be read whole, Remove leaves the key and the file alone and says why.
+#[test]
+fn removing_a_computer_with_a_broken_list_leaves_its_key_and_says_why() {
+    let hub = Arc::new(Hub::default());
+    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
+        id: "mini".into(),
+        name: "Mini".into(),
+        key: parse_public_key(&host_key(), &[ED25519]).unwrap().key,
+        admin: Some(false),
+        ..Default::default()
+    }];
+    let why = "machines_in.json was not changed: it is not valid JSON".to_string();
+    *host.io.broken.lock().unwrap() = Some(why.clone());
+    host.page.page_shown();
+    until(&mut [&mut host], "read", |p| {
+        !p[0].page.info().machines.is_empty()
+    });
+    let notice = |p: &Page| match p.page.sharing().ask() {
+        Some(crate::sharing::SharingAsk::Notice(l)) => Some(l.clone()),
+        _ => None,
+    };
+    assert_eq!(
+        notice(&host).as_deref(),
+        Some(why.as_str()),
+        "shown with the page"
+    );
+    host.page
+        .sharing_button(flare_settings::page::machines::SHARING_PRIMARY);
+    assert!(notice(&host).is_none());
+    host.page.remove(&format!("{INCOMING_PREFIX}mini"));
+    until(&mut [&mut host], "the notice", |p| {
+        p[0].page.sharing().ask().is_some()
+    });
+    assert_eq!(notice(&host).as_deref(), Some(why.as_str()));
+    assert!(
+        host.os.removed_keys.lock().unwrap().is_empty(),
+        "the key stays"
+    );
+    assert_eq!(host.io.list_in().len(), 1);
+    assert_eq!(host.io.saves.load(Ordering::SeqCst), 0);
+}
+
 /// Rule 1260: a computer whose key is in `administrators_authorized_keys` is removed with one elevated script.
 #[test]
 fn removing_a_computer_whose_key_is_in_the_admin_file_asks_once() {

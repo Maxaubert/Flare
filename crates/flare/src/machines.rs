@@ -5,7 +5,9 @@
 //!
 //! Settings > Machines (PR 7, `machines_page`) adds and removes them; a hand edit still works. A machine whose id, host or user is not a plain word is left out when it is read
 //! (no option smuggled into ssh's argv, rule 290); an unknown `kind` reads as no kind and is never written back
-//! (rule 40). Saving writes the whole file at once (`write_atomic`, rule 36). Every read and write is a disk call:
+//! (rule 40). A read that is saved back is strict (`load_machines`, audit #3): a file that cannot be read whole, or that
+//! holds an entry left out, is an error and is never saved over. Saving writes the whole file at once (`write_atomic`,
+//! rule 36). Every read and write is a disk call:
 //! a worker's, never the UI thread's (rule 34).
 
 use flare_tabs::tabs::Os;

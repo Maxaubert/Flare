@@ -5033,9 +5033,11 @@ read, is not JSON, has no `machines` (or `linked_in`) list, or holds an entry Fl
 error that says "<file> was not changed". The real `save` and `save_in` refuse to write over such a file. Add,
 Remove and both pairing sides read with `MachinesIo::load` / `load_in` before they change anything: the host
 refuses before the key goes in, the viewer stops before it sends its key, and Remove reads before the key comes out.
-The page shows the line as a notice when it is shown. Held by
-`a_broken_list_file_is_an_error_and_no_file_is_an_empty_list`, `a_broken_machines_file_is_never_saved_over` and
-`a_broken_list_file_stops_pairing_and_is_not_saved_over`.
+The page shows the line as a notice when it is shown. Only Computer sharing turning off may empty
+`machines_in.json` anyway (`clear_in`): its clean up removes every Flare key by its tag. Held by
+`a_broken_list_file_is_an_error_and_no_file_is_an_empty_list`, `the_real_saves_never_write_over_a_broken_file`,
+`a_broken_machines_file_is_never_saved_over`, `a_broken_list_file_stops_pairing_and_is_not_saved_over` and
+`removing_a_computer_with_a_broken_list_leaves_its_key_and_says_why`.
 
 1338. **A machine Remove whose save fails shows a notice.** Audit 2026-11-21, finding #43 (issue #306).
 `MachinesMsg::Removed` carries `Result<Vec<Machine>, String>`; an error shows as the page's notice, the same way

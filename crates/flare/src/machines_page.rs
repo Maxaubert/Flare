@@ -74,6 +74,11 @@ pub trait MachinesIo: Send + Sync {
     fn save_in(&self, _list: &[Incoming]) -> Result<(), String> {
         Ok(())
     }
+    /// Empties the list when Computer sharing turns off. Its clean up removes every key Flare added by its tag, so
+    /// this one write may replace a file that cannot be read (audit #3).
+    fn clear_in(&self) -> Result<(), String> {
+        self.save_in(&[])
+    }
     /// The systems found for the SSH hosts before (rule 1278), by host. None by default.
     fn known_os(&self) -> HashMap<HostKey, MachineOs> {
         HashMap::new()
@@ -149,6 +154,11 @@ impl MachinesIo for RealMachinesIo {
         // Never over a file that could not be read whole (audit #3): it is the record of the keys added.
         load_incoming(&self.in_file)?;
         flare_settings::atomic::write_atomic(&self.in_file, &incoming_json(list))
+            .map_err(|e| format!("machines_in.json could not be saved: {e}"))
+    }
+
+    fn clear_in(&self) -> Result<(), String> {
+        flare_settings::atomic::write_atomic(&self.in_file, &incoming_json(&[]))
             .map_err(|e| format!("machines_in.json could not be saved: {e}"))
     }
 
@@ -480,7 +490,7 @@ impl MachinesPage {
             let (io, drain) = (Arc::clone(&self.io), self.pairing.drain());
             worker("flare-machines-save", move || {
                 drain();
-                if let Err(e) = io.save_in(&[]) {
+                if let Err(e) = io.clear_in() {
                     log::warn!("{e}");
                 }
             });
@@ -1179,6 +1189,10 @@ pub(crate) mod fake {
             *self.incoming.lock().unwrap() = list.to_vec();
             Ok(())
         }
+        fn clear_in(&self) -> Result<(), String> {
+            self.incoming.lock().unwrap().clear();
+            Ok(())
+        }
         fn known_os(&self) -> HashMap<HostKey, MachineOs> {
             self.known.lock().unwrap().clone()
         }
@@ -1790,6 +1804,48 @@ mod tests {
         assert!(lists.is_empty(), "the window keeps its list");
         assert_eq!(r.page.machines(), [mac()]);
         assert_eq!(r.io.list(), [mac()]);
+    }
+
+    /// Audit #3, on the disk: the real saves refuse to write over a file that cannot be read whole and leave its bytes
+    /// as they were; with no file (a first run) both save. Turning sharing off may still empty machines_in.json.
+    #[test]
+    fn the_real_saves_never_write_over_a_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let io = RealMachinesIo::new(dir.path(), dir.path().to_path_buf(), Some(Vec::new()));
+        let (path, inp) = (
+            crate::machines::machines_file(dir.path()),
+            incoming_file(dir.path()),
+        );
+        let incoming = Incoming {
+            id: "mini".into(),
+            name: "Mini".into(),
+            key: "AAAA".into(),
+            ..Default::default()
+        };
+        // A first run: no files.
+        io.save(&[mac()]).unwrap();
+        io.save_in(std::slice::from_ref(&incoming)).unwrap();
+        assert_eq!(io.load(), Ok(vec![mac()]));
+        assert_eq!(io.load_in(), Ok(vec![incoming.clone()]));
+        // A hand edit with a trailing comma.
+        let broken = r#"{"machines":[{"id":"a","ssh":"a"},]}"#;
+        std::fs::write(&path, broken).unwrap();
+        std::fs::write(&inp, broken).unwrap();
+        assert!(io.load().is_err() && io.load_in().is_err());
+        assert!(
+            io.save(&[])
+                .unwrap_err()
+                .starts_with("machines.json was not changed")
+        );
+        assert!(
+            io.save_in(&[])
+                .unwrap_err()
+                .starts_with("machines_in.json was not changed")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        assert_eq!(std::fs::read_to_string(&inp).unwrap(), broken);
+        io.clear_in().unwrap();
+        assert_eq!(io.load_in(), Ok(Vec::new()));
     }
 
     /// Audit #3: a machines.json that cannot be read whole is never saved over. The page says so when it is shown;
