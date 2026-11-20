@@ -27,9 +27,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "device_agent.rs"]
+mod agent;
+
+pub use agent::{AgentCall, AgentReq, REMOTE_WORDS, Reply};
+use agent::{AgentEvent, AgentWait};
+
 use flare_device::fake::FakeSource;
 use flare_device::geom::{Letterbox, Orientation, Size};
-use flare_device::job::JobError;
 use flare_device::keymap::{self, usage};
 use flare_device::source::{
     Answer, Button, DeviceInfo, DeviceSource, DeviceState, InputState, ReqId, Screen, SourceEvent,
@@ -99,6 +104,8 @@ pub enum DeviceMsg {
     Tick,
     /// The Xcode pick answered (a worker, at startup).
     Xcode(XcodeAnswer),
+    /// The agent's jobs and indicators move on (every 16 ms while one runs or moves, PR 5).
+    AgentTick,
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
@@ -115,6 +122,8 @@ pub enum Woken {
     Nothing,
     Redraw,
     Refresh,
+    /// Only the agent's indicators moved: the window sets them and nothing else (PR 5).
+    Indicators,
 }
 
 /// The simulators Flare booted itself (rule 1319): only these are shut down at quit, also after a crash, since the
@@ -408,6 +417,8 @@ pub enum Effect {
     Drop(String),
     OpenUrl(String),
     OpenXcode,
+    /// The tab's device panel closes (the agent shut its device down, PR 5).
+    Close(String),
 }
 
 /// A request in flight.
@@ -417,6 +428,8 @@ enum Pending {
     Boot(Target),
     Attach(Target),
     Shutdown(Target),
+    /// An agent call waits on it (PR 5).
+    Agent(AgentWait),
 }
 
 /// The newest CPU picture of a device not yet handed to Slint.
@@ -531,10 +544,8 @@ pub struct DeviceCtl {
     press: Option<Press>,
     pushed: Pushed,
     ticking: bool,
-    /// An agent call running in a tab (PR 5 starts them): the person's input ends it with `interrupted`.
-    jobs: HashMap<String, &'static str>,
-    /// Calls the person's input ended, for PR 5 to answer.
-    ended: Vec<(String, JobError)>,
+    /// The agent's calls and its indicators (PR 5, `device_agent.rs`).
+    agent: agent::Agent,
     /// Counters for the `device.state` probe.
     frames_shown: u64,
     person_inputs: u64,
@@ -671,8 +682,7 @@ impl DeviceCtl {
             press: None,
             pushed: Pushed::default(),
             ticking: false,
-            jobs: HashMap::new(),
-            ended: Vec::new(),
+            agent: agent::Agent::default(),
             frames_shown: 0,
             person_inputs: 0,
             takeovers: 0,
@@ -866,10 +876,17 @@ impl DeviceCtl {
 
     pub fn set_minimised(&mut self, on: bool) {
         self.minimised = on;
+        if on {
+            // Rule 1321: the indicators go at once with the window.
+            self.agent_hide_indicators();
+        }
     }
 
     pub fn set_occluded(&mut self, on: bool) {
         self.occluded = on;
+        if on {
+            self.agent_hide_indicators();
+        }
     }
 
     /// The tab whose device panel is on show.
@@ -906,15 +923,30 @@ impl DeviceCtl {
         self.idle(!list.is_empty());
         self.drain();
         let live: HashSet<&str> = list.iter().map(|(t, ..)| t.as_str()).collect();
-        self.tabs.retain(|t, _| live.contains(t.as_str()));
-        self.jobs.retain(|t, _| live.contains(t.as_str()));
+        let closed: Vec<String> = self
+            .tabs
+            .keys()
+            .filter(|t| !live.contains(t.as_str()))
+            .cloned()
+            .collect();
+        for tab in closed {
+            self.tabs.remove(&tab);
+            self.agent_forget_tab(&tab);
+        }
         for (tab, target, _) in &list {
             let t = self.tabs.entry(tab.clone()).or_default();
             if t.target != *target {
-                *t = TabDev {
-                    target: target.clone(),
-                    ..TabDev::default()
-                };
+                let was = std::mem::replace(
+                    t,
+                    TabDev {
+                        target: target.clone(),
+                        ..TabDev::default()
+                    },
+                );
+                // The panel shows another device now: the agent's refs and call on the old one end.
+                if !was.target.is_empty() && was.target != CHOOSE {
+                    self.agent_forget_tab(tab);
+                }
             }
         }
         self.shown = front
@@ -1014,6 +1046,7 @@ impl DeviceCtl {
             }
         }
         self.drain();
+        effects.extend(self.take_effects());
         effects
     }
 
@@ -1143,11 +1176,16 @@ impl DeviceCtl {
                             self.xcode = Xcode::Ready;
                         }
                         self.relist_at = None;
+                        self.agent_event(&AgentEvent::Listed(None));
                     }
                     (Pending::List, Ok(_)) => self.listing = false,
                     (Pending::List, Err(e)) => {
                         self.listing = false;
                         log::warn!("device list: {}", e.message);
+                        self.agent_event(&AgentEvent::Listed(Some(flare_ctl::CtlError::new(
+                            e.fail.code(),
+                            format!("the device list could not be read: {}", e.message),
+                        ))));
                         if not_set_up(&e.message) {
                             // Open check 5: simctl asks for Xcode's first launch or its licence. The list is read
                             // again in a while (the person may finish the setup), never at once in a loop.
@@ -1165,6 +1203,7 @@ impl DeviceCtl {
                         }
                     }
                     (Pending::Attach(t), r) => {
+                        let mut err = None;
                         if let Some(d) = self.devs.get_mut(&t) {
                             d.attaching = false;
                             match r {
@@ -1174,20 +1213,34 @@ impl DeviceCtl {
                                 }
                                 Err(e) => {
                                     log::info!("attach {t}: {}", e.message);
+                                    err = Some(flare_ctl::CtlError::new(
+                                        e.fail.code(),
+                                        e.message.clone(),
+                                    ));
                                     self.fail(&t, e.message);
                                 }
                             }
                         }
+                        self.agent_event(&AgentEvent::Attached(t, err));
                     }
+                    (Pending::Agent(w), r) => self.on_agent_answer(w, r),
                     (Pending::Boot(t), r) => {
                         self.booting.remove(&t);
                         match r {
-                            Err(e) => self.fail(&t, e.message),
+                            Err(e) => {
+                                self.agent_event(&AgentEvent::Booted(
+                                    t.clone(),
+                                    Err(flare_ctl::CtlError::new(e.fail.code(), e.message.clone())),
+                                ));
+                                self.fail(&t, e.message);
+                            }
                             Ok(_) => {
-                                // Flare booted it: shut down at quit (rule 1319), also after a crash.
-                                if self.real.is_some() && self.booted.record(t.udid(), unix_ms()) {
+                                // Flare booted it: shut down at quit (rule 1319), also after a crash; only such a
+                                // device may the agent shut down (rule 1322). The file is the real source's.
+                                if self.booted.record(t.udid(), unix_ms()) && self.real.is_some() {
                                     self.save_booted();
                                 }
+                                self.agent_event(&AgentEvent::Booted(t.clone(), Ok(())));
                                 if let Some(x) = self
                                     .devices
                                     .as_mut()
@@ -1206,6 +1259,7 @@ impl DeviceCtl {
                 }
             }
             SourceEvent::Frames { target, screen, .. } => {
+                self.agent_event(&AgentEvent::NewSession(target.clone()));
                 self.devs.entry(target).or_default().screen = Some(screen);
             }
             SourceEvent::Orientation {
@@ -1239,6 +1293,7 @@ impl DeviceCtl {
                 if let Some(d) = self.devs.get_mut(&target) {
                     d.changed = count;
                 }
+                self.agent_event(&AgentEvent::Changed(target, count));
             }
             SourceEvent::State { target, state } => {
                 if let Some(list) = self.devices.as_mut()
@@ -1249,6 +1304,8 @@ impl DeviceCtl {
                 match state {
                     DeviceState::Booted => {
                         self.booting.remove(&target);
+                        // Booted by someone else meanwhile: a boot call waiting for it answers too.
+                        self.agent_event(&AgentEvent::Booted(target.clone(), Ok(())));
                     }
                     DeviceState::Booting => {
                         let now = self.now();
@@ -1267,12 +1324,19 @@ impl DeviceCtl {
                             d.raw = None;
                             d.input = None;
                         }
+                        if state == DeviceState::Shutdown {
+                            self.agent_event(&AgentEvent::ShutDown(target));
+                        }
                     }
                 }
             }
             SourceEvent::Input { target, state } => {
+                let lost = state == InputState::Lost;
                 if let Some(d) = self.devs.get_mut(&target) {
                     d.input = Some(state);
+                }
+                if lost {
+                    self.agent_event(&AgentEvent::InputLost(target));
                 }
             }
             SourceEvent::Broken(why) => {
@@ -1282,6 +1346,7 @@ impl DeviceCtl {
                     &[("why", V::Str(why.clone()))],
                     0,
                 );
+                self.agent_event(&AgentEvent::Broken(why.clone()));
                 self.broken = Some(why);
             }
         }
@@ -1386,6 +1451,7 @@ impl DeviceCtl {
                 app.set_panel_device_foot("".into());
             }
             self.frames.borrow_mut().show(None);
+            self.push_indicators(app);
             return;
         };
         let Some(setup) = self.setup_of(&tab) else {
@@ -1493,6 +1559,9 @@ impl DeviceCtl {
         app.set_panel_device_slow(if slow { CPU_SLOW } else { "" }.into());
         app.set_panel_device_foot(self.foot(&tab).into());
         app.set_panel_device_controls(live && self.drives(&tab).is_some());
+        let shown = self.frames_shown + self.frames.borrow().frames();
+        self.sample_fps(shown);
+        self.push_indicators(app);
     }
 
     /// The line along the bottom of a live picture: view only, or the touch connection.
@@ -1545,23 +1614,9 @@ impl DeviceCtl {
             return;
         }
         self.person_inputs += 1;
-        if self.jobs.remove(tab).is_some() {
+        if self.agent_takeover(tab) {
             self.takeovers += 1;
-            self.ended
-                .push((tab.to_string(), flare_device::job::Job::interrupted()));
         }
-    }
-
-    /// An agent call runs in the tab (PR 5 starts them; tests use it to see the takeover).
-    #[allow(dead_code)] // PR 5's agent jobs
-    pub fn job_started(&mut self, tab: &str, op: &'static str) {
-        self.jobs.insert(tab.to_string(), op);
-    }
-
-    /// The calls the person's input ended since the last look.
-    #[allow(dead_code)] // PR 5 answers them
-    pub fn take_ended(&mut self) -> Vec<(String, JobError)> {
-        std::mem::take(&mut self.ended)
     }
 
     /// The box's letterbox of the shown device.
@@ -1863,13 +1918,21 @@ impl DeviceCtl {
                 self.on_xcode(a);
                 self.state_changed = true;
             }
+            DeviceMsg::AgentTick => {
+                self.agent_tick();
+            }
         }
         self.drain();
+        if !self.agent.effects.is_empty() {
+            self.state_changed = true;
+        }
         let framed = std::mem::take(&mut self.new_frame);
         if std::mem::take(&mut self.state_changed) {
             Woken::Refresh
         } else if framed {
             Woken::Redraw
+        } else if self.agent.ticking || self.agent.pushed.is_some() {
+            Woken::Indicators
         } else {
             Woken::Nothing
         }
@@ -1961,6 +2024,7 @@ impl DeviceCtl {
             "takeovers": self.takeovers,
             "devices": self.devices.as_ref().map_or(0, Vec::len),
             "inputs": inputs,
+            "agent": self.agent_probe(),
         })
     }
 }

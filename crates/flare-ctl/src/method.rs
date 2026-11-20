@@ -18,6 +18,9 @@ pub const MOD_CALL_TIMEOUT: Duration = Duration::from_secs(40);
 /// Time for the long `remote.*` calls a viewer makes over ssh (`remote.open`, `remote.ls`, `remote.fetch`, remote
 /// sessions PR 2 on): the host starts a shell, lists a folder or reads a file before it answers.
 pub const REMOTE_CALL: Duration = Duration::from_secs(60);
+/// Time for `device.boot` (device panel PR 5): a cold boot answers when the device is booted, up to 120 s, and the
+/// call allows a little more so the answer is Flare's own `busy` rather than the channel's `timeout`.
+pub const DEVICE_BOOT_TIMEOUT: Duration = Duration::from_secs(130);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Method {
@@ -143,6 +146,27 @@ pub enum Method {
     /// `machines.json`, a folder there and an optional Claude session to resume. The agent's (owner decision: no
     /// prompt) and the `flare open --on` command's. The opened tab takes no typing from either (rule 299).
     OpenRemoteSession,
+    /// The devices this Mac can run (device panel, issue #248, PR 5), under `device`: the agent's only (rule 1322).
+    DeviceList,
+    /// Boots a device headless and shows it in the caller's own tab's panel; answers once it is booted.
+    DeviceBoot,
+    /// Shuts down the device in the caller's panel, only one Flare booted, and closes the panel.
+    DeviceShutdown,
+    /// The device's picture (PNG at point size) and its filtered UI tree with refs.
+    DeviceLook,
+    /// The UI tree only.
+    DeviceUi,
+    DeviceTap,
+    DeviceSwipe,
+    DeviceType,
+    /// A hardware button or one key.
+    DevicePress,
+    /// Launches (or brings to front) an installed app.
+    DeviceLaunch,
+    /// Installs a simulator `.app` from the tab's folder or DerivedData.
+    DeviceInstall,
+    /// Booted or not, live or still and why, frames a second, the last takeover.
+    DeviceState,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -190,11 +214,14 @@ pub enum Namespace {
     /// What a caller opens in this Flare for the person (`open.remote`, remote sessions PR 5): the agent's and the
     /// app's. No permission opens it, so no mod or plugin reaches it, and neither does a remote link or the bridge.
     Open,
+    /// The device panel's agent tools (`device.*`, issue #248 PR 5): the agent's only. No permission opens it, so no
+    /// mod or plugin reaches it (rule 1322), and neither does a remote link, the bridge or the app's own UI.
+    Device,
 }
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 21] = [
+    pub const ALL: [Namespace; 22] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -216,6 +243,7 @@ impl Namespace {
         Namespace::Notice,
         Namespace::Remote,
         Namespace::Open,
+        Namespace::Device,
     ];
 
     /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
@@ -229,7 +257,8 @@ impl Namespace {
             | Namespace::Ui
             | Namespace::Storage
             | Namespace::Remote
-            | Namespace::Open => None,
+            | Namespace::Open
+            | Namespace::Device => None,
             Namespace::Decor => Some(Permission::Decorate),
             Namespace::Panel => Some(Permission::Panel),
             Namespace::View => Some(Permission::View),
@@ -252,7 +281,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 64] = [
+    pub const ALL: [Method; 76] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -317,6 +346,18 @@ impl Method {
         Method::RemoteFetch,
         Method::RemotePut,
         Method::OpenRemoteSession,
+        Method::DeviceList,
+        Method::DeviceBoot,
+        Method::DeviceShutdown,
+        Method::DeviceLook,
+        Method::DeviceUi,
+        Method::DeviceTap,
+        Method::DeviceSwipe,
+        Method::DeviceType,
+        Method::DevicePress,
+        Method::DeviceLaunch,
+        Method::DeviceInstall,
+        Method::DeviceState,
     ];
 
     /// The wire name.
@@ -386,6 +427,18 @@ impl Method {
             Method::RemoteFetch => "remote.fetch",
             Method::RemotePut => "remote.put",
             Method::OpenRemoteSession => "open.remote",
+            Method::DeviceList => "device.list",
+            Method::DeviceBoot => "device.boot",
+            Method::DeviceShutdown => "device.shutdown",
+            Method::DeviceLook => "device.look",
+            Method::DeviceUi => "device.ui",
+            Method::DeviceTap => "device.tap",
+            Method::DeviceSwipe => "device.swipe",
+            Method::DeviceType => "device.type",
+            Method::DevicePress => "device.press",
+            Method::DeviceLaunch => "device.launch",
+            Method::DeviceInstall => "device.install",
+            Method::DeviceState => "device.state",
         }
     }
 
@@ -452,6 +505,18 @@ impl Method {
             | Method::RemoteFetch
             | Method::RemotePut => Namespace::Remote,
             Method::OpenRemoteSession => Namespace::Open,
+            Method::DeviceList
+            | Method::DeviceBoot
+            | Method::DeviceShutdown
+            | Method::DeviceLook
+            | Method::DeviceUi
+            | Method::DeviceTap
+            | Method::DeviceSwipe
+            | Method::DeviceType
+            | Method::DevicePress
+            | Method::DeviceLaunch
+            | Method::DeviceInstall
+            | Method::DeviceState => Namespace::Device,
         }
     }
 
@@ -484,6 +549,10 @@ impl Method {
                 REMOTE_CALL
             }
             Namespace::Remote => DEFAULT_TIMEOUT,
+            // A boot waits for the device (up to 120 s); every other device call is as long as a browser call (a
+            // touch may wait 20 s for a cold input connection, a look for the first UI tree after a boot).
+            Namespace::Device if self == Method::DeviceBoot => DEVICE_BOOT_TIMEOUT,
+            Namespace::Device => BROWSER_TIMEOUT,
             _ => DEFAULT_TIMEOUT,
         }
     }
@@ -530,6 +599,7 @@ mod tests {
                 Namespace::Notice => prefix == "notice",
                 Namespace::Remote => prefix == "remote",
                 Namespace::Open => prefix == "open",
+                Namespace::Device => prefix == "device",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
@@ -575,8 +645,8 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 64);
-        assert_eq!(Namespace::ALL.len(), 21);
+        assert_eq!(Method::ALL.len(), 76);
+        assert_eq!(Namespace::ALL.len(), 22);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
         }
@@ -648,5 +718,30 @@ mod tests {
         assert_eq!(Method::ModsCall.timeout(), MOD_CALL_TIMEOUT);
         assert!(MOD_CALL_TIMEOUT > Duration::from_secs(30));
         assert_eq!(Method::ModsTools.timeout(), DEFAULT_TIMEOUT);
+    }
+
+    /// Device panel PR 5: twelve `device.*` methods under their own namespace, no permission, the boot's long time.
+    #[test]
+    fn device_methods_are_named_under_device() {
+        let device: Vec<Method> = Method::ALL
+            .into_iter()
+            .filter(|m| m.namespace() == Namespace::Device)
+            .collect();
+        assert_eq!(device.len(), 12);
+        for m in &device {
+            assert!(m.name().starts_with("device."), "{}", m.name());
+            assert_eq!(Method::parse(m.name()), Some(*m));
+            let want = if *m == Method::DeviceBoot {
+                DEVICE_BOOT_TIMEOUT
+            } else {
+                BROWSER_TIMEOUT
+            };
+            assert_eq!(m.timeout(), want, "{}", m.name());
+        }
+        assert!(DEVICE_BOOT_TIMEOUT > Duration::from_secs(120));
+        assert_eq!(Namespace::Device.permission(), None);
+        for n in ["device", "device.", "device.drive", "device.look.x"] {
+            assert_eq!(Method::parse(n), None, "{n:?}");
+        }
     }
 }

@@ -677,6 +677,13 @@ pub struct AppCtl {
     web: WebCtl,
     /// The device panel (issue #248): offered only where a device source exists (the fake under `--e2e`).
     device: DeviceCtl,
+    /// The control channel's word on whether the agent's `device.*` tools work here (PR 5): kept true by the window
+    /// while the device panel is offered with an Xcode and the window shows (never in a `--start-hidden` run that
+    /// was not raised). `hello` lists the tools by it.
+    device_gate: Option<(
+        Arc<std::sync::atomic::AtomicBool>,
+        Rc<std::cell::Cell<bool>>,
+    )>,
     /// The downloads of web pages waiting for a yes (S6).
     downloads: crate::download_ask::DownloadQueue,
     /// The app links of web pages waiting for the person's Open (rule 252).
@@ -1206,6 +1213,7 @@ impl AppCtl {
             convo,
             web,
             device,
+            device_gate: None,
             downloads: crate::download_ask::DownloadQueue::default(),
             app_asks: crate::app_ask::AppAsks::default(),
             app_launcher: Rc::new(crate::app_ask::RecordingLauncher::default()),
@@ -4525,6 +4533,7 @@ impl AppCtl {
             | CtlOp::BrowserNavigate { .. }
             | CtlOp::BrowserAgent { .. }
             | CtlOp::BrowserPoint { .. }
+            | CtlOp::DeviceAgent { .. }
             | CtlOp::ShowMod { .. }
             | CtlOp::ModTool { .. }
             | CtlOp::Fill { .. }
@@ -5762,6 +5771,8 @@ impl AppCtl {
                         op @ (CtlOp::BrowserAgent { .. } | CtlOp::BrowserPoint { .. }) => {
                             self.ctl_browser_agent(op, req.reply);
                         }
+                        // The agent's device calls (device panel PR 5): the device controller answers them.
+                        op @ CtlOp::DeviceAgent { .. } => self.ctl_device_agent(op, req.reply),
                         // A mini-app or a diagram: answered when the page has loaded (and drawn).
                         op @ CtlOp::ShowApp { .. } => {
                             self.ctl_show_app(op, req.reply, req.deadline);

@@ -1,14 +1,17 @@
 //! The device panel's glue (issue #248, PR 4a and 4b): opening and closing it, `UiMsg::Device`, the person's input over
 //! the picture, the effects the controller asks of the window (a pick, a panel whose device is gone, an opener), the
 //! real simulator's install (the Xcode pick on a worker, the sim host made by the first device panel), the tab menu's
-//! entry and the shutdown at quit.
+//! entry and the shutdown at quit. PR 5: the agent's `device.*` calls (`ctl_device_agent`), on the caller's own tab's
+//! panel only (rule 1322), never in a tab whose session runs on another machine or that this Flare runs hidden for one
+//! (rule 1323).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use flare_surfaces::PanelKind;
 
 use super::*;
-use crate::device_ctl::{CHOOSE, DeviceMsg, Effect, Woken};
+use crate::device_ctl::{AgentCall, CHOOSE, DeviceMsg, Effect, REMOTE_WORDS, Woken};
 
 /// The tab menu's row that opens the device panel (macOS on Apple silicon with Xcode, or the fake under `--e2e`).
 pub const DEVICE_MENU_ROW: &str = "Device panel";
@@ -35,6 +38,32 @@ impl AppCtl {
             let _ = self.device.update(&self.panels, front, splitting, names);
         }
         self.device.push(app);
+        self.sync_device_gate();
+    }
+
+    /// The control channel's device gate (PR 5): `hidden` is the window's "started hidden, not raised yet".
+    pub fn set_device_gate(
+        &mut self,
+        gate: Arc<std::sync::atomic::AtomicBool>,
+        hidden: std::rc::Rc<std::cell::Cell<bool>>,
+    ) {
+        self.device_gate = Some((gate, hidden));
+        self.sync_device_gate();
+    }
+
+    /// The agent's device tools work here while the panel is offered with an Xcode and the window shows. A change is
+    /// published (`device.changed`), so `flare-mcp` lists its tools again.
+    fn sync_device_gate(&mut self) {
+        use std::sync::atomic::Ordering;
+        let Some((gate, hidden)) = &self.device_gate else {
+            return;
+        };
+        let on = self.device.agent_offered() && !hidden.get();
+        if gate.swap(on, Ordering::SeqCst) != on
+            && let Some(events) = &self.ctl_events
+        {
+            events("device.changed", serde_json::json!({"on": on}), None);
+        }
     }
 
     /// Does what the device controller asked; true when a panel changed.
@@ -51,6 +80,12 @@ impl AppCtl {
                 Effect::Drop(tab) => {
                     log::info!("a device panel's device no longer exists: the panel goes");
                     if self.panels.drop_device(&tab) {
+                        changed = true;
+                        self.panel_changed(&tab);
+                    }
+                }
+                Effect::Close(tab) => {
+                    if self.panels.close(&tab) {
                         changed = true;
                         self.panel_changed(&tab);
                     }
@@ -95,8 +130,92 @@ impl AppCtl {
                     app.window().request_redraw();
                 }
             }
+            Woken::Indicators => {
+                if let Some(app) = self.app() {
+                    self.device.push_indicators(&app);
+                }
+            }
             Woken::Nothing => {}
         }
+    }
+
+    /// An agent's `device.*` call (PR 5): checked here against the tab (a local shell tab, its own panel), handed to
+    /// the controller, which answers on `reply` now or later. `device_boot` opens the tab's device panel when it has
+    /// none and shows the device it boots there.
+    pub(super) fn ctl_device_agent(
+        &mut self,
+        op: crate::ctl_app::CtlOp,
+        reply: crate::device_ctl::Reply,
+    ) {
+        use flare_ctl::{CtlError, code};
+        let crate::ctl_app::CtlOp::DeviceAgent { tab, op, cancel } = op else {
+            let _ = reply.send(Err(CtlError::new(code::INTERNAL, "not a device call")));
+            return;
+        };
+        if cancel.is_set() {
+            let _ = reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the caller went away",
+            )));
+            return;
+        }
+        if !self.is_shell_tab(&tab) {
+            let _ = reply.send(Err(CtlError::new(code::NO_TAB, "that tab is closed")));
+            return;
+        }
+        // Rule 1323: a tab whose session runs on another machine, or one a remote viewer follows here, boots nothing.
+        let remote = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .any(|t| t.id == tab && t.remote.is_some())
+            || self
+                .remote_host
+                .as_ref()
+                .is_some_and(|h| h.is_followed(&tab));
+        if remote {
+            let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, REMOTE_WORDS)));
+            return;
+        }
+        if !self.device.offered() {
+            let _ = reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the device panel is not available in this Flare",
+            )));
+            return;
+        }
+        // A boot shows its device in the tab's own panel: one is opened (on the device list) when the tab has none.
+        if matches!(op, crate::device_ctl::AgentReq::Boot { .. }) {
+            let had = self
+                .panels
+                .device_panels()
+                .into_iter()
+                .find(|(t, ..)| *t == tab);
+            let reopen = match had {
+                Some((_, _, true)) => None,
+                // A closed device panel opens again on its own device (the one the tab used last).
+                Some((_, target, false)) => Some(target),
+                None => Some(CHOOSE.to_string()),
+            };
+            if let Some(target) = reopen {
+                if self.panels.show(&tab, PanelKind::Device, &target) {
+                    self.panel_changed(&tab);
+                }
+                self.refresh();
+            }
+        }
+        let label = crate::web_ctl::agent_label(self.agent_named(&tab));
+        self.device.start_agent(AgentCall {
+            tab,
+            req: op,
+            reply,
+            cancel,
+            label,
+        });
+        let effects = self.device.take_effects();
+        self.apply_device(effects);
+        self.refresh();
     }
 
     /// The device panel's ring frames, for the render notifier's weak slot.

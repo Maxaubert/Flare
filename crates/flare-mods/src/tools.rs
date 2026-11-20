@@ -194,7 +194,21 @@ mod tests {
             "set_tab_progress",
             "clear_tab_progress",
             "open_remote_session",
+            // Device panel PR 5: listed on a Mac with Xcode.
+            "device_list",
+            "device_boot",
+            "device_shutdown",
+            "device_look",
+            "device_ui",
+            "device_tap",
+            "device_swipe",
+            "device_type",
+            "device_press",
+            "device_launch",
+            "device_install",
+            "device_state",
         ];
+        assert_eq!(builtin.len(), 36);
         for id in ["notes", "a-b-c", "zzz"] {
             let name = tool_name(id, "show_image");
             assert!(name.starts_with(PREFIX));

@@ -35,6 +35,9 @@ pub const KEY_MS: u64 = 20;
 const DIRECTION_SHARE: f64 = 0.5;
 /// The badge while text is typed.
 pub const TYPING: &str = "Typing...";
+/// How long a job that types waits for the screen after its last key when it is the first key of the device's input
+/// session: the first key took 200 to 690 ms to arrive in spike S1 (255 ms at most in PR 3's bench).
+pub const FIRST_KEY_SETTLE_MS: u64 = 1_000;
 
 /// Why a call failed, in the channel's own words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,6 +194,8 @@ pub struct Job {
     /// What is held down now (sent and not yet let go of), for [`Job::release`].
     finger: Option<(f64, f64)>,
     keys: Vec<u32>,
+    /// How long the job waits for the screen after its last input ([`SETTLE_MS`], or [`FIRST_KEY_SETTLE_MS`]).
+    settle_ms: u64,
 }
 
 fn err(fail: Fail, message: impl Into<String>) -> JobError {
@@ -381,7 +386,21 @@ impl Job {
             badge,
             finger: None,
             keys: Vec::new(),
+            settle_ms: SETTLE_MS,
         })
+    }
+
+    /// The job sends keys (typing, Return, a named key, or a paste's Cmd-V).
+    pub fn types(&self) -> bool {
+        self.queue
+            .iter()
+            .any(|(_, i)| matches!(i, Input::Key(_) | Input::Paste(_)))
+    }
+
+    /// The first key of the device's input session is slow to arrive: the job waits [`FIRST_KEY_SETTLE_MS`] for the
+    /// screen to change after its last input instead of [`SETTLE_MS`].
+    pub fn first_key(&mut self) {
+        self.settle_ms = FIRST_KEY_SETTLE_MS;
     }
 
     /// Where the finger dot goes before the input, once (the window moves the dot there and calls
@@ -425,7 +444,7 @@ impl Job {
                 if self.queue.is_empty() {
                     self.stage = Stage::Settle {
                         base: changed,
-                        until_ms: now_ms + SETTLE_MS,
+                        until_ms: now_ms + self.settle_ms,
                     };
                 }
                 if batch.is_empty() {
@@ -763,5 +782,43 @@ mod tests {
         assert_eq!(k.err().unwrap().fail, Fail::NotFound);
         let k = Job::start(DeviceOp::Press(Press::Key("return".into())), &refs(), PHONE).unwrap();
         assert_eq!(k.badge(), Some("Return"));
+    }
+
+    #[test]
+    fn the_first_key_of_a_session_waits_a_second_for_the_screen() {
+        let typing = DeviceOp::Type {
+            text: "hi".into(),
+            at: None,
+            submit: false,
+        };
+        let mut j = Job::start(typing.clone(), &RefMap::default(), PHONE).unwrap();
+        assert!(j.types());
+        j.first_key();
+        let mut now = 0;
+        loop {
+            match j.on_tick(now, 0) {
+                Out::Done(_) => break,
+                _ => now += 10,
+            }
+            assert!(now < 5_000);
+        }
+        // Two keys 20 ms apart, then a second's wait.
+        assert!(now >= FIRST_KEY_SETTLE_MS, "{now}");
+        let mut j = Job::start(typing, &RefMap::default(), PHONE).unwrap();
+        let mut now = 0;
+        while !matches!(j.on_tick(now, 0), Out::Done(_)) {
+            now += 10;
+        }
+        assert!(now < FIRST_KEY_SETTLE_MS, "{now}");
+        let tap = Job::start(
+            DeviceOp::Tap {
+                at: At::Point(10.0, 10.0),
+                hold_ms: None,
+            },
+            &RefMap::default(),
+            PHONE,
+        )
+        .unwrap();
+        assert!(!tap.types());
     }
 }

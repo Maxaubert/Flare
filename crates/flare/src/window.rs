@@ -1458,6 +1458,10 @@ pub fn run_window(
                     }
                     mods_dispatcher = Some(server.dispatcher());
                     owner_events = Some(server.owner_events());
+                    // Device panel PR 5: `hello` lists the agent's device tools while they work here (a window
+                    // that shows, never a `--start-hidden` run that was not raised).
+                    rc.borrow_mut()
+                        .set_device_gate(server.device_gate(), background_parked.clone());
                     rc.borrow_mut().set_ctl(
                         server.events(),
                         crate::appctl::CtlInfo {

@@ -745,3 +745,22 @@ the pick on 2026-11-19; Claude picked:
   is 1323.
 - **booted.json** drops an entry when its device is seen shut down or is gone. `simctl list` gives no boot time, so a
   device someone else booted again after Flare's boot is not told apart and is still shut down at the next quit.
+
+## Update, Claude (device panel PR 5), 2026-11-20
+
+- **The app's own `Ui` grant is closed to `device.*`** (as the plan says), so "the grant that may call everything" is
+  every grant's method but the device ones: the person drives the panel directly, never through the agent's tools.
+- **`device_launch` takes `app` only.** The sim host's launch has no arguments yet (`DeviceSource::launch`), so `args?`
+  is left out of the tool's schema; it can come with a sim host change.
+- **`device_look` names the device, the screen and its orientation, not the app in front:** the sim host has no query
+  for the front app yet.
+- **The keyboard badge shows at least 600 ms** (`indicator::BADGE_MIN_MS`): a key press is done within a frame, so
+  without it the badge was never seen.
+- **`device_install` reads `Info.plist` for the bytes `iPhoneSimulator`**, which a binary and an XML plist alike keep as
+  plain ASCII (no plist parser is added).
+- **A boot over 120 s answers `busy` on the call's thread** (`ctl_device.rs`); the controller keeps waiting and answers
+  nobody once the caller has gone.
+- **`hello` lists the device tools by the window's device gate** (`AppDispatcher.device`): up while the panel is offered
+  with an Xcode (or the fake under `--e2e`) and the window is not a `--start-hidden` run that was not raised. A change is
+  published as `device.changed`, which `flare-mcp`'s watcher turns into `notifications/tools/list_changed`; `tools/list`
+  says hello on a fresh connection so it sees the change.
