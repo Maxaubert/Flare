@@ -5025,3 +5025,29 @@ reads the unknown kind as nothing and never writes it back (rule 40). Second hal
 boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
 `a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
 (`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+
+1334. **The MCP server's mods tool-list watcher starts after a failed first tools/list.** Audit 2026-11-18, finding
+#33 (issue #273). `serve` asks `Channel::watch_mod_tools` after every `tools/list`, not only the first. The channel
+decides: `FlareChannel` starts one watcher, and only once a `mods.tools` call was answered (`mods_hub_seen`). A first
+list whose `mods.tools` failed (Flare busy past `call_wait`, a broken pipe) no longer rules the watcher out for the
+whole session. `crates/flare-mcp/src/lib.rs`. Held by `the_watch_starts_after_a_failed_first_tools_list`,
+`the_watch_starts_once_after_the_first_tools_list` and `flare_channel_waits_for_a_mods_hub_before_it_watches`.
+
+1335. **A pending build counts a start only when the run counted before it is gone.** Audit 2026-11-18, finding #31
+(issue #273). Every profile of one install shares `install.json`, so opening profiles B and C within 20 s of the new
+build's first start used to count as early deaths and roll a good build back. Now the counted start takes a run lock,
+`run-<commit>.lock` in the install root (no sharing on Windows, `flock` on macOS), and `guard_at_start` keeps it for the
+life of the process (`staged_glue::RUN_LOCK`). A start that finds it held reads as `Start::Trying` with the count as it
+was and counts nothing. When the holder dies, the OS lets go of the lock and the next start counts, so two early deaths
+still roll back (`EARLY_DEATHS`). The lock is per commit, so a run of an older build never hides a death of the new
+one; the locks of other builds are removed when they can be. A lock that cannot be opened for another reason counts the
+start, as before. `staged::on_start` lets the lock go at once (the tests play deaths with it); `on_start_holding`
+returns it. `crates/flare-update/src/staged.rs`, `crates/flare/src/appctl/staged_glue.rs`. Held by
+`other_profiles_opening_while_the_first_run_is_up_count_no_death`,
+`a_counted_run_that_died_still_counts_toward_the_roll_back`, `an_older_builds_run_lock_does_not_hide_a_death` and
+`two_early_deaths_and_the_next_start_rolls_back`.
+
+1336. **The DPI matrix's measure.py says n/a for a missing image in the ink table.** Audit 2026-11-18, finding #26
+(issue #273). `run.ps1` skips the gpu pass with no adapter, and `-Only` can leave the `strip-3` scene out. `ink_table`
+now writes `n/a` for a missing image, as `strip_table` and `skeleton_table` already did, instead of crashing.
+`tools/dpi-matrix/measure.py`. Held by `tools/dpi-matrix/test_measure.py`.

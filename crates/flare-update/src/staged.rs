@@ -14,7 +14,9 @@
 //!   new build's first start. Two processes never swap at once (`install.lock`).
 //! - **After the restart** ([`on_start`], [`confirm`]): the first start says "installed"; one that stays up
 //!   [`START_GRACE_MS`] (or quits cleanly) confirms the build, and the `.old` files go (a stage made since stays). When the new exe
-//!   dies early twice, the next start puts the `.old` files back and starts the old exe instead.
+//!   dies early twice, the next start puts the `.old` files back and starts the old exe instead. A start counts only
+//!   when the run counted before it is gone ([`on_start_holding`], `run-<commit>.lock`, rule 1335): a second profile
+//!   opened while the first is up is no death.
 //!
 //! **macOS (2026-11-11, rule 1132).** The unit is the whole bundle. An installed copy is a `.app` in an
 //! `Applications` folder (`/Applications/Flare.app/Contents/MacOS/Flare`); its root is
@@ -485,6 +487,20 @@ pub struct InstallLock {
 
 /// Takes the install's lock; `None` while another process holds it.
 pub fn lock(layout: &Layout) -> Option<InstallLock> {
+    hold(&layout.root().join(LOCK)).ok()
+}
+
+/// Why [`hold`] got no lock.
+enum Unheld {
+    /// Another process holds it.
+    Busy,
+    /// The file could not be opened or locked for another reason.
+    Failed,
+}
+
+/// Takes a lock on `path` (made when missing) that the OS lets go of when the process ends: Windows opens it with no
+/// sharing, macOS takes a `flock`.
+fn hold(path: &Path) -> Result<InstallLock, Unheld> {
     let mut o = fs::OpenOptions::new();
     o.create(true).truncate(false).write(true);
     #[cfg(windows)]
@@ -493,14 +509,55 @@ pub fn lock(layout: &Layout) -> Option<InstallLock> {
         o.share_mode(0);
     }
     // sync-ok: one small file, at start or on a worker
-    let f = o.open(layout.root().join(LOCK)).ok()?;
+    let f = match o.open(path) {
+        Ok(f) => f,
+        // ERROR_SHARING_VIOLATION: another process has it open.
+        #[cfg(windows)]
+        Err(e) if e.raw_os_error() == Some(32) => return Err(Unheld::Busy),
+        Err(_) => return Err(Unheld::Failed),
+    };
     #[cfg(not(windows))]
-    f.try_lock().ok()?;
-    Some(InstallLock { _file: f })
+    match f.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Err(Unheld::Busy),
+        Err(_) => return Err(Unheld::Failed),
+    }
+    Ok(InstallLock { _file: f })
 }
 
 /// The lock file, in the install root.
 pub const LOCK: &str = "install.lock";
+
+/// The run lock of a pending build: held for its whole life by the run whose start was counted (rule 1335).
+pub struct RunLock {
+    _lock: InstallLock,
+}
+
+/// The run lock's file for `commit`, in the install root: `run-<commit>.lock`, letters and digits only. One per
+/// build, so a run of an older build that still holds its own never hides a death of the new one.
+fn run_lock_path(layout: &Layout, commit: &str) -> PathBuf {
+    let name: String = commit
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(40)
+        .collect();
+    layout.root().join(format!("run-{name}.lock"))
+}
+
+/// Removes the run locks of other builds (one held by a run still up stays on Windows; nothing waits on it).
+fn sweep_run_locks(layout: &Layout, keep: Option<&Path>) {
+    let Ok(dir) = fs::read_dir(layout.root()) else {
+        return;
+    };
+    for e in dir.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let p = e.path();
+        if name.starts_with("run-") && name.ends_with(".lock") && Some(p.as_path()) != keep {
+            let _ = fs::remove_file(&p);
+        }
+    }
+}
 
 /// The first free aside name for `name` in `dir`: `<name>.<tag>`, else `<name>.<tag>1`, `<name>.<tag>2`...
 fn aside_name(layout: &Layout, dir: &Path, name: &str, tag: &str) -> String {
@@ -792,19 +849,56 @@ pub enum Start {
 /// The last-good guard, run once per start of the copy (after the single-instance check, so a hand-off does not
 /// count). It counts the starts of a pending build; past [`EARLY_DEATHS`] it rolls back. A swap that was cut off is
 /// put back. While another process holds the install's lock (it is swapping) this does nothing.
+///
+/// The run lock this start takes is let go of at once, as if this run died now: the tests play deaths with it. A
+/// real start keeps it with [`on_start_holding`].
 pub fn on_start(layout: &Layout) -> Start {
+    on_start_holding(layout).0
+}
+
+/// [`on_start`], and the run lock of a counted start, which the caller keeps for the life of the process (rule 1335).
+/// Every profile of the copy shares one `install.json`, so a start only counts as a try of the pending build when the
+/// run counted before it is gone (died, or quit). While that run is still up (its run lock is held) this start is
+/// another profile of the same try: it reads as [`Start::Trying`] and counts nothing.
+pub fn on_start_holding(layout: &Layout) -> (Start, Option<RunLock>) {
     if read_marker(layout).is_none() {
-        return Start::Plain;
+        return (Start::Plain, None);
     }
     let Some(_lock) = lock(layout) else {
-        return Start::Plain;
+        return (Start::Plain, None);
     };
-    let Some(mut m) = read_marker(layout) else {
-        return Start::Plain;
+    let Some(m) = read_marker(layout) else {
+        return (Start::Plain, None);
     };
     if !is_mine(layout, &m) {
-        return Start::Plain;
+        return (Start::Plain, None);
     }
+    let pending = m.state == MarkerState::Pending;
+    let run_path = run_lock_path(layout, &m.commit);
+    sweep_run_locks(layout, pending.then_some(run_path.as_path()));
+    let mut run = None;
+    if pending {
+        match hold(&run_path) {
+            Ok(l) => run = Some(RunLock { _lock: l }),
+            // The counted run is still up: this start follows no death.
+            Err(Unheld::Busy) if m.starts > 0 => {
+                return (
+                    Start::Trying {
+                        commit: m.commit,
+                        starts: m.starts,
+                    },
+                    None,
+                );
+            }
+            // No lock to go by: count it, as before (a wrong roll back is better than none).
+            Err(_) => {}
+        }
+    }
+    (on_start_locked(layout, m), run)
+}
+
+/// [`on_start_holding`]'s work on the record, under the install's lock.
+fn on_start_locked(layout: &Layout, mut m: Marker) -> Start {
     match m.state {
         MarkerState::Swapping => {
             let commit = m.commit.clone();
@@ -1490,6 +1584,94 @@ mod tests {
         );
         assert_eq!(on_start(&i.layout), Start::Plain);
         assert!(read_marker(&i.layout).is_none());
+    }
+
+    /// Rule 1335: profiles B and C open while profile A (the counted first start) is still up. They share
+    /// `install.json`, but they follow no death: nothing is counted and nothing rolls back.
+    #[cfg_attr(
+        not(windows),
+        ignore = "the staged install names files with backslashes (the Windows dev install); macOS phase 8 of the port plan"
+    )]
+    #[test]
+    fn other_profiles_opening_while_the_first_run_is_up_count_no_death() {
+        let i = Inst::new();
+        i.stage_new();
+        swap(&i.layout).unwrap();
+        let (first, a) = on_start_holding(&i.layout);
+        assert!(matches!(first, Start::Installed { .. }));
+        assert!(a.is_some(), "the counted start keeps the run lock");
+        for _ in 0..3 {
+            let (s, held) = on_start_holding(&i.layout);
+            assert_eq!(
+                s,
+                Start::Trying {
+                    commit: "abcdef0123456789".into(),
+                    starts: 1
+                }
+            );
+            assert!(held.is_none());
+        }
+        assert_eq!(read_marker(&i.layout).unwrap().starts, 1);
+        assert_eq!(i.read("FlareStable.exe"), b"new exe");
+        drop(a);
+    }
+
+    /// Rule 1335: the early-death safety still works with the run lock. A counted run that died (its lock let go)
+    /// makes the next start count, also while other profiles that were never counted stay up.
+    #[cfg_attr(
+        not(windows),
+        ignore = "the staged install names files with backslashes (the Windows dev install); macOS phase 8 of the port plan"
+    )]
+    #[test]
+    fn a_counted_run_that_died_still_counts_toward_the_roll_back() {
+        let i = Inst::new();
+        i.stage_new();
+        swap(&i.layout).unwrap();
+        let (_, a) = on_start_holding(&i.layout);
+        // Profile B opens while A is up: not counted.
+        let (_, b) = on_start_holding(&i.layout);
+        assert!(b.is_none());
+        // A dies early: its lock goes.
+        drop(a);
+        let (s, a2) = on_start_holding(&i.layout);
+        assert_eq!(
+            s,
+            Start::Trying {
+                commit: "abcdef0123456789".into(),
+                starts: 2
+            }
+        );
+        drop(a2);
+        let (s, _) = on_start_holding(&i.layout);
+        assert_eq!(
+            s,
+            Start::RollBack {
+                commit: "abcdef0123456789".into()
+            }
+        );
+        assert_eq!(i.read("FlareStable.exe"), b"old exe");
+    }
+
+    /// Rule 1335: a run of an older build that still holds its own run lock never hides the deaths of a new one.
+    #[cfg_attr(
+        not(windows),
+        ignore = "the staged install names files with backslashes (the Windows dev install); macOS phase 8 of the port plan"
+    )]
+    #[test]
+    fn an_older_builds_run_lock_does_not_hide_a_death() {
+        let i = Inst::new();
+        let stale = hold(&run_lock_path(&i.layout, "0000000000aa"))
+            .ok()
+            .unwrap();
+        i.stage_new();
+        swap(&i.layout).unwrap();
+        assert!(matches!(on_start(&i.layout), Start::Installed { .. }));
+        assert!(matches!(
+            on_start(&i.layout),
+            Start::Trying { starts: 2, .. }
+        ));
+        assert!(matches!(on_start(&i.layout), Start::RollBack { .. }));
+        drop(stale);
     }
 
     #[cfg_attr(
