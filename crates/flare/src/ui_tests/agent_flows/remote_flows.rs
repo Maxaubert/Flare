@@ -59,6 +59,29 @@ fn hidden(f: &Fx, cwd: &str) -> String {
     open_from(f, cwd, Some("Mac Mini"), None)
 }
 
+/// A `remote.attach` of the hidden session `tab` on link `conn`. Its shell is made before its session is in the
+/// manager (a worker starts it), so `that tab's shell is not running` is tried again for a while; it follows nothing.
+fn attach(f: &Fx, tab: &str, conn: u64, viewer: Option<&str>) -> Value {
+    let t = Instant::now();
+    loop {
+        let op = CtlOp::RemoteAttach {
+            tab: tab.into(),
+            conn,
+            viewer: viewer.map(str::to_string),
+        };
+        match ask(f, op) {
+            Ok(v) => return v,
+            Err(e)
+                if e.code == flare_ctl::code::UNAVAILABLE
+                    && t.elapsed() < Duration::from_secs(5) =>
+            {
+                f.step(20);
+            }
+            Err(e) => panic!("attach: {e:?}"),
+        }
+    }
+}
+
 /// A Claude in the session `id` (shell in `cwd`), idle.
 fn claude_in(f: &Fx, id: &str, cwd: &str) {
     f.say(cwd, &title(T_IDLE));
@@ -257,15 +280,7 @@ fn every_remote_op_refuses_a_tab_that_is_not_hidden() {
     }
     assert_eq!(f.ids().len(), 2, "nothing closed");
     let id = hidden(&f, "C:\\there");
-    ask(
-        &f,
-        CtlOp::RemoteAttach {
-            tab: id.clone(),
-            conn: 9,
-            viewer: None,
-        },
-    )
-    .expect("the hidden session attaches");
+    attach(&f, &id, 9, None);
     assert!(host.is_followed(&id));
     ask(
         &f,
@@ -288,15 +303,7 @@ fn a_remote_close_ends_a_hidden_session_without_asking_on_the_host() {
     claude_in(&f, &id, "C:\\there");
     f.say("C:\\there", W);
     until(&f, "the work", |f| working(f, &id));
-    ask(
-        &f,
-        CtlOp::RemoteAttach {
-            tab: id.clone(),
-            conn: 3,
-            viewer: None,
-        },
-    )
-    .expect("attach");
+    attach(&f, &id, 3, None);
     let v = ask(&f, CtlOp::RemoteClose { tab: id.clone() }).expect("the close");
     assert_eq!(v["closed"], true);
     assert!(f.ctl.borrow().ask_text().is_none(), "no ask here");
@@ -347,15 +354,7 @@ fn a_hidden_sessions_question_never_rings_on_the_host_followed_or_not() {
     );
     assert!(f.ctl.borrow_mut().hub_mut().question_tabs().is_empty());
     // Followed now: still nothing here.
-    ask(
-        &f,
-        CtlOp::RemoteAttach {
-            tab: id.clone(),
-            conn: 4,
-            viewer: None,
-        },
-    )
-    .expect("attach");
+    attach(&f, &id, 4, None);
     for _ in 0..10 {
         f.step(100);
     }
@@ -410,15 +409,7 @@ fn a_hidden_session_keeps_its_size_when_its_last_follower_goes() {
     let (host, _) = serving(&f);
     let id = hidden(&f, "C:\\there");
     let size = |f: &Fx| f.ctl.borrow().handle_of(&id).expect("a handle").size();
-    ask(
-        &f,
-        CtlOp::RemoteAttach {
-            tab: id.clone(),
-            conn: 7,
-            viewer: None,
-        },
-    )
-    .expect("attach");
+    attach(&f, &id, 7, None);
     ask(
         &f,
         CtlOp::RemoteResize {
@@ -698,15 +689,7 @@ fn a_hidden_session_whose_shell_ends_goes() {
     let strip = f.tabs(&["C:\\work"]);
     let (host, _) = serving(&f);
     let id = hidden(&f, "C:\\there");
-    ask(
-        &f,
-        CtlOp::RemoteAttach {
-            tab: id.clone(),
-            conn: 2,
-            viewer: Some("Mac Studio".into()),
-        },
-    )
-    .expect("attach");
+    attach(&f, &id, 2, Some("Mac Studio"));
     assert_eq!(
         f.ctl.borrow().model().hidden_of(&id).unwrap().opener,
         "Mac Studio",
@@ -783,7 +766,13 @@ fn a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed() {
     assert_eq!(f.rows(), 1, "no placeholder for the hidden session");
     AppCtl::start_restore(&f.ctl);
     f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
-    f.pump_until("both shells", |f| f.sp.made().len() >= 2);
+    // Wait for these two by folder: the home shell can be made first, so a count of two is not yet the hidden one.
+    f.pump_until("both shells", |f| {
+        let made = f.sp.made();
+        ["C:\\p", "C:\\h"]
+            .iter()
+            .all(|c| made.iter().any(|m| m.spec().cwd == *c))
+    });
     assert_eq!(f.rows(), 1, "still one row");
     let ids = hidden_ids(&f);
     assert_eq!(ids.len(), 1);
