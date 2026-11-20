@@ -875,15 +875,7 @@ fn a_click_from_the_opener_picks_an_option_in_the_hidden_sessions_menu() {
     f.tabs(&["C:\\work"]);
     serving(&f);
     let id = hidden(&f, "C:\\there");
-    ask(
-        &f,
-        CtlOp::RemoteAttach {
-            tab: id.clone(),
-            conn: 4,
-            viewer: None,
-        },
-    )
-    .expect("the attach");
+    attach(&f, &id, 4, None);
     let click = |act| {
         RemoteIntent::Mouse(RemoteMouse {
             act,
