@@ -65,8 +65,11 @@ mod other {
     use super::*;
 
     /// The stand-in off macOS: there is no ring, so there is never a frame to show.
+    /// A field keeps it from being a unit struct, so `DeviceFrames::default()` reads the same on every OS (clippy).
     #[derive(Default)]
-    pub struct DeviceFrames;
+    pub struct DeviceFrames {
+        _none: (),
+    }
 
     impl DeviceFrames {
         pub fn show(&mut self, _target: Option<Target>) {}
