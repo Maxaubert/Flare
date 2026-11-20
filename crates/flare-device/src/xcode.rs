@@ -108,8 +108,8 @@ pub fn version_of(app: &Path) -> Option<String> {
 
 /// Asks this Mac which Xcode to use. BLOCKING (`xcode-select`, file reads and the signature checks, each bounded):
 /// call it on a worker, never on the UI thread (rule 34). Candidates are the `xcode-select` app and
-/// `/Applications/Xcode*.app` only; each must pass [`crate::macos::codesign::xcode_app`] and its SimulatorKit
-/// [`crate::macos::codesign::apple_framework`], or it is skipped with a warning (rule 1325).
+/// `/Applications/Xcode*.app` only (resolved, see [`resolve_in`]); each must pass [`verify`], or it is skipped with
+/// a warning (rule 1325).
 #[cfg(target_os = "macos")]
 pub fn find() -> Option<Xcode> {
     use std::time::Duration;
