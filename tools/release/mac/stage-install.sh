@@ -6,8 +6,9 @@
 #   <root>/staged.tmp/Flare.app   a copy of the bundle (ditto: links and signature kept)
 #   <root>/staged/                staged.tmp renamed into place (the old stage's manifest goes first)
 #   <root>/staged/staged.json     written LAST: {commit, built_at, files: {"Contents/MacOS/Flare": sha256, ...}}
-# The running app sees the stage, shows "Build ready", and installs it when Max clicks the chip. It NEVER touches
-# /Applications or the running bundle: only the click in the app swaps the bundle. A second stage replaces the first.
+# The running app sees the stage, shows "Build ready", and installs it when Max clicks the chip, or when an agent asks
+# (`Flare --install-staged`, rule 1326: a Developer ID stage only, once every agent is idle). It NEVER touches
+# /Applications or the running bundle: only the app swaps the bundle. A second stage replaces the first.
 #
 #   tools/release/mac/stage-install.sh                        build and stage for ~/Library/Application Support/Flare
 #   FLARE_STAGE_APP=/path/Flare.app tools/release/mac/stage-install.sh   stage a bundle already built (no cargo)
@@ -76,3 +77,9 @@ printf '{\n  "commit": "%s",\n  "built_at": "%s",\n  "files": {%s\n  }\n}\n' "$C
   >"$STAGED/staged.json.tmp"
 mv "$STAGED/staged.json.tmp" "$STAGED/staged.json"
 say "staged ${COMMIT:0:7} for $ROOT ($COUNT files); click Build ready in Flare to install it"
+# Rule 1326: an agent installs only a Developer ID stage (Flare --install-staged); say which this is.
+if codesign -dv --verbose=2 "$STAGED/Flare.app" 2>&1 | grep -q '^Authority=Developer ID Application:'; then
+  say "the stage is signed with Developer ID: an agent may install it (Flare --install-staged)"
+else
+  say "the stage is not signed with Developer ID: only a click on Build ready installs it (set FLARE_MAC_SIGN_IDENTITY)"
+fi
