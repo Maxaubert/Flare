@@ -490,6 +490,84 @@ fn the_bounds_follow_the_scale_of_the_monitor() {
     }
 }
 
+/// Rule 1344: a pick face taller than the work area (9 rows in 3 groups on a short screen) is capped to it and its
+/// top stays on the monitor, at every scale.
+#[test]
+fn a_tall_face_stays_on_a_short_monitor() {
+    let tall = 196 + 48 * 9 + 30 * 3;
+    for s in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0_f64] {
+        let work = Bounds {
+            x: 0,
+            y: 40,
+            w: (1280.0 * s) as i32,
+            h: (600.0 * s) as i32,
+        };
+        let b = bounds_for(work, s, tall);
+        assert!(
+            b.y >= work.y,
+            "scale {s}: the top {} is above the work area {}",
+            b.y,
+            work.y
+        );
+        assert!(
+            b.y + b.h <= work.y + work.h,
+            "scale {s}: the foot runs off the work area"
+        );
+        assert_eq!(
+            b.h, work.h,
+            "scale {s}: the face is capped to the work area"
+        );
+    }
+}
+
+/// Rule 1344: in a window capped shorter than its face the pick rows scroll under the heard words, so the last row
+/// can still be clicked and the hint stays clear; a window at its own height does not scroll.
+#[test]
+fn a_capped_pick_card_scrolls_its_rows() {
+    let rows: Vec<OverlayRow> = (1..=9)
+        .map(|n| {
+            row(
+                &format!("r{n}"),
+                n,
+                Some(["A", "B", "C"][usize::from(n - 1) / 3]),
+            )
+        })
+        .collect();
+    let items = items_of(&rows);
+    let last = items.len() - 1;
+    for s in [1.0_f32, 2.25] {
+        let f = face_of(&pick(rows.clone()));
+        let h = Harness::new(s, 480, 400, || DictationWidget::new().unwrap());
+        let model = Rc::new(VecModel::<WidgetItem>::default());
+        h.comp.set_items(ModelRc::from(model.clone()));
+        set_face(&h.comp, &model, &f);
+        h.advance(500);
+        let picked = Rc::new(RefCell::new(Vec::<String>::new()));
+        let sink = Rc::clone(&picked);
+        h.comp
+            .on_pick(move |id| sink.borrow_mut().push(id.to_string()));
+        // The hint line (card foot less 12, 18 tall) is not under a row: a click there picks nothing.
+        h.click(180.0, 400.0 - 14.0 - 12.0 - 9.0);
+        assert!(
+            picked.borrow().is_empty(),
+            "scale {s}: a row ran over the hint"
+        );
+        for _ in 0..12 {
+            h.wheel(180.0, 200.0, 0.0, -120.0);
+            h.advance(0);
+        }
+        let scroll = h.comp.get_rows_scroll();
+        assert!(scroll > 0.0, "scale {s}: the rows did not scroll");
+        h.click(180.0, item_mid(&items, last) - scroll);
+        assert_eq!(*picked.borrow(), ["r9"], "scale {s}");
+    }
+    // At its own height the card does not scroll.
+    let (h, _m) = card(1.0, &pick(rows));
+    h.wheel(180.0, 200.0, 0.0, -120.0);
+    h.advance(0);
+    assert_eq!(h.comp.get_rows_scroll(), 0.0);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Never takes focus (N18)
 // ---------------------------------------------------------------------------------------------------------------------

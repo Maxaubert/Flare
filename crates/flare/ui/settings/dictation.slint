@@ -152,6 +152,8 @@ export component DictMicField inherits HorizontalLayout {
                 changed has-hover => {
                     if self.has-hover && root.testing {
                         root.tip("Speak: the bar should move", root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                    } else if !self.has-hover {
+                        root.tip("", 0px, 0px, 0px, 0px);
                     }
                 }
             }
@@ -209,6 +211,8 @@ export component DictLimitedMark inherits Rectangle {
         changed has-hover => {
             if self.has-hover {
                 root.tip(root.text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
             }
         }
     }

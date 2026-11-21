@@ -5025,3 +5025,46 @@ reads the unknown kind as nothing and never writes it back (rule 40). Second hal
 boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
 `a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
 (`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+
+1344. **The dictation pick card never leaves the top of a short screen.** Audit #18 (issue #306): a pick face is
+196 + 48 per row + 30 per group tall, and `bounds_for` put it 16 px above the work area's foot with no floor, so 9 rows
+on a short screen pushed the title and the heard words off the top or onto the monitor above. `bounds_for`
+(`crates/flare/src/dictation_widget.rs`) now caps the height to the work area and keeps the top at or under its top.
+The card's rows sit in a Flickable (`dictation_widget.slint`) that ends 4 px above the hint, so a capped window scrolls
+its rows with the wheel and never draws a row over the hint. At its own height the face has room for every row and
+nothing moves. Held by `a_tall_face_stays_on_a_short_monitor` and `a_capped_pick_card_scrolls_its_rows`
+(`ui_tests/dictation_widget.rs`).
+
+1345. **Settings' About item never covers the item above it; a short rail scrolls.** Audit #29 (issue #306): About is
+pinned 12 px above the frame's foot, and at the minimum window it sat over Diagnostics and took its clicks.
+`about_y` (`crates/flare-settings/src/layout.rs`) never puts it above its own slot in the column (the last box of
+`rail_layout`, one gap under the item before it). The rail items in `settings/frame.slint` sit in a Flickable under the
+Find field that runs to About's foot plus 12 px, so a short frame scrolls them with the wheel. A frame tall enough
+keeps the old places and does not scroll. Held by `about_never_covers_the_item_above_it_in_a_short_frame`
+(`layout.rs`) and `a_short_frame_scrolls_the_rail_and_about_never_covers_an_item` (`ui_tests/settings_frame.rs`).
+
+1346. **The start screen keeps its mark in a short window and scrolls its list.** Audit #30 (issue #306): the block
+was centred with no floor, so a short window with five places cut off the mark and the title at the top and the
+Settings row at the bottom. `block-top` in `start.slint` is never under 0, and the nav is a Flickable that ends at
+the footer, so the wheel brings the Settings row into view. A window that fits the block looks and acts as before.
+Held by `a_short_window_keeps_the_mark_and_scrolls_the_nav` (`ui_tests/start.rs`).
+
+1347. **The find bar fits the narrowest terminal.** Audit #38 (issue #306): the bar is 344 px with its 52 px readout,
+wider than `MIN_GRID` (320), and its x had no floor, so the page clip cut off its left edge and the start of the input.
+`find.slint` now keeps the bar at least 4 px in from the left and shrinks the input (180 px, never under 60) by what
+the bar would overrun. The readout and the buttons keep their size, and a wide grid draws the bar as before. Held by
+`the_bar_fits_the_narrowest_terminal` (`ui_tests/term.rs`).
+
+1348. **A long remote folder path keeps the current folder in view.** Audit #39 (issue #306): the crumbs are one
+no-wrap row from the left in a clipped box, so a long path pushed the current folder and its parents out of view and
+out of reach. In `remote_folder.slint` the row is as wide as its crumbs and starts at `min(0, box width - row
+width)`: crumbs that fit start at the left as before, and a path too long keeps its end at the box's right edge and
+cuts the start. Held by `a_long_path_keeps_the_current_folder_in_view` (`ui_tests/remote_folder.rs`).
+
+1349. **A settings hover that asks for a tooltip takes it back on leave.** Audit #40 (issue #306): thirteen hover
+handlers in `ui/settings` (controls, row, dictation, colour, wall, plugin_sheet, app_icons) sent `tip(text)` on
+enter and nothing on leave. `TipHost` keeps a pending request until something clears it, so the tip showed late over
+whatever the pointer reached next. Each now sends `tip("")` when `has-hover` turns false, as `frame.slint` does.
+Slint sends the old item's leave before the new item's enter, so moving straight from one control to the next still
+shows the second one's tip. Held by `every_hover_tip_is_taken_back_on_leave` (`tests/settings_access.rs`, a scan of
+every `changed has-hover` in `ui/`) and `the_subtext_tooltip_appears_only_when_it_is_cut` (`ui_tests/settings_row.rs`).
