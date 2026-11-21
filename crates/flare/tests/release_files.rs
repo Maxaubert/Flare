@@ -304,10 +304,11 @@ fn actions_are_pinned_to_major_tags_that_exist() {
         .lines()
         .filter_map(|l| {
             let t = l.trim().trim_start_matches("- ");
-            // `owner/name@<40-hex sha> # vN` (A4 L61): the allow-list names the action and its major.
+            // `owner/name@<40-hex sha> # vN.N.N` (A4 L61, audit 2026-11-21 #16): the allow-list names the action and
+            // its major, so a Dependabot bump inside the major keeps passing.
             let spec = t.strip_prefix("uses: ")?;
             let (action, rest) = spec.split_once('@')?;
-            let major = rest.split_once("# ")?.1.trim();
+            let major = rest.split_once("# ")?.1.trim().split('.').next()?;
             Some(format!("{action}@{major}"))
         })
         .collect();
