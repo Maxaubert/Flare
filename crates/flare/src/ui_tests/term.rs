@@ -3284,6 +3284,98 @@ mod flow {
         assert!(!w.h.comp.get_rfolder_open());
     }
 
+    /// Rule 1299 (Max, 2026-11-18: "clicking Documents just reopens the Users folder, it doesn't go into Documents,
+    /// and it happens on single click"): with the real pointer in the window, one click picks the folder and nothing
+    /// else (no ask, the list neither scrolls back nor is built again), and a double-click goes into it.
+    #[test]
+    fn in_the_window_one_click_picks_and_a_double_click_goes_in() {
+        const NAMES: [&str; 20] = [
+            "Applications",
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Library",
+            "Movies",
+            "Music",
+            "Pictures",
+            "Public",
+            "a1",
+            "a2",
+            "a3",
+            "a4",
+            "a5",
+            "a6",
+            "a7",
+            "a8",
+            "a9",
+            "b1",
+            "b2",
+        ];
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let mut l = FakeLister {
+            home: "/Users/max".into(),
+            ..FakeLister::default()
+        };
+        l.folders.insert(
+            "/Users/max".into(),
+            NAMES.iter().map(|n| (*n, true)).collect(),
+        );
+        l.folders
+            .insert("/Users/max/a3".into(), vec![("inside", true)]);
+        let lister = Arc::new(l);
+        w.ctl.borrow_mut().set_folder_lister(lister.clone());
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").unwrap();
+        w.h.comp.invoke_menu_picked(i as i32);
+        listed(&w);
+        w.run(100);
+        let (lx, ly, lw) = (
+            w.h.comp.get_rfolder_list_x(),
+            w.h.comp.get_rfolder_list_y(),
+            w.h.comp.get_rfolder_list_w(),
+        );
+        let x = lx + lw / 2.0;
+        // Scrolled down three rows, so a list built again would show by jumping back to the top.
+        w.h.wheel(x, ly + 60.0, 0.0, -84.0);
+        w.run(400);
+        let scrolled = w.h.comp.get_rfolder_scrolled();
+        assert!(scrolled < -1.0, "the list scrolled: {scrolled}");
+        let row_y = |i: f32| ly + 1.0 + scrolled + i * 28.0 + 14.0;
+        let asks = |l: &FakeLister| {
+            l.asks
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|a| a.1.clone())
+                .collect::<Vec<_>>()
+        };
+        // One click on a3: picked, footer names it, nothing asked, the list where it was.
+        w.h.click(x, row_y(11.0));
+        w.run(600);
+        assert_eq!(w.h.comp.get_rfolder_selected(), 11, "one click picks");
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max/a3");
+        assert!(!w.h.comp.get_rfolder_loading(), "one click asks nothing");
+        assert_eq!(asks(&lister), [None], "one click asks nothing");
+        assert_eq!(
+            w.h.comp.get_rfolder_scrolled(),
+            scrolled,
+            "the list stays where it was"
+        );
+        // A double-click on it goes in.
+        w.h.click(x, row_y(11.0));
+        w.h.advance(40);
+        w.h.click(x, row_y(11.0));
+        listed(&w);
+        assert_eq!(
+            asks(&lister),
+            [None, Some("/Users/max/a3".to_string())],
+            "a double-click goes in"
+        );
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max/a3");
+        assert_eq!(crumb_labels(&w), ["Mac Mini", "/", "Users", "max", "a3"]);
+    }
+
     /// Rule 1282: a machine that does not answer is one line in the dialog (Settings > Machines' words), and nothing
     /// opens; Cancel closes it, and an answer that comes after is never taken.
     #[test]

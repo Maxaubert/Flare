@@ -115,6 +115,9 @@ pub struct Args {
     /// `flare open --on <machine> <folder> [--resume <id>]` (remote sessions PR 5): ask the running Flare (started
     /// with `--start-hidden` when none runs) to open a tab that shows a session on that machine, then exit.
     pub open_on: Option<OpenOn>,
+    /// `flare --install-staged [--check]` (rule 1326): ask the running Flare to install its staged build once every
+    /// agent is idle (or with `--check` only say where the stage stands), print the answer and exit. `Some(check)`.
+    pub install_staged: Option<bool>,
     /// Bare arguments (folders or files), in order.
     pub positional: Vec<String>,
 }
@@ -160,8 +163,10 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         no_start: false,
         start_hidden: false,
         open_on: None,
+        install_staged: None,
         positional: Vec::new(),
     };
+    let mut install_check = false;
     // `--on` and `--resume` take values: read here, so a value never reaches the positional list or the hand-off's
     // path parsing (rule 300).
     let mut on: Option<String> = None;
@@ -207,6 +212,8 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
             "--serve-remote" => out.serve_remote = true,
             "--no-start" => out.no_start = true,
             "--start-hidden" => out.start_hidden = true,
+            "--install-staged" => out.install_staged = Some(false),
+            "--check" => install_check = true,
             "--on" => on = Some(value(args, &mut i, flag)?.to_string()),
             "--resume" => resume = Some(value(args, &mut i, flag)?.to_string()),
             "--preview-update" => out.preview_update = true,
@@ -319,6 +326,23 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
     out.open_on = open_on(on, resume, &mut out.positional)?;
     if out.open_on.is_some() && (other_mode || out.start_hidden) {
         return Err("flare open --on takes no other mode; only --user-data-dir".to_string());
+    }
+    if install_check && out.install_staged.is_none() {
+        return Err("--check goes with --install-staged".to_string());
+    }
+    if out.install_staged.is_some() {
+        if other_mode
+            || out.start_hidden
+            || out.serve_remote
+            || out.open_on.is_some()
+            || !out.positional.is_empty()
+        {
+            return Err(
+                "flare --install-staged [--check] takes no folder and no other mode; only --user-data-dir"
+                    .to_string(),
+            );
+        }
+        out.install_staged = Some(install_check);
     }
     if out.live_shell.is_some() && out.live_screenshot.is_none() {
         return Err("--live-shell needs --live-screenshot <path>".to_string());
@@ -454,6 +478,34 @@ mod tests {
         let plain = parse_args(&a(&["open"]), None).unwrap();
         assert_eq!(plain.positional, ["open"]);
         assert_eq!(plain.open_on, None);
+    }
+
+    /// Rule 1326: `--install-staged` is a command of its own; `--check` only goes with it, and it takes no folder.
+    #[test]
+    fn install_staged_reads_its_check_and_refuses_anything_else() {
+        assert_eq!(
+            parse_args(&a(&["--install-staged"]), None)
+                .unwrap()
+                .install_staged,
+            Some(false)
+        );
+        let args = parse_args(
+            &a(&["--check", "--install-staged", "--user-data-dir=/tmp/p"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(args.install_staged, Some(true));
+        assert!(args.positional.is_empty());
+        assert_eq!(parse_args(&a(&[]), None).unwrap().install_staged, None);
+        for bad in [
+            &["--check"][..],
+            &["--install-staged", "/tmp/folder"],
+            &["--install-staged", "--start-hidden"],
+            &["--install-staged", "--serve-remote"],
+            &["--install-staged", "--on", "mac", "open", "/p"],
+        ] {
+            assert!(parse_args(&a(bad), None).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

@@ -773,3 +773,145 @@ fn an_installed_mac_bundle_has_a_layout_and_an_e2e_run_never_uses_the_real_root(
         .is_none()
     );
 }
+
+// ---- An agent's install (`install.staged`, 2026-11-20, rule 1326) ------------------------------------------------
+
+impl Fx {
+    /// What `install.staged` hands the window: the stage's signature as the call's worker read it.
+    fn agent_installs(&self, check: bool) -> serde_json::Value {
+        let sig = self
+            .ctl
+            .borrow()
+            .staged_flow()
+            .and_then(|s| s.ready().map(|r| r.sig.clone()))
+            .unwrap_or_default();
+        let v = self.ctl.borrow_mut().staged_arm(&sig, check);
+        self.pump();
+        v
+    }
+
+    fn armed(&self) -> bool {
+        self.ctl.borrow().staged_flow().unwrap().armed()
+    }
+}
+
+/// Rule 1326: the calling agent is still mid-turn when it asks. Nothing installs while it works; once it (and every
+/// other agent) is idle for a minute, the 10 s toast runs, then the swap and the restart on the same profile, and the
+/// person is never asked.
+#[test]
+fn an_agents_install_waits_for_every_agent_idle_a_minute_then_installs_like_the_click() {
+    let f = make(Start::Plain, true);
+    f.agent_working(true);
+    f.at(1_000);
+    let v = f.agent_installs(false);
+    assert_eq!(v["state"], "armed");
+    assert!(f.armed());
+    assert_eq!(
+        f.app().get_staged_toast(),
+        "Build abc1234 installs when every agent is idle"
+    );
+    assert_eq!(
+        f.app().get_staged_chip_aria(),
+        "Build ready, installs when every agent is idle; click to install now"
+    );
+    for t in [2_000, 30_000, 70_000, 200_000] {
+        f.at(t);
+        assert_eq!(f.phase(), Phase::Waiting, "the caller still works at {t}");
+    }
+    assert!(!f.app().get_dialog_open(), "nobody is asked");
+    f.agent_working(false);
+    f.at(201_000);
+    f.at(260_999);
+    assert_eq!(f.phase(), Phase::Waiting, "a full minute of idle first");
+    f.at(261_000);
+    assert_eq!(f.phase(), Phase::Countdown { ends: 271_000 });
+    assert_eq!(
+        f.app().get_staged_toast(),
+        "Installing the new build and restarting"
+    );
+    assert_eq!(f.app().get_staged_toast_button(), "Cancel");
+    assert_eq!(f.agent_installs(false)["state"], "installing");
+    f.at(271_000);
+    assert_eq!(f.read("FlareStable.exe"), b"new exe");
+    let r = f.restarts.borrow();
+    assert_eq!(r.len(), 1, "the new exe starts once");
+    assert_eq!(
+        r[0].1[0],
+        "--user-data-dir=C:\\Users\\x\\AppData\\Roaming\\FlareStable"
+    );
+    assert_eq!(f.quits.get(), 1, "through the normal end of life");
+    assert!(!f.app().get_dialog_open());
+}
+
+/// Work in the countdown puts it back to waiting for idle (no question to the person), and it installs after the next
+/// idle minute. A check only reports.
+#[test]
+fn work_in_an_agents_countdown_waits_for_idle_again_without_asking() {
+    let f = make(Start::Plain, true);
+    assert_eq!(f.agent_installs(true)["state"], "staged");
+    assert!(!f.armed(), "a check arms nothing");
+    assert_eq!(f.agent_installs(false)["state"], "armed");
+    assert_eq!(f.agent_installs(true)["state"], "armed");
+    f.at(1_000);
+    f.at(61_000);
+    assert!(matches!(f.phase(), Phase::Countdown { .. }));
+    f.agent_working(true);
+    f.at(62_000);
+    assert_eq!(f.phase(), Phase::Waiting, "an agent started: it waits");
+    assert!(f.armed(), "still armed");
+    assert!(!f.app().get_dialog_open(), "and nobody is asked");
+    assert_eq!(f.app().get_staged_toast(), "");
+    f.at(200_000);
+    assert!(f.restarts.borrow().is_empty());
+    f.agent_working(false);
+    f.at(201_000);
+    f.at(261_000);
+    assert!(matches!(f.phase(), Phase::Countdown { .. }));
+    f.at(271_000);
+    assert_eq!(f.restarts.borrow().len(), 1);
+}
+
+/// A question of Flare's own on screen (the close question) holds an agent's install like a working agent; the
+/// person's Cancel on the toast ends the agent's ask, and a new stage needs a new one.
+#[test]
+fn a_question_holds_an_agents_install_and_the_persons_cancel_ends_it() {
+    let f = make(Start::Plain, true);
+    f.agent_working(true);
+    f.agent_installs(false);
+    let _ = f.ctl.borrow_mut().on_close_requested();
+    f.pump();
+    assert!(f.app().get_dialog_open(), "the close question is up");
+    f.agent_working(false);
+    f.at(1_000);
+    f.at(100_000);
+    assert_eq!(f.phase(), Phase::Waiting, "a question is not idle");
+    f.app().invoke_dialog_cancel();
+    f.pump();
+    f.at(101_000);
+    f.at(161_000);
+    assert!(matches!(f.phase(), Phase::Countdown { .. }));
+    f.app().invoke_staged_toast_clicked();
+    f.pump();
+    assert!(!f.armed(), "the person's Cancel ends it");
+    f.at(1_000_000);
+    assert!(f.restarts.borrow().is_empty());
+    assert_eq!(f.read("FlareStable.exe"), b"old exe");
+    assert!(f.app().get_staged_chip_shown(), "the build stays on offer");
+    f.agent_installs(false);
+    stage(&f.layout, b"another exe");
+    f.changed();
+    assert!(!f.armed(), "a new stage needs a new ask");
+}
+
+#[test]
+fn an_agents_install_with_nothing_staged_or_a_changed_stage_arms_nothing() {
+    let f = make(Start::Plain, false);
+    let v = f.ctl.borrow_mut().staged_arm("any", false);
+    assert_eq!(v["state"], "none");
+    stage(&f.layout, b"new exe");
+    f.changed();
+    let v = f.ctl.borrow_mut().staged_arm("an older stage", false);
+    assert_eq!(v["state"], "none");
+    assert!(v["why"].as_str().unwrap().contains("changed"));
+    assert!(!f.armed());
+}

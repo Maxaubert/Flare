@@ -2052,8 +2052,8 @@ Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked lo
   where they are on the right (`~\Documents`, "user folder"), and a real recent pushes one out. Each folder row keeps its
   pin. Nothing to list at all: a disabled "No recent folders" under the first row.
 - **Open folders are left out** (rule 1269, Max 2026-11-15). When the menu opens, an unpinned recent or starter folder
-  that an open local tab is in is not listed. A pin always stays. A hidden folder frees no spot, so the list just gets
-  shorter, with no note. Remote tabs hide nothing here.
+  that an open local tab is in is not listed. A pin always stays. A hidden folder's spot goes to the next older recent
+  without a tab, then to a starter (rule 1298, Max 2026-11-18), with no note. Remote tabs hide nothing here.
 - **The starter folders** are Windows' known folders (`SHGetKnownFolderPath`, so a Documents redirected to OneDrive is the
   one Explorer shows), checked for existence on a worker once at start (`flare_win::paths::starter_folders`, rule 34);
   until it answers the menu simply has none. Under `--e2e` there are none.
@@ -2228,6 +2228,40 @@ only when the person clicks "Build ready". How to stage: `docs/shipping.md`, "In
   start by hand of that exe may not run, and `<name>.old` is then the way back). Files removed from `claude-plugin\` in a
   new build stay in `current\` (the swap is per file, not a mirror). The restarted exe waits up to `HANDOFF_WAIT` (6 s)
   for the quitting one's pipe before it takes the lock, so the window comes back about 6 s after the old one goes.
+
+### An agent installs the staged build (2026-11-20, rule 1326)
+
+Max, 2026-11-20: agents can install the staged build themselves, and "always stage and install the signed build".
+
+- **What it does.** Exactly what the click on "Build ready" does, but it never cuts off a session: the install is
+  **armed** and starts only once no agent in any tab is working or waiting on a question and no question of Flare's own
+  (the close question) is up, held for a minute (`IDLE_MS`, 60 s, the idle install spec's rule). The calling agent's own
+  turn counts too, so it is installed after the caller ends its turn. Then the same 10 s toast with Cancel, the swap, the
+  normal end of life and the restart with the sessions resumed. Nobody is asked: work or a question in the countdown (or
+  during the swap) puts it back to waiting for idle, still armed. The person's Cancel on the toast, a failed swap or a
+  new stage disarm it, and the person's own click on the chip takes over (the click's rules: the close question under a
+  working agent, else at once). The chip's accessible name says it installs when every agent is idle, and an 8 s notice says
+  "Build <commit> installs when every agent is idle".
+- **How an agent calls it.** The `install_staged_build` tool (`flare-mcp`, `check: true` only reports), or the command
+  `/Applications/Flare.app/Contents/MacOS/Flare --install-staged [--check]` (Windows: the installed exe, for example
+  `FlareStable.exe --install-staged`). Both reach the running Flare's control channel as the agent grant (no token) and
+  call `install.staged`, a method of its own namespace that only the agent and the app reach: no plugin or mod
+  permission opens it, nor a remote link or the bridge. The command never starts a Flare.
+- **The answer.** At once: `armed`, `installing`, `none` (nothing staged, or the window has not offered it yet),
+  `refused` with why (a build folder run; on the Mac a stage not signed with Developer ID), or `staged` for a check; plus
+  the commit, `built_at`, `signed` (`developer-id`, `ad-hoc`, `other`, `unsigned`, `invalid`, `not-checked`) and the
+  signer. The call's worker reads the manifest and runs `codesign --verify --deep --strict` then `codesign -dv` on
+  `staged/Flare.app` (about a quarter of a second); the window arms only the stage whose manifest signature it offers.
+  Windows has no Developer ID: a stage there is `not-checked` and armed as it is.
+- **Tests.** `staged_flow::tests` (arm, the idle minute, pause, Cancel, a new stage, `all_idle`), `signing::tests`
+  (real `codesign` output), `method`/`grant` tests (`install.staged` is the agent's and the app's only),
+  `ctl_app::tests::install_staged_reports_the_stage_and_its_signer_and_arms_only_a_developer_id_build`,
+  `ui_tests::staged_flows` (`an_agents_install_...`, `work_in_an_agents_countdown_...`,
+  `a_question_holds_an_agents_install_...`), `flare-mcp` (`install_staged_build_routes_...`), `cli_install::tests` and
+  `config::tests::install_staged_...`. All headless; no window opens.
+- **Not covered.** No offscreen e2e drives a full agent install yet (the click's `clickInstall` covers the swap and the
+  restart, which are the same code). A question the hub has not seen (an agent without hooks whose question widget the
+  screen watch has not read) is not counted.
 
 ## 3D model viewer (issue #36), 2026-11-09
 

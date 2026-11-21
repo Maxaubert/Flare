@@ -15,6 +15,10 @@
 //!   updates on or off; its root is `~/Library/Application Support/Flare` (`FLARE_STAGE_ROOT` overrides). The watch
 //!   polls `staged/staged.json` every 2 s (its size and time, no hashing), and the restart is `open -n <bundle>`.
 //!   An `--e2e` run never uses the real root (only with `FLARE_STAGE_ROOT`).
+//! - An agent's install (`install.staged`, 2026-11-20, rule 1326) arms the flow instead of clicking: the clock reads
+//!   whether every agent is idle (no work, no question, no question of Flare's own up) and the countdown starts once
+//!   that held for a minute. Nothing asks the person: work or a question in the countdown (or the swap) puts it back to
+//!   waiting for idle. The answer says what the stage is and who signed it (`AppDispatcher::install_staged`).
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -22,8 +26,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flare_update::copy;
+use flare_update::signing::Signing;
 use flare_update::staged::{self, Layout, Start};
-use flare_update::staged_flow::{Do, Phase, Ready, StagedFlow, Times};
+use flare_update::staged_flow::{self, Armed, Do, Phase, Ready, StagedFlow, Times};
 use slint::TimerMode;
 
 use super::{AppCtl, Post, UiMsg};
@@ -161,12 +166,16 @@ impl AppCtl {
                 }
             }
             StagedMsg::TakenBack => {
+                let mut armed = false;
                 if let Some(s) = self.staged.as_mut() {
                     s.swapped_here = false;
                     s.flow.taken_back();
+                    armed = s.flow.armed();
                 }
-                // The click still stands: it asks now that an agent works.
-                self.staged_ask();
+                // The click still stands: it asks now that an agent works. An agent's install waits for idle instead.
+                if !armed {
+                    self.staged_ask();
+                }
             }
             StagedMsg::Swapped(r) => self.staged_swapped(r),
             StagedMsg::Confirm => self.staged_confirm(),
@@ -205,6 +214,48 @@ impl AppCtl {
     /// An agent in some tab is working.
     fn staged_working(&self) -> bool {
         !self.busy_agents().is_empty() || self.hub.working_count() > 0
+    }
+
+    /// Every agent is idle, for an agent's install: none works, none waits on a question, and no question of Flare's
+    /// own (the close question, an install question) is up.
+    fn staged_all_idle(&self) -> bool {
+        staged_flow::all_idle(
+            usize::from(self.staged_working()),
+            self.hub.question_tabs().len(),
+            self.ask.is_some(),
+        )
+    }
+
+    /// `install.staged` (rule 1326), on the UI thread: the call's worker read the manifest (`sig`) and who signed it.
+    /// `check` only says where the stage stands. Otherwise the flow is armed: it installs once every agent is idle.
+    pub(crate) fn staged_arm(&mut self, sig: &str, check: bool) -> serde_json::Value {
+        use serde_json::json;
+        let now = self.now();
+        let Some(s) = self.staged.as_mut() else {
+            return json!({"state": "refused", "why": "this Flare does not watch for a staged build (it is no installed copy)"});
+        };
+        let Some(ready) = s.flow.ready().cloned() else {
+            return json!({"state": "none", "why": "Flare has not offered this stage yet (it checks every file first); try again in a few seconds"});
+        };
+        if ready.sig != sig {
+            return json!({"state": "none", "why": "the stage changed while it was read; ask again"});
+        }
+        if check {
+            let state = match s.flow.phase() {
+                Phase::Countdown { .. } | Phase::Installing => "installing",
+                Phase::Waiting if s.flow.armed() => "armed",
+                Phase::Waiting => "staged",
+            };
+            return json!({"state": state});
+        }
+        let was = s.flow.armed();
+        let r = s.flow.arm();
+        if r == Armed::Armed && !was {
+            crate::diag_ctl::crumb("staged-armed", &[]);
+            s.flow.say(&copy::staged_armed(&ready.commit), now);
+        }
+        self.staged_push();
+        json!({"state": r.word()})
     }
 
     /// The chip was clicked: install now. No menu (rule 258).
@@ -254,6 +305,21 @@ impl AppCtl {
     fn staged_tick(&mut self) {
         let now = self.now();
         let working = self.staged_working();
+        let idle = self.staged_all_idle();
+        let Some(s) = self.staged.as_mut() else {
+            return;
+        };
+        if s.flow.armed() {
+            // An agent's install: nothing asks the person. Work or a question in the countdown waits for idle again.
+            let counting = matches!(s.flow.phase(), Phase::Countdown { .. });
+            if counting && !s.agreed && !idle {
+                crate::diag_ctl::crumb("staged-armed-wait", &[]);
+                s.flow.pause();
+            } else if s.flow.idle(idle, now) {
+                s.agreed = false;
+                crate::diag_ctl::crumb("staged-armed-idle", &[]);
+            }
+        }
         let Some(s) = self.staged.as_mut() else {
             return;
         };
@@ -290,7 +356,14 @@ impl AppCtl {
         let Some(s) = self.staged.as_ref() else {
             return false;
         };
-        !s.agreed && self.staged_working()
+        if s.agreed {
+            return false;
+        }
+        // An agent's install also holds for a question (it was armed for every agent idle).
+        if s.flow.armed() {
+            return !self.staged_all_idle();
+        }
+        self.staged_working()
     }
 
     fn staged_swapped(&mut self, r: Result<(), String>) {
@@ -415,6 +488,7 @@ impl AppCtl {
                 "toast": v.toast,
                 "button": v.toast_button,
                 "commit": s.flow.ready().map(|r| r.commit.clone()),
+                "armed": s.flow.armed(),
                 "phase": match s.flow.phase() {
                     Phase::Waiting => "waiting",
                     Phase::Countdown { .. } => "countdown",
@@ -530,6 +604,56 @@ fn watch_root(layout: &Layout, post: Post) {
     }
 }
 
+/// What `install.staged`'s worker reads off the disk: the stage's manifest and who signed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedLook {
+    pub commit: String,
+    pub built_at: String,
+    /// The manifest's signature (`Manifest::signature`): the window arms only the stage it offers.
+    pub sig: String,
+    pub signing: Signing,
+}
+
+/// Reads the stage for `install.staged` on the call's worker: None when nothing is staged.
+pub type StagedProbe = Arc<dyn Fn() -> Result<Option<StagedLook>, String> + Send + Sync>;
+
+/// The production probe over an installed copy: the manifest (no hashing: the window hashed it before it offered it,
+/// and the swap checks every hash again) and `codesign` on the staged bundle (macOS).
+pub fn staged_probe(layout: Layout) -> StagedProbe {
+    Arc::new(move || {
+        let m = match staged::read_manifest(&layout) {
+            Ok(m) => m,
+            Err(staged::NotReady::Missing) => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        let signing = if layout.bundle().is_some() {
+            flare_update::signing::inspect_bundle(&layout.staged_files())
+        } else {
+            Signing::NotChecked {
+                why: "Windows builds carry no Developer ID".to_string(),
+            }
+        };
+        Ok(Some(StagedLook {
+            commit: m.commit.clone(),
+            built_at: m.built_at.clone(),
+            sig: m.signature(),
+            signing,
+        }))
+    })
+}
+
+/// Rule 1326 (Max, 2026-11-20: "always stage and install the signed build"): on macOS an agent installs only a build
+/// signed with Developer ID. The person's click installs any stage, as before. Windows has no Developer ID.
+pub fn agent_may_install(signing: &Signing, mac: bool) -> Result<(), String> {
+    if !mac || signing.developer_id() {
+        return Ok(());
+    }
+    Err(format!(
+        "the staged build is {}, not signed with Developer ID; stage a signed build (FLARE_MAC_SIGN_IDENTITY) or let the person click Build ready",
+        signing.describe()
+    ))
+}
+
 /// What the start-up guard found, for the window glue.
 static STARTED: std::sync::OnceLock<(Layout, Start)> = std::sync::OnceLock::new();
 
@@ -596,13 +720,17 @@ pub fn started() -> Option<(Layout, Start)> {
     STARTED.get().cloned()
 }
 
-/// The flow's waits: the real ones, or under `--e2e` the scenario's (`FLARE_E2E_STAGED_COUNTDOWN_MS`).
+/// The flow's waits: the real ones, or under `--e2e` the scenario's (`FLARE_E2E_STAGED_COUNTDOWN_MS`,
+/// `FLARE_E2E_STAGED_IDLE_MS`).
 pub fn times() -> Times {
     let ms =
         |suffix: &str| crate::ship_ctl::e2e_var(suffix).and_then(|v| v.trim().parse::<u64>().ok());
     let mut t = Times::default();
     if let Some(v) = ms("STAGED_COUNTDOWN_MS") {
         t.countdown_ms = v;
+    }
+    if let Some(v) = ms("STAGED_IDLE_MS") {
+        t.idle_ms = v;
     }
     t
 }

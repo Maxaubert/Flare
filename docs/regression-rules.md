@@ -730,7 +730,7 @@ by `a_click_while_the_next_page_loads_names_the_page_the_text_came_from`, `an_an
 255. **The person's arrow is typed unsent, framed, and reaches the agent's next look once.** (CHANGED 2026-11-15 by rule 1268: a Claude tab whose hooks named its session gets nothing typed and hears of the kept arrow in the quiet context; other agents keep the typed frame.) On release the browser is asked, with no page script, what is under the head (`DOM.getNodeForLocation`, then `Accessibility.getPartialAXTree` read by `agent_web::pointed_at`), and `ask_agent::frame_arrow` frames it: the site, `> points at:` with the role and the name gated, on one line, capped and stripped of double quotes, `> at:` and how to see it. It goes through `deliver_ask` like Ask agent (rules 188, 234: never Enter, never to a tab that is not in front). The arrow is kept for `USER_ARROW_MS` or until the page moves on; the next look gets `user_arrow` `{from, to, ref, role, name}` with a ref made by `RefMap::ref_for` when the look did not list the element, and the arrow drawn on its screenshot (`blend_onto_rgba`), then it is gone. Native: `crates/flare/src/web_ctl/arrows.rs`, `crates/flare/src/ask_agent.rs`, `crates/flare/src/appctl/sessions_glue.rs`, `crates/flare-surfaces/src/agent_web.rs`, `agent_job.rs`. Held by `the_person_drags_an_arrow_and_its_frame_is_typed_unsent`, `the_next_look_gets_the_persons_arrow_with_a_ref_once_and_then_it_goes`, `an_arrow_at_an_element_the_look_does_not_list_gets_a_ref_of_its_own`, `the_persons_arrow_is_kept_five_minutes_or_until_the_page_moves_on`, `when_the_browser_names_nothing_under_the_arrow_the_frame_says_so`, `a_hostile_element_name_stays_one_quoted_capped_line_of_the_frame`, `an_arrow_on_a_buttons_label_names_the_button_and_one_on_nothing_named_says_its_role` and `the_screenshot_gets_the_arrow_where_it_was_drawn_at_the_looks_scale`. Source: the same spec, section 2.
 256. **The draw mode takes the mouse, never the keyboard, and every way out cancels it.** "Draw arrow" shows only on a tab with an agent, on a web page or a mini-app (never a plugin's page), and not while a pop-up is open (`push_draw_arrow`). The pad (`PadWindow`) is a layered popup owned by Flare's window, every pixel at alpha 1, `WS_EX_NOACTIVATE`, answering `MA_NOACTIVATE`; the probe of 2026-11-10 (`pad_probe`, a hidden desktop) found it catches the press, drag and release while the page keeps the focus. The agent tick reads the pointer (a press that started before the mode is not one; the left button must be seen up first). The button again, a right click, Escape where it arrives (the key filter in the page, `on_key` in the window), a Flare menu, a tab switch, a pop-up and a navigation end it with nothing asked and nothing typed (`update_arrows`, `draw_tick`). Native: `crates/flare-win/src/agent_cursor.rs`, `crates/flare/src/web_ctl/arrows.rs`, `crates/flare/src/web_ctl.rs` (`key_filter`), `crates/flare/src/appctl.rs` (`on_key`), `crates/flare/ui/panel.slint`. Held by `every_cancel_ends_the_draw_mode_with_nothing_asked_and_nothing_typed`, `the_draw_button_shows_for_an_agent_on_a_web_page_and_never_over_a_popup`, `a_click_with_no_drag_points_at_the_target_from_up_and_left` and `pad_probe` (by hand). Source: the same spec, section 2.
 257. **The person's arrow stays on what it points at as the page scrolls.** Its ends are kept on the document (the viewport point plus the scroll `Page.getLayoutMetrics` gave at the release), never as fixed viewport points: a person who scrolled before sending saw the blue arrow sit over another element while the look named the first, and the agent got a picture and numbers that disagreed with the ref. While its page is in front the agent tick measures the scroll again every `POINT_MEASURE_MS` (`user_arrow_measure`, answered in `arrow_cdp`), the mark is drawn only while both ends show and not on a stale scroll (`update_arrows`), and a look gets `from` and `to` in its own viewport (`viewport.scroll`, added to `browser.look`), with `offscreen: true` and nothing drawn on the screenshot when the head is outside it; `browser_look`'s text says so instead of claiming it is drawn. Found by the review of 2026-11-10. Native: `crates/flare/src/web_ctl/arrows.rs`, `crates/flare-surfaces/src/agent_job.rs`, `crates/flare-mcp/src/browser.rs`. Held by `the_persons_arrow_stays_on_what_it_points_at_as_the_page_scrolls`, `a_look_after_a_scroll_gets_the_arrow_where_its_ends_are_now_and_off_screen_undrawn`, `a_look_with_the_persons_arrow_says_where_it_points_with_the_page_words_inside_the_markers` and `a_look_reports_the_picture_the_elements_and_numbers_them`. Source: the same spec, section 2.
-258. **A staged build installs only on a click, and the click asks first under a working agent.** "Build ready" has no menu: a click is install now. With an agent working, the close question ("Stop the agent and install the update?", Install and restart / Cancel) asks first and Cancel keeps the build on offer; with none, the 10 s toast with Cancel runs at once. Nothing installs on its own, however long the app is idle, and there is no Not today or Discard: a build stays on offer until it is installed or a new stage replaces it. Native: `flare_update::staged_flow` (`StagedFlow::click`, no idle clock, `needs_tick` false while a build only waits), `appctl::staged_glue` (`staged_chip_clicked`, `staged_ask`); tests `staged_flow::tests::nothing_installs_on_its_own`, `ui_tests::staged_flows::nothing_installs_on_its_own_after_a_minute_idle`, `a_click_under_a_working_agent_asks_first_and_cancel_keeps_the_build_on_offer`, and the offscreen e2e `clickInstall`. Source: Flare-native, `docs/superpowers/specs/2026-11-10-build-ready-one-click.md` (owner, 2026-11-10).
+258. **A staged build installs only on a click, and the click asks first under a working agent.** "Build ready" has no menu: a click is install now. With an agent working, the close question ("Stop the agent and install the update?", Install and restart / Cancel) asks first and Cancel keeps the build on offer; with none, the 10 s toast with Cancel runs at once. Nothing installs on its own, however long the app is idle, and there is no Not today or Discard: a build stays on offer until it is installed or a new stage replaces it. Native: `flare_update::staged_flow` (`StagedFlow::click`, no idle clock, `needs_tick` false while a build only waits), `appctl::staged_glue` (`staged_chip_clicked`, `staged_ask`); tests `staged_flow::tests::nothing_installs_on_its_own`, `ui_tests::staged_flows::nothing_installs_on_its_own_after_a_minute_idle`, `a_click_under_a_working_agent_asks_first_and_cancel_keeps_the_build_on_offer`, and the offscreen e2e `clickInstall`. Source: Flare-native, `docs/superpowers/specs/2026-11-10-build-ready-one-click.md` (owner, 2026-11-10). Amended by rule 1326 (2026-11-20): an agent may arm the install, which then starts on its own once every agent is idle.
 259. **A test waits for the event it checks and holds on any account.** A pty resize lands on the `flare-pty-resize` helper and a restored shell is spawned on a worker, so a test counts resizes only once the helpers are quiet and speaks to a restored shell only once its spawn is seen; a fixed count right after a step failed on every busy CI runner. A security descriptor is compared in the form Windows writes it (`canonical_dacl`), since the CI runner's built-in Administrator reads back as `LA`. A match arm names one agent kind (or one kind and `None`), so `no_source_file_lists_the_resumable_agents_by_hand` keeps finding real second lists. Found 2026-11-10: these four failed on every run of main. Native: `crates/flare/src/ui_tests/flows.rs`, `ui_tests/agent_flows/convo_flows.rs`, `crates/flare-ctl/tests/pipe.rs`, `crates/flare-agent/src/keys.rs`. Held by `the_slide_holds_the_terminals_size_and_fits_once`, `a_stored_conversation_panel_reopens_empty_until_the_transcript_loads`, `the_live_pipe_carries_the_owner_only_descriptor`, `the_built_in_administrator_reads_back_as_its_alias` and `no_source_file_lists_the_resumable_agents_by_hand`.
 260. **A test that names a well-known account builds it from the machine, not from the user.** Windows writes "LA" only for RID 500 of the local machine's account domain, so a test takes that domain from the computer name (`machine_account_domain`), never by cutting the RID off the current user's SID: on a domain or Entra ID account that prefix is another domain, whose RID 500 keeps its full SID. Found 2026-11-10 in review of 258: the alias test passed only on a local account. Native: `crates/flare-ctl/tests/pipe.rs`. Held by `the_built_in_administrator_reads_back_as_its_alias`.
 261. **The web panel's profile lives under the profile folder, so a login lasts as long as the profile.** Owner, 2026-11-10: "if I'm signed into Google once in the browser it should still be signed in the next time I open Flare". The hidden e2e `webLogins` (`tools/e2e/src/scenarios/web_logins.rs`: a local site on `127.0.0.1` sets a cookie for a year, a session cookie and `localStorage`; the page reads `document.cookie` itself) found that a persistent cookie and `localStorage` already survived a panel close, a quit (one set the moment before it too: the quit closes the views and lets the browser go, rule 28, so it writes its cookies) and the staged install's restart. What lost them: the default run (no `--user-data-dir`, the Dev copy `%LOCALAPPDATA%\Flare\current\Flare.exe`) kept the panel's folder at `%LOCALAPPDATA%\Flare\WebView2`, inside the Velopack root, which Setup moves aside and deletes on a reinstall and the uninstall deletes, while Stable (`--user-data-dir=%APPDATA%\FlareStable`) kept it under its profile. Native: `flare_surfaces::web::webview_folder(profile_dir)` is always `<profile>\WebView2` (the mini-apps' and plugins' folders stay its `-<kind>` siblings, never shared with the panel or Edge), and at start the default run moves the old folders once with `move_old_webview_folders` (only a folder whose new place is empty, so nothing is replaced and a second start does nothing). Dev and Stable are two profiles with two panel profiles: a login in one is not in the other, by design. A session-only cookie (a site's sign-in without "stay signed in") ends when the last web panel closes, since the browser ends with it (panels cost nothing while closed); `webLogins` holds that too. Held by `the_profile_lives_under_the_profile_folder_never_the_install_folder`, `the_old_place_is_only_the_default_runs_local_appdata_folder`, `the_old_folders_move_once_and_never_replace_what_is_there` (`crates/flare-surfaces/src/web.rs`) and `webLogins` (22 checks).
@@ -2759,7 +2759,8 @@ bundle's record, the lock, the cross-volume refusal as a pure function), `stage_
 bundle with `FLARE_STAGE_APP` and `FLARE_STAGE_ROOT`) and `ui_tests::staged_flows` (`a_mac_bundle_...`,
 `the_mac_restart_...`, `an_installed_mac_bundle_...`). An ad hoc signature changes per build, so macOS may ask for
 permissions again after an install. Source: Max, "always stage apps so they show as update here in the ui"
-(2026-11-11).
+(2026-11-11). Amended by rule 1326 (2026-11-20): an agent may also arm the install of a Developer ID stage; the app
+still does the swap, once every agent is idle.
 1137. **macOS: the default dictation key Ctrl+Cmd works in Flare's window, and a missing Input Monitoring is asked for
 and logged, never silence.** Max switched dictation on (Large v3 Turbo downloaded) and the key did nothing, with not
 one dictation line in the diag log (owner, 2026-11-11). Root cause: macOS' winit (`flagsChanged:`) queues a modifier's
@@ -4577,8 +4578,9 @@ e2e `brand` scenario (the box ends 16 px under Cancel). Source: Max, 2026-11-15,
 the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
 recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
 choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
-case. A folder below or beside it is another folder. A hidden folder frees no spot: no older recent and no starter
-takes it, and no "No recent folders" note appears, so the list just has fewer rows. A remote tab's folder is on
+case. A folder below or beside it is another folder. A hidden folder brings no "No recent folders" note. (Amended by
+rule 1298 on 2026-11-18: its spot now goes to the next older recent without a tab, then to a starter; it no longer
+stays empty.) A remote tab's folder is on
 another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
 menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
 `menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
@@ -4917,7 +4919,7 @@ plain rows, active and not, hover square and click) and the strip guard
 row updates while hovered). Source: Max, 2026-11-17.
 
 1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
-screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
+screenshot of Settings > Machines > Add a computer listing "Office-Mac-Mini" (nearby, with the Apple logo) and then
 "mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
 read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
 first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
@@ -4929,6 +4931,61 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1297. **A computer found twice after an mDNS name conflict shows once in the Machine drop-down.** Max, 2026-11-18, a
+screenshot of Settings > Machines > Add a computer listing "Office-Mac-Mini" twice, both with the Apple logo, after a
+router update put the Mac on Ethernet and WiFi at once: "fix the duplicate issue". The Mac's Flare heard its own
+announcement on the other network, took it for another computer and renamed itself `Office-Mac-Mini (2)` there (mdns-sd
+conflict handling), so the browse found two instances. Entries whose instance names match once a trailing " (N)" goes,
+with the same TXT name, system and port, are one computer: the one without the suffix stays, its own addresses first and the other's after (an announcement is not
+proof, so a copy is never tried first) (`merge_nearby` in `flare/src/pairing.rs`). Another port, another system or a suffix that is not a number
+stays apart. Held by `a_computer_found_twice_after_a_name_conflict_shows_once` (`flare/src/pairing_tests.rs`). Source:
+Max, 2026-11-18.
+1298. **Older recents fill the folder menu's spots that open tabs leave.** Max, 2026-11-18: "the new tab right click
+menu only shows choose a folder on this machine or the mac, no recent folders". His `flare.recentRoots` held twelve
+folders, and the seven newest each had an open tab. Rule 1269 took the newest five first and then hid those with a
+tab, and a hidden folder's spot stayed empty, so all five spots were empty and only "Choose a folder…" and the
+machine's row were left (no remote recents were kept yet). Now the folders with an open local tab leave the history
+before the newest five are taken: the five newest recents without a tab are listed, and a starter fills a spot only
+when no older recent is left (never one with a tab). A pin still always stays. The "No recent folders" note still
+shows only when nothing at all is known (no pin, no history, no starter), never because folders are hidden. The
+remote recents and the machine rows are as rule 1282 left them. Native: `menus_ui::folder_rows`. Held by
+`older_recents_fill_the_spots_of_folders_that_have_a_tab` (Max's twelve recents with seven open, and the starter case)
+and the rule 1269 tests (`menus_ui.rs`). Source: Max, 2026-11-18.
+
+1299. **A click in the remote folder browser only picks; a double-click goes in.** Max, 2026-11-18: "when i pick
+choose folder on mac it shows a file picker in the users folder which is fine but clicking anything like i clicked
+documents just reopens the users folder it doesnt go into documents, and it happens on single click". Each click on
+a row called `push_rfolder`, which set new rows and crumbs models on the window. Slint then built every row again:
+`changed rows` scrolled the list back to its top (the folder looked opened again), and the second press of a
+double-click landed on a new row item, so Slint reset its click count and `double-clicked` never fired: nothing was
+ever entered. The tests called `invoke_rfolder_pick` and `invoke_rfolder_enter` directly, and the preview never swaps
+its model, so none saw it. Now a pick (a click, Up or Down) puts only the picked row and the footer's path on the
+window (`push_rfolder_pick`); the rows and crumbs models are set only when a listing comes in or the dialog opens or
+closes. One click picks (highlight, footer path), a double-click enters, Enter is still Open here (rule 1282), and Open
+here opens the picked folder. Native: `appctl/remote_folder_glue.rs`; the window shows the list's place and scroll as
+`rfolder-list-x`, `rfolder-list-y`, `rfolder-list-w` and `rfolder-scrolled`. Held by
+`in_the_window_one_click_picks_and_a_double_click_goes_in` (`ui_tests/term.rs`: the real pointer in the whole window,
+a fake lister that records each asked path: one click asks nothing and the list stays scrolled where it was, a
+double-click asks the child path and the crumbs follow). Source: Max, 2026-11-18.
+
+1300. **An SSH host wears the system a link said, and one that answered nothing is asked again.** Max, 2026-11-18:
+"only the mac has an icon in the machine picker, the evo x2 doesnt have one, it should have a windows icon and that
+stuff should be automatic if possible otherwise dont show any icon there, but only after its connected". The picker
+is Settings > Machines > Add a machine's Machine drop-down. The Mac there is the nearby computer, with the logo its
+announcement carries (its `mac` SSH host is left out by rule 1285). evo-x2 (`HostName 100.105.158.52`, a Windows PC
+over a VPN) is an SSH host whose logo comes only from rule 1278's look (its SSH greeting, then `uname -s`); it was not
+reachable when the dialog looked, so nothing was found, and the dialog looked only once a visit. Now: (1) an SSH host
+takes the system a link said for the same computer: a linked machine's `kind` (its own `remote.hello` at Add, or the
+pairing), matched by the host it names or by its address against the host's `HostName` (`same_host`, the rule 1285
+comparison), else a computer that reaches this one by the address it paired from. That word wins over a greeting, and
+it is kept in `host_os.json` on a worker, so the logo stays after the machine is removed. (2) A host that answered
+nothing is looked at again each time the dialog opens, so its logo comes once it can be reached; a host with a system
+is not asked again in the visit. A host nothing said anything about still draws no logo. What a greeting said is
+never a machine's `kind` (rules 1207, 1208, 1278). Native: `MachinesPage::{os_learnt, os_of_host, keep_learnt_os,
+open_form}`, `flare_settings::page::machines::same_host`. Held by
+`an_ssh_host_wears_the_system_its_link_said_once_connected` and
+`the_dialog_finds_each_ssh_hosts_system_and_keeps_it` (`machines_page.rs`). Source: Max, 2026-11-18.
 
 1286. **A Claude tab whose session was never used comes back as a new blank Claude, never another session.** Max,
 2026-11-18: "if a session is open but never has a message sent, when flare then restarts it contineus a random session
@@ -4965,6 +5022,14 @@ SESSION_NEW}`, `TabModel::set_session`, `AppCtl::session_to_save`, `flare_agent:
 `a_tab_resumes_its_own_session_and_a_never_used_one_comes_back_blank`,
 `a_closed_claude_tab_never_used_comes_back_as_a_new_blank_claude` and
 `a_new_blank_claude_is_claude_with_no_session_and_not_new_work`. Source: Max, 2026-11-18.
+
+1301. **On Windows, Claude Code's macOS bullet (U+23FA) draws as a plain dot, not an emoji tile.** Max, 2026-11-19,
+screenshots of a Mac tab on the PC: each Claude reply started with a blue emoji tile instead of the dot a PC tab shows
+("it's not an emoji, it should just be a dot"), and the spinner's star (U+2733) was a green emoji tile too. Claude Code prints U+23FA on macOS and U+25CF on Windows; cosmic-text's
+fallback sent U+23FA to Segoe UI Emoji. Windows now lists Segoe UI Symbol as its text-symbol face
+(`TEXT_SYMBOL_FAMILIES` in `flare-render/src/font_catalog.rs`), so a text-presentation character the emoji face took is
+drawn from it, as rule 1131 does on macOS (the bullet, the spinner stars U+2733, U+2736, U+273B, U+273D, and marks such as U+2714 and U+26A0); with VS16, or a default emoji, it stays colour. Held by
+`a_text_presentation_symbol_draws_from_a_text_face_on_windows` (`flare-render/src/raster.rs`). Source: Max, 2026-11-19.
 Follow-up 2026-11-19, Max: "no sessions continue now, all started with an empty session". Every Claude tab saved
 `"new"` and came back blank, for two reasons. (1) The hub took a session the hooks named (`HostEvent::Osc777` in
 `agent_hub.rs`) without counting it as a change, and the window saves sessions only on `AgentHub::take_changed`
@@ -5143,3 +5208,66 @@ reaches the program. Native: `crates/flare-ctl/src/remote.rs` (`MouseIntent`, `p
 `ui_tests::term::a_click_on_a_remote_tab_in_mouse_mode_reaches_the_link_as_mouse_intents` and
 `remote_flows::a_click_from_the_opener_picks_an_option_in_the_hidden_sessions_menu`. Source: Max, 2026-11-19 (a click
 on an option of Claude Code's question menu in a remote tab did nothing).
+
+1324. **A pulse on screen leaves evidence in the diagnostics log: a row or the frame's geometry that flips and back
+is logged.** Max, 2026-11-20, a screenshot of Claude Code's status line: "the shell flickering is not fixed these
+bars will pulsate ... i fix it by shrinknign the window then maximizing again". No cause was proven. Headless runs
+showed the grid painter, the atlas, a resize and a femtovg composite give the same pixels frame after frame. A
+recording of Claude Code 2.1.329 (fullscreen renderer, idle and working), fed chunk by chunk through the emulator,
+never showed the status row in another state: Claude re-emits a bar only when it changes. So the app now watches the
+two places a flip can come from (`pulse_watch.rs`). Each painted frame's rows: a row that reads A, B, then A again
+within 300 ms logs `row-flip` with its column span, what changed (char, fg, bg) and the backgrounds of both looks. No
+text is logged. Each presented frame's geometry: the window, the grid box in device pixels (fractions kept, new
+`grid-box-*-phx` properties), the grid texture, the frozen width and on macOS the `CAMetalLayer`'s drawable against
+bounds x scale (`flare_win::metal_layer`). It logs `present-geom` on a change (at most every 5 s, the last one kept)
+and `present-flip` when it goes back within 300 ms. A further pulse then shows in `diag.jsonl` as one of three cases.
+A `row-flip` with `bg: true` on the status row means the cells really changed. A `present-flip`, `layerScaled`,
+`stretched` or `offPixel` means the frame is moved or scaled. Neither means the pixels Flare presents are steady and
+the cause is in the window server or the display. Held by
+`a_status_bar_drawn_blank_for_one_frame_is_logged_with_its_colours` and
+`a_grid_box_that_jumps_half_a_pixel_and_back_is_a_present_flip` (`pulse_watch.rs`),
+`the_pulse_watch_reads_the_grid_box_where_the_image_is_drawn` (`ui_tests/app.rs`) and
+`metal_layer_reads_its_drawable_against_its_bounds` (`flare-win/tests/appkit.rs`).
+
+1326. **An agent may install the staged build, and it never cuts off a session: the install is armed until every agent
+is idle; on a Mac only a Developer ID build.** Max, 2026-11-20: agents should be able to install the staged build
+themselves, doing what the click on "Build ready" does, and "always stage and install the signed build". `install.staged`
+(the `install_staged_build` tool, `flare --install-staged [--check]`) is its own namespace that only the agent and the
+app enter; no plugin permission, remote link or bridge reaches it. It answers at once (`armed`, `installing`, `none`,
+`refused` with why, or `staged` for a check) with the commit and `signed`. Armed, the flow reads every 250 ms whether no
+agent works, none waits on a question (`AgentHub::question_tabs`) and no question of Flare's own is up
+(`staged_flow::all_idle`); that must hold for `IDLE_MS` (60 s) without a break, so the calling agent's own turn ends
+first. Then the 10 s toast with Cancel; work or a question in it, or during the swap, puts it back to waiting (the swap
+is taken back), never asking the person. The person's Cancel, a failed swap or a new stage disarm it, and the person's click on the chip takes over (the click's rules apply: the close question under a working agent, else at once). On macOS the
+call's worker runs `codesign --verify --deep --strict` and `codesign -dv` on the staged bundle and refuses an agent
+anything but a Developer ID leaf (`signing::parse_display`); the person's click installs any stage, as before. Native:
+`crates/flare-update/src/{staged_flow,signing}.rs`, `crates/flare/src/appctl/staged_glue.rs` (`staged_arm`,
+`staged_tick`), `crates/flare/src/ctl_app.rs` (`install_staged`), `crates/flare-ctl/src/{method,grant,install}.rs`,
+`crates/flare-mcp/src/lib.rs`, `crates/flare/src/cli_install.rs`. Held by
+`staged_flow::tests::an_armed_build_counts_down_only_after_a_full_minute_of_idle`,
+`work_in_the_countdown_keeps_it_armed_and_cancel_or_a_new_stage_disarm_it`,
+`the_persons_click_takes_over_an_agents_ask`, `signing::tests`,
+`grant::tests::only_the_agent_and_the_app_install_the_staged_build`,
+`ctl_app::tests::install_staged_reports_the_stage_and_its_signer_and_arms_only_a_developer_id_build` and
+`ui_tests::staged_flows::an_agents_install_waits_for_every_agent_idle_a_minute_then_installs_like_the_click`,
+`work_in_an_agents_countdown_waits_for_idle_again_without_asking`,
+`a_question_holds_an_agents_install_and_the_persons_cancel_ends_it`. Source: Max, 2026-11-20.
+
+## Device panel (2026-11-19)
+
+Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
+(issue #248). Rules 1310 to 1322 are this feature's; each lands with the PR that builds it.
+
+1316. **A device panel is kind `device`, target `sim/<udid>`, kept in `panels.json`; a build without its viewer keeps it
+and never shows it.** Max, 2026-11-16 and 2026-11-19 (issue #248, decisions 5 and 12 of the spec). First half (device
+panel PR 1): `PanelKind::Device` is named `"device"`, native (Slint draws it, kind 5 once built) and **not built**
+(`is_built` false), so `PanelCtl::restore` and `show` keep a stored device panel in the file and never hand its
+`sim/<udid>` target to `preview::loadable` (a file check) or the file preview. The target is
+`flare_device::target`: `sim/` and a 36-character UUID (`8-4-4-4-12` hex), lower-cased; `simctl`'s upper case reads as
+the same device, only the lower-cased name is a stored target, and the limits of `flare_surfaces::state::clean_target`
+apply first. `flare_device::target::target_ok` checks the shape only (no file, no `simctl`, rule 34). An older Flare
+reads the unknown kind as nothing and never writes it back (rule 40). Second half (PR 4a): `is_built` turns true,
+`target_ok` in `panel_ctl.rs` gets a `Device` arm calling `flare_device::target::target_ok`, restore shows Boot and never
+boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
+`a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
+(`flare-device/src/target.rs`). Source: Max, 2026-11-19.
