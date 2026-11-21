@@ -3295,11 +3295,6 @@ impl AppCtl {
                 // The first row is always "Choose a folder…"; by its place, as a folder may carry that name.
                 if i == 0 {
                     self.choose_folder();
-                } else if let Some((machine, folder)) = crate::menus_ui::remote_folder_of_row(path)
-                {
-                    // A remote folder's row (rule 1213): a remote tab on that machine, in that folder.
-                    let (machine, folder) = (machine.to_string(), folder.to_string());
-                    self.open_remote(&machine, &folder, None, true);
                 } else if let Some(machine) = crate::menus_ui::machine_of_row(path) {
                     // A linked machine's row: the folder browser on that machine, at its home (rule 1282, Max's pick
                     // of mockup B on 2026-11-17; before, it opened a shell in the home folder at once).

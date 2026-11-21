@@ -7,8 +7,7 @@
 use crate::tabs_ui::View;
 use flare_settings::kv::PrefStore;
 use flare_settings::recent_roots::{
-    RECENT_SHOWN, REMOTE_SHOWN, RemoteRoot, pinned_roots, recent_labels, recent_roots,
-    remote_roots, starter_fill, toggle_pin,
+    RECENT_SHOWN, pinned_roots, recent_labels, recent_roots, starter_fill, toggle_pin,
 };
 use flare_tabs::places::place_rows;
 use flare_tabs::sidebar_rows::find_keeps;
@@ -206,15 +205,11 @@ pub const NO_MACHINES: &str = "No linked machines yet";
 /// linked, one disabled note.
 pub fn machine_menu_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, String)> {
     let mut rows = machine_rows(machines);
-    match rows.first_mut() {
-        // The + menu draws a rule above its first machine; alone in its menu it needs none.
-        Some((first, _)) => first.group = false,
-        None => {
-            let mut note = MenuRowData::plain(NO_MACHINES);
-            note.icon = GLYPH_LINK;
-            note.disabled = true;
-            rows.push((note, String::new()));
-        }
+    if rows.is_empty() {
+        let mut note = MenuRowData::plain(NO_MACHINES);
+        note.icon = GLYPH_LINK;
+        note.disabled = true;
+        rows.push((note, String::new()));
     }
     rows
 }
@@ -260,14 +255,14 @@ pub fn machine_logo(kind: Option<flare_tabs::tabs::Os>) -> Option<&'static str> 
 /// What a machine's row says on its right (rule 1282, mockup B): its pick opens the folder browser.
 pub const MACHINE_HINT: &str = "choose folder";
 
-/// The + menu's machine rows (owner pick, 2026-11-12): one a linked machine, its system's logo and its name, after a
-/// rule, and "choose folder" on its right. A pick opens the folder browser on that machine (rule 1282, Max's pick of
-/// mockup B on 2026-11-17); there is no submenu. Only these rows wear the machine's logo.
+/// The + menu's machine rows (owner pick, 2026-11-12): one a linked machine, its system's logo and its name, and
+/// "choose folder" on its right. A pick opens the folder browser on that machine (rule 1282, Max's pick of mockup B on
+/// 2026-11-17); there is no submenu. Only these rows wear the machine's logo. Rule 1357: in the + menu they sit right
+/// under "Choose a folder…", in its group, so they draw no rule of their own.
 fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, String)> {
     machines
         .iter()
-        .enumerate()
-        .map(|(i, m)| {
+        .map(|m| {
             let mut row = MenuRowData::plain(&m.name);
             if let Some(g) = machine_logo(m.kind) {
                 row.icon_cmd = glyph_path(g).to_string();
@@ -276,55 +271,7 @@ fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, Stri
                 row.icon = GLYPH_LINK;
             }
             row.hint = MACHINE_HINT.to_string();
-            row.group = i == 0;
             (row, format!("{MACHINE_ROW}{}", m.id))
-        })
-        .collect()
-}
-
-/// What a remote folder's row in the + menu carries instead of a folder (rule 1213): this mark, the machine's id, a
-/// NUL, then the host's folder. A NUL starts it, so no folder's path is ever read as one.
-pub const REMOTE_FOLDER_ROW: &str = "\u{0}remote:";
-
-/// The machine and the host folder a + menu row opens a remote tab in, for a remote folder's row.
-pub fn remote_folder_of_row(path: &str) -> Option<(&str, &str)> {
-    let rest = path.strip_prefix(REMOTE_FOLDER_ROW)?;
-    let (machine, folder) = rest.split_once('\u{0}')?;
-    (!machine.is_empty() && !folder.is_empty()).then_some((machine, folder))
-}
-
-/// The + menu's remote folders (rule 1213): the newest folders remote tabs opened, after this machine's, each with the
-/// folder glyph before its name and "on <machine>" on its right (rule 1282, mockup B: only a machine's own row wears
-/// its logo, so a folder never reads as a machine). A machine no longer in `machines.json` drops its folders from the
-/// list. No pin: a pin is this machine's.
-fn remote_folder_rows(
-    prefs: &PrefStore,
-    machines: &[crate::machines::Machine],
-) -> Vec<(MenuRowData, String)> {
-    let listed: Vec<(RemoteRoot, &crate::machines::Machine)> = remote_roots(prefs)
-        .into_iter()
-        .filter_map(|r| {
-            let m = machines.iter().find(|m| m.id == r.machine)?;
-            Some((r, m))
-        })
-        .take(REMOTE_SHOWN)
-        .collect();
-    let paths: Vec<String> = listed.iter().map(|(r, _)| r.path.clone()).collect();
-    let labels = recent_labels(&paths);
-    listed
-        .into_iter()
-        .zip(labels)
-        .enumerate()
-        .map(|(i, ((r, m), l))| {
-            let mut row = MenuRowData::plain(&l.label);
-            row.icon = GLYPH_FOLDER_FILL;
-            row.filled_icon = true;
-            row.hint = format!("on {}", m.name);
-            row.group = i == 0;
-            (
-                row,
-                format!("{REMOTE_FOLDER_ROW}{}\u{0}{}", r.machine, r.path),
-            )
         })
         .collect()
 }
@@ -350,15 +297,16 @@ fn starter_hint(path: &str, home: &str) -> String {
     }
 }
 
-/// The folder menu (the sidebar's arrow and the strip's right-click): "Choose a folder…", then the pins, then the
-/// newest unpinned recents. While fewer recents than the menu shows are known, `starters` (Documents, Downloads,
-/// Desktop, the user folder: those that exist) fill the empty spots; a real recent pushes one out. Nothing to
-/// list at all: a disabled note under the first row. Each row comes with the folder it opens ("" for the first
-/// row and the note).
-/// After them, one row per linked machine (remote sessions PR 7, [`machine_rows`]).
-/// `open` holds the folders of the open local tabs (rule 1269): an unpinned folder among them is left out, so the
-/// menu offers only folders that have no tab yet. A pin always stays. A hidden folder's spot goes to the next older
-/// recent without a tab, then to a starter (rule 1298); no note appears for folders that are only hidden.
+/// The folder menu (the sidebar's arrow and the strip's right-click), rule 1357 (Max, 2026-11-21: "1 this pc 2
+/// remote | recent folders"): "Choose a folder…" (this PC), then right under it one row per linked machine
+/// ([`machine_rows`]), then a rule and this PC's folders ([`folder_rows`]): the pins, then the newest unpinned recents.
+/// While fewer recents than the menu shows are known, `starters` (Documents, Downloads, Desktop, the user folder: those
+/// that exist) fill the empty spots; a real recent pushes one out. Nothing to list at all: a disabled note after the
+/// rule. Each row comes with what it opens ("" for the first row and the note, [`MACHINE_ROW`] and the id for a
+/// machine). Remote tabs' folders are not listed here.
+/// `open` holds the folders of the open local tabs (rule 1269): a folder among them is left out, a pin too (rule 1357),
+/// so the menu offers only folders that have no tab yet. A hidden folder's spot goes to the next older recent without a
+/// tab, then to a starter (rule 1298); no note appears for folders that are only hidden.
 pub fn plus_menu_rows(
     prefs: &PrefStore,
     starters: &[String],
@@ -366,10 +314,11 @@ pub fn plus_menu_rows(
     machines: &[crate::machines::Machine],
     open: &[String],
 ) -> Vec<(MenuRowData, String)> {
-    let remote = remote_folder_rows(prefs, machines);
-    let mut rows = folder_rows(prefs, starters, home, !remote.is_empty(), open);
-    rows.extend(remote);
+    let mut choose = MenuRowData::plain(CHOOSE_FOLDER);
+    choose.icon = GLYPH_FOLDER;
+    let mut rows = vec![(choose, String::new())];
     rows.extend(machine_rows(machines));
+    rows.extend(folder_rows(prefs, starters, home, open));
     rows
 }
 
@@ -402,21 +351,25 @@ fn is_open_folder(path: &str, open: &[String]) -> bool {
     !key.is_empty() && open.iter().any(|o| open_folder_key(o) == key)
 }
 
+/// This PC's folder rows of the + menu, after its rule (the first row starts a group): see [`plus_menu_rows`].
 fn folder_rows(
     prefs: &PrefStore,
     starters: &[String],
     home: &str,
-    has_remote: bool,
     open: &[String],
 ) -> Vec<(MenuRowData, String)> {
-    let (pinned, history) = (pinned_roots(prefs), recent_roots(prefs));
-    let mut choose = MenuRowData::plain(CHOOSE_FOLDER);
-    choose.icon = GLYPH_FOLDER;
-    let mut rows = vec![(choose, String::new())];
+    let (pins, history) = (pinned_roots(prefs), recent_roots(prefs));
+    let mut rows = Vec::new();
     // Rule 1269: a folder with an open tab is left out, and nothing known at all is the only time the note shows.
-    let known = !pinned.is_empty()
+    let known = !pins.is_empty()
         || !history.is_empty()
-        || !starter_fill(&pinned, &history, starters, RECENT_SHOWN).is_empty();
+        || !starter_fill(&pins, &history, starters, RECENT_SHOWN).is_empty();
+    // Rule 1357 (Max, 2026-11-21: his five pins all had a tab): a pin with an open tab is left out too.
+    let pinned: Vec<String> = pins
+        .iter()
+        .filter(|p| !is_open_folder(p, open))
+        .cloned()
+        .collect();
     // Rule 1298 (Max, 2026-11-18: the menu showed no recent folder while his five newest all had a tab): the open
     // folders leave the history before the newest five are taken, so older recents without a tab fill their spots.
     let recent: Vec<String> = history
@@ -424,12 +377,10 @@ fn folder_rows(
         .filter(|r| !is_open_folder(r, open))
         .collect();
     let places = place_rows(&pinned, &recent);
-    let mut fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
+    // The starters are weighed against every pin, so a pinned starter is never offered as a starter.
+    let mut fill = starter_fill(&pins, &recent, starters, RECENT_SHOWN);
     fill.retain(|s| !is_open_folder(s, open));
     if !known {
-        if has_remote {
-            return rows;
-        }
         let mut note = MenuRowData::plain("No recent folders");
         note.disabled = true;
         note.group = true;
@@ -477,7 +428,7 @@ pub fn toggle_pin_in_menu(
     let Some((_, path)) = rows.get(index) else {
         return;
     };
-    if path.is_empty() || machine_of_row(path).is_some() || remote_folder_of_row(path).is_some() {
+    if path.is_empty() || machine_of_row(path).is_some() {
         return;
     }
     toggle_pin(prefs, &path.clone());
@@ -667,10 +618,24 @@ mod tests {
         assert!(rows.iter().all(|(r, _)| !r.disabled));
     }
 
-    /// Owner pick (remote sessions PR 7): one row per linked machine after the folders, its logo and its name, no pin
-    /// and no submenu; its pick names the machine, never a folder. Rule 1282: it says "choose folder" on its right.
+    /// A linked Mac for the + menu tests.
+    fn office_mac() -> crate::machines::Machine {
+        crate::machines::Machine {
+            id: "mac".into(),
+            name: "Office-Mac-Mini".into(),
+            kind: Some(flare_tabs::tabs::Os::Mac),
+            ssh: "mini".into(),
+            user: None,
+            flare: "flare".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Owner pick (remote sessions PR 7): one row per linked machine, its logo and its name, no pin and no submenu; its
+    /// pick names the machine, never a folder. Rule 1282: it says "choose folder" on its right. Rule 1357: the machines
+    /// sit right under "Choose a folder…", in its group, before this PC's folders.
     #[test]
-    fn each_linked_machine_is_one_row_after_the_folders_with_its_logo_and_name() {
+    fn each_linked_machine_is_one_row_under_choose_with_its_logo_and_name() {
         use crate::machines::Machine;
         use flare_tabs::tabs::Os;
         let m = |id: &str, name: &str, kind: Option<Os>| Machine {
@@ -683,7 +648,7 @@ mod tests {
             ..Default::default()
         };
         let machines = [
-            m("mac", "Mac Mini", Some(Os::Mac)),
+            m("mac", "Office-Mac-Mini", Some(Os::Mac)),
             m("pc", "Desk", Some(Os::Pc)),
             m("nas", "nas", None),
         ];
@@ -692,101 +657,75 @@ mod tests {
         let mut rows = plus_menu_rows(&prefs, &[], "", &machines, &[]);
         assert_eq!(
             labels(&rows),
-            [CHOOSE_FOLDER, "a", "Mac Mini", "Desk", "nas"]
+            [CHOOSE_FOLDER, "Office-Mac-Mini", "Desk", "nas", "a"]
         );
-        let (mac, path) = &rows[2];
+        let (mac, path) = &rows[1];
         assert_eq!(machine_of_row(path), Some("mac"));
         assert_eq!(mac.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
         assert!(
             mac.logo_icon
                 && !mac.filled_icon
-                && mac.group
+                && !mac.group
                 && mac.trailing_icon.is_none()
                 && !mac.flyout
         );
-        assert!(rows[2..].iter().all(|(r, _)| r.hint == MACHINE_HINT));
-        assert_eq!(rows[3].0.icon_cmd, glyph_path(GLYPH_LOGO_PC));
-        assert!(!rows[3].0.group);
+        assert!(rows[1..4].iter().all(|(r, _)| r.hint == MACHINE_HINT));
+        assert_eq!(rows[2].0.icon_cmd, glyph_path(GLYPH_LOGO_PC));
         // A system not known draws no logo of either.
-        assert!(rows[4].0.icon_cmd.is_empty());
-        assert_eq!(rows[4].0.icon, GLYPH_LINK);
+        assert!(rows[3].0.icon_cmd.is_empty());
+        assert_eq!(rows[3].0.icon, GLYPH_LINK);
         // A folder's path is never a machine; a machine's row has no pin to toggle.
         assert_eq!(machine_of_row(r"C:\w\a"), None);
-        toggle_pin_in_menu(&prefs, &mut rows, 2, &[], "", &machines, &[]);
+        toggle_pin_in_menu(&prefs, &mut rows, 1, &[], "", &machines, &[]);
         assert!(pinned_roots(&prefs).is_empty());
-        // No folder known: the note, then the machines.
+        assert_eq!(labels(&rows)[1], "Office-Mac-Mini");
+        // No folder known: the machine, then the note after the rule.
         let none = plus_menu_rows(&PrefStore::memory(), &[], "", &machines[..1], &[]);
         assert_eq!(
             labels(&none),
-            [CHOOSE_FOLDER, "No recent folders", "Mac Mini"]
+            [CHOOSE_FOLDER, "Office-Mac-Mini", "No recent folders"]
         );
+        assert!(!none[1].0.group && none[2].0.group && none[2].0.disabled);
+        // Ctrl+Shift+R's menu shows the same rows, none with a rule.
+        let alone = machine_menu_rows(&machines);
+        assert_eq!(labels(&alone), ["Office-Mac-Mini", "Desk", "nas"]);
+        assert!(alone.iter().all(|(r, _)| !r.group));
     }
 
-    /// Rule 1213: a remote tab's folder is listed after this machine's, no pin; its row names the machine and the host
-    /// folder. A machine no longer linked drops its folders from the list. Rule 1282 (mockup B): it wears the folder
-    /// glyph and "on <machine>", so only the machine's own row carries the machine's logo.
+    /// Rule 1357 (Max, 2026-11-21: "move the remote option to be the second option 1 this pc 2 remote | recent
+    /// folders"): "Choose a folder…", the machines in its group, one rule, then this PC's pins and recents; each row
+    /// keeps what its pick opens.
     #[test]
-    fn remote_folders_follow_the_local_ones_with_the_folder_glyph_and_their_machine() {
-        use crate::machines::Machine;
-        use flare_settings::recent_roots::remember_remote_root;
-        use flare_tabs::tabs::Os;
-        let mac = Machine {
-            id: "mac".into(),
-            name: "Mac Mini".into(),
-            kind: Some(Os::Mac),
-            ssh: "mini".into(),
-            user: None,
-            flare: "flare".into(),
-            ..Default::default()
-        };
+    fn the_plus_menu_is_this_pc_then_the_machines_then_a_rule_then_the_recents() {
+        let mac = office_mac();
         let prefs = PrefStore::memory();
-        remember_root(&prefs, r"C:\w\a");
-        remember_remote_root(&prefs, "gone", "/srv/old", false);
-        remember_remote_root(&prefs, "mac", "/Users/max/proj", false);
-        let mut rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &[]);
-        assert_eq!(labels(&rows), [CHOOSE_FOLDER, "a", "proj", "Mac Mini"]);
-        let (row, path) = &rows[2];
-        assert_eq!(remote_folder_of_row(path), Some(("mac", "/Users/max/proj")));
-        assert_eq!(machine_of_row(path), None);
-        assert_eq!(row.icon, GLYPH_FOLDER_FILL);
-        assert!(row.icon_cmd.is_empty(), "no machine logo on a folder");
-        assert!(row.filled_icon && row.group && row.trailing_icon.is_none());
-        assert_eq!(row.hint, "on Mac Mini");
+        for p in [r"C:\x\c", r"C:\x\b", r"C:\x\a"] {
+            remember_root(&prefs, p);
+        }
+        toggle_pin(&prefs, r"C:\x\c");
+        let rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &[]);
         assert_eq!(
-            rows[3].0.icon_cmd,
-            glyph_path(GLYPH_LOGO_MAC),
-            "the machine's row keeps it"
+            labels(&rows),
+            [CHOOSE_FOLDER, "Office-Mac-Mini", "c", "a", "b"]
         );
-        assert_eq!(remote_folder_of_row(r"C:\w\a"), None);
-        // A remote folder's row has no pin to toggle.
-        toggle_pin_in_menu(
-            &prefs,
-            &mut rows,
-            2,
-            &[],
-            "",
-            std::slice::from_ref(&mac),
-            &[],
-        );
-        assert!(pinned_roots(&prefs).is_empty());
-        // Only remote folders known: no note, the remote folder, then the machine.
-        let only = PrefStore::memory();
-        remember_remote_root(&only, "mac", "/Users/max/proj", false);
+        let groups: Vec<bool> = rows.iter().map(|(r, _)| r.group).collect();
         assert_eq!(
-            labels(&plus_menu_rows(
-                &only,
-                &[],
-                "",
-                std::slice::from_ref(&mac),
-                &[]
-            )),
-            [CHOOSE_FOLDER, "proj", "Mac Mini"]
+            groups,
+            [false, false, true, false, false],
+            "one rule, above the folders"
         );
-        // No machines linked: no remote folder.
+        assert_eq!(rows[0].1, "");
+        assert_eq!(machine_of_row(&rows[1].1), Some("mac"));
         assert_eq!(
-            labels(&plus_menu_rows(&prefs, &[], "", &[], &[])),
-            [CHOOSE_FOLDER, "a"]
+            paths(&rows)[2..],
+            [r"C:\x\c", r"C:\x\a", r"C:\x\b"],
+            "the pin first, then the recents"
         );
+        assert!(rows[2].0.trailing_filled && !rows[3].0.trailing_filled);
+        // No machine linked: "Choose a folder…" then the recents, as before.
+        let rows = plus_menu_rows(&prefs, &[], "", &[], &[]);
+        assert_eq!(labels(&rows), [CHOOSE_FOLDER, "c", "a", "b"]);
+        assert!(rows[1].0.group);
     }
 
     #[test]
@@ -933,9 +872,9 @@ mod tests {
         let rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &open);
         assert_eq!(
             labels(&rows),
-            [CHOOSE_FOLDER, "r07", "r08", "r09", "r10", "r11", "Mac Mini"]
+            [CHOOSE_FOLDER, "Mac Mini", "r07", "r08", "r09", "r10", "r11"]
         );
-        assert!(rows[1].0.group && rows[1].0.trailing_icon == Some(GLYPH_PIN));
+        assert!(rows[2].0.group && rows[2].0.trailing_icon == Some(GLYPH_PIN));
         // Only three recents without a tab: a starter makes up the rest, never one with a tab.
         let starters = vec![r"C:\g\r00".to_string(), r"C:\s\docs".to_string()];
         let few: Vec<String> = all[..9].to_vec();
@@ -946,19 +885,42 @@ mod tests {
         );
     }
 
-    /// Rule 1269: a pin stays even while its folder has a tab, and an open starter is left out without another one
-    /// taking its spot.
+    /// Rule 1357 (amends rule 1269's "a pin always stays"; Max, 2026-11-21: his five pins all had a tab): a pinned
+    /// folder with an open tab is left out too, and an older recent takes its spot. Its pin is kept: once its tab
+    /// closes it is back at the top, pinned. An open starter is left out without another one taking its spot.
     #[test]
-    fn a_pinned_folder_stays_while_its_tab_is_open() {
+    fn an_open_pinned_folder_is_left_out_and_comes_back_when_its_tab_closes() {
         let prefs = PrefStore::memory();
-        remember_root(&prefs, r"C:\x\a");
-        remember_root(&prefs, r"C:\x\p");
+        for p in [r"C:\x\c", r"C:\x\b", r"C:\x\a", r"C:\x\p"] {
+            remember_root(&prefs, p);
+        }
         toggle_pin(&prefs, r"C:\x\p");
         let open = vec![r"C:\x\p".to_string(), r"C:\x\a".to_string()];
         let rows = plus_menu_rows(&prefs, &[], "", &[], &open);
-        assert_eq!(paths(&rows), ["", r"C:\x\p"]);
+        assert_eq!(paths(&rows), ["", r"C:\x\b", r"C:\x\c"]);
+        assert!(rows[1].0.group && !rows[1].0.trailing_filled);
+        assert_eq!(pinned_roots(&prefs), [r"C:\x\p"], "the pin is kept");
+        let rows = plus_menu_rows(&prefs, &[], "", &[], &open[1..]);
+        assert_eq!(paths(&rows), ["", r"C:\x\p", r"C:\x\b", r"C:\x\c"]);
         assert!(rows[1].0.trailing_filled);
+        // Max's menu: five pins, each with a tab. None is listed; the recents without a tab are.
+        let max = PrefStore::memory();
+        let pins: Vec<String> = (0..5).map(|i| format!(r"C:\g\pin{i}")).collect();
+        for p in [r"C:\g\old2", r"C:\g\old1"] {
+            remember_root(&max, p);
+        }
+        for p in &pins {
+            remember_root(&max, p);
+            toggle_pin(&max, p);
+        }
+        let rows = plus_menu_rows(&max, &[], "", &[], &pins);
+        assert_eq!(paths(&rows), ["", r"C:\g\old1", r"C:\g\old2"]);
+        // A pinned starter with a tab is never offered as a starter either.
         let starters = vec![r"C:\s\one".to_string(), r"C:\s\two".to_string()];
+        let s = PrefStore::memory();
+        toggle_pin(&s, r"C:\s\one");
+        let rows = plus_menu_rows(&s, &starters, "", &[], &[r"C:\s\one".to_string()]);
+        assert_eq!(paths(&rows), ["", r"C:\s\two"]);
         let rows = plus_menu_rows(
             &PrefStore::memory(),
             &starters,
@@ -989,30 +951,38 @@ mod tests {
         }
     }
 
-    /// Rule 1269: only local tabs hide a folder. A remote tab's folder is on its own machine, so the app never passes it
-    /// in, and the remote rows stay as they were.
+    /// Rule 1357 (Max, 2026-11-21: "only recents from this pc"): a remote tab's folder is kept with its machine (rule
+    /// 1213) but never listed in the + menu; the machine's own row stays. Only local tabs hide a folder, so a local path
+    /// that a remote recent shares changes nothing either.
     #[test]
-    fn open_folders_never_hide_a_remote_folder_row() {
-        use crate::machines::Machine;
-        use flare_settings::recent_roots::remember_remote_root;
-        let mac = Machine {
-            id: "mac".into(),
-            name: "Mac Mini".into(),
-            kind: None,
-            ssh: "mini".into(),
-            user: None,
-            flare: "flare".into(),
-            host: None,
-            port: None,
-            key: None,
-            known_hosts: None,
-            host_key: None,
-        };
+    fn no_remote_folder_row_is_listed_in_the_plus_menu() {
+        use flare_settings::recent_roots::{remember_remote_root, remote_roots};
+        let mac = office_mac();
         let prefs = PrefStore::memory();
-        remember_remote_root(&prefs, "mac", "/Users/max/proj", false);
-        let open = vec!["/Users/max/proj".to_string()];
+        remember_root(&prefs, r"C:\w\a");
+        remember_remote_root(&prefs, "mac", "/Users/me/proj", false);
+        let open = vec!["/Users/me/proj".to_string()];
         let rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &open);
-        assert_eq!(labels(&rows), [CHOOSE_FOLDER, "proj", "Mac Mini"]);
+        assert_eq!(labels(&rows), [CHOOSE_FOLDER, "Office-Mac-Mini", "a"]);
+        assert!(
+            rows.iter()
+                .all(|(r, p)| !r.hint.starts_with("on ") && !p.contains("/Users/me/proj")),
+            "no remote folder's row"
+        );
+        assert_eq!(remote_roots(&prefs).len(), 1, "the remote recents are kept");
+        // Only remote folders known: the note, as for nothing known.
+        let only = PrefStore::memory();
+        remember_remote_root(&only, "mac", "/Users/me/proj", false);
+        assert_eq!(
+            labels(&plus_menu_rows(
+                &only,
+                &[],
+                "",
+                std::slice::from_ref(&mac),
+                &[]
+            )),
+            [CHOOSE_FOLDER, "Office-Mac-Mini", "No recent folders"]
+        );
     }
 
     #[test]
