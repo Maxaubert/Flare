@@ -281,6 +281,8 @@ export component ThemeCard inherits Rectangle {
             changed has-hover => {
                 if self.has-hover {
                     root.tip("Edit colours, saved as Custom", pencil.absolute-position.x, pencil.absolute-position.y, pencil.width, pencil.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
                 }
             }
         }
@@ -411,6 +413,8 @@ export component ThemeWallView inherits Rectangle {
             changed has-hover => {
                 if self.has-hover {
                     root.tip(root.toggle-title, toggle.absolute-position.x, toggle.absolute-position.y, toggle.width, toggle.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
                 }
             }
         }

@@ -2017,6 +2017,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
         tip: String::new(),
         tone: flare_tabs::decor::Tone::Ink,
         generation,
+        own: false,
     })
     .unwrap_err();
     assert_eq!(e.code, code::UNAUTHORIZED);
@@ -2027,6 +2028,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
         value: Some(0.5),
         label: String::new(),
         generation,
+        own: false,
     })
     .unwrap_err();
     assert_eq!(e.code, code::UNAUTHORIZED);
@@ -2049,6 +2051,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
         tip: String::new(),
         tone: flare_tabs::decor::Tone::Ink,
         generation: w.hub.generation("flip"),
+        own: false,
     })
     .unwrap();
     assert!(f.ctl.borrow().has_decor(&a));

@@ -28,10 +28,12 @@ pub use macos::{
     MONOSPACE_FAMILIES, TEXT_SYMBOL_FAMILIES,
 };
 
-/// None on Windows: its fallback order is left as it is, so a text-presentation character is
-/// never moved off the face cosmic-text picked.
+/// The text face a text-presentation character (U+23FA, Claude Code's bullet on macOS, which a Mac
+/// tab sends to this PC) is drawn from when cosmic-text's fallback sent it to Segoe UI Emoji (rule
+/// 1301). Segoe UI Symbol has U+23FA and the other media-control symbols (checked 2026-11-19 with
+/// its cmap).
 #[cfg(windows)]
-pub const TEXT_SYMBOL_FAMILIES: &[&str] = &[];
+pub const TEXT_SYMBOL_FAMILIES: &[&str] = &["Segoe UI Symbol"];
 /// None on Windows, for the same reason.
 #[cfg(windows)]
 pub const EMOJI_FAMILIES: &[&str] = &[];

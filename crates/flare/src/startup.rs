@@ -558,6 +558,7 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
     tabs.save(&SavedTabs {
         tabs: now,
         active: active.min(count.saturating_sub(1)),
+        hidden: Vec::new(),
     });
     let started = std::time::Instant::now();
     let ok = end_of_life(&tabs, &window, &mut host);
@@ -1137,6 +1138,7 @@ mod tests {
                 session: None,
             }],
             active: 0,
+            hidden: Vec::new(),
         });
         window.save(&WindowState {
             width: 1180,
@@ -1168,6 +1170,7 @@ mod tests {
                 session: None,
             }],
             active: 0,
+            hidden: Vec::new(),
         };
         let mut model = TabModel::boot(&saved, 1);
         let glue = |m: &TabModel| {
@@ -1187,6 +1190,7 @@ mod tests {
                 remote: None,
             }],
             active: 0,
+            hidden: Vec::new(),
         });
         glue(&model);
         tabs.flush();

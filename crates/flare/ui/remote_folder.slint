@@ -112,6 +112,11 @@ export component RemoteFolder inherits Rectangle {
     out property <bool> loading-shown: root.loading;
     out property <length> scrolled: flick.content-y;
     out property <bool> keys-held: fs.has-focus;
+    // The crumbs' visible box and where the row of crumbs starts and ends, in the window.
+    out property <length> crumbs-x: crumb-box.absolute-position.x;
+    out property <length> crumbs-w: crumb-box.width;
+    out property <length> crumb-row-x: crumb-row.absolute-position.x;
+    out property <length> crumb-row-w: crumb-row.preferred-width;
 
     visible: root.open;
     width: 100%;
@@ -230,10 +235,15 @@ export component RemoteFolder inherits Rectangle {
                     tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
                 }
                 Rectangle { width: 6px; }
-                Rectangle {
+                crumb-box := Rectangle {
                     horizontal-stretch: 1;
                     clip: true;
-                    HorizontalLayout {
+                    // From the left while they fit; a path too long for the row keeps its end (the current folder)
+                    // in view and cuts the start instead (rule 1348).
+                    crumb-row := HorizontalLayout {
+                        x: min(0px, parent.width - self.width);
+                        width: self.preferred-width;
+                        height: parent.height;
                         alignment: start;
                         spacing: 2px;
                         for c[i] in root.crumbs: HorizontalLayout {
@@ -473,6 +483,10 @@ export component RemoteFolderPreview inherits Window {
     out property <bool> error-shown: dlg.error-shown;
     out property <length> scrolled: dlg.scrolled;
     out property <bool> keys-held: dlg.keys-held;
+    out property <length> crumbs-x: dlg.crumbs-x;
+    out property <length> crumbs-w: dlg.crumbs-w;
+    out property <length> crumb-row-x: dlg.crumb-row-x;
+    out property <length> crumb-row-w: dlg.crumb-row-w;
 
     behind := TouchArea {
         width: parent.width;

@@ -480,12 +480,13 @@ pub enum HandlePoll {
     GiveUp,
 }
 
-/// The debounced stores a run keeps: tabs, window, prefs and panels.
+/// The debounced stores a run keeps: tabs, window, prefs, panels and the plugins' hub (its plugins' own stores).
 type Stores = (
     Arc<TabsStore>,
     Arc<WindowStateStore>,
     PrefStore,
     Arc<flare_surfaces::store::PanelStore>,
+    Arc<flare_mods::Hub>,
 );
 
 /// Every debounced store written now: the logoff closure and the end of `run`.
@@ -494,11 +495,14 @@ fn flush_stores(
     window: &WindowStateStore,
     prefs: &PrefStore,
     panels: &flare_surfaces::store::PanelStore,
+    plugins: &flare_mods::storage::Storage,
 ) {
     window.flush();
     tabs.flush();
     prefs.flush();
     panels.flush();
+    // A plugin's last storage.set may still wait out its spacing on a writer the exit would end (rule 1328).
+    plugins.flush_all();
 }
 
 /// Pure: the decision of look number `polls` (counted from 0) given what `hwnd_of` answered.
@@ -1474,6 +1478,7 @@ pub fn run_window(
         }
         let plugin_limits = mods_hub.limits();
         let plugin_logs = mods_hub.logs_dir();
+        let plugins_hub = Arc::clone(&mods_hub);
         rc.borrow_mut().set_mods(mods_hub, mods_dispatcher);
         rc.borrow_mut().set_plugin_run_record(run_record);
         // Plugins phase 7: helpers need the channel (their pipe), and Install from file its picker.
@@ -1682,8 +1687,9 @@ pub fn run_window(
                 let window = Arc::clone(&window_store);
                 let prefs = prefs.clone();
                 let panels = Arc::clone(&panels_store);
+                let plugins = Arc::clone(&plugins_hub);
                 move || {
-                    flush_stores(&tabs, &window, &prefs, &panels);
+                    flush_stores(&tabs, &window, &prefs, &panels, plugins.storage());
                     // The log says so last, and is on the disk before the OS ends us.
                     crate::diag_ctl::session_end();
                 }
@@ -1712,7 +1718,7 @@ pub fn run_window(
             crate::start_menu_icon::for_run(&ship, &inst.profile.dir),
             crate::app_icon::sharer_for_run(&ship),
         ));
-        stores = Some((tabs_store, window_store, prefs, panels_store));
+        stores = Some((tabs_store, window_store, prefs, panels_store, plugins_hub));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each
         // tab's scrollback.
@@ -1912,7 +1918,7 @@ pub fn run_window(
     // the controller applies BEFORE the show. The window material needs a handle, so it joins after.
     let look_prefs = stores
         .as_ref()
-        .map_or_else(PrefStore::memory, |(_, _, p, _)| p.clone());
+        .map_or_else(PrefStore::memory, |(_, _, p, _, _)| p.clone());
     let look = {
         let ctl = LookCtl::new(
             &app,
@@ -2116,8 +2122,8 @@ pub fn run_window(
     {
         c.end();
     }
-    if let Some((tabs, window, prefs, panels)) = &stores {
-        flush_stores(tabs, window, prefs, panels);
+    if let Some((tabs, window, prefs, panels, plugins)) = &stores {
+        flush_stores(tabs, window, prefs, panels, plugins.storage());
     }
     // The mini-apps' folders go with the run (one a browser still holds is renamed aside and deleted
     // by the next start).
@@ -3205,8 +3211,41 @@ mod tests {
             ),
         }]);
         assert!(!file.exists(), "inside the debounce nothing is written yet");
-        flush_stores(&tabs, &window, &prefs, &panels);
+        let plugins = flare_mods::storage::Storage::new(dir.path().join("plugins-storage"));
+        flush_stores(&tabs, &window, &prefs, &panels, &plugins);
         assert!(file.exists());
+    }
+
+    #[test]
+    fn a_session_end_flushes_a_plugin_storage_set_that_waits_for_its_spacing() {
+        // Rule 1328: a plugin's storage.set that waits out its write spacing must be on the disk at quit and logoff.
+        let dir = tempfile::tempdir().unwrap();
+        let long = Duration::from_secs(60);
+        let tabs = TabsStore::new(dir.path().join("tabs.json"), long);
+        let window = WindowStateStore::new(dir.path().join("window.json"), long);
+        let prefs = PrefStore::memory();
+        let panels = flare_surfaces::store::PanelStore::new(dir.path().join("panels.json"), long);
+        let plugins = flare_mods::storage::Storage::new(dir.path().join("plugins-storage"))
+            .with_write_every(long);
+        // The first set is written at once; the next waits out the spacing.
+        plugins
+            .set("todo", Some("n"), serde_json::json!(1))
+            .unwrap();
+        let stored = plugins.file_of("todo");
+        let read = || std::fs::read_to_string(&stored).unwrap_or_default();
+        let t = std::time::Instant::now();
+        while read() != r#"{"n":1}"# {
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "the first write never landed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        plugins
+            .set("todo", Some("n"), serde_json::json!(2))
+            .unwrap();
+        flush_stores(&tabs, &window, &prefs, &panels, &plugins);
+        assert_eq!(read(), r#"{"n":2}"#);
     }
 
     #[test]

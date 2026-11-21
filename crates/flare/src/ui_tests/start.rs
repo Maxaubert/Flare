@@ -168,6 +168,50 @@ fn new_terminal_places_and_settings_report() {
     }
 }
 
+/// Rule 1346: a window too short for the block keeps the mark at the top (never above it) and the nav scrolls, so
+/// the Settings row can still be reached. A window that fits does not scroll.
+#[test]
+fn a_short_window_keeps_the_mark_and_scrolls_the_nav() {
+    let five: Vec<Place> = (0..5)
+        .map(|i| place(&format!("C:\\a\\dir{i}"), false))
+        .collect();
+    for s in [1.0_f32, 2.25] {
+        let picked = Rc::new(RefCell::new(0));
+        let h = Harness::new(s, W, H, preview);
+        h.comp
+            .set_places(ModelRc::new(VecModel::from(five.clone())));
+        h.comp.set_shown(true);
+        h.advance(500);
+        let p = picked.clone();
+        h.comp.on_settings(move || *p.borrow_mut() += 1);
+        let new_y = h.comp.get_new_y();
+        // The mark (84 + 16) and the title (28 + 40) sit above the nav: the block starts at or under the top.
+        assert!(
+            new_y >= 168.0 - 0.5,
+            "scale {s}: the block starts above the window, new row at {new_y}"
+        );
+        // The nav stops at the footer.
+        assert!(
+            new_y + h.comp.get_nav_view_h() <= H as f32 - 36.0 + 0.5,
+            "scale {s}: the nav runs into the footer"
+        );
+        // The wheel brings the Settings row into view, and it takes a click.
+        for _ in 0..4 {
+            h.wheel(300.0, new_y + 40.0, 0.0, -120.0);
+            h.advance(0);
+        }
+        let scroll = h.comp.get_nav_scroll();
+        assert!(scroll > 0.0, "scale {s}: the nav did not scroll");
+        h.click(300.0, settings_top(new_y, 5) - scroll + 18.0);
+        assert_eq!(*picked.borrow(), 1, "scale {s}: Settings was not reached");
+    }
+    // A window that fits the block keeps the nav whole and still.
+    let h = screen(1.0, vec![place("C:\\a\\dir", false)]);
+    h.wheel(300.0, h.comp.get_new_y() + 20.0, 0.0, -120.0);
+    h.advance(0);
+    assert_eq!(h.comp.get_nav_scroll(), 0.0);
+}
+
 #[test]
 fn only_pinned_places_say_pinned() {
     // A pinned tag is drawn only in the row that is pinned: compare the frame with the tag
