@@ -349,6 +349,39 @@ pub(crate) fn hwnd_of(app: &AppWindow) -> Option<isize> {
         .flatten()
 }
 
+/// The geometry of the frame about to be presented (rule 1324, the pulse watch).
+fn present_geom(app: &AppWindow) -> crate::pulse_watch::PresentGeom {
+    let win = app.window().size();
+    let tex = app.get_grid_image().size();
+    #[cfg(target_os = "macos")]
+    let layer = native_view_of(app)
+        .and_then(flare_win::metal_layer::geom)
+        .map(|l| crate::pulse_watch::LayerGeom {
+            drawable_w: l.drawable_w,
+            drawable_h: l.drawable_h,
+            bounds_w: l.bounds_w,
+            bounds_h: l.bounds_h,
+            scale: l.scale,
+            window_scale: l.window_scale,
+            opaque: l.opaque,
+            tagged: l.tagged,
+        });
+    #[cfg(not(target_os = "macos"))]
+    let layer = None;
+    crate::pulse_watch::PresentGeom {
+        win_w: win.width,
+        win_h: win.height,
+        box_x: app.get_grid_box_x_phx(),
+        box_y: app.get_grid_box_y_phx(),
+        box_w: app.get_grid_box_w_phx(),
+        box_h: app.get_grid_box_h_phx(),
+        tex_w: tex.width,
+        tex_h: tex.height,
+        frozen_w: app.get_grid_frozen_width() * app.window().scale_factor(),
+        layer,
+    }
+}
+
 /// The window's native handle for the window-level calls (park, material, chrome): the HWND on
 /// Windows, the content `NSView` on macOS (`flare_win::glass`, `chrome` and `window_park` take
 /// that). Everything that needs a real HWND keeps `hwnd_of`.
@@ -915,6 +948,8 @@ pub fn run_window(
         // The frame trace (FLARE_TRACE_FRAME=1): when the render began and when the last one ended.
         let mut render_began: Option<std::time::Instant> = None;
         let mut last_ended: Option<std::time::Instant> = None;
+        // The presented frame's geometry, for a pulse from scaling or a half pixel (rule 1324).
+        let mut present_watch = crate::pulse_watch::PresentWatch::default();
         app.window()
             .set_rendering_notifier(move |state, api| match state {
                 RenderingState::RenderingSetup => {
@@ -965,6 +1000,9 @@ pub fn run_window(
                             app.window().request_redraw();
                         }
                     }
+                    let notes =
+                        present_watch.observe(present_geom(&app), std::time::Instant::now());
+                    crate::pulse_watch::log_present(&notes);
                 }
                 RenderingState::AfterRendering => {
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);

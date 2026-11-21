@@ -763,6 +763,7 @@ mod tests {
                         cwd: format!("C:\\w\\proj{i:02}"),
                         agent: None,
                         remote: None,
+                        session: None,
                     })
                     .collect(),
                 active: 0,

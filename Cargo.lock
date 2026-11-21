@@ -1976,6 +1976,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flare-device"
+version = "0.1.0"
+dependencies = [
+ "flare-ctl",
+ "flare-surfaces",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "flare-diag"
 version = "0.1.0"
 dependencies = [

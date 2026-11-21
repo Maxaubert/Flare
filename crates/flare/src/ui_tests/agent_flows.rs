@@ -198,6 +198,7 @@ impl Fx {
                         cwd: (*cwd).to_string(),
                         agent: *agent,
                         remote: None,
+                        session: None,
                     })
                     .collect(),
                 active: 0,

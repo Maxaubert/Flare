@@ -4,9 +4,10 @@
 //! The restore never types into a shell: a resume travels as the startup command (`Spawn::resume`).
 
 use crate::tabs::{MachineTag, Pending, Tab, TabKind, TabState};
-use flare_agent::kinds::{AGY_RESUME, AgentKind, CODEX_RESUME};
+use flare_agent::kinds::{AGY_RESUME, AgentKind, CLAUDE_NEW, CODEX_RESUME};
+use flare_agent::signal::is_session_id;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,10 @@ use std::time::{Duration, Instant};
 /// opens (nothing in the strip or the model limits the tabs, so a lower cap lost tabs 51 and up, with
 /// their resumes, at the next launch: review #11).
 pub const MAX_TABS: usize = 500;
+
+/// The `session` a saved Claude tab holds when its Claude never named a session: nothing was sent in it, so there is
+/// nothing to resume and it comes back as a new blank Claude (rule 1286).
+pub const SESSION_NEW: &str = "new";
 
 /// The longest machine id or host tab id a saved remote tab keeps.
 const REMOTE_ID_MAX: usize = 128;
@@ -26,6 +31,15 @@ pub struct SavedTab {
     /// Some for a remote tab (remote sessions PR 3): `cwd` is then the host's folder and `agent` is None (the host
     /// owns the session and its resume).
     pub remote: Option<SavedRemote>,
+    /// A local Claude tab only (rule 1286): the Claude session its hooks (or its resume) named, a lower-case UUID, or
+    /// [`SESSION_NEW`] when its Claude never named one because nothing was sent. None: not known (a file from before
+    /// the key, or a Flare whose hooks are off); the restore then hands it the folder's newest free session.
+    pub session: Option<String>,
+}
+
+/// The `session` a saved tab may hold: a lower-case UUID or [`SESSION_NEW`]; anything else reads as None.
+pub fn saved_session(s: &str) -> Option<String> {
+    (s == SESSION_NEW || is_session_id(s)).then(|| s.to_string())
 }
 
 /// A remote tab as `tabs.json` keeps it: `remote: {machine, host_tab, last_seq}`.
@@ -106,10 +120,17 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
                 .and_then(Value::as_str)
                 .and_then(AgentKind::parse)
                 .filter(|_| remote.is_none());
+            // Only a local Claude tab keeps its session (rule 1286); a file from before the key has none.
+            let session = e
+                .get("session")
+                .and_then(Value::as_str)
+                .and_then(saved_session)
+                .filter(|_| agent == Some(AgentKind::Claude));
             Some(SavedTab {
                 cwd: cwd.to_string(),
                 agent,
                 remote,
+                session,
             })
         })
         .take(MAX_TABS)
@@ -122,10 +143,11 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
     SavedTabs { tabs, active }
 }
 
-/// `{"tabs":[{"cwd":..,"agent":..}],"active":n}`; the agent key is left out for a plain shell. A remote tab is
+/// `{"tabs":[{"cwd":..,"agent":..,"session":..}],"active":n}`; the agent key is left out for a plain shell, the session
+/// key for any tab but a local Claude tab whose session is known (rule 1286). A remote tab is
 /// `{"cwd":..,"remote":{"machine":..,"host_tab":..,"last_seq":n}}` (`host_tab` left out until the host answered).
 pub fn tabs_json(s: &SavedTabs) -> String {
-    // Written by hand: the key order (cwd, then agent; tabs, then active) is part of the file shape.
+    // Written by hand: the key order (cwd, agent, session; tabs, then active) is part of the file shape.
     let quote = |t: &str| Value::String(t.to_string()).to_string();
     let tabs: Vec<String> = s
         .tabs
@@ -145,11 +167,21 @@ pub fn tabs_json(s: &SavedTabs) -> String {
                     r.last_seq
                 )
             }
-            (None, Some(a)) => format!(
-                r#"{{"cwd":{},"agent":{}}}"#,
-                quote(&t.cwd),
-                quote(a.as_str())
-            ),
+            (None, Some(a)) => {
+                let session = t
+                    .session
+                    .as_deref()
+                    .filter(|_| a == AgentKind::Claude)
+                    .and_then(saved_session)
+                    .map(|s| format!(r#","session":{}"#, quote(&s)))
+                    .unwrap_or_default();
+                format!(
+                    r#"{{"cwd":{},"agent":{}{}}}"#,
+                    quote(&t.cwd),
+                    quote(a.as_str()),
+                    session
+                )
+            }
             (None, None) => format!(r#"{{"cwd":{}}}"#, quote(&t.cwd)),
         })
         .collect();
@@ -177,6 +209,12 @@ pub struct Restored {
 /// M3 ships `NoSessions`; M6 swaps in the reader of Claude's transcript store.
 pub trait SessionLookup: Send + Sync {
     fn sessions(&self, cwd: &str) -> Vec<String>;
+
+    /// BLOCKING (the restore worker): whether session `id` of `cwd` can be resumed, its transcript there holding a
+    /// message the user sent (rule 1286). By default: the folder's lookup lists it.
+    fn used(&self, cwd: &str, id: &str) -> bool {
+        self.sessions(cwd).iter().any(|s| s == id)
+    }
 }
 
 /// The M3 lookup: no sessions, so every Claude tab comes back as a plain shell.
@@ -200,15 +238,40 @@ pub fn is_unsafe_restore_folder(cwd: &str) -> bool {
 }
 
 /// Port of planRestore: drop gone folders, keep the active tab pointing right, hand Claude tabs of
-/// one folder their sessions newest first.
+/// one folder their sessions newest first. A session counts as used when the folder's lookup lists it.
 pub fn plan_restore(
     saved: &SavedTabs,
     exists: &dyn Fn(&str) -> bool,
     sessions: &dyn Fn(&str) -> Vec<String>,
 ) -> Restored {
+    plan_restore_with(saved, exists, sessions, &|cwd, id| {
+        sessions(cwd).iter().any(|s| s == id)
+    })
+}
+
+/// `plan_restore` with the "was this session used" check made explicit (rule 1286). A Claude tab that saved its
+/// session resumes exactly that one when `used` says its transcript holds a user message and no tab before it took it;
+/// otherwise (no transcript, nothing sent, or `new`) it starts a new blank Claude ([`CLAUDE_NEW`]), never another
+/// session. A Claude tab with no saved session takes the newest session of its folder that no tab saved or took, and a
+/// new blank Claude when none is left.
+pub fn plan_restore_with(
+    saved: &SavedTabs,
+    exists: &dyn Fn(&str) -> bool,
+    sessions: &dyn Fn(&str) -> Vec<String>,
+    used: &dyn Fn(&str, &str) -> bool,
+) -> Restored {
     let mut tabs: Vec<RestoredTab> = Vec::new();
     let mut active = 0usize;
-    let mut taken: HashMap<String, usize> = HashMap::new();
+    // The sessions tabs saved as theirs: a tab without one never takes them (rule 1286).
+    let named: HashSet<&str> = saved
+        .tabs
+        .iter()
+        .filter(|t| t.remote.is_none() && t.agent == Some(AgentKind::Claude))
+        .filter_map(|t| t.session.as_deref())
+        .filter(|s| *s != SESSION_NEW)
+        .collect();
+    // The sessions handed out so far: two tabs never resume one session.
+    let mut taken: HashSet<String> = HashSet::new();
     for (i, t) in saved.tabs.iter().enumerate() {
         // A remote tab's folder is the host's: it is never statted here, and a path that would reach this machine's
         // network (a UNC path) is never used here either, since nothing here opens it (rule 287).
@@ -224,11 +287,22 @@ pub fn plan_restore(
             Some(AgentKind::Codex) => resume = Some(CODEX_RESUME.to_string()),
             Some(AgentKind::Agy) => resume = Some(AGY_RESUME.to_string()),
             Some(AgentKind::Claude) => {
-                let n = taken.entry(t.cwd.to_lowercase()).or_insert(0);
-                if let Some(id) = sessions(&t.cwd).get(*n) {
-                    resume = Some(id.clone());
-                    *n += 1;
-                }
+                let id = match t.session.as_deref() {
+                    Some(SESSION_NEW) => None,
+                    Some(id) => {
+                        Some(id.to_string()).filter(|id| !taken.contains(id) && used(&t.cwd, id))
+                    }
+                    None => sessions(&t.cwd)
+                        .into_iter()
+                        .find(|id| !named.contains(id.as_str()) && !taken.contains(id)),
+                };
+                resume = Some(match id {
+                    Some(id) => {
+                        taken.insert(id.clone());
+                        id
+                    }
+                    None => CLAUDE_NEW.to_string(),
+                });
             }
             None => {}
         }
@@ -329,9 +403,12 @@ pub fn resolve_restore_within(
             Err(_) => break,
         }
     }
-    plan_restore(saved, &|p| present.get(p).copied().unwrap_or(true), &|p| {
-        lookup.sessions(p)
-    })
+    plan_restore_with(
+        saved,
+        &|p| present.get(p).copied().unwrap_or(true),
+        &|p| lookup.sessions(p),
+        &|p, id| lookup.used(p, id),
+    )
 }
 
 /// The first frame: the placeholders and the id of each saved tab's slot.
@@ -528,6 +605,7 @@ mod tests {
             cwd: cwd.into(),
             agent,
             remote: None,
+            session: None,
         }
     }
     fn rt(cwd: &str, resume: Option<&str>, from: Option<usize>) -> RestoredTab {
@@ -679,14 +757,161 @@ mod tests {
         assert_eq!(*asked.lock().unwrap(), vec!["C:\\a", "C:\\a\\sub"]);
     }
 
+    /// Rule 1286: a Claude tab with no session left (none saved, none in the folder) comes back as a new blank
+    /// Claude, not a plain shell.
     #[test]
-    fn no_session_means_a_plain_shell() {
+    fn no_session_means_a_new_blank_claude() {
         let saved = SavedTabs {
             tabs: vec![st("C:\\a", Some(AgentKind::Claude))],
             active: 0,
         };
         let r = plan_restore(&saved, &all, &no_sessions);
-        assert_eq!(r.tabs, vec![rt("C:\\a", None, Some(0))]);
+        assert_eq!(r.tabs, vec![rt("C:\\a", Some(CLAUDE_NEW), Some(0))]);
+    }
+
+    fn sst(cwd: &str, session: &str) -> SavedTab {
+        SavedTab {
+            session: Some(session.into()),
+            ..st(cwd, Some(AgentKind::Claude))
+        }
+    }
+
+    const USED: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e50";
+    const UNUSED: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e51";
+    const OLDER: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e52";
+
+    /// Rule 1286: the session key round-trips for a local Claude tab, `new` included, and a file from before the key
+    /// still reads (no session); a bad value, a session on a shell or Codex tab, or on a remote tab is dropped.
+    #[test]
+    fn the_session_key_round_trips_and_old_files_still_read() {
+        let s = SavedTabs {
+            tabs: vec![
+                sst("C:\\a", USED),
+                sst("C:\\b", SESSION_NEW),
+                st("C:\\c", Some(AgentKind::Claude)),
+            ],
+            active: 0,
+        };
+        let json = tabs_json(&s);
+        assert_eq!(
+            json,
+            format!(
+                r#"{{"tabs":[{{"cwd":"C:\\a","agent":"claude","session":"{USED}"}},{{"cwd":"C:\\b","agent":"claude","session":"new"}},{{"cwd":"C:\\c","agent":"claude"}}],"active":0}}"#
+            )
+        );
+        assert_eq!(parse_tabs(&json), s);
+        // A file written before the key.
+        let old = parse_tabs(r#"{"tabs":[{"cwd":"C:\\a","agent":"claude"}],"active":0}"#);
+        assert_eq!(old.tabs, vec![st("C:\\a", Some(AgentKind::Claude))]);
+        // Anything else is no session.
+        // (One tab per line: the source guard reads two agent words on a line as a hand-written agent list.)
+        let tabs = [
+            r#"{"cwd":"C:\\a","agent":"claude","session":"x; rm"}"#.to_string(),
+            format!(
+                r#"{{"cwd":"C:\\b","agent":"claude","session":"{}"}}"#,
+                USED.to_uppercase()
+            ),
+            format!(r#"{{"cwd":"C:\\c","session":"{USED}"}}"#),
+            format!(r#"{{"cwd":"C:\\d","agent":"codex","session":"{USED}"}}"#),
+            r#"{"cwd":"C:\\e","agent":"claude","session":7}"#.to_string(),
+            r#"{"cwd":"C:\\f","agent":"claude","session":"claude:new"}"#.to_string(),
+        ];
+        let raw = format!(r#"{{"tabs":[{}],"active":0}}"#, tabs.join(","));
+        assert!(parse_tabs(&raw).tabs.iter().all(|t| t.session.is_none()));
+        let remote = parse_tabs(&format!(
+            r#"{{"tabs":[{{"cwd":"/h","agent":"claude","session":"{USED}","remote":{{"machine":"m"}}}}],"active":0}}"#
+        ));
+        assert_eq!(remote.tabs[0].session, None);
+        // A session on a tab that is not Claude is never written.
+        let codex = SavedTabs {
+            tabs: vec![SavedTab {
+                session: Some(USED.into()),
+                ..st("C:\\d", Some(AgentKind::Codex))
+            }],
+            active: 0,
+        };
+        assert_eq!(
+            tabs_json(&codex),
+            r#"{"tabs":[{"cwd":"C:\\d","agent":"codex"}],"active":0}"#
+        );
+    }
+
+    /// Rule 1286, Max 2026-11-18: a Claude tab resumes exactly its own session when that session was used; one whose
+    /// session was never used (no transcript, or no user message in it) or that saved `new` comes back as a new blank
+    /// Claude and never takes another session of the folder.
+    #[test]
+    fn a_tab_resumes_its_own_used_session_and_an_unused_one_comes_back_blank() {
+        let saved = SavedTabs {
+            tabs: vec![
+                sst("C:\\w", UNUSED),
+                sst("C:\\w", USED),
+                sst("C:\\w", SESSION_NEW),
+                sst("C:\\w", "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e59"),
+            ],
+            active: 0,
+        };
+        // The folder lists USED and OLDER; only USED holds a user message (UNUSED has an empty transcript).
+        let list = |_: &str| vec![USED.to_string(), OLDER.to_string(), UNUSED.to_string()];
+        let used = |_: &str, id: &str| id == USED || id == OLDER;
+        let r = plan_restore_with(&saved, &all, &list, &used);
+        let resumes: Vec<Option<&str>> = r.tabs.iter().map(|t| t.resume.as_deref()).collect();
+        assert_eq!(
+            resumes,
+            vec![
+                Some(CLAUDE_NEW),
+                Some(USED),
+                Some(CLAUDE_NEW),
+                Some(CLAUDE_NEW)
+            ]
+        );
+        assert!(
+            !resumes.contains(&Some(OLDER)),
+            "another session was picked"
+        );
+    }
+
+    /// Rule 1286: a session a tab saved as its own is never handed to a tab without one, and one session is never
+    /// resumed by two tabs; a tab without a session takes the newest free one, then a new blank Claude.
+    #[test]
+    fn a_saved_session_is_never_handed_to_another_tab() {
+        let saved = SavedTabs {
+            tabs: vec![
+                st("C:\\w", Some(AgentKind::Claude)),
+                sst("C:\\w", USED),
+                sst("C:\\w", USED),
+                st("C:\\w", Some(AgentKind::Claude)),
+            ],
+            active: 0,
+        };
+        let list = |_: &str| vec![USED.to_string(), OLDER.to_string()];
+        let used = |_: &str, _: &str| true;
+        let r = plan_restore_with(&saved, &all, &list, &used);
+        let resumes: Vec<Option<&str>> = r.tabs.iter().map(|t| t.resume.as_deref()).collect();
+        assert_eq!(
+            resumes,
+            vec![Some(OLDER), Some(USED), Some(CLAUDE_NEW), Some(CLAUDE_NEW)]
+        );
+    }
+
+    /// Rule 1286: the worker asks the lookup whether a saved session was used, in the tab's own folder.
+    #[test]
+    fn resolve_restore_asks_the_lookup_whether_the_saved_session_was_used() {
+        struct Used;
+        impl SessionLookup for Used {
+            fn sessions(&self, _: &str) -> Vec<String> {
+                vec![OLDER.to_string()]
+            }
+            fn used(&self, cwd: &str, id: &str) -> bool {
+                cwd == "C:\\w" && id == USED
+            }
+        }
+        let saved = SavedTabs {
+            tabs: vec![sst("C:\\w", USED), sst("C:\\v", USED)],
+            active: 0,
+        };
+        let r = resolve_restore(&saved, Arc::new(|_: &str| true), Arc::new(Used));
+        let resumes: Vec<Option<&str>> = r.tabs.iter().map(|t| t.resume.as_deref()).collect();
+        assert_eq!(resumes, vec![Some(USED), Some(CLAUDE_NEW)]);
     }
 
     #[test]
@@ -1083,6 +1308,7 @@ mod tests {
                 cwd: format!(r"C:\w{i}"),
                 agent: None,
                 remote: None,
+                session: None,
             })
             .collect();
         let json = tabs_json(&SavedTabs { tabs, active: 119 });
@@ -1175,6 +1401,7 @@ mod remote_tests {
                 host_tab: host_tab.map(str::to_string),
                 last_seq: seq,
             }),
+            session: None,
         }
     }
 
@@ -1183,6 +1410,7 @@ mod remote_tests {
             cwd: cwd.into(),
             agent: Some(AgentKind::Claude),
             remote: None,
+            session: None,
         }
     }
 

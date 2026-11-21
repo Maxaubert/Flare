@@ -605,3 +605,33 @@ fn a_caption_button_reached_by_tab_has_a_2px_accent_ring_and_a_click_has_none() 
         );
     }
 }
+
+/// Rule 1324: the pulse watch's grid box (device pixels, fractions kept) is where the grid image is drawn.
+#[test]
+fn the_pulse_watch_reads_the_grid_box_where_the_image_is_drawn() {
+    let h = harness(1.0);
+    h.comp.set_layout_vertical(true);
+    h.comp.set_sidebar_width(220.0);
+    h.comp.set_sidebar_collapsed(false);
+    h.advance(0);
+    let f = h.render();
+    let (x0, y0, x1, y1) = f
+        .bbox_where(0, 0, f.w, f.h, is_red)
+        .expect("the image is on screen");
+    let px = |v: f32| v.round() as u32;
+    let (bx, by) = (
+        px(h.comp.get_grid_box_x_phx()),
+        px(h.comp.get_grid_box_y_phx()),
+    );
+    let (bw, bh) = (
+        px(h.comp.get_grid_box_w_phx()),
+        px(h.comp.get_grid_box_h_phx()),
+    );
+    // The image's first column and row may be blended into the chrome's edge (as in the
+    // frozen-width test above); its far edges end exactly where the box does.
+    assert!(x0 == bx || x0 == bx + 1, "box x {bx}, image x {x0}");
+    assert!(y0 == by || y0 == by + 1, "box y {by}, image y {y0}");
+    assert_eq!((x1 + 1, y1 + 1), (bx + bw, by + bh));
+    assert_eq!(bw, h.comp.get_grid_phys_width() as u32);
+    assert_eq!(bh, h.comp.get_grid_phys_height() as u32);
+}

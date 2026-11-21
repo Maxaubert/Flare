@@ -418,6 +418,7 @@ fn saved(cwds: &[String], active: usize) -> SavedTabs {
                 cwd: cwd.clone(),
                 agent: None,
                 remote: None,
+                session: None,
             })
             .collect(),
         active,
@@ -572,6 +573,7 @@ fn mark_tab(folder: &str, agent: Option<AgentKind>) -> SavedTab {
         cwd: github(folder),
         agent,
         remote: None,
+        session: None,
     }
 }
 

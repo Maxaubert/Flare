@@ -347,7 +347,10 @@ impl AgentHub {
     fn apply_arm(&mut self, tab: &str, step: ArmStep) {
         self.arms.insert(tab.to_string(), step.arm);
         if step.gone {
-            self.sessions.remove(tab);
+            // The window saves the session with the tab (rule 1286): losing it is a change to save.
+            if self.sessions.remove(tab).is_some() {
+                self.changed = true;
+            }
             self.agent_folders.remove(tab);
             self.agent_start_folders.remove(tab);
             (self.deps.reports_off)(tab);
@@ -486,6 +489,12 @@ impl AgentHub {
                     if let Some(signal) = parse_agent_signal(data) {
                         if let Some(session) = &signal.session {
                             let old = self.sessions.insert(id.clone(), session.clone());
+                            // A session named (or another one) is a change of its own: the window saves it with
+                            // the tab (rule 1286). The marks often do not move with it (the title showed the work
+                            // before the turn's hook named the session), so they cannot stand for it.
+                            if old.as_deref() != Some(session.as_str()) {
+                                self.changed = true;
+                            }
                             // Another session in the same tab: what the old one put on the tab goes.
                             if old.is_some_and(|o| o != *session) {
                                 self.agent_start_folders.remove(id);
@@ -571,6 +580,9 @@ impl AgentHub {
             }
             _ => self.sessions.remove(tab),
         };
+        if old.as_ref() != self.sessions.get(tab) {
+            self.changed = true;
+        }
         // A shell started again in a tab that had a session: that session's decor goes.
         if let Some(old) = old
             && self.sessions.get(tab) != Some(&old)
@@ -641,6 +653,9 @@ impl AgentHub {
         }
         if let Some(s) = st.session.as_deref().filter(|s| is_session_id(s)) {
             let old = self.sessions.insert(tab.to_string(), s.to_string());
+            if old.as_deref() != Some(s) {
+                self.changed = true;
+            }
             if old.is_some_and(|o| o != s) {
                 self.agent_start_folders.remove(tab);
                 self.decor_gone
@@ -845,12 +860,12 @@ impl AgentHub {
         .min()
     }
 
-    /// True once after the marks, an agent kind or a failed kind changed.
     /// The arm state as the keyboard path's `AgentView` (it follows the hub without borrowing it).
     pub fn view(&self) -> Rc<dyn flare_agent::keys::AgentView> {
         Rc::new(self.arms.clone())
     }
 
+    /// True once after the marks, an agent kind, a failed kind or a tab's Claude session changed.
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }
@@ -1515,6 +1530,32 @@ mod tests {
         assert_eq!(a.state.as_deref(), Some("done"));
     }
 
+    /// Rule 1286, 2026-11-19: a session the hooks name is a change the window saves, also when no mark moves with it.
+    /// Claude's title shows the work about 25 ms before the turn's UserPromptSubmit hook names the session, so the
+    /// mark is already "working" when the id lands; the window syncs `tabs.json` only on `take_changed`, so the tab
+    /// kept saving `new` and came back as a new blank Claude.
+    #[test]
+    fn a_named_session_is_a_change_even_when_no_mark_moves() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.title("a", CLAUDE_TITLE);
+        r.print("a", &osc("working"));
+        r.pump_until("a working", |h| h.working("a"));
+        let _ = r.hub.take_changed();
+        r.print("a", &osc_session("working", SID));
+        assert!(r.hub.indicator().working_ids().contains("a"));
+        assert!(r.hub.take_changed(), "the session named is a change");
+        r.print("a", &osc_session("working", SID));
+        assert!(!r.hub.take_changed(), "the same session again is none");
+        let next = "11111111-2222-4333-8444-555555555555";
+        r.print("a", &osc_session("working", next));
+        assert!(r.hub.take_changed(), "another session is a change");
+        // The agent leaving takes the session: a change too.
+        r.title("a", "");
+        assert_eq!(r.hub.claude_session("a"), None);
+        assert!(r.hub.take_changed());
+    }
+
     #[test]
     fn a_session_goes_when_the_agent_leaves_or_the_tab_closes() {
         let mut r = Rig::new();
@@ -1613,6 +1654,19 @@ mod tests {
         // The tabs come in the order they opened.
         let order: Vec<String> = r.hub.send_tabs().into_iter().map(|t| t.tab).collect();
         assert_eq!(order, vec!["a", "b", "c"]);
+    }
+
+    /// Rule 1286: a tab started as a new blank Claude (`claude:new`) is a Claude tab from its first moment, holds no
+    /// session until its hooks name one (the marker is not a session id), and, like a resume, is not new work (rule 38).
+    #[test]
+    fn a_new_blank_claude_is_claude_with_no_session_and_not_new_work() {
+        let mut r = Rig::new();
+        r.open("a", Some(flare_agent::kinds::CLAUDE_NEW));
+        let a = tab_of(&r.hub, "a");
+        assert_eq!(a.session, None);
+        assert_eq!(a.agent.as_deref(), Some("claude"));
+        assert_eq!(r.hub.claude_session("a"), None);
+        assert!(r.hub.indicator().activity.is_touched("a"));
     }
 
     #[test]

@@ -399,6 +399,7 @@ pub(super) fn write_tabs(profile: &Path, folders: &[PathBuf]) -> Result<(), Stri
                 cwd: f.to_string_lossy().into_owned(),
                 agent: None,
                 remote: None,
+                session: None,
             })
             .collect(),
         active: 0,

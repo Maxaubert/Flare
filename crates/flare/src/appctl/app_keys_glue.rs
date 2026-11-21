@@ -3,14 +3,15 @@
 //! the keys, Ctrl+Shift+E shows the tab's folder in Explorer (Finder on a Mac). On a Mac they are Cmd+Shift.
 //!
 //! The closed tabs are kept in memory only, for this run: a short list, the last one last. A Claude tab comes back with
-//! its own session when the hooks named it; otherwise a worker finds the newest session of the folder that no open tab
-//! holds (rule 4: nothing is guessed beyond that). Codex and agy come back with their own resume (`codex resume
+//! its own session when the hooks named it. When they did not while the hooks are on, nothing was sent in it and it
+//! comes back as a new blank Claude (rule 1286); with the hooks off a worker finds the newest session of the folder
+//! that no open tab holds, and a new blank Claude when there is none (rule 4: nothing is guessed beyond that). Codex and agy come back with their own resume (`codex resume
 //! --last`, `agy -c`). A remote tab comes back on its machine, in its folder; the host owns its session.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use flare_agent::kinds::{AGY_RESUME, AgentKind, CODEX_RESUME};
+use flare_agent::kinds::{AGY_RESUME, AgentKind, CLAUDE_NEW, CODEX_RESUME};
 use flare_agent::resume::valid_resume;
 use flare_agent::reveal::agent_of_resume;
 use flare_tabs::tabs::TabKind;
@@ -35,6 +36,9 @@ pub(crate) struct ClosedTab {
     pub agent: Option<AgentKind>,
     /// The Claude session the hooks named for it, checked by `valid_resume`.
     pub session: Option<String>,
+    /// For a Claude tab with no session named: the hooks were on, so nothing was sent in it and it comes back as a new
+    /// blank Claude (rule 1286). False: not known, and a worker looks for a session.
+    pub unused: bool,
     /// The machine's id, for a remote tab.
     pub machine: Option<String>,
 }
@@ -56,14 +60,15 @@ pub(crate) fn push_closed(list: &mut Vec<ClosedTab>, tab: ClosedTab) {
     }
 }
 
-/// What a closed tab starts with: Codex and agy their own resume, Claude its known session. `Err` for a Claude tab
-/// with no session known: a worker looks for one.
+/// What a closed tab starts with: Codex and agy their own resume, Claude its known session, or a new blank Claude when
+/// its session was never used (rule 1286). `Err` for a Claude tab with no session known: a worker looks for one.
 fn resume_of(t: &ClosedTab) -> Result<Option<String>, ()> {
     match t.agent {
         Some(AgentKind::Codex) => Ok(Some(CODEX_RESUME.to_string())),
         Some(AgentKind::Agy) => Ok(Some(AGY_RESUME.to_string())),
         Some(AgentKind::Claude) => match &t.session {
             Some(s) => Ok(Some(s.clone())),
+            None if t.unused => Ok(Some(CLAUDE_NEW.to_string())),
             None => Err(()),
         },
         None => Ok(None),
@@ -94,11 +99,16 @@ impl AppCtl {
                 .saved_agent(id)
                 .or_else(|| self.model.agent_kind(id))
         };
-        let session = (agent == Some(AgentKind::Claude))
-            .then(|| self.hub.claude_session(id))
-            .flatten()
+        // What `tabs.json` would save for it (rule 1286): its session (the hub's, or the id the tab already saves), or
+        // `new` when its Claude never named a session with the hooks on.
+        let saved = self.session_to_save(id, agent);
+        let session = saved
+            .as_deref()
             .and_then(|s| valid_resume(Some(s)))
+            .filter(|s| flare_agent::signal::is_session_id(s))
             .map(str::to_string);
+        let unused =
+            session.is_none() && saved.as_deref() == Some(flare_tabs::restore::SESSION_NEW);
         push_closed(
             &mut self.closed,
             ClosedTab {
@@ -106,6 +116,7 @@ impl AppCtl {
                 at,
                 agent,
                 session,
+                unused,
                 machine,
             },
         );
@@ -148,7 +159,7 @@ impl AppCtl {
     }
 
     /// A worker reads the folder's Claude sessions (newest first) and the tab opens with the newest no open tab
-    /// holds (`held`), or as a plain shell when there is none.
+    /// holds (`held`), or as a new blank Claude when there is none (rule 1286).
     fn find_session_then_reopen(&mut self, t: ClosedTab, held: HashSet<String>) {
         let lookup = Arc::clone(&self.deps.lookup);
         let post = Arc::clone(&self.deps.post);
@@ -159,12 +170,13 @@ impl AppCtl {
                 let resume = lookup
                     .sessions(&cwd)
                     .into_iter()
-                    .find(|s| !held.contains(s));
+                    .find(|s| !held.contains(s))
+                    .or_else(|| Some(CLAUDE_NEW.to_string()));
                 post(UiMsg::Reopen(Reopen { cwd, at, resume }));
             });
         if let Err(e) = spawned {
             log::warn!("could not start the reopen worker: {e}");
-            self.open_resuming(&t.cwd, None, t.at);
+            self.open_resuming(&t.cwd, Some(CLAUDE_NEW), t.at);
         }
     }
 
@@ -183,6 +195,8 @@ impl AppCtl {
         self.hub.on_spawned(&id, dir, resume);
         if let Some(k) = resume.map(agent_of_resume) {
             self.model.set_agent(&id, Some(k));
+            let session = self.session_to_save(&id, Some(k));
+            self.model.set_session(&id, session.as_deref());
             let now = self.now();
             self.restoring.insert(id.clone(), (k, now));
         }
@@ -279,6 +293,7 @@ mod tests {
             at: 0,
             agent: None,
             session: None,
+            unused: false,
             machine: None,
         }
     }
@@ -309,5 +324,24 @@ mod tests {
             resume_of(&t),
             Ok(Some("3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f".to_string()))
         );
+    }
+
+    /// Rule 1286: a closed Claude tab whose Claude never named a session (nothing was sent, the hooks on) opens again
+    /// as a new blank Claude, not another session of the folder.
+    #[test]
+    fn a_closed_claude_tab_never_used_comes_back_as_a_new_blank_claude() {
+        let mut t = closed("C:\\a");
+        t.agent = Some(AgentKind::Claude);
+        t.unused = true;
+        assert_eq!(resume_of(&t), Ok(Some(CLAUDE_NEW.to_string())));
+        // A named session wins over the flag.
+        t.session = Some("3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f".into());
+        assert_eq!(
+            resume_of(&t),
+            Ok(Some("3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f".to_string()))
+        );
+        // A Codex tab keeps its own resume.
+        t.agent = Some(AgentKind::Codex);
+        assert_eq!(resume_of(&t), Ok(Some(CODEX_RESUME.to_string())));
     }
 }
