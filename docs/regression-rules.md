@@ -5302,3 +5302,28 @@ reads the unknown kind as nothing and never writes it back (rule 40). Second hal
 boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
 `a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
 (`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+1331. **A context menu's flyout with no room on either side hangs under its parent row, or over it, never on it.**
+Audit 2026-11-18, finding 20 (issue #273). In a narrow window the 156 px panel and the 176 px flyout cannot sit side
+by side. The flyout used to clamp to x 8 and lie on its own parent row, under the pointer, so the menu seemed to
+swap under the cursor. Now, when neither the right nor the left side fits, the flyout keeps the panel's x (clamped to
+the window) and starts at the parent row's foot; near the window's foot it ends at the row's top instead. The panel
+never moves. The right side and the left flip are unchanged. Held by
+`a_flyout_with_no_room_on_either_side_drops_below_its_row_and_never_covers_it` and
+`a_flyout_with_no_room_on_either_side_goes_above_its_row_near_the_foot` (`crates/flare/src/ui_tests/menus.rs`).
+Source: audit report `research/audit/2026-11-18-flare-full.md`, 2026-11-20.
+1332. **A sidebar row shows only the plugin hover buttons that fit between the name's start and the decor.**
+Audit 2026-11-18, finding 21 (issue #273). `hb1.x` had no lower bound, so a row with a ring, progress and two badges
+drew its hover buttons over the 46 px icon band. `SideRow` now takes the room from x 56 to the decor's 4 px gap,
+at the end box's hovered width (38 px with a ring, so a button never flickers while the X slides in), and shows two
+buttons, one or none. Fewer buttons keep their places (`hover-action` 0 is always the first). At 220 px with a ring,
+progress and two badges one button shows; at 150 px none. Held by
+`sidebar_hover_buttons_never_reach_the_icon_band_or_the_badges` (`crates/flare/src/ui_tests/plugin_surfaces.rs`).
+Source: audit report `research/audit/2026-11-18-flare-full.md`, 2026-11-20.
+1333. **A context menu or flyout taller than the window stops 8 px from each edge and scrolls.** Audit 2026-11-18,
+finding 22 (issue #273). Pins and linked machines have no cap, so the plus menu could outgrow the window: the panel's
+y went negative and rows left the window. `ContextMenu`'s panel and its flyout are now at most the window's height less
+16 px, and their rows sit in a `Flickable` that is interactive only when capped (no mouse-drag pan), so a menu that
+fits is laid out and behaves exactly as before. The wheel reaches the last row. Held by
+`a_menu_taller_than_the_window_is_capped_and_scrolls_to_its_last_row`, `a_tall_dropdown_stays_in_the_window` and
+`a_flyout_taller_than_the_window_is_capped_and_scrolls` (`crates/flare/src/ui_tests/menus.rs`). Source: audit report
+`research/audit/2026-11-18-flare-full.md`, 2026-11-20.

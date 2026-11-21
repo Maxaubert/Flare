@@ -280,7 +280,8 @@ export component ContextMenu inherits Rectangle {
         // Snapped, as the text's width is any fraction: the border stays on whole pixels.
         width: Px.snap(min(max(156px, col.preferred-width) + 2 * Px.hair(), root.width - 16px));
         // The layout's padding is the border already: adding it again made the last row taller.
-        height: col.preferred-height;
+        // A menu taller than the window stops 8 px from each edge and scrolls (audit 2026-11-18, rule 1333).
+        height: min(col.preferred-height, root.height - 16px);
         x: Px.snap(root.drop
             ? max(8px, min(root.at-x - self.width, root.width - self.width - 8px))
             : min(root.at-x, root.width - self.width - 8px));
@@ -298,22 +299,31 @@ export component ContextMenu inherits Rectangle {
         drop-shadow-color: #00000080;
         clip: true;
         TouchArea { }
-        col := VerticalLayout {
-            padding: Px.hair();
-            for r[i] in root.rows: VerticalLayout {
-                if r.parent < 0 && i > 0: Rectangle {
-                    // A group starts after a wider gap with the rule in the middle of it (whole pixels).
-                    height: r.group ? Px.snap(9px) : Px.hair();
-                    background: r.group ? transparent : Theme.divider;
-                    if r.group: Rectangle { y: Px.snap(4px); height: Px.hair(); background: Theme.divider; }
-                }
-                if r.parent < 0: MenuItem {
-                    item: r;
-                    index: i;
-                    expanded: root.open-sub == i;
-                    picked(n) => { root.pick(n); }
-                    trailing(n) => { root.trailing(n); }
-                    hovered(n, y) => { root.row-hovered(n, y); }
+        // Only a capped menu scrolls; a menu that fits takes no wheel or drag (it is laid out as before).
+        Flickable {
+            width: parent.width;
+            height: parent.height;
+            interactive: col.preferred-height > parent.height;
+            mouse-drag-pan-enabled: false;
+            content-height: col.preferred-height;
+            col := VerticalLayout {
+                width: panel.width;
+                padding: Px.hair();
+                for r[i] in root.rows: VerticalLayout {
+                    if r.parent < 0 && i > 0: Rectangle {
+                        // A group starts after a wider gap with the rule in the middle of it (whole pixels).
+                        height: r.group ? Px.snap(9px) : Px.hair();
+                        background: r.group ? transparent : Theme.divider;
+                        if r.group: Rectangle { y: Px.snap(4px); height: Px.hair(); background: Theme.divider; }
+                    }
+                    if r.parent < 0: MenuItem {
+                        item: r;
+                        index: i;
+                        expanded: root.open-sub == i;
+                        picked(n) => { root.pick(n); }
+                        trailing(n) => { root.trailing(n); }
+                        hovered(n, y) => { root.row-hovered(n, y); }
+                    }
                 }
             }
         }
@@ -346,14 +356,27 @@ export component ContextMenu inherits Rectangle {
 
     // The flyout is a layer over its parent, not an extension: it overlaps by 6 px, flips to the
     // left when the right edge has no room, and never leaves the window.
+    // When neither side has room (a narrow window), it hangs under the parent row, or over it near the window's
+    // foot, so it never lies on the row under the pointer (audit 2026-11-18, rule 1331).
     fly := Rectangle {
         visible: root.fly-open;
         width: Px.snap(min(max(176px, fcol.preferred-width + 2 * Px.hair()), 260px));
-        height: fcol.preferred-height;
+        // Capped like the panel: a tall flyout scrolls (rule 1333).
+        height: min(fcol.preferred-height, root.height - 16px);
         property <length> right-x: panel.x + panel.width - 6px;
-        x: Px.snap(self.right-x + self.width > root.width - 8px ? max(8px, panel.x - self.width + 6px) : self.right-x);
+        property <length> left-x: panel.x - self.width + 6px;
+        property <bool> fits-right: self.right-x + self.width <= root.width - 8px;
+        property <bool> stacked: !self.fits-right && self.left-x < 8px;
+        // The parent row is a MenuItem, 28 px tall.
+        property <length> row-foot: root.sub-anchor + 28px;
+        x: Px.snap(self.fits-right ? self.right-x
+            : !self.stacked ? self.left-x
+            : max(8px, min(panel.x, root.width - self.width - 8px)));
         // Its first row meets the parent row's top, which is one hairline below the panel's.
-        y: Px.snap(max(8px, min(root.sub-anchor - Px.hair(), root.height - self.height - 8px)));
+        y: Px.snap(!self.stacked ? max(8px, min(root.sub-anchor - Px.hair(), root.height - self.height - 8px))
+            : self.row-foot + self.height <= root.height - 8px ? self.row-foot
+            : root.sub-anchor - self.height >= 8px ? root.sub-anchor - self.height
+            : max(8px, min(root.sub-anchor - Px.hair(), root.height - self.height - 8px)));
         background: Theme.side-flat;
         border-radius: 2px;
         border-width: Px.hair();
@@ -367,22 +390,30 @@ export component ContextMenu inherits Rectangle {
                 if e.kind == PointerEventKind.move { root.close-pending = false; }
             }
         }
-        fcol := VerticalLayout {
-            padding: Px.hair();
-            for r[i] in root.rows: VerticalLayout {
-                if r.parent == root.open-sub && root.open-sub >= 0 && (i == 0 || root.rows[i - 1].parent != r.parent): MenuItem {
-                    item: r;
-                    index: i;
-                    picked(n) => { root.pick(n); }
-                    hovered(n, y) => { root.row-hovered(n, y); }
-                }
-                if r.parent == root.open-sub && root.open-sub >= 0 && i > 0 && root.rows[i - 1].parent == r.parent: VerticalLayout {
-                    Rectangle { height: Px.hair(); background: Theme.divider; }
-                    MenuItem {
+        Flickable {
+            width: parent.width;
+            height: parent.height;
+            interactive: fcol.preferred-height > parent.height;
+            mouse-drag-pan-enabled: false;
+            content-height: fcol.preferred-height;
+            fcol := VerticalLayout {
+                width: fly.width;
+                padding: Px.hair();
+                for r[i] in root.rows: VerticalLayout {
+                    if r.parent == root.open-sub && root.open-sub >= 0 && (i == 0 || root.rows[i - 1].parent != r.parent): MenuItem {
                         item: r;
                         index: i;
                         picked(n) => { root.pick(n); }
                         hovered(n, y) => { root.row-hovered(n, y); }
+                    }
+                    if r.parent == root.open-sub && root.open-sub >= 0 && i > 0 && root.rows[i - 1].parent == r.parent: VerticalLayout {
+                        Rectangle { height: Px.hair(); background: Theme.divider; }
+                        MenuItem {
+                            item: r;
+                            index: i;
+                            picked(n) => { root.pick(n); }
+                            hovered(n, y) => { root.row-hovered(n, y); }
+                        }
                     }
                 }
             }
