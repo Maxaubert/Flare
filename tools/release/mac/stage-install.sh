@@ -49,14 +49,31 @@ find_developer_id() {
     END { if (pick != "") print pick; else if (first != "") print first }'
 }
 
-# 0 when the bundle is signed with Developer ID: an Authority line for it and a TeamIdentifier that is set. codesign's
-# whole answer is read first (rule 1342: a `grep -q` on its pipe failed a signed stage with SIGPIPE, commit 14de4121).
-is_developer_id() {
+# The TeamIdentifier of code signed with Developer ID (an Authority line for it and a team that is set); empty and 1
+# otherwise. codesign's whole answer is read first (rule 1342: a `grep -q` on its pipe failed a signed stage with
+# SIGPIPE, commit 14de4121).
+developer_id_team() {
   local info team
   info="$(codesign -dv --verbose=2 "$1" 2>&1 || true)"
-  team="$(printf '%s\n' "$info" | sed -n 's/^TeamIdentifier=//p')"
+  team="$(printf '%s\n' "$info" | sed -n '/^TeamIdentifier=/{s/^TeamIdentifier=//;p;q;}')"
   printf '%s\n' "$info" | grep '^Authority=Developer ID Application:' >/dev/null || return 1
-  [ -n "$team" ] && [ "$team" != "not set" ]
+  [ -n "$team" ] && [ "$team" != "not set" ] || return 1
+  printf '%s\n' "$team"
+}
+
+# 0 when the whole bundle is Developer ID signed: the bundle itself, a signature that still verifies (codesign
+# --verify --deep --strict: nothing changed or left unsigned after signing), and every helper app and framework
+# under Contents/Frameworks signed by the same team (a partly signed bundle is refused).
+is_developer_id() {
+  local team nested_team n
+  team="$(developer_id_team "$1")" || return 1
+  codesign --verify --deep --strict "$1" >/dev/null 2>&1 || return 1
+  for n in "$1"/Contents/Frameworks/*.app "$1"/Contents/Frameworks/*.framework; do
+    [ -e "$n" ] || continue
+    nested_team="$(developer_id_team "$n")" || return 1
+    [ "$nested_team" = "$team" ] || return 1
+  done
+  return 0
 }
 
 TMP_BUILD=""
@@ -89,7 +106,7 @@ fi
 SIGNED=0
 is_developer_id "$APP" && SIGNED=1
 if [ "$SIGNED" = "0" ]; then
-  [ "$ALLOW_ADHOC" = "1" ] || fail "$APP is not signed with Developer ID (codesign -dv: no Developer ID Authority or TeamIdentifier); an ad hoc install loses Flare's TCC grants (Screen Recording). Nothing staged; $ADHOC_HINT"
+  [ "$ALLOW_ADHOC" = "1" ] || fail "$APP is not signed with Developer ID (codesign -dv: no Developer ID Authority or TeamIdentifier, a signature that does not verify, or a helper or framework not signed by the same team); an ad hoc install loses Flare's TCC grants (Screen Recording). Nothing staged; $ADHOC_HINT"
   say "staging a bundle that is not signed with Developer ID (FLARE_STAGE_ALLOW_ADHOC=1)"
 fi
 

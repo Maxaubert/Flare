@@ -5347,11 +5347,15 @@ cdhash, so every ad hoc install is a new app to TCC, while a Developer ID build 
 "Developer ID Application" identity (`security find-identity -v -p codesigning`, read only; team `WV7BY8CUM8` first
 when there are several). With none, it refuses before building; a built or `FLARE_STAGE_APP` bundle that `codesign -dv`
 does not show as Developer ID (Authority line and a set `TeamIdentifier`, its output read whole first, rule 1342) is
-refused before anything is written, so the old stage stays. `FLARE_STAGE_ALLOW_ADHOC=1` lets an ad hoc stage through
+refused before anything is written, so the old stage stays. A Developer ID main signature is not enough: the bundle
+must also pass `codesign --verify --deep --strict` (nothing changed after signing), and every helper app and framework
+in `Contents/Frameworks` must be Developer ID signed by the same team, so a partly signed bundle is refused too.
+`FLARE_STAGE_ALLOW_ADHOC=1` lets an ad hoc stage through
 (tests and CI, which have no Keychain identity). The tests never sign: the build path runs against a fake checkout and
 fake `security` and `codesign`. Held by `the_mac_stage_script_refuses_a_bundle_that_is_not_developer_id_signed`,
 `the_mac_stage_script_signs_with_the_keychains_developer_id_and_prefers_the_owners_team` and
-`the_mac_stage_script_refuses_to_build_ad_hoc_unless_allowed` (`crates/flare-update/tests/stage_script.rs`).
+`the_mac_stage_script_refuses_to_build_ad_hoc_unless_allowed` and
+`the_mac_stage_script_refuses_a_partly_signed_or_broken_developer_id_bundle` (`crates/flare-update/tests/stage_script.rs`).
 1344. **The dictation pick card never leaves the top of a short screen.** Audit #18 (issue #306): a pick face is
 196 + 48 per row + 30 per group tall, and `bounds_for` put it 16 px above the work area's foot with no floor, so 9 rows
 on a short screen pushed the title and the heard words off the top or onto the monitor above. `bounds_for`

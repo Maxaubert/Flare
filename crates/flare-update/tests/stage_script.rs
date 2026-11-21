@@ -281,6 +281,61 @@ mod mac {
         assert!(!root.join("staged.tmp").exists());
     }
 
+    /// Rule 1356: a Developer ID main signature is not enough. A bundle whose signature no longer verifies (changed
+    /// after signing), or whose framework is ad hoc or another team's, is refused like an ad hoc one. A fake
+    /// `codesign` first on PATH answers per case; nothing is signed.
+    #[test]
+    fn the_mac_stage_script_refuses_a_partly_signed_or_broken_developer_id_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Support").join("Flare");
+        let built = dir.path().join("build").join("Flare.app");
+        fake_bundle(&built, "exe");
+        let bin = dir.path().join("bin");
+        let mode = dir.path().join("mode.txt");
+        // Modes: "good" (all Developer ID, verifies), "broken" (--verify fails), "adhoc-fw" (the framework is ad
+        // hoc), "other-fw" (the framework is another team's).
+        write_exe(
+            &bin.join("codesign"),
+            &format!(
+                "#!/bin/bash\nmode=\"$(cat '{}')\"\n\
+                 if [ \"$1\" = --verify ]; then [ \"$mode\" != broken ]; exit; fi\n\
+                 target=\"${{!#}}\"\nteam=WV7BY8CUM8\n\
+                 case \"$target\" in *.framework)\n\
+                   [ \"$mode\" = adhoc-fw ] && {{ printf 'Signature=adhoc\\nTeamIdentifier=not set\\n' >&2; exit 0; }}\n\
+                   [ \"$mode\" = other-fw ] && team=QQQQQQQQQQ ;;\nesac\n\
+                 printf 'Authority=Developer ID Application: X (%s)\\nTeamIdentifier=%s\\n' \"$team\" \"$team\" >&2\n",
+                mode.display()
+            ),
+        );
+        let run = |m: &str| {
+            std::fs::write(&mode, m).unwrap();
+            let path = format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            Command::new("/bin/bash")
+                .arg(mac_script())
+                .env("PATH", path)
+                .env("FLARE_STAGE_ROOT", &root)
+                .env("FLARE_STAGE_APP", &built)
+                .env("FLARE_STAGE_REPO", repo_root())
+                .env_remove("FLARE_MAC_SIGN_IDENTITY")
+                .env_remove("FLARE_STAGE_ALLOW_ADHOC")
+                .output()
+                .expect("the script runs")
+        };
+        for m in ["broken", "adhoc-fw", "other-fw"] {
+            let out = run(m);
+            assert!(!out.status.success(), "{m}: refused\n{}", say(&out));
+            assert!(say(&out).contains("not signed with Developer ID"), "{m}");
+            assert!(!root.join("staged").exists(), "{m}: nothing staged");
+        }
+        let out = run("good");
+        assert!(out.status.success(), "{}", say(&out));
+        assert!(say(&out).contains("signed with Developer ID: an agent may install it"));
+    }
+
     /// A fake checkout whose make-app.sh records the identity it got, plus fake `security` and `codesign` first on
     /// PATH: the build path runs with no Keychain and no real signing (rule 1356).
     struct FakeBuild {

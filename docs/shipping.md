@@ -126,7 +126,8 @@ tools/release/mac/stage-install.sh
   `/Applications`.
 - **Only a Developer ID stage (2026-11-21, rule 1356).** With no Developer ID identity, or a built or given bundle that
   `codesign -dv` does not show as Developer ID (an `Authority=Developer ID Application:` line and a `TeamIdentifier`),
-  the script stages nothing and says why. An ad hoc signature is a per-build cdhash, so installing one drops Flare's
+  that fails `codesign --verify --deep --strict`, or whose helper apps and frameworks are not all Developer ID signed by
+  the same team, the script stages nothing and says why. An ad hoc signature is a per-build cdhash, so installing one drops Flare's
   TCC grants (Screen Recording broke that way on 2026-11-20); a Developer ID build keeps them. `FLARE_STAGE_ALLOW_ADHOC=1`
   stages an ad hoc build anyway (the tests and CI use it; they have no Keychain identity).
 - `FLARE_STAGE_APP=<built Flare.app>` stages a bundle already built (no cargo; the same signature check); `FLARE_STAGE_ROOT=<folder>` stages
