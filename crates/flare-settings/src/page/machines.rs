@@ -255,6 +255,13 @@ fn host_key(s: &str) -> String {
         .unwrap_or(s)
 }
 
+/// Pure: whether two host names or addresses name one computer, the way [`same_computer`] compares them (no case, no
+/// trailing dot, no `.local`, an address in its usual text). An empty one names none.
+pub fn same_host(a: &str, b: &str) -> bool {
+    let key = host_key(a);
+    !key.is_empty() && key == host_key(b)
+}
+
 /// Pure: whether an SSH host reaches this nearby computer (rule 1285): its `HostName` is the computer's announced name
 /// or one of its addresses, without case, a trailing dot or `.local`. Nothing is looked up.
 pub fn same_computer(host: &SshHost, near: &NearbyChoice) -> bool {

@@ -471,3 +471,62 @@ fn a_sidebar_row_draws_its_hover_buttons_left_of_the_ring() {
         "a button reaches {x1}, the end starts at {end_left}"
     );
 }
+
+/// Finding 21 (audit 2026-11-18, issue #273): a hovered sidebar row with a ring, progress and two badges. Row 1 of
+/// three, with `hov` hover buttons, in a sidebar `side_w` wide.
+fn crowded_side(side_w: f32, hov: i32) -> Frame {
+    let h = Harness::new(1.0, 700, 500, move || {
+        let c = TabSidebarPreview::new().expect("the preview builds");
+        let rows: Vec<TabRow> = strip_rows(hov)
+            .into_iter()
+            .map(|mut r| {
+                // No name: the frames differ only where a button is drawn.
+                if r.id.as_str() == "t1" {
+                    r.prog = 0.5;
+                    r.chip_count = 2;
+                    r.chip1_cmd = glyph_path(GLYPH_BADGE_PLUS).into();
+                    r.chip2_cmd = glyph_path(GLYPH_BADGE_PLUS).into();
+                }
+                r
+            })
+            .collect();
+        c.set_rows(ModelRc::new(VecModel::from(rows)));
+        c.set_side_width(side_w);
+        c
+    });
+    h.advance(0);
+    // On the row's icon band, away from every button.
+    h.move_to(30.0, 50.0 + 46.0 + 4.0 + 23.0);
+    h.advance(400);
+    h.render()
+}
+
+#[test]
+fn sidebar_hover_buttons_never_reach_the_icon_band_or_the_badges() {
+    // At 220 the card is 204 wide: the hovered end box (ring and X) is 38, the pill 60, so the pill starts at card x
+    // 92 (window 100) and only one 22 px button fits between the name's start (56) and the pill's 4 px gap.
+    let (x0, _, x1, _) = diff(&crowded_side(220.0, 0), &crowded_side(220.0, 2))
+        .expect("one button still fits at 220");
+    assert!(
+        x0 >= 8 + 56,
+        "a button starts at {x0}, inside the icon band"
+    );
+    assert!(
+        x1 < 100 - 3,
+        "a button reaches {x1}, the pill starts at 100"
+    );
+    assert!(
+        (x1 + 1 - x0).abs_diff(22) <= 2,
+        "one button, not two: {x0}..{x1}"
+    );
+    // At 150 there is no room for any: the row looks the same with or without them.
+    assert_eq!(
+        diff(&crowded_side(150.0, 0), &crowded_side(150.0, 2)),
+        None,
+        "no button at 150"
+    );
+    // With room for both, both show (the 300 px sidebar).
+    let (w0, _, w1, _) =
+        diff(&crowded_side(300.0, 0), &crowded_side(300.0, 2)).expect("two buttons");
+    assert!((w1 + 1 - w0).abs_diff(47) <= 2, "{w0}..{w1}");
+}

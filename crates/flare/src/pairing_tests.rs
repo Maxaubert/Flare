@@ -398,6 +398,46 @@ fn an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses() {
     assert!(nearby_of(&full, &txt(&[("proto", "1")]), addrs, 0).is_none());
 }
 
+/// Rule 1297: a computer on Ethernet and WiFi at once is found as `Maxs-Mac-Mini` and `Maxs-Mac-Mini (2)`; it shows
+/// once, with both addresses. Another computer, or the same name with another port or system, stays apart.
+#[test]
+fn a_computer_found_twice_after_a_name_conflict_shows_once() {
+    let nb = |inst: &str, name: &str, os: Option<Os>, port: u16, addrs: &[&str]| Nearby {
+        id: format!("{inst}.{SERVICE}"),
+        name: name.into(),
+        os,
+        version: "0.1.0".into(),
+        addrs: addrs.iter().map(|a| a.parse().unwrap()).collect(),
+        port,
+    };
+    let mac = Some(Os::Mac);
+    let list = merge_nearby(vec![
+        nb("Maxs-Mac-Mini (2)", "Maxs-Mac-Mini", mac, 47790, &["192.168.50.242"]),
+        nb("evo-x2", "evo-x2", Some(Os::Pc), 47790, &["192.168.50.20"]),
+        nb("Maxs-Mac-Mini", "Maxs-Mac-Mini", mac, 47790, &["fe80::1", "192.168.50.76"]),
+    ]);
+    let ids: Vec<&str> = list.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            format!("Maxs-Mac-Mini.{SERVICE}").as_str(),
+            format!("evo-x2.{SERVICE}").as_str()
+        ]
+    );
+    let shown: Vec<String> = list[0].addrs.iter().map(ToString::to_string).collect();
+    // Its own addresses first (as announced), the renamed copy's after: a copy is never tried first.
+    assert_eq!(shown, ["fe80::1", "192.168.50.76", "192.168.50.242"]);
+
+    // Not the same computer: another port, another system, or a suffix that is not a number.
+    let apart = merge_nearby(vec![
+        nb("studio", "studio", mac, 47790, &["10.0.0.2"]),
+        nb("studio (2)", "studio", mac, 47791, &["10.0.0.3"]),
+        nb("studio (3)", "studio", Some(Os::Pc), 47790, &["10.0.0.4"]),
+        nb("studio (x)", "studio", mac, 47790, &["10.0.0.5"]),
+    ]);
+    assert_eq!(apart.len(), 4);
+}
+
 /// Rule 1256: the announcement says the name, the system, Flare's version and the protocol, and nothing else.
 #[test]
 fn the_announcement_carries_no_secret() {

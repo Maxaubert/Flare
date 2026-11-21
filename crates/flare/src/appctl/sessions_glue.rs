@@ -278,8 +278,12 @@ impl AppCtl {
     }
 
     /// `session.read` on the UI thread: where the tab's Claude session is filed (the call's thread reads it).
-    pub(super) fn ctl_session_of(&self, tab: &str) -> Result<Value, CtlError> {
-        let Some((_, folder)) = self.shell_tabs().into_iter().find(|(id, _)| id == tab) else {
+    /// A hidden session's only when `hidden_ok` (rule 1302): its opener's `remote.fetch` reads its folder, and its own
+    /// tab token asks. Any other caller (a plugin naming it) gets the answer a closed tab gets, so it learns nothing
+    /// (rule 1306).
+    pub(super) fn ctl_session_of(&self, tab: &str, hidden_ok: bool) -> Result<Value, CtlError> {
+        let refused = !hidden_ok && self.model.is_hidden(tab);
+        let Some(folder) = self.session_tab_folder(tab).filter(|_| !refused) else {
             return Err(CtlError::new(code::NO_TAB, "that tab is closed"));
         };
         let dir = self
