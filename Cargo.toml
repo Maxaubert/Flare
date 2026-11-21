@@ -70,7 +70,7 @@ anyhow = "1"
 libc = "=0.2.191"
 regex = "=1.13.1"
 memchr = "=2.8.3"
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 url = "=2.5.8"
 uuid = { version = "=1.28.0", features = ["v4"] }
 sha2 = "=0.10.9"
