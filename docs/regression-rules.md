@@ -4899,7 +4899,7 @@ plain rows, active and not, hover square and click) and the strip guard
 row updates while hovered). Source: Max, 2026-11-17.
 
 1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
-screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
+screenshot of Settings > Machines > Add a computer listing "Office-Mac-Mini" (nearby, with the Apple logo) and then
 "mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
 read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
 first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
@@ -4912,6 +4912,15 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
 
+1297. **A computer found twice after an mDNS name conflict shows once in the Machine drop-down.** Max, 2026-11-18, a
+screenshot of Settings > Machines > Add a computer listing "Office-Mac-Mini" twice, both with the Apple logo, after a
+router update put the Mac on Ethernet and WiFi at once: "fix the duplicate issue". The Mac's Flare heard its own
+announcement on the other network, took it for another computer and renamed itself `Office-Mac-Mini (2)` there (mdns-sd
+conflict handling), so the browse found two instances. Entries whose instance names match once a trailing " (N)" goes,
+with the same TXT name, system and port, are one computer: the one without the suffix stays, its own addresses first and the other's after (an announcement is not
+proof, so a copy is never tried first) (`merge_nearby` in `flare/src/pairing.rs`). Another port, another system or a suffix that is not a number
+stays apart. Held by `a_computer_found_twice_after_a_name_conflict_shows_once` (`flare/src/pairing_tests.rs`). Source:
+Max, 2026-11-18.
 1298. **Older recents fill the folder menu's spots that open tabs leave.** Max, 2026-11-18: "the new tab right click
 menu only shows choose a folder on this machine or the mac, no recent folders". His `flare.recentRoots` held twelve
 folders, and the seven newest each had an open tab. Rule 1269 took the newest five first and then hid those with a
