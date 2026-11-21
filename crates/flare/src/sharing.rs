@@ -323,6 +323,8 @@ $installed = $false
 $started = $false
 $rule = $false
 $startType = $null
+$sshdOn = $null
+$sshdWhere = $null
 $cfg = $null
 $backup = $null
 $hadCfg = $true
@@ -340,6 +342,8 @@ try {{
         # A server Flare starts (installed now, or one the person had but left stopped) opens on the Private profile
         # only, before it starts: its rule may name every profile.
         $step = 'firewall'
+        # Its state is kept first, so a failed step can put it back (rule 1343).
+        if ($null -ne $sshdRule) {{ $sshdOn = $sshdRule.Enabled; $sshdWhere = $sshdRule.Profile }}
         if ($null -ne $sshdRule) {{ Set-NetFirewallRule -Name '{SSHD_RULE}' -Profile Private -Enabled True }}
         # Flare writes into the SSH server's folder as an administrator only when no other account can change the
         # folder or the config, and neither is a link.
@@ -392,13 +396,14 @@ try {{
     New-NetFirewallRule -Name '{FLARE_RULE}' -DisplayName 'Flare pairing' -Enabled True -Direction Inbound -Program {exe} -Protocol TCP -LocalPort {ports} -RemoteAddress LocalSubnet -Action Allow -Profile Private | Out-Null
     New-NetFirewallRule -Name '{FLARE_MDNS_RULE}' -DisplayName 'Flare pairing (mDNS)' -Enabled True -Direction Inbound -Program {exe} -Protocol UDP -LocalPort {MDNS_PORT} -RemoteAddress LocalSubnet -Action Allow -Profile Private | Out-Null
 }} catch {{
-    # A failed setup leaves the SSH server as it found it: a server Flare started is stopped again, its config and
-    # its start type are put back, and Flare's own rules go. The switch goes back off.
+    # A failed setup leaves the SSH server as it found it: a server Flare started is stopped again, its config,
+    # its start type and its firewall rule are put back, and Flare's own rules go. The switch goes back off.
     $fail = 1
     if ($started) {{ Stop-Service -Name 'sshd' -ErrorAction SilentlyContinue }}
     if ($null -ne $backup -and (Test-Path -LiteralPath $backup)) {{ Copy-Item -LiteralPath $backup -Destination $cfg -Force -ErrorAction SilentlyContinue }}
     if (-not $hadCfg -and $null -ne $cfg) {{ Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue }}
     if ($null -ne $startType -and $startType -ne 'Automatic') {{ Set-Service -Name 'sshd' -StartupType $startType -ErrorAction SilentlyContinue }}
+    if ($null -ne $sshdOn -and $null -ne $sshdWhere) {{ Set-NetFirewallRule -Name '{SSHD_RULE}' -Profile $sshdWhere -Enabled $sshdOn -ErrorAction SilentlyContinue }}
     if ($rule) {{
         Remove-NetFirewallRule -Name '{FLARE_RULE}' -ErrorAction SilentlyContinue
         Remove-NetFirewallRule -Name '{FLARE_MDNS_RULE}' -ErrorAction SilentlyContinue
