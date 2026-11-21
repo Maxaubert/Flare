@@ -65,6 +65,20 @@ impl Fail {
             Fail::Forbidden => "forbidden",
         }
     }
+
+    /// The failure a control-channel code names, or None for one this build does not know.
+    pub fn from_code(code: &str) -> Option<Fail> {
+        [
+            Fail::Interrupted,
+            Fail::Unavailable,
+            Fail::NotFound,
+            Fail::Busy,
+            Fail::Retry,
+            Fail::Forbidden,
+        ]
+        .into_iter()
+        .find(|f| f.code() == code)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

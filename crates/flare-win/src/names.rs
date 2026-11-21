@@ -34,6 +34,9 @@ pub const PARAKEET_HOST_EXE: &str = "flare-parakeet-host.exe";
 /// The resident Parakeet host executable (macOS: no extension).
 #[cfg(not(windows))]
 pub const PARAKEET_HOST_EXE: &str = "flare-parakeet-host";
+/// The device panel's sim host (issue #248), beside the app's executable (`Contents/MacOS` on macOS). It is macOS
+/// only; on Windows the name is never started.
+pub const SIM_HOST_EXE: &str = "flare-sim-host";
 /// The engine folder beside the executable.
 pub const ENGINE_FOLDER: &str = "whisper";
 /// Env seam (read only through `e2e::global().env`): a WAV played as the microphone.
@@ -140,6 +143,7 @@ mod tests {
             COPY_NAME,
             COPY_NAME_DEV,
             PARAKEET_HOST_EXE,
+            SIM_HOST_EXE,
             ENGINE_FOLDER,
             SEAM_MIC,
             SEAM_NVIDIA,
