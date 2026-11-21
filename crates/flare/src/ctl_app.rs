@@ -386,6 +386,12 @@ pub enum CtlOp {
     /// `remote.status` (remote sessions PR 4): every hidden session as the host's own marks say it (rules 294, 1303).
     /// Answered with `{tabs}`; the worker numbers it.
     RemoteStatus,
+    /// `remote.find` (rule 1307): the hidden session that holds `open_id` (an id the worker checked), answered with
+    /// `{tab}`. Only hidden sessions are searched, never a strip tab; `no_tab` when none holds it, `unavailable` while
+    /// this window has not restored its saved tabs yet.
+    RemoteFind {
+        open_id: String,
+    },
     /// `open.remote` (remote sessions PR 5): a tab here that shows a session on `machine` (an id the worker found in
     /// `machines.json`) in the host's `folder`, resuming `resume` there (checked with `valid_resume`). In front only
     /// when `front` (the `flare open` command); the agent's open leaves the front tab where it is. Answered with `{tab}`.
@@ -474,6 +480,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::RemoteRelease { .. } => "CtlOp::RemoteRelease",
             CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
             CtlOp::RemoteStatus => "CtlOp::RemoteStatus",
+            CtlOp::RemoteFind { .. } => "CtlOp::RemoteFind",
             CtlOp::OpenRemote { .. } => "CtlOp::OpenRemote",
             CtlOp::InstallStaged { .. } => "CtlOp::InstallStaged",
         })
@@ -2792,6 +2799,20 @@ impl AppDispatcher {
                 let seq = host.status_seq(&tabs);
                 Ok(json!({"tabs": tabs, "seq": seq}))
             }
+            Method::RemoteFind => {
+                // Rule 1307: the opener's own open id finds its hidden session after this Flare restarted.
+                only_fields(params, &["open_id"], "remote.find")?;
+                let open_id = str_param(params, "open_id")?
+                    .filter(|o| remote::valid_open_id(o))
+                    .ok_or_else(|| {
+                        CtlError::new(
+                            code::BAD_PARAMS,
+                            "open_id is 1 to 64 letters, digits, - or _",
+                        )
+                    })?
+                    .to_string();
+                self.ask(CtlOp::RemoteFind { open_id })
+            }
             Method::RemoteConvo => self.remote_convo(host, params),
             Method::RemoteFetch => self.remote_fetch(host, params),
             Method::RemotePut => remote_put(host, params),
@@ -3377,7 +3398,8 @@ impl AppDispatcher {
             | Method::RemoteStatus
             | Method::RemoteConvo
             | Method::RemoteFetch
-            | Method::RemotePut => self.remote_call(ctx, method, &params),
+            | Method::RemotePut
+            | Method::RemoteFind => self.remote_call(ctx, method, &params),
             Method::OpenRemoteSession => self.open_remote(ctx, &params),
             Method::InstallStaged => self.install_staged(&params),
             Method::ViewText => {
@@ -6632,6 +6654,32 @@ mod tests {
                 "CtlOp::RemoteOpen"
             ]
         );
+    }
+
+    /// Rule 1307: `remote.find` takes one open id, a short plain word as `remote.open` checks it, and asks the window
+    /// only then. No grant but the remote one reaches it.
+    #[test]
+    fn remote_find_answers_only_for_a_known_open_id() {
+        let (d, ops, _) = remote_rig();
+        let c = bridge(1);
+        for bad in [
+            json!({}),
+            json!({"open_id": ""}),
+            json!({"open_id": "a b"}),
+            json!({"open_id": "x".repeat(65)}),
+            json!({"open_id": 7}),
+            json!({"open_id": "o-1", "tab": "t1"}),
+        ] {
+            assert_eq!(
+                code_of(d.call(&c, Method::RemoteFind, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        assert!(ops.lock().unwrap().is_empty());
+        let _ = d.call(&c, Method::RemoteFind, json!({"open_id": "x".repeat(64)}));
+        assert_eq!(*ops.lock().unwrap(), ["CtlOp::RemoteFind"]);
+        assert_eq!(Method::parse("remote.find"), Some(Method::RemoteFind));
     }
 
     /// Remote sessions PR 7: `~` alone is the host's home folder (the + menu's shell on a machine, whose home the viewer

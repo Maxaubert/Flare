@@ -987,6 +987,8 @@ drops what is no typing); the emulator's answers stay here (`SessionManager::wri
 `mouse_focus_and_string_sequences_are_never_sent`,
 `a_remote_tab_never_starts_a_local_shell_and_the_quit_leaves_its_session` and
 `a_remote_tab_shows_the_hosts_output_and_takes_typing`. Source: remote sessions PR 3 (2026-11-12).
+Amended by rule 1307 (2026-11-19): a remote tab also saves its `open_id` in `remote` (`SavedRemote.open_id`); an older
+file reads as before.
 288. **A viewer's disconnect, quit or restart never ends the host session; the restore attaches again and is not new
 work.** Rules 37 and 38 for a remote tab. Closing the tab (`kill`) sends `remote.close`, which asks on the host as any
 close does (rule 48), and is still taken to the host when the link was down. The quit (`kill_all`, through
@@ -1004,6 +1006,9 @@ that is gone ends the tab as a shell that exits. A shape it does not know reads 
 `a_host_tab_that_is_gone_ends_the_tab`, `a_remote_tab_round_trips_through_tabs_json_beside_a_local_one`,
 `the_restore_keeps_a_remote_tab_without_a_stat_and_attaches_it`, `a_remote_tab_saves_its_host_tab_and_the_output_read`
 and the e2e `remoteViewer`. Source: remote sessions PR 3 (2026-11-12).
+Amended by rule 1307 (2026-11-19): a host tab that is gone is looked for once by the tab's open id (`remote.find`)
+before the tab ends; a tab saved before the open id ends as before, and a session whose shell ended on the host leaves
+the tab with one red line (rule 1308).
 289. **Replayed output never raises an agent mark.** What a remote tab shows as it attaches is the past: the snapshot is
 plain text (`plain_snapshot` takes every sequence out of it), and what a reconnect catches up on has the agent's
 signals (OSC 777, OSC 7501) taken out (`SignalStrip`, which keeps a signal cut across the end of the replay out whole).
@@ -3541,6 +3546,8 @@ that it was not sent. A `no_tab` end drops the kept typing: it is never typed in
 `remote_host::tests::an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them`,
 `ctl_app::tests::remote_open_checks_the_host_folder_and_the_resume_id_first` and
 `remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_session`. Source: Max, 2026-11-13.
+Amended by rule 1307 (2026-11-19): the open id is made when the tab is made (not per link worker) and saved with the
+tab in `tabs.json`, so a restored tab sends the same one and finds its session after the host's Flare restarted.
 1211. **The host's own window shows the fitted conversation view while a remote viewer sizes an agent tab.** The
 owner's design (spec "Size" and "The other screen"): the live terminal has one size, the last typist's, and the other
 screen shows the conversation instead of a squeezed terminal. Rule 1193 gave the viewer that view; the host kept
@@ -5116,6 +5123,51 @@ machine opened never shows on this screen). Native: `crates/flare/src/ctl_app.rs
 `flare_tabs::restore::tests::a_hidden_entry_with_a_bad_opener_restores_hidden_and_unnamed` and
 `flare_tabs::model::hidden_tests::an_opener_name_is_checked_the_same_at_open_rename_and_restore`. Source: the security
 review of PR #289, 2026-11-19.
+1307. **The opener finds its session again after the host's Flare restarted.** A restart of the host's Flare (a quit, an
+update, a crash) brings each hidden session back under a new tab id (rule 1302), so the opener's saved `host_tab` gets
+`no_tab`. That needs ids no earlier run gave: the window clock starts at 0 each run, so strip ids repeat (`t0-6` after
+every start), and a restarted host gave the same id to whatever tab took that place, which the opener then followed
+(found by the e2e). A hidden session's id is `h<run>-<n>` (`TabModel` `hidden_id`, a random word per run), so a saved
+id from an earlier run is always `no_tab`. The remote tab's `open_id` (rule 1210) is made with the tab on the UI thread (`AppCtl::open_remote`) and saved
+in `tabs.json` as `remote: {.., open_id}` (`SavedRemote.open_id`; an older file reads as before, a bad id is dropped
+alone, rule 40). On `no_tab` at attach or in the polls, the link sends `remote.find {open_id}` once per link life, on the
+same link (`Worker::find`): `{tab}` sets the new host tab, drops the typing kept for the lost one (never typed into
+another tab), takes a fresh snapshot and then says "Flare restarted on <machine>. The session goes on." in one line
+(once the host's screen is quiet, at least 500 ms after the snapshot: a Windows console can repaint after the resize);
+the same id (only the follow was lost) goes on from the number read, with no line. `unknown_method` (an older host) or no
+open id (a tab saved before the key, which stays without one) ends the tab as before. Any other refusal is passing:
+`unavailable` is asked again every 250 ms for up to 10 s on the same link, then the link is tried again later; it never
+ends the tab. The host (`CtlOp::RemoteFind`) searches only its hidden sessions (`TabModel::hidden`, `Hidden::open_id`),
+never a strip tab, and answers `unavailable` until its saved tabs are restored (`TabModel::restore_done`), so an opener
+that comes back during the restore never hears a false end. No name check: the open id is the opener's own random id,
+and a Mac's host name can change (rule 1199). `remote.find` is idempotent (`may_retry`), rides no anchor and is in the
+`remote` namespace (no grant change, no protocol bump, rule 278). Native: `crates/flare/src/remote_link.rs`
+(`Worker::session`, `follow`, `find`, `Step::Gone`, `restarted_line`), `crates/flare-term/src/remote_pty.rs`
+(`RemoteLive::open_id`, `open_id_or_new`), `crates/flare-tabs/src/restore.rs` (`SavedRemote`, `parse_remote`,
+`tabs_json`), `model.rs` (`saved`), `crates/flare/src/appctl.rs` (`open_remote`, `restored`), `appctl/remote_glue.rs`
+(`CtlOp::RemoteFind`), `ctl_app.rs`, `serve_remote.rs` (`may_retry`), `crates/flare-ctl/src/method.rs`. Held by
+`remote_link::tests` (`a_no_tab_after_a_host_restart_finds_the_session_by_open_id_and_takes_a_snapshot`,
+`a_restored_tab_finds_its_session_after_a_host_restart_while_away`, `an_older_host_without_find_ends_the_tab_as_before`,
+`kept_typing_is_never_sent_to_the_found_tab`, `a_find_the_host_cannot_answer_yet_is_asked_again_on_the_same_link`,
+`a_find_refused_past_the_patience_tries_the_link_again_and_never_ends_the_tab`, `a_host_tab_that_is_gone_ends_the_tab`),
+`remote_flows::remote_find_answers_only_for_a_hidden_sessions_open_id`,
+`remote_flows::a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed`,
+`ctl_app::tests::remote_find_answers_only_for_a_known_open_id`,
+`flare_tabs::restore::remote_tests::a_remote_tab_saves_and_restores_its_open_id`,
+`flare_tabs::restore::remote_tests::an_older_tabs_json_reads_as_before`,
+`flare_term::remote_pty::tests::a_tab_keeps_its_open_id_and_one_with_none_gets_one_once`,
+`flare_tabs::model::hidden_tests::a_hidden_sessions_id_is_never_one_an_earlier_run_gave` and the e2e `remoteOpen` (the
+host's Flare quits and starts again). Source: Max, 2026-11-19, plan `2026-11-19-remote-session-on-opener.md` PR 2.
+1308. **A remote tab whose session ended on its host says so and stays.** When a hidden session's shell exits on the
+host (rule 1302: it goes, and its followers hear `no_tab`), the opener's `remote.find` (rule 1307) finds nothing. The tab
+then stays open with one red line, "This session was ended on <machine>.", and its link ends; it is not ended as a shell
+that exits, so the line can be read. The opener's own close never shows it (its link ends first). There is no Settings
+list, Show here or End on the host (Max 2026-11-19, after the mockups), so this is the only "ended there" case. Native:
+`crates/flare/src/remote_link.rs` (`Worker::find`, `ended_line`). Held by
+`remote_link::tests::an_ended_answer_leaves_the_tab_with_its_line`,
+`remote_link::tests::typing_kept_for_a_host_tab_that_is_gone_is_typed_nowhere` and
+`remote_flows::remote_find_answers_only_for_a_hidden_sessions_open_id`. Source: Max, 2026-11-19 ("was ended on" stays
+only for a session that ended on the host by itself).
 
 1324. **A pulse on screen leaves evidence in the diagnostics log: a row or the frame's geometry that flips and back
 is logged.** Max, 2026-11-20, a screenshot of Claude Code's status line: "the shell flickering is not fixed these

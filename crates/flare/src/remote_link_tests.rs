@@ -58,6 +58,10 @@ struct HostState {
     /// Rule 1215: the files put with `exec` (where they went), and an older host that refuses `exec`.
     runnable: Vec<String>,
     no_exec: bool,
+    /// Rule 1307: an older host with no `remote.find`, and the next this many finds answered `unavailable` (the host
+    /// still restoring its tabs).
+    no_find: bool,
+    find_not_yet: u32,
 }
 
 #[derive(Clone, Default)]
@@ -261,8 +265,45 @@ impl FakeHost {
                     json!({"tab": tab, "name": name, "done": true, "host_path": host, "paste": format!("'{host}'")}),
                 )
             }
+            Method::RemoteFind => {
+                if st.no_find {
+                    return Err(CtlError::new(code::UNKNOWN_METHOD, "an older host"));
+                }
+                if st.find_not_yet > 0 {
+                    st.find_not_yet -= 1;
+                    return Err(CtlError::new(
+                        code::UNAVAILABLE,
+                        "this Flare is still restoring its tabs",
+                    ));
+                }
+                let o = p["open_id"].as_str().unwrap_or_default();
+                st.open_ids
+                    .get(o)
+                    .filter(|t| st.tabs.contains_key(*t))
+                    .map(|t| json!({"tab": t}))
+                    .ok_or_else(no_tab)
+            }
             _ => Err(CtlError::new(code::FORBIDDEN, "not here")),
         }
+    }
+
+    /// The host's Flare starts again (rule 1307): every link breaks, nothing is followed, and each session comes back
+    /// under a new tab id with its output and its open id.
+    fn restart(&self) {
+        let mut st = lk(self);
+        let old: Vec<(String, HostTab)> = st.tabs.drain().collect();
+        for (was, t) in old {
+            st.next += 1;
+            let id = format!("h{}", st.next);
+            st.tabs.insert(id.clone(), t);
+            for v in st.open_ids.values_mut() {
+                if *v == was {
+                    *v = id.clone();
+                }
+            }
+        }
+        st.attached.clear();
+        st.epoch += 1;
     }
 
     fn print(&self, tab: &str, b: &[u8]) {
@@ -363,7 +404,14 @@ fn rig_with(host: FakeHost, host_tab: Option<&str>) -> Rig {
 }
 
 fn rig_timed(host: FakeHost, host_tab: Option<&str>, timing: Timing) -> Rig {
-    let live = flare_term::remote_pty::RemoteLive::new(host_tab.map(str::to_string), 0);
+    rig_live(
+        host,
+        flare_term::remote_pty::RemoteLive::new(host_tab.map(str::to_string), 0, None),
+        timing,
+    )
+}
+
+fn rig_live(host: FakeHost, live: flare_term::remote_pty::RemoteLive, timing: Timing) -> Rig {
     let sp = RemoteSpawner::new(
         Arc::new(FakeConnector {
             host: host.clone(),
@@ -575,6 +623,9 @@ fn a_host_tab_that_is_gone_ends_the_tab() {
     }));
     assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok()); // sync-ok: test code only, never the app
     wait_for("the end", || r.live.link() == LinkState::Ended);
+    // A tab saved before the open id (rule 1307) has nothing to find its session by: no find is asked.
+    assert_eq!(r.host.calls("remote.find"), 0);
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
 }
 
 /// Closing the tab closes the host session; the quit only detaches and the session lives on.
@@ -1017,7 +1068,7 @@ fn the_hosts_status_of_the_tab_reaches_the_window_on_change_and_wakes_it() {
     lk(&host).states = Some(HashMap::new());
     let woke = Arc::new(AtomicU64::new(0));
     let w2 = Arc::clone(&woke);
-    let live = flare_term::remote_pty::RemoteLive::new(None, 0);
+    let live = flare_term::remote_pty::RemoteLive::new(None, 0, None);
     let sp = RemoteSpawner::new(
         Arc::new(FakeConnector {
             host: host.clone(),
@@ -1802,4 +1853,159 @@ fn the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole() {
     k.keep(vec![text("gone")], &[t0], t0, age);
     k.clear();
     assert_eq!(k.take(t0, age), (vec![], false));
+}
+
+// ---- the opener finds its session again (rules 1307, 1308) ----
+
+/// The tab's pty end, caught: `Some` once the tab ended as a shell that exits.
+fn exits(r: &mut Rig) -> std::sync::mpsc::Receiver<Option<u32>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    r.pty.on_exit(Box::new(move |c| {
+        let _ = tx.send(c);
+    }));
+    rx
+}
+
+/// Rule 1307: the host's Flare restarts and brings the session back under a new id. The tab's link gets `no_tab` for
+/// the old id, asks `remote.find` with its open id once, follows the new id from a fresh snapshot and says so in one
+/// line, after the snapshot. No new session is opened.
+#[test]
+fn a_no_tab_after_a_host_restart_finds_the_session_by_open_id_and_takes_a_snapshot() {
+    let r = rig();
+    r.live_on();
+    r.host.print("h1", b"before\r\n");
+    wait_for("before", || r.text().contains("before"));
+    r.host.restart();
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    r.host.print("h2", b"after\r\n");
+    wait_for("after", || r.text().contains("after"));
+    let line = restarted_line("mac");
+    // Said once the found session's screen is quiet (`RESTART_LINE_QUIET`).
+    wait_for("the restart line", || r.text().contains(&line));
+    let t = r.text();
+    assert_eq!(t.matches(&line).count(), 1, "{t:?}");
+    assert!(
+        t.rfind(&line) > t.rfind("before"),
+        "the line comes after the new snapshot: {t:?}"
+    );
+    assert_eq!(r.host.calls("remote.find"), 1);
+    assert_eq!(r.host.calls("remote.open"), 1, "no second session");
+    assert_eq!(r.host.calls("remote.snapshot"), 2, "a fresh snapshot");
+    assert_eq!(lk(&r.host).tabs.len(), 1);
+}
+
+/// Rule 1307: a restored tab (its host tab and its open id from `tabs.json`) finds its session after a host restart
+/// that came while this Flare was away.
+#[test]
+fn a_restored_tab_finds_its_session_after_a_host_restart_while_away() {
+    let host = FakeHost::default();
+    {
+        let mut st = lk(&host);
+        st.tabs.insert(
+            "h9".into(),
+            HostTab {
+                out: b"still here\r\n".to_vec(),
+                ..HostTab::default()
+            },
+        );
+        st.next = 9;
+        st.open_ids.insert("o-1".into(), "h9".into());
+    }
+    host.restart();
+    let live = flare_term::remote_pty::RemoteLive::new(Some("h9".into()), 4, Some("o-1".into()));
+    let r = rig_live(host, live, fast());
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h10"));
+    r.live_on();
+    wait_for("the screen", || r.text().contains("still here"));
+    wait_for("the restart line", || {
+        r.text().contains(&restarted_line("mac"))
+    });
+    assert_eq!(r.host.calls("remote.open"), 0);
+}
+
+/// Rule 1308: the session's shell exited on the host, so `remote.find` finds nothing. The tab stays, with one red line,
+/// and its link ends; the tab is not ended as a shell that exits (its line would go with it).
+#[test]
+fn an_ended_answer_leaves_the_tab_with_its_line() {
+    let mut r = rig();
+    let ended = exits(&mut r);
+    r.live_on();
+    lk(&r.host).tabs.remove("h1");
+    wait_for("the end", || r.live.link() == LinkState::Ended);
+    wait_for("the line", || r.text().contains(&ended_line("mac")));
+    assert_eq!(r.text().matches(&ended_line("mac")).count(), 1);
+    assert_eq!(r.host.calls("remote.find"), 1);
+    assert!(
+        ended.recv_timeout(Duration::from_millis(200)).is_err(), // sync-ok: test code only, never the app
+        "the tab stays to show its line"
+    );
+    assert_eq!(r.host.calls("remote.open"), 1, "nothing opened again");
+}
+
+/// Rule 1307: an older host has no `remote.find` (`unknown_method`): the tab ends as before, with no line.
+#[test]
+fn an_older_host_without_find_ends_the_tab_as_before() {
+    let mut r = rig();
+    let ended = exits(&mut r);
+    r.live_on();
+    {
+        let mut st = lk(&r.host);
+        st.no_find = true;
+        st.tabs.remove("h1");
+    }
+    assert!(ended.recv_timeout(Duration::from_secs(5)).is_ok()); // sync-ok: test code only, never the app
+    wait_for("the end", || r.live.link() == LinkState::Ended);
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
+    assert_eq!(r.host.calls("remote.find"), 1);
+}
+
+/// Rule 1307: what was typed while the link was down was for the lost tab: it is never typed into the found one. What
+/// is typed after goes there.
+#[test]
+fn kept_typing_is_never_sent_to_the_found_tab() {
+    let mut r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() == LinkState::Down);
+    r.writer.write_all(b"rm -rf build").unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    r.host.restart();
+    lk(&r.host).refuse = false;
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    r.writer.write_all(b"ls").unwrap();
+    wait_for("the new typing", || !r.host.typed("h2").is_empty());
+    assert_eq!(r.host.typed("h2"), vec![Intent::Text("ls".into())]);
+}
+
+/// Rule 1307: a find the host cannot answer yet (it is still restoring its tabs) is asked again on the same link; the
+/// tab never ends for it.
+#[test]
+fn a_find_the_host_cannot_answer_yet_is_asked_again_on_the_same_link() {
+    let r = rig();
+    r.live_on();
+    lk(&r.host).find_not_yet = 3;
+    r.host.restart();
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    assert_eq!(r.host.calls("remote.find"), 4);
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
+}
+
+/// Rule 1307: a find still refused after the patience never ends the tab: the link is tried again later, and finds it
+/// then.
+#[test]
+fn a_find_refused_past_the_patience_tries_the_link_again_and_never_ends_the_tab() {
+    let r = rig();
+    r.live_on();
+    lk(&r.host).find_not_yet = u32::MAX;
+    r.host.restart();
+    wait_for("a later link", || lk(&r.host).connects >= 3);
+    assert_ne!(r.live.link(), LinkState::Ended);
+    lk(&r.host).find_not_yet = 0;
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
 }

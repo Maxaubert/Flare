@@ -67,6 +67,9 @@ impl LinkState {
 #[derive(Default)]
 struct LiveInner {
     host_tab: Mutex<Option<String>>,
+    /// This tab's `remote.open` id (rule 1210), made when the tab is made and saved with it, so the tab finds its
+    /// session again after the host's Flare restarted (`remote.find`, rule 1307). None: a tab saved before the key.
+    open_id: Mutex<Option<String>>,
     seq: AtomicU64,
     state: AtomicU8,
     /// The host's newest status of the tab that the window has not taken yet (remote sessions PR 4).
@@ -196,10 +199,12 @@ pub struct HostStatus {
 pub struct RemoteLive(Arc<LiveInner>);
 
 impl RemoteLive {
-    /// A tab that is opened fresh (`host_tab` None) or brought back (`host_tab` Some, from `tabs.json`).
-    pub fn new(host_tab: Option<String>, seq: u64) -> Self {
+    /// A tab that is opened fresh (`host_tab` None) or brought back (`host_tab` Some, from `tabs.json`), with its open
+    /// id (rule 1307; None for a tab saved before the key).
+    pub fn new(host_tab: Option<String>, seq: u64, open_id: Option<String>) -> Self {
         let live = Self::default();
         *lk(&live.0.host_tab) = host_tab;
+        *lk(&live.0.open_id) = open_id;
         live.0.seq.store(seq, Ordering::SeqCst);
         live
     }
@@ -211,6 +216,18 @@ impl RemoteLive {
 
     pub fn set_host_tab(&self, tab: &str) {
         *lk(&self.0.host_tab) = Some(tab.to_string());
+    }
+
+    /// This tab's open id (rule 1307), if it has one.
+    pub fn open_id(&self) -> Option<String> {
+        lk(&self.0.open_id).clone()
+    }
+
+    /// This tab's open id, made now when it has none (a tab that never reached its host's `remote.open`).
+    pub fn open_id_or_new(&self) -> String {
+        lk(&self.0.open_id)
+            .get_or_insert_with(crate::session::new_ctl_token)
+            .clone()
     }
 
     /// The host's output number the tab has read up to.
@@ -316,6 +333,7 @@ impl std::fmt::Debug for RemoteLive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteLive")
             .field("host_tab", &self.host_tab())
+            .field("open_id", &self.open_id().is_some())
             .field("seq", &self.seq())
             .field("link", &self.link())
             .finish()
@@ -1342,14 +1360,28 @@ mod tests {
 
     #[test]
     fn the_live_state_is_shared_and_equal_only_to_itself() {
-        let a = RemoteLive::new(Some("t1".into()), 7);
+        let a = RemoteLive::new(Some("t1".into()), 7, None);
         let b = a.clone();
         b.set_seq(9);
         b.set_link(LinkState::Live);
         assert_eq!(a.seq(), 9);
         assert_eq!(a.link(), LinkState::Live);
         assert_eq!(a, b);
-        assert_ne!(a, RemoteLive::new(Some("t1".into()), 9));
+        assert_ne!(a, RemoteLive::new(Some("t1".into()), 9, None));
+    }
+
+    /// Rule 1307: a tab keeps the open id it was made with; one with none gets one once, and keeps it.
+    #[test]
+    fn a_tab_keeps_its_open_id_and_one_with_none_gets_one_once() {
+        let a = RemoteLive::new(None, 0, Some("o-1".into()));
+        assert_eq!(a.open_id().as_deref(), Some("o-1"));
+        assert_eq!(a.open_id_or_new(), "o-1");
+        let b = RemoteLive::default();
+        assert_eq!(b.open_id(), None);
+        let made = b.open_id_or_new();
+        assert_eq!(made.len(), 64);
+        assert_eq!(b.open_id_or_new(), made);
+        assert_eq!(b.open_id(), Some(made));
     }
 
     /// Remote sessions PR 6: file work waits for the link in the order asked; once the link ends, what still waits is

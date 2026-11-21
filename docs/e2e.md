@@ -369,8 +369,12 @@ the restored tab attaches, B's status still says `done`, and after 4 s A shows n
 no Flare for B and starts `flare --start-hidden --user-data-dir=<B's profile> --e2e` (`--e2e` passed on, so B is a test
 app with its hook, on the hidden desktop it inherits from A). The scenario waits for B's prompt in A's front tab, connects
 to B's hook by its profile, checks `window.park` (off every screen, no-activate, not in front, rule 301) and that B
-holds the session, types `echo remote-open-5` into A (the only text it sends) and reads it once each. It asks B to quit
-and reaps B by its profile at the end. `crates/flare/tests/serve_remote.rs` runs every serve process with `--no-start`,
+holds the session, types `echo remote-open-5` into A (the only text it sends) and reads it once each. Rule 1307 (remote
+on opener PR 2): it then asks B to quit (B saves the hidden session) and waits for B's pipe to go. A's link starts B
+again through the serve process; B restores the session hidden under a new id, and A's tab finds it by its open id
+(`remote.find`). The scenario waits up to 90 s for the line "Flare restarted on" in A's front tab (once), checks that
+B holds one hidden session, types `echo remote-open-6` and reads it once each. It asks B to quit and reaps B by its
+profile at the end. `crates/flare/tests/serve_remote.rs` runs every serve process with `--no-start`,
 so no unit test ever starts a Flare hidden.
 
 `remoteFiles` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 6, Windows only for now) runs the two Flares of
