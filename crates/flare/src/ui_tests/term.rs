@@ -169,6 +169,37 @@ fn the_bar_is_332_by_28_plus_two_hairlines() {
     }
 }
 
+/// Rule 1347: in the narrowest terminal (MIN_GRID, 320 px) the bar stays whole: it starts at least 4 px in from the
+/// left, it ends 12 px from the right, and the input shrinks to make room (the readout and buttons keep their size).
+#[test]
+fn the_bar_fits_the_narrowest_terminal() {
+    for s in SCALES {
+        let h = Harness::new(s, 320, 200, || FindBarPreview::new().unwrap());
+        h.comp.set_open(true);
+        h.advance(0);
+        let f = h.render();
+        let (x0, _, x1, _) = bar_box(&f, s);
+        let floor = (4.0 * s).round() as u32;
+        assert!(
+            x0 + 1 >= floor,
+            "scale {s}: the bar starts at {x0}, under {floor}"
+        );
+        let right_gap = f.w - (x1 + 1);
+        let want = (12.0 * s).round() as u32;
+        assert!(
+            right_gap.abs_diff(want) <= 1,
+            "scale {s}: right gap {right_gap}, want {want}"
+        );
+        // Typing still reaches the input, and the close button at the right still answers.
+        h.comp.invoke_focus_input();
+        h.key_text("abc");
+        h.advance(0);
+        assert_eq!(h.comp.get_last_query().as_str(), "abc", "scale {s}");
+        h.click(320.0 - 12.0 - 8.0 - 10.0, 12.0 + 14.0);
+        assert_eq!(h.comp.get_close_count(), 1, "scale {s}");
+    }
+}
+
 #[test]
 fn the_border_is_a_hairline_and_the_fill_is_side_flat() {
     for s in [1.0_f32, 1.5, 2.25] {

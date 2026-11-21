@@ -230,13 +230,14 @@ pub struct Bounds {
 }
 
 /// The widget's rectangle on a monitor: `work` is the monitor's work area, `scale` its scaling, `css_h` the face's
-/// height. Centred, `LIFT` css px above the work area's foot (N18).
+/// height. Centred, `LIFT` css px above the work area's foot (N18). A face taller than the work area is capped
+/// to it and its top kept on the monitor (the pick list then scrolls in the card, rule 1344).
 pub fn bounds_for(work: Bounds, scale: f64, css_h: u32) -> Bounds {
     let w = (f64::from(WIDTH) * scale).round() as i32;
-    let h = (f64::from(css_h) * scale).round() as i32;
+    let h = ((f64::from(css_h) * scale).round() as i32).min(work.h.max(0));
     let lift = (f64::from(LIFT) * scale).round() as i32;
     let x = work.x + (f64::from(work.w - w) / 2.0).round() as i32;
-    let y = work.y + work.h - h - lift;
+    let y = (work.y + work.h - h - lift).max(work.y);
     Bounds { x, y, w, h }
 }
 
