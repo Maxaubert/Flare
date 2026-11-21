@@ -180,6 +180,9 @@ pub enum CtlOp {
         /// A plugin's generation ([`Hub::generation`]) when the call was checked (0 for the agent): a plugin
         /// switched off since, even if on again, is refused.
         generation: u64,
+        /// The tab is the caller's own (its token's). A hidden session answers a call on it as `unavailable`, naming
+        /// its opener, only when this is true; any other caller gets the answer an unknown tab gets (rule 1306).
+        own: bool,
     },
     BadgeClear {
         tab: String,
@@ -195,6 +198,8 @@ pub enum CtlOp {
         label: String,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     ProgressClear {
         tab: String,
@@ -223,6 +228,10 @@ pub enum CtlOp {
     /// transcript. Answered with `{session, folder, claude_dir}` (`session` null when none is known).
     SessionOf {
         tab: String,
+        /// Whether a hidden session (rule 1302) may answer: true for its opener's `remote.fetch` and `remote.convo`,
+        /// and for a call made with that session's own tab token. A plugin naming it gets the answer an unknown tab
+        /// gets (rule 1306).
+        hidden_ok: bool,
     },
     /// `tabs.input` (plugins phase 5): text a plugin types into the tab's shell as one paste, checked on the call's
     /// thread (the permission, the tab, the size, the characters, the rate), and an Enter after it when asked.
@@ -241,6 +250,8 @@ pub enum CtlOp {
         tab: String,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `bar.hide`: the plugin's bar leaves the tab (another plugin's stays).
     BarHide {
@@ -265,6 +276,8 @@ pub enum CtlOp {
     /// plugin's page). Answered with `{tab, url, host}`.
     FillPage {
         tab: String,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `browser.fill`: checked on the call's thread (the plugin, the params, the tab it may fill, its asks); the window
     /// checks the page's site against the login's addresses, asks the person in its own dialog and on Allow types
@@ -280,6 +293,8 @@ pub enum CtlOp {
         via_call: bool,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `secret.ask`: Flare's own masked field, titled with the plugin's name. Answered with `{text}` (to this
     /// plugin only, never logged) or `{cancelled: true}`.
@@ -327,21 +342,24 @@ pub enum CtlOp {
         tool: String,
         input: Value,
     },
-    /// `remote.open` (remote sessions PR 2): a new tab in a host folder the call's thread checked is one, with a session
-    /// id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host answered lately is answered
-    /// with the tab it opened, not a second one (rule 1210).
+    /// `remote.open` (remote sessions PR 2): a hidden session (rule 1302) in a host folder the call's thread checked
+    /// is one, with a session id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host
+    /// answered lately is answered with the session it opened, not a second one (rule 1210). `opener` is the opener's
+    /// machine as its link named it (`viewer_of`), None when the bridge named none.
     RemoteOpen {
         folder: String,
         resume: Option<String>,
         open_id: Option<String>,
+        opener: Option<String>,
     },
-    /// `remote.tabs`: every shell tab with its folder, title, the agent's state word and session.
+    /// `remote.tabs`: every hidden session (rule 1303) with its folder, title, the agent's state word and session.
     RemoteTabs,
-    /// `remote.attach`: connection `conn` follows the tab (its handle and output tail go into the `RemoteHost`).
-    /// Answered with `{tab, cols, rows, seq}`.
+    /// `remote.attach`: connection `conn` follows the hidden session (its handle and output tail go into the
+    /// `RemoteHost`). Answered with `{tab, cols, rows, seq}`. `viewer` renames the session's opener (rule 1302).
     RemoteAttach {
         tab: String,
         conn: u64,
+        viewer: Option<String>,
     },
     /// `remote.input`: intents the call's thread checked (rule 279), typed into the tab.
     RemoteInput {
@@ -356,16 +374,17 @@ pub enum CtlOp {
         rows: usize,
         viewer: Option<String>,
     },
-    /// The last remote viewer of the tab detached or went: its size goes back to the window. Never ends it (rule 280).
+    /// The last remote viewer of the tab detached or went. Never ends it (rule 280); a hidden session keeps its
+    /// opener's size (rule 1302).
     RemoteRelease {
         tab: String,
     },
-    /// `remote.close`: the tab closes the way a person's close does; an agent at work asks first (rule 48).
+    /// `remote.close`: the hidden session ends at once, never asking on this screen (rule 1305).
     RemoteClose {
         tab: String,
     },
-    /// `remote.status` (remote sessions PR 4): every shell tab as the host's own marks say it (rule 294). Answered with
-    /// `{tabs}`; the worker numbers it.
+    /// `remote.status` (remote sessions PR 4): every hidden session as the host's own marks say it (rules 294, 1303).
+    /// Answered with `{tabs}`; the worker numbers it.
     RemoteStatus,
     /// `open.remote` (remote sessions PR 5): a tab here that shows a session on `machine` (an id the worker found in
     /// `machines.json`) in the host's `folder`, resuming `resume` there (checked with `valid_resume`). In front only
@@ -375,6 +394,9 @@ pub enum CtlOp {
         folder: String,
         resume: Option<String>,
         front: bool,
+        /// The caller's own tab (an agent's token), None for `flare open --on`: a hidden session's agent is refused
+        /// (rule 1302), since a tab it opened would show on this screen.
+        caller: Option<String>,
     },
     /// `install.staged` (rule 1326): the call's worker read the stage (`sig`, `Manifest::signature`) and checked who
     /// signed it; the window arms its flow for that stage (or with `check` only says where it stands). Answered at once
@@ -691,7 +713,7 @@ impl AppDispatcher {
     /// opened here (it is the host's to check, rule 287); a resume id must pass `valid_resume`. The tab opens at once
     /// and its link connects on its own worker, so the answer never waits for ssh. Whoever calls, the opened tab takes
     /// no typing from them: the agent's grant has no `remote.*`, `shell.input` or `tabs.input` (rule 299).
-    fn open_remote(&self, params: &Value) -> Result<Value, CtlError> {
+    fn open_remote(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let machines = self.machines.as_ref().ok_or_else(|| {
             CtlError::new(code::UNAVAILABLE, "this Flare opens no remote sessions")
         })?;
@@ -748,6 +770,7 @@ impl AppDispatcher {
             folder: folder.to_string(),
             resume,
             front,
+            caller: ctx.tab.clone(),
         })
     }
 
@@ -771,6 +794,12 @@ impl AppDispatcher {
             )),
             None => Self::tab_of_call(ctx),
         }
+    }
+
+    /// Whether `tab` is the caller's own (the tab of the token it called with). Only then may a hidden session answer
+    /// as one (rule 1306); any other caller naming it gets the answer an unknown tab gets.
+    fn owns(ctx: &CallContext, tab: &str) -> bool {
+        ctx.tab.as_deref() == Some(tab)
     }
 
     /// Whether the person's click on one of the calling plugin's actions or sidebar items gave it scope on `tab`.
@@ -887,6 +916,7 @@ impl AppDispatcher {
         // Read before anything is checked, so a switch off during the checks is seen by the window.
         let generation = self.generation_of(ctx);
         let (tab, source) = self.decor_target(ctx, params)?;
+        let own = Self::owns(ctx, &tab);
         let spend = (tab.clone(), source.clone());
         let key = str_param(params, "key")?
             .ok_or_else(|| bad("key is required".into()))?
@@ -941,6 +971,7 @@ impl AppDispatcher {
                     tip: line("tip")?,
                     tone,
                     generation,
+                    own,
                 }
             }
             Method::TabsBadgeClear => CtlOp::BadgeClear { tab, source, key },
@@ -961,6 +992,7 @@ impl AppDispatcher {
                     value,
                     label: line("label")?,
                     generation,
+                    own,
                 }
             }
             Method::TabsProgressClear => CtlOp::ProgressClear { tab, source, key },
@@ -1203,7 +1235,12 @@ impl AppDispatcher {
             READ_RATE,
             "session.read calls for one tab",
         )?;
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        // A hidden session answers only a call made with its own tab token (rule 1306).
+        let hidden_ok = Self::owns(ctx, &tab);
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok,
+        })?;
         let none = || Ok(json!({"tab": tab, "session": null, "entries": []}));
         let (Some(session), Some(folder), Some(dir)) = (
             at["session"].as_str(),
@@ -1295,6 +1332,7 @@ impl AppDispatcher {
         self.ask(if method == Method::BarShow {
             CtlOp::BarShow {
                 plugin,
+                own: Self::owns(ctx, &tab),
                 tab,
                 generation,
             }
@@ -1549,7 +1587,8 @@ impl AppDispatcher {
         Self::plugin_caller(ctx, "the address of a page to fill")?;
         only_fields(params, &["tab"], "browser.fill.page")?;
         let tab = self.fill_tab(ctx, params)?;
-        self.ask(CtlOp::FillPage { tab })
+        let own = Self::owns(ctx, &tab);
+        self.ask(CtlOp::FillPage { tab, own })
     }
 
     /// `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`: checked here (the params, the tab,
@@ -1559,6 +1598,7 @@ impl AppDispatcher {
         let (plugin, plugin_name, generation) = self.fill_caller(ctx, "filling a login")?;
         let tab = self.fill_tab(ctx, params)?;
         let via_call = !self.may_see_tab(ctx, &tab);
+        let own = Self::owns(ctx, &tab);
         let req = flare_mods::fill::parse_fill(params)?;
         let hub = self.hub()?;
         hub.asks().admit(&plugin, Instant::now())?;
@@ -1571,6 +1611,7 @@ impl AppDispatcher {
             values: req.values,
             via_call,
             generation,
+            own,
         };
         self.ask_by(op, Instant::now() + ASK_CALL_WAIT)
     }
@@ -1665,7 +1706,7 @@ impl AppDispatcher {
                 ));
             }
         }
-        let own = ctx.tab.as_deref() == Some(tab.as_str());
+        let own = Self::owns(ctx, &tab);
         self.ask(CtlOp::ShowMod {
             tab,
             mod_id: mod_id.to_string(),
@@ -2625,6 +2666,7 @@ impl AppDispatcher {
                     folder: dir.to_string_lossy().into_owned(),
                     resume,
                     open_id,
+                    opener: viewer_of(ctx),
                 })
             }
             Method::RemoteLs => {
@@ -2647,6 +2689,7 @@ impl AppDispatcher {
                 self.ask(CtlOp::RemoteAttach {
                     tab,
                     conn: ctx.conn,
+                    viewer: viewer_of(ctx),
                 })
             }
             Method::RemoteDetach => {
@@ -2778,7 +2821,10 @@ impl AppDispatcher {
                 "that tab is not followed: send remote.attach first",
             ));
         }
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok: true,
+        })?;
         let folder = at["folder"].as_str().unwrap_or_default();
         let file = crate::remote_files::resolve_fetch(folder, path, &self.home, host.temp())?;
         let c = crate::remote_files::read_chunk(&file, chunk)?;
@@ -2913,7 +2959,10 @@ impl AppDispatcher {
             REMOTE_CONVO_RATE,
             "remote.convo calls on one tab",
         )?;
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok: true,
+        })?;
         let (Some(session), Some(folder), Some(dir)) = (
             at["session"].as_str(),
             at["folder"].as_str(),
@@ -2946,12 +2995,10 @@ pub const REMOTE_CONVO_RATE: f64 = 10.0;
 /// and the bridge says it as its `hello`'s client. An older bridge says only its own name, which names no machine, and
 /// so does a name that is empty, too long or holds a control character.
 pub fn viewer_of(ctx: &CallContext) -> Option<String> {
-    let name = ctx.client.trim();
-    (!name.is_empty()
-        && name != crate::serve_remote::BRIDGE_CLIENT
-        && name.chars().count() <= flare_ctl::session::MAX_MACHINE_NAME
-        && !name.chars().any(char::is_control))
-    .then(|| name.to_string())
+    // Rule 1306: the one check a hidden session's opener name meets at open, rename and restore.
+    flare_tabs::restore::valid_opener(&ctx.client)
+        .filter(|n| *n != crate::serve_remote::BRIDGE_CLIENT)
+        .map(str::to_string)
 }
 
 impl Dispatcher for AppDispatcher {
@@ -3331,7 +3378,7 @@ impl AppDispatcher {
             | Method::RemoteConvo
             | Method::RemoteFetch
             | Method::RemotePut => self.remote_call(ctx, method, &params),
-            Method::OpenRemoteSession => self.open_remote(&params),
+            Method::OpenRemoteSession => self.open_remote(ctx, &params),
             Method::InstallStaged => self.install_staged(&params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;

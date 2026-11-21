@@ -2639,11 +2639,12 @@ viewer", section 5 `remote.status` and `remote.convo`).
   host's next question (rule 298). An older host without `remote.status` keeps working, without the words. Held by `remote_status::tests`, `remote_link::tests`, `agent_hub::tests`,
   `indicator::tests` and `ui_tests::agent_flows::remote_flows`.
 - **One notification per question.** A question in a tab followed from the other machine is announced there, never
-  also on the host (rule 295). Held by `remote_flows::a_question_in_a_followed_tab_is_the_viewers_to_notify`.
-- **Keep-awake.** The host holds off system sleep while a tab followed from the other machine has an agent at work,
-  and lets go when the work stops, the viewer goes or Flare ends; the display still sleeps and the screen still locks
+  also on the host (rule 295; since 2026-11-19 the session is hidden on the host and never rings there, rule 1304). Held by `remote_flows::a_hidden_sessions_question_never_rings_on_the_host_followed_or_not`.
+- **Keep-awake.** The host holds off system sleep while a tab followed from the other machine has an agent at work
+  (since 2026-11-19: while any hidden session works, followed or not, rule 1302), and lets go when the work stops or
+  Flare ends; the display still sleeps and the screen still locks
   (rule 296, owner decision). Held by `keep_awake::tests` and
-  `remote_flows::a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after`.
+  `remote_flows::a_working_hidden_session_holds_the_host_awake_with_no_follower`.
 - **The conversation over the link.** `remote.convo` sends what is said in the tab's Claude session as numbered
   entries; the host finds and reads the transcript itself, no path crosses, and a viewer takes each entry once (rule
   297). Held by `remote_convo::tests` and `ctl_app::tests::remote_convo_sends_the_hosts_transcript_as_numbered_entries_and_no_path`.
@@ -2747,9 +2748,9 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   line (Clawd stays in the pane), in horizontal tabs at the right after the status ring and before the ×. Its tooltip
   names the machine. A restored tab takes the logo once the machines are read. Held by
   `tabs_ui::tests::a_remote_tabs_row_carries_its_machines_logo_and_name`.
-- **Hide here only.** A remote tab's right-click menu has "Hide here only" after "Close tab": the tab goes from this
-  window and the session goes on on its machine. Close still ends it everywhere and asks first while an agent works
-  (rule 1192). Held by `ui_tests::term::flow::hide_here_only_detaches_and_close_ends_the_session_everywhere` and the
+- **Hide here only (removed 2026-11-19).** A remote tab's right-click menu had "Hide here only" after "Close tab". Max
+  removed it: with sessions hidden on the host it left a session nobody sees. Close ends the session everywhere and
+  asks first on this machine while an agent is there (rules 1192, 1305). Held by `ui_tests::term::flow::a_remote_tabs_menu_has_close_and_no_hide_here_only` and the
   e2e `remoteUi`.
 - **The fitted conversation view.** While the other machine sizes a remote tab (someone typed there last) and the tab
   has a Claude session, this screen shows the conversation wrapped to its own width instead of a terminal at the other
@@ -2757,7 +2758,7 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   the live terminal back at this window's size; the key goes on to the tab (rule 1193). Held by
   `ui_tests::term::flow::a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back` and
   `ui_tests::remote_convo::*`.
-- **The host's own fitted view, 2026-11-13.** While a remote viewer sizes an agent tab of the host (someone typed on the
+- **The host's own fitted view, 2026-11-13 (unreachable since 2026-11-19, removed in a later PR).** While a remote viewer sizes an agent tab of the host (someone typed on the
   viewer last) and that tab is in front, the host's window shows the same fitted conversation view of the tab's own
   Claude session, with "Live on <viewer's machine>. Click or type to take the terminal here." above it, instead of the
   terminal at the viewer's size. A key typed there or a click takes the size back: the terminal returns at the host
@@ -2806,7 +2807,7 @@ Three fixes to a remote tab's link when it is slow or drops, owner approved 2026
   tab (the viewer opens again without it). Held by `remote_link::tests::an_open_whose_answer_was_lost_opens_no_second_tab`,
   `an_older_host_that_refuses_the_open_id_still_opens_the_tab`, `remote_host::tests::an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them`,
   `ctl_app::tests::remote_open_checks_the_host_folder_and_the_resume_id_first` and
-  `remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_tab`.
+  `remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_session`.
 - **Typing while the link is down is kept.** Keys, text and pastes typed in a remote tab while its link is down are
   kept and sent in order right after the next attach. Typing older than 30 s, or past 64 KB in all (and the rest of
   that outage's typing after it), is dropped, and the tab shows one red line: "Some typing while the link to <machine>
@@ -3059,3 +3060,33 @@ throw an error message on screen". The approved look is mockup A. Rule 1275; the
   `AppDispatcher::notice_show`, `CtlOp::NoticeShow`, `crate::plugin_notice` (the list and its clock),
   `appctl/notice_glue.rs`, `ui/plugin_notice.slint` (`PluginNotices`, `PluginNoticeToast`). Held by the tests in
   `flare_mods::notice`, `crate::plugin_notice`, `appctl::tests::mods_tests::plugin_notice` and `ui_tests::plugin_notice`.
+
+## Remote sessions show only on the machine that opened them, 2026-11-19
+
+Max's words: "from now on you can open a session on another machine but its only ever on one machine, no imports since
+that gets messy. on the machine its running on, it will be in the background, you wont see it, only on the machine that
+started it remotely." Spec: `docs/superpowers/specs/2026-11-19-remote-session-on-opener-design.md`; plan:
+`docs/superpowers/plans/2026-11-19-remote-session-on-opener.md` (this is its PR 1, the host side). Contract:
+`docs/surfaces/protocol.md` section 5.
+
+- **Hidden on the host.** A session another machine opens (`remote.open`) runs on the host as a hidden session: a shell
+  and its agent as any tab, but no strip tab, sidebar row, Ctrl+Tab or Ctrl+1..9 stop, front pick, badge, attention
+  count, notification, plugin tab or dictation target (rule 1302). It is sized by its opener from birth, keeps that
+  size when the opener goes, and is saved in `tabs.json` with `hidden: {opener, open_id, cols, rows}` and restored
+  hidden, its Claude session resumed (rule 1286). A machine holds at most 50; a 51st open is refused with a line.
+- **Only hidden sessions answer the remote ops.** `remote.status` and `remote.tabs` list only hidden sessions, and
+  every op that names any other tab answers `no_tab`, so a host's own tabs and the remote tabs it shows are never
+  followed from a third machine (rule 1303).
+- **Questions ring on the opener only** (rule 1304). **The host never asks on a remote close**; the opener asks first
+  while its host names an agent, idle or not (rule 1305).
+- **A working hidden session holds the host awake**, followed or not, and the quit ask and the install hold name it
+  "<folder> (for <opener>)".
+- **Its agent's panels.** A hidden session's agent that asks for a panel, a `show_*` tool, the browser panel, a badge or
+  progress hears `unavailable`: "this session shows on <opener>; its panels cannot show there yet".
+- **"Hide here only" is gone** on the opener (Max, 2026-11-19).
+- **No list on the host** (Max, 2026-11-19): Settings > Machines shows only the machines. A hidden session whose
+  opener never comes back runs until the host's Flare quits, saved and restored hidden until then. **Not yet (PR 2,
+  released together with this one):** the opener finds its session again after a host restart (`remote.find`). Held by
+  `ui_tests::agent_flows::remote_flows`, `flare_tabs::model::hidden_tests`, `flare_tabs::restore::tests` (the hidden
+  ones), `tab_host::tests::a_hidden_session_is_remote_sized_from_birth_and_keeps_its_size`,
+  `ui_tests::term::flow::the_opener_asks_before_closing_an_idle_remote_claude_tab` and the e2e `remoteUi`.

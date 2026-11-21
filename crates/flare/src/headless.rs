@@ -422,6 +422,7 @@ fn saved(cwds: &[String], active: usize) -> SavedTabs {
             })
             .collect(),
         active,
+        hidden: Vec::new(),
     }
 }
 
@@ -608,7 +609,14 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
             } else {
                 mark_bar
             };
-            (SavedTabs { tabs, active: 6 }, prep)
+            (
+                SavedTabs {
+                    tabs,
+                    active: 6,
+                    hidden: Vec::new(),
+                },
+                prep,
+            )
         }
         "marks-sidebar" | "marks-sidebar-bar" => {
             let tabs = vec![
@@ -623,7 +631,14 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
             } else {
                 mark_bar_vertical
             };
-            (SavedTabs { tabs, active: 0 }, prep)
+            (
+                SavedTabs {
+                    tabs,
+                    active: 0,
+                    hidden: Vec::new(),
+                },
+                prep,
+            )
         }
         "marks-icons" => {
             // Clawd, the OpenAI mark (Flare, a Codex tab), the prompt (docs, a plain shell) and,
@@ -634,14 +649,28 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
                 mark_tab("Sonara", None),
                 mark_tab("docs", None),
             ];
-            (SavedTabs { tabs, active: 0 }, horizontal)
+            (
+                SavedTabs {
+                    tabs,
+                    active: 0,
+                    hidden: Vec::new(),
+                },
+                horizontal,
+            )
         }
         "marks-overflow" => {
             // Sixteen tabs at 700 px: the strip shows icons, one name and the +N control.
             let tabs = (1..=16)
                 .map(|i| mark_tab(&format!("Tab{i:02}"), None))
                 .collect();
-            (SavedTabs { tabs, active: 0 }, horizontal)
+            (
+                SavedTabs {
+                    tabs,
+                    active: 0,
+                    hidden: Vec::new(),
+                },
+                horizontal,
+            )
         }
         "marks-tip" => {
             let tabs = vec![
@@ -650,12 +679,26 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
                 mark_tab("Sonara", None),
                 mark_tab("api", None),
             ];
-            (SavedTabs { tabs, active: 0 }, horizontal)
+            (
+                SavedTabs {
+                    tabs,
+                    active: 0,
+                    hidden: Vec::new(),
+                },
+                horizontal,
+            )
         }
         "marks-skeleton" => {
             // A Claude tab coming back, in front: the skeleton draws over its grid.
             let tabs = vec![mark_tab("Atlas", claude), mark_tab("Flare", claude)];
-            (SavedTabs { tabs, active: 1 }, horizontal)
+            (
+                SavedTabs {
+                    tabs,
+                    active: 1,
+                    hidden: Vec::new(),
+                },
+                horizontal,
+            )
         }
         // marks-close: one working Claude tab. Saved as a plain shell, so it is not coming back to
         // a session: the question stands over the shell, not over a resume skeleton.
@@ -663,6 +706,7 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
             SavedTabs {
                 tabs: vec![mark_tab("Atlas", None)],
                 active: 0,
+                hidden: Vec::new(),
             },
             horizontal,
         ),

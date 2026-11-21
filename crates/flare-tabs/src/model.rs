@@ -4,7 +4,7 @@
 //! settings cases, the tabsChanged effect). One object the UI thread owns; the glue calls it.
 
 use crate::restore::{
-    Restored, SavedRemote, SavedTab, SavedTabs, Spawn, peek_state, settle_restore_from,
+    Restored, SavedHidden, SavedRemote, SavedTab, SavedTabs, Spawn, peek_state, settle_restore_from,
 };
 use crate::tab_mru::{Walk, start_walk, step_walk, sync_mru, touch_mru, walk_holds, walk_target};
 use crate::tabs::{self, MachineTag, Pending, SETTINGS_ID, Tab, TabKind, TabState};
@@ -30,6 +30,25 @@ pub struct TabModel {
     /// Each remote tab's live state (remote sessions PR 3): the host's id of the tab and the output it read, which
     /// `tabs.json` keeps so a restart attaches to the same session (rule 288).
     remotes: HashMap<String, RemoteLive>,
+    /// Sessions this machine runs for another machine's Flare (rule 1302): never in `state`, so the strip, the
+    /// sidebar, the used list, Ctrl+Tab, Ctrl+1..9 and every front pick pass them by. Their agents and sessions live
+    /// in `agents` and `sessions` as any tab's do.
+    hidden: Vec<Hidden>,
+}
+
+/// A hidden session (rule 1302): a local shell tab no strip shows, kept for the machine that opened it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hidden {
+    /// Its id, folder and kind as any shell tab's; `pending` and `remote` are always None.
+    pub tab: Tab,
+    /// The opener's machine name, as its link named itself (updated at each attach).
+    pub opener: String,
+    /// The opener's `open_id` (rule 1210), kept for the session's life and saved with it.
+    pub open_id: Option<String>,
+    /// When it was opened (the window clock).
+    pub since_ms: u64,
+    /// The opener's last size: the session is born and restored at it, never at this window's size.
+    pub size: Option<(u16, u16)>,
 }
 
 fn make_id(clock_ms: u64, seq: &mut u64) -> String {
@@ -51,6 +70,7 @@ impl TabModel {
             agents: HashMap::new(),
             sessions: HashMap::new(),
             remotes: HashMap::new(),
+            hidden: Vec::new(),
         }
     }
 
@@ -163,7 +183,103 @@ impl TabModel {
         self.after_change();
     }
 
+    /// A hidden session in `cwd` for the machine `opener` (rule 1302): never added to the strip, so nothing in front
+    /// moves and the used list never holds it.
+    pub fn open_hidden(
+        &mut self,
+        cwd: &str,
+        opener: &str,
+        open_id: Option<&str>,
+        size: Option<(u16, u16)>,
+        now_ms: u64,
+    ) -> String {
+        let id = self.new_id();
+        self.hidden.push(Hidden {
+            tab: Tab {
+                id: id.clone(),
+                kind: TabKind::Shell,
+                cwd: cwd.to_string(),
+                pending: None,
+                remote: None,
+            },
+            // Rule 1306: the one check restore uses too, so what opens is what comes back.
+            opener: crate::restore::valid_opener(opener)
+                .unwrap_or(crate::restore::OPENER_UNNAMED)
+                .to_string(),
+            open_id: open_id.map(str::to_string),
+            since_ms: now_ms,
+            size,
+        });
+        id
+    }
+
+    /// The hidden sessions, oldest first.
+    pub fn hidden(&self) -> &[Hidden] {
+        &self.hidden
+    }
+
+    pub fn hidden_of(&self, id: &str) -> Option<&Hidden> {
+        self.hidden.iter().find(|h| h.tab.id == id)
+    }
+
+    pub fn is_hidden(&self, id: &str) -> bool {
+        self.hidden_of(id).is_some()
+    }
+
+    /// The hidden session goes, with its agent, session and remote state. False for any other id.
+    pub fn close_hidden(&mut self, id: &str) -> bool {
+        let before = self.hidden.len();
+        self.hidden.retain(|h| h.tab.id != id);
+        if self.hidden.len() == before {
+            return false;
+        }
+        self.agents.remove(id);
+        self.sessions.remove(id);
+        self.remotes.remove(id);
+        true
+    }
+
+    /// The opener's size of a hidden session (saved with it). False when it is no hidden session or nothing changed.
+    pub fn set_hidden_size(&mut self, id: &str, cols: u16, rows: u16) -> bool {
+        match self.hidden.iter_mut().find(|h| h.tab.id == id) {
+            Some(h) if h.size != Some((cols, rows)) => {
+                h.size = Some((cols, rows));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The opener named itself again (each attach): a renamed machine shows its new name. A name the check refuses
+    /// (rule 1306) changes nothing.
+    pub fn set_hidden_opener(&mut self, id: &str, opener: &str) -> bool {
+        let Some(opener) = crate::restore::valid_opener(opener) else {
+            return false;
+        };
+        match self.hidden.iter_mut().find(|h| h.tab.id == id) {
+            Some(h) if h.opener != opener => {
+                h.opener = opener.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The hidden sessions' labels, as the strip would name them among themselves.
+    pub fn hidden_labels(&self) -> Vec<String> {
+        let tabs: Vec<Tab> = self.hidden.iter().map(|h| h.tab.clone()).collect();
+        tabs::tab_labels(&tabs)
+    }
+
     pub fn set_cwd(&mut self, id: &str, cwd: &str) -> bool {
+        // A hidden session follows its shell's folder too (OSC 7), but nothing in the strip moves.
+        if let Some(h) = self.hidden.iter_mut().find(|h| h.tab.id == id) {
+            if h.tab.cwd.to_lowercase() == cwd.to_lowercase() {
+                return false;
+            }
+            h.tab.cwd = cwd.to_string();
+            return true;
+        }
         match tabs::set_cwd(&self.state, id, cwd) {
             Some(s) => {
                 self.state = s;
@@ -280,7 +396,8 @@ impl TabModel {
         self.agents.contains_key(id)
     }
 
-    /// Each placeholder takes over its slot in place; returns the shells to start.
+    /// Each placeholder takes over its slot in place; returns the shells to start. The restored hidden sessions
+    /// (rule 1302) join the hidden list with new ids and come last in the answer: [`TabModel::is_hidden`] tells them.
     pub fn settle(&mut self, r: &Restored) -> Vec<Spawn> {
         let clock = self.clock_ms;
         let mut seq = self.seq;
@@ -295,7 +412,20 @@ impl TabModel {
         self.state = settled.state;
         self.restore_done = true;
         self.after_change();
-        settled.spawn
+        let mut spawn = settled.spawn;
+        for h in &r.hidden {
+            if self.hidden.len() >= crate::restore::MAX_HIDDEN {
+                break;
+            }
+            let id = self.open_hidden(&h.cwd, &h.opener, h.open_id.as_deref(), h.size, clock);
+            spawn.push(Spawn {
+                id,
+                cwd: h.cwd.clone(),
+                resume: h.resume.clone(),
+                remote: None,
+            });
+        }
+        spawn
     }
 
     pub fn restore_done(&self) -> bool {
@@ -350,6 +480,24 @@ impl TabModel {
                 })
                 .collect(),
             active,
+            // Rule 1302: after the strip, hidden as they are, with the opener's name, open id and size.
+            hidden: self
+                .hidden
+                .iter()
+                .map(|h| {
+                    let agent = self.agent_kind(&h.tab.id);
+                    SavedHidden {
+                        cwd: h.tab.cwd.clone(),
+                        agent,
+                        session: (agent == Some(AgentKind::Claude))
+                            .then(|| self.session(&h.tab.id).map(str::to_string))
+                            .flatten(),
+                        opener: h.opener.clone(),
+                        open_id: h.open_id.clone(),
+                        size: h.size,
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -564,6 +712,7 @@ mod tests {
                 },
             ],
             active: 1,
+            hidden: Vec::new(),
         };
         let mut m = TabModel::boot(&saved, 0);
         let ids = m.ids();
@@ -587,6 +736,7 @@ mod tests {
                 },
             ],
             active: 1,
+            hidden: Vec::new(),
         });
         assert_eq!(spawn.len(), 2);
         assert_eq!(spawn[0].id, ids[0]);
@@ -607,6 +757,7 @@ mod tests {
                 session: None,
             }],
             active: 0,
+            hidden: Vec::new(),
         };
         let mut m = TabModel::boot(&saved, 0);
         assert!(m.saved_if_restored().is_none());
@@ -618,6 +769,7 @@ mod tests {
                 remote: None,
             }],
             active: 0,
+            hidden: Vec::new(),
         });
         assert!(m.saved_if_restored().is_some());
         let mut e = TabModel::empty(0);
@@ -662,5 +814,173 @@ mod remote_tests {
         assert_eq!(s.active, 1);
         assert!(m.close(&id));
         assert!(m.remote_live(&id).is_none());
+    }
+}
+
+/// Rule 1302: a hidden session in the model.
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use crate::restore::{RestoredHidden, RestoredTab, parse_tabs, tabs_json};
+
+    const SID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+
+    #[test]
+    fn a_hidden_session_is_not_in_the_strip_the_walk_or_the_front_pick() {
+        let mut m = TabModel::empty(0);
+        let a = m.open_tab(r"C:\a");
+        let b = m.open_tab(r"C:\b");
+        let h = m.open_hidden(r"C:\h", "Mac Mini", Some("o-1"), Some((90, 30)), 5);
+        assert_eq!(
+            m.state.active_id.as_deref(),
+            Some(b.as_str()),
+            "nothing in front moved"
+        );
+        assert!(m.state.tabs.iter().all(|t| t.id != h), "never in the strip");
+        assert!(!m.mru().contains(&h), "never in the used list");
+        assert_eq!(m.labels().len(), 2);
+        for _ in 0..4 {
+            m.step(1, TabSwitch::Order);
+            assert_ne!(m.state.active_id.as_deref(), Some(h.as_str()));
+            m.step(1, TabSwitch::Recent);
+            m.commit_walk();
+            assert_ne!(m.state.active_id.as_deref(), Some(h.as_str()));
+        }
+        assert!(!m.jump(3), "Ctrl+3 has no third tab");
+        m.pick(&h);
+        assert_ne!(
+            m.state.active_id.as_deref(),
+            Some(h.as_str()),
+            "a pick never fronts it"
+        );
+        assert!(m.is_hidden(&h) && !m.is_hidden(&a));
+        let hd = m.hidden_of(&h).expect("hidden");
+        assert_eq!(
+            (
+                hd.opener.as_str(),
+                hd.open_id.as_deref(),
+                hd.size,
+                hd.since_ms
+            ),
+            ("Mac Mini", Some("o-1"), Some((90, 30)), 5)
+        );
+        assert!(m.set_cwd(&h, r"C:\h\sub"));
+        assert_eq!(m.hidden()[0].tab.cwd, r"C:\h\sub");
+        assert_eq!(m.hidden_labels(), ["sub"]);
+        assert!(m.set_hidden_size(&h, 100, 40));
+        assert!(
+            !m.set_hidden_size(&h, 100, 40),
+            "the same size is no change"
+        );
+        assert!(m.set_hidden_opener(&h, "Mac Studio"));
+        assert!(!m.close(&h), "a strip close never takes it");
+        m.set_agent(&h, Some(AgentKind::Claude));
+        m.set_session(&h, Some(SID));
+        assert!(m.close_hidden(&h));
+        assert!(m.hidden().is_empty());
+        assert_eq!(m.agent_kind(&h), None, "its agent goes with it");
+        assert_eq!(m.session(&h), None);
+        assert!(!m.close_hidden(&a), "a strip tab is no hidden session");
+    }
+
+    /// Rule 1306: opening, renaming and restoring check an opener's name the same way. A name restore would refuse is
+    /// kept as "another computer" at open and changes nothing at a rename, so a saved session always comes back hidden
+    /// with the name it showed.
+    #[test]
+    fn an_opener_name_is_checked_the_same_at_open_rename_and_restore() {
+        use crate::restore::{MAX_OPENER_NAME, OPENER_UNNAMED};
+        let mut m = TabModel::empty(0);
+        let long = "m".repeat(MAX_OPENER_NAME + 1);
+        let most = "m".repeat(MAX_OPENER_NAME);
+        let h = m.open_hidden(r"C:\h", &long, None, None, 0);
+        assert_eq!(m.hidden_of(&h).unwrap().opener, OPENER_UNNAMED);
+        let h2 = m.open_hidden(r"C:\h2", "Mac\u{7}Mini", None, None, 0);
+        assert_eq!(m.hidden_of(&h2).unwrap().opener, OPENER_UNNAMED);
+        let h3 = m.open_hidden(r"C:\h3", &most, None, None, 0);
+        assert_eq!(m.hidden_of(&h3).unwrap().opener, most);
+        assert!(!m.set_hidden_opener(&h3, &long));
+        assert!(!m.set_hidden_opener(&h3, "Mac\nMini"));
+        assert_eq!(m.hidden_of(&h3).unwrap().opener, most);
+        assert!(m.set_hidden_opener(&h, " Mac Studio "));
+        assert_eq!(m.hidden_of(&h).unwrap().opener, "Mac Studio");
+        // What was kept comes back, all hidden.
+        let back = parse_tabs(&tabs_json(&m.saved()));
+        assert!(back.tabs.is_empty());
+        let names: Vec<&str> = back.hidden.iter().map(|h| h.opener.as_str()).collect();
+        assert_eq!(names, ["Mac Studio", OPENER_UNNAMED, most.as_str()]);
+    }
+
+    #[test]
+    fn closing_the_front_tab_never_fronts_a_hidden_session() {
+        let mut m = TabModel::empty(0);
+        let a = m.open_tab(r"C:\a");
+        let h = m.open_hidden(r"C:\h", "PC", None, None, 0);
+        assert!(m.close(&a));
+        assert_eq!(m.state.active_id, None, "no tab left in front");
+        assert!(m.is_hidden(&h), "the hidden session goes on");
+        m.toggle_settings();
+        m.toggle_settings();
+        assert_ne!(m.state.active_id.as_deref(), Some(h.as_str()));
+    }
+
+    /// Rule 1302: a hidden session is saved after the strip with its opener, open id, size, agent and session; the
+    /// front counts strip tabs only; the file reads back hidden; settle restores it hidden with a new id.
+    #[test]
+    fn a_hidden_session_saves_and_restores_hidden_with_its_opener_and_open_id() {
+        let mut m = TabModel::empty(0);
+        let a = m.open_tab(r"C:\a");
+        let h = m.open_hidden(r"C:\h", "Mac Mini", Some("o-1"), Some((90, 30)), 0);
+        m.set_agent(&h, Some(AgentKind::Claude));
+        m.set_session(&h, Some(SID));
+        m.pick(&a);
+        let s = m.saved();
+        assert_eq!(s.tabs.len(), 1);
+        assert_eq!(s.active, 0);
+        assert_eq!(
+            s.hidden,
+            vec![SavedHidden {
+                cwd: r"C:\h".into(),
+                agent: Some(AgentKind::Claude),
+                session: Some(SID.into()),
+                opener: "Mac Mini".into(),
+                open_id: Some("o-1".into()),
+                size: Some((90, 30)),
+            }]
+        );
+        let back = parse_tabs(&tabs_json(&s));
+        assert_eq!(back, s, "the file round-trips");
+        let mut boot = TabModel::boot(&back, 1);
+        assert_eq!(
+            boot.state.tabs.len(),
+            1,
+            "no placeholder for a hidden session"
+        );
+        let spawn = boot.settle(&Restored {
+            tabs: vec![RestoredTab {
+                cwd: r"C:\a".into(),
+                resume: None,
+                from: Some(0),
+                remote: None,
+            }],
+            active: 0,
+            hidden: vec![RestoredHidden {
+                cwd: r"C:\h".into(),
+                resume: Some(SID.into()),
+                opener: "Mac Mini".into(),
+                open_id: Some("o-1".into()),
+                size: Some((90, 30)),
+            }],
+        });
+        assert_eq!(spawn.len(), 2);
+        let hid = &spawn[1];
+        assert!(boot.is_hidden(&hid.id), "restored hidden");
+        assert_eq!(hid.resume.as_deref(), Some(SID));
+        assert!(boot.state.tabs.iter().all(|t| t.id != hid.id));
+        let hd = boot.hidden_of(&hid.id).unwrap();
+        assert_eq!(
+            (hd.open_id.as_deref(), hd.size),
+            (Some("o-1"), Some((90, 30)))
+        );
+        assert_ne!(hid.id, h, "a new id, as every restored tab");
     }
 }

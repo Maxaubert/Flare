@@ -85,7 +85,7 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
   nothing; Test on a linked machine whose ssh is down shows "Not linked" and the reason as one grey line under its row (no tooltip on the status).
 - [ ] The + menu (right-click on +, or the New tab arrow) lists the machine; its pick opens a shell tab in the other
   machine's home folder, with the logo on the tab (vertical: before the folder; horizontal: before the ×).
-- [ ] "Hide here only" on that tab: gone here, still open on the other machine; Close on it ends it on both.
+- [ ] That tab's menu has no "Hide here only" (removed 2026-11-19); Close on it ends it on both, and the other machine never asks.
 - [ ] A Claude session in a remote tab: type on the host's own Flare, and the viewer shows the conversation fitted to
   its window with "Live on <machine>"; a click or a key there brings the terminal back at the viewer's size, and the
   host's window gets its size back at the next key typed there.

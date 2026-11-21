@@ -91,11 +91,91 @@ fn parse_remote(v: Option<&Value>) -> Option<SavedRemote> {
     })
 }
 
-/// The strip as `tabs.json` holds it.
+/// Most hidden sessions one machine holds (rule 1302, Max 2026-11-19): a 51st `remote.open` is refused, and a saved
+/// file keeps no more.
+pub const MAX_HIDDEN: usize = 50;
+
+/// The longest opener name a hidden session keeps: a machine name, so the same limit `remote.hello` checks
+/// (`flare_ctl::session::MAX_MACHINE_NAME`; the flare crate asserts they match). Rule 1306.
+pub const MAX_OPENER_NAME: usize = 256;
+
+/// The opener's name when it named none, or a name no check passes (rule 1306).
+pub const OPENER_UNNAMED: &str = "another computer";
+
+/// An opener name as every path checks it (rule 1306): trimmed, not empty, at most [`MAX_OPENER_NAME`] characters
+/// and no control character. Used when a session opens, when its opener names itself again, and at restore.
+pub fn valid_opener(name: &str) -> Option<&str> {
+    let s = name.trim();
+    (!s.is_empty() && s.chars().count() <= MAX_OPENER_NAME && !s.chars().any(char::is_control))
+        .then_some(s)
+}
+
+/// A hidden session as `tabs.json` keeps it (rule 1302): a local session this machine runs for another machine's
+/// Flare, never shown in the strip. Written as a tab with `hidden: {opener, open_id, cols, rows}` after the strip's
+/// tabs, so an older Flare reads it as a local tab (rule 40).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedHidden {
+    pub cwd: String,
+    pub agent: Option<AgentKind>,
+    /// As [`SavedTab::session`] (rule 1286).
+    pub session: Option<String>,
+    /// The machine that opened it, as its link named itself ("another computer" when it named none).
+    pub opener: String,
+    /// The opener's `open_id` (rule 1210), when it sent one.
+    pub open_id: Option<String>,
+    /// The opener's last size, so a restored session comes back at it and never at this window's size.
+    pub size: Option<(u16, u16)>,
+}
+
+/// The opener name the file holds, or [`OPENER_UNNAMED`] when it holds none [`valid_opener`] passes.
+fn opener_name(v: Option<&Value>) -> String {
+    v.and_then(Value::as_str)
+        .and_then(valid_opener)
+        .unwrap_or(OPENER_UNNAMED)
+        .to_string()
+}
+
+/// An `open_id` as rule 1210 checks it: 1 to 64 ASCII letters, digits, `-` or `_`.
+pub fn valid_open_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// What a saved tab's `hidden` object holds: the opener, the open id and the size.
+type HiddenKey = (String, Option<String>, Option<(u16, u16)>);
+
+/// The `hidden` key of a saved tab. None only when the key is missing or null (a file from before rule 1302, rule
+/// 40). Any other value is a hidden session, and it never comes back as a strip tab (rule 1306): a part that is not
+/// shaped right reads as unknown (the opener as [`OPENER_UNNAMED`], no open id, no size).
+fn parse_hidden(v: Option<&Value>) -> Option<HiddenKey> {
+    let v = v.filter(|v| !v.is_null())?;
+    let empty = serde_json::Map::new();
+    let o = v.as_object().unwrap_or(&empty);
+    let opener = opener_name(o.get("opener"));
+    let open_id = o
+        .get("open_id")
+        .and_then(Value::as_str)
+        .filter(|s| valid_open_id(s))
+        .map(str::to_string);
+    let dim = |k: &str| {
+        o.get(k)
+            .and_then(Value::as_u64)
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| *n > 0)
+    };
+    let size = dim("cols").zip(dim("rows"));
+    Some((opener, open_id, size))
+}
+
+/// The strip as `tabs.json` holds it, and the hidden sessions (rule 1302) the file keeps after it.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct SavedTabs {
     pub tabs: Vec<SavedTab>,
     pub active: usize,
+    /// Never part of the strip: `active` counts `tabs` only.
+    pub hidden: Vec<SavedHidden>,
 }
 
 /// Defensive reader: anything not shaped right is an empty strip, never a crash.
@@ -106,6 +186,11 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
     let Some(list) = v.get("tabs").and_then(Value::as_array) else {
         return SavedTabs::default();
     };
+    let mut hidden: Vec<SavedHidden> = Vec::new();
+    // `active` indexes the well-shaped entries, hidden sessions included (they are written after the strip): each strip
+    // tab's index among them, so a hidden one never shifts the front.
+    let mut kept = 0usize;
+    let mut at_of: Vec<usize> = Vec::new();
     let tabs: Vec<SavedTab> = list
         .iter()
         .filter_map(|e| {
@@ -113,7 +198,36 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
             if cwd.is_empty() {
                 return None;
             }
+            let at = kept;
+            kept += 1;
             let remote = parse_remote(e.get("remote"));
+            // A hidden session (rule 1302) is never a strip tab: it goes to its own list (rule 1306). Only a
+            // well-shaped remote tab (it runs on another machine) is never hidden.
+            if remote.is_none()
+                && let Some((opener, open_id, size)) = parse_hidden(e.get("hidden"))
+            {
+                if hidden.len() < MAX_HIDDEN {
+                    let agent = e
+                        .get("agent")
+                        .and_then(Value::as_str)
+                        .and_then(AgentKind::parse);
+                    let session = e
+                        .get("session")
+                        .and_then(Value::as_str)
+                        .and_then(saved_session)
+                        .filter(|_| agent == Some(AgentKind::Claude));
+                    hidden.push(SavedHidden {
+                        cwd: cwd.to_string(),
+                        agent,
+                        session,
+                        opener,
+                        open_id,
+                        size,
+                    });
+                }
+                return None;
+            }
+            at_of.push(at);
             // The host owns a remote tab's session: no agent of this machine resumes it.
             let agent = e
                 .get("agent")
@@ -133,14 +247,20 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
                 session,
             })
         })
-        .take(MAX_TABS)
         .collect();
+    let mut tabs = tabs;
+    tabs.truncate(MAX_TABS);
     let active = v
         .get("active")
         .and_then(Value::as_f64)
-        .filter(|a| a.fract() == 0.0 && *a >= 0.0 && *a < tabs.len() as f64)
-        .map_or(0, |a| a as usize);
-    SavedTabs { tabs, active }
+        .filter(|a| a.fract() == 0.0 && *a >= 0.0 && *a < kept as f64)
+        .and_then(|a| at_of.iter().take(tabs.len()).position(|&i| i == a as usize))
+        .unwrap_or(0);
+    SavedTabs {
+        tabs,
+        active,
+        hidden,
+    }
 }
 
 /// `{"tabs":[{"cwd":..,"agent":..,"session":..}],"active":n}`; the agent key is left out for a plain shell, the session
@@ -184,6 +304,34 @@ pub fn tabs_json(s: &SavedTabs) -> String {
             }
             (None, None) => format!(r#"{{"cwd":{}}}"#, quote(&t.cwd)),
         })
+        .chain(s.hidden.iter().take(MAX_HIDDEN).map(|h| {
+            // Rule 1302: the agent and session keys as a local tab writes them, so an older Flare reads it as one.
+            let agent = h
+                .agent
+                .map(|a| format!(r#","agent":{}"#, quote(a.as_str())))
+                .unwrap_or_default();
+            let session = h
+                .session
+                .as_deref()
+                .filter(|_| h.agent == Some(AgentKind::Claude))
+                .and_then(saved_session)
+                .map(|s| format!(r#","session":{}"#, quote(&s)))
+                .unwrap_or_default();
+            let open_id = h
+                .open_id
+                .as_deref()
+                .map(|o| format!(r#","open_id":{}"#, quote(o)))
+                .unwrap_or_default();
+            let size = h
+                .size
+                .map(|(c, r)| format!(r#","cols":{c},"rows":{r}"#))
+                .unwrap_or_default();
+            format!(
+                r#"{{"cwd":{}{agent}{session},"hidden":{{"opener":{}{open_id}{size}}}}}"#,
+                quote(&h.cwd),
+                quote(&h.opener),
+            )
+        }))
         .collect();
     format!(r#"{{"tabs":[{}],"active":{}}}"#, tabs.join(","), s.active)
 }
@@ -198,11 +346,23 @@ pub struct RestoredTab {
     pub remote: Option<SavedRemote>,
 }
 
+/// A hidden session that comes back (rule 1302): hidden, never a strip tab, resumed as a local tab is (rule 1286).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredHidden {
+    pub cwd: String,
+    pub resume: Option<String>,
+    pub opener: String,
+    pub open_id: Option<String>,
+    pub size: Option<(u16, u16)>,
+}
+
 /// What the restore decided.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Restored {
     pub tabs: Vec<RestoredTab>,
     pub active: usize,
+    /// The hidden sessions that come back, after the strip.
+    pub hidden: Vec<RestoredHidden>,
 }
 
 /// The HOOK POINT for agent resume (M6): the Claude session ids of a folder, newest first.
@@ -263,15 +423,44 @@ pub fn plan_restore_with(
     let mut tabs: Vec<RestoredTab> = Vec::new();
     let mut active = 0usize;
     // The sessions tabs saved as theirs: a tab without one never takes them (rule 1286).
+    // Hidden sessions (rule 1302) name theirs too: a strip tab never takes one.
     let named: HashSet<&str> = saved
         .tabs
         .iter()
         .filter(|t| t.remote.is_none() && t.agent == Some(AgentKind::Claude))
         .filter_map(|t| t.session.as_deref())
+        .chain(
+            saved
+                .hidden
+                .iter()
+                .filter(|h| h.agent == Some(AgentKind::Claude))
+                .filter_map(|h| h.session.as_deref()),
+        )
         .filter(|s| *s != SESSION_NEW)
         .collect();
     // The sessions handed out so far: two tabs never resume one session.
     let mut taken: HashSet<String> = HashSet::new();
+    let mut resume_of = |cwd: &str, agent: Option<AgentKind>, session: Option<&str>| match agent {
+        Some(AgentKind::Codex) => Some(CODEX_RESUME.to_string()),
+        Some(AgentKind::Agy) => Some(AGY_RESUME.to_string()),
+        Some(AgentKind::Claude) => {
+            let id = match session {
+                Some(SESSION_NEW) => None,
+                Some(id) => Some(id.to_string()).filter(|id| !taken.contains(id) && used(cwd, id)),
+                None => sessions(cwd)
+                    .into_iter()
+                    .find(|id| !named.contains(id.as_str()) && !taken.contains(id)),
+            };
+            Some(match id {
+                Some(id) => {
+                    taken.insert(id.clone());
+                    id
+                }
+                None => CLAUDE_NEW.to_string(),
+            })
+        }
+        None => None,
+    };
     for (i, t) in saved.tabs.iter().enumerate() {
         // A remote tab's folder is the host's: it is never statted here, and a path that would reach this machine's
         // network (a UNC path) is never used here either, since nothing here opens it (rule 287).
@@ -282,30 +471,7 @@ pub fn plan_restore_with(
         if i == saved.active {
             active = tabs.len();
         }
-        let mut resume = None;
-        match t.agent.filter(|_| here) {
-            Some(AgentKind::Codex) => resume = Some(CODEX_RESUME.to_string()),
-            Some(AgentKind::Agy) => resume = Some(AGY_RESUME.to_string()),
-            Some(AgentKind::Claude) => {
-                let id = match t.session.as_deref() {
-                    Some(SESSION_NEW) => None,
-                    Some(id) => {
-                        Some(id.to_string()).filter(|id| !taken.contains(id) && used(&t.cwd, id))
-                    }
-                    None => sessions(&t.cwd)
-                        .into_iter()
-                        .find(|id| !named.contains(id.as_str()) && !taken.contains(id)),
-                };
-                resume = Some(match id {
-                    Some(id) => {
-                        taken.insert(id.clone());
-                        id
-                    }
-                    None => CLAUDE_NEW.to_string(),
-                });
-            }
-            None => {}
-        }
+        let resume = resume_of(&t.cwd, t.agent.filter(|_| here), t.session.as_deref());
         tabs.push(RestoredTab {
             cwd: t.cwd.clone(),
             resume,
@@ -313,8 +479,26 @@ pub fn plan_restore_with(
             remote: t.remote.clone(),
         });
     }
+    // A hidden session comes back as a local tab does, in its own list (rule 1302); a gone folder drops it.
+    let hidden = saved
+        .hidden
+        .iter()
+        .take(MAX_HIDDEN)
+        .filter(|h| !h.cwd.is_empty() && local_folder_ok(&h.cwd, exists))
+        .map(|h| RestoredHidden {
+            cwd: h.cwd.clone(),
+            resume: resume_of(&h.cwd, h.agent, h.session.as_deref()),
+            opener: h.opener.clone(),
+            open_id: h.open_id.clone(),
+            size: h.size,
+        })
+        .collect();
     let active = active.min(tabs.len().saturating_sub(1));
-    Restored { tabs, active }
+    Restored {
+        tabs,
+        active,
+        hidden,
+    }
 }
 
 fn has_control(cwd: &str) -> bool {
@@ -369,16 +553,18 @@ pub fn resolve_restore_within(
     let (tx, rx) = std::sync::mpsc::channel::<(String, bool)>();
     let mut asked = 0usize;
     let mut seen = std::collections::HashSet::new();
-    for t in &saved.tabs {
-        // A remote tab's folder is the host's: never statted here.
-        if t.remote.is_some()
-            || t.cwd.is_empty()
-            || is_unsafe_restore_folder(&t.cwd)
-            || !seen.insert(t.cwd.clone())
-        {
+    // A remote tab's folder is the host's: never statted here. A hidden session's is this machine's (rule 1302).
+    let local = saved
+        .tabs
+        .iter()
+        .filter(|t| t.remote.is_none())
+        .map(|t| &t.cwd)
+        .chain(saved.hidden.iter().map(|h| &h.cwd));
+    for cwd in local {
+        if cwd.is_empty() || is_unsafe_restore_folder(cwd) || !seen.insert(cwd.clone()) {
             continue;
         }
-        let (is_dir, tx, cwd) = (Arc::clone(&is_dir), tx.clone(), t.cwd.clone());
+        let (is_dir, tx, cwd) = (Arc::clone(&is_dir), tx.clone(), cwd.clone());
         // Detached: a stat that never returns is left behind, not waited for.
         let spawned = std::thread::Builder::new()
             .name("flare-restore-stat".into())
@@ -620,6 +806,148 @@ mod tests {
         vec![]
     }
 
+    fn hd(cwd: &str, agent: Option<AgentKind>, session: Option<&str>) -> SavedHidden {
+        SavedHidden {
+            cwd: cwd.into(),
+            agent,
+            session: session.map(String::from),
+            opener: "Mac Mini".into(),
+            open_id: Some("o-1".into()),
+            size: Some((90, 30)),
+        }
+    }
+
+    /// Rule 1302: a hidden session is written after the strip as a tab with `hidden: {..}` (the agent and session keys
+    /// as a local tab's), reads back into its own list, and `active` still names the strip tab.
+    #[test]
+    fn a_hidden_session_is_written_after_the_strip_and_reads_back_hidden() {
+        const SID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+        let s = SavedTabs {
+            tabs: vec![st("C:\\a", None), st("C:\\b", None)],
+            active: 1,
+            hidden: vec![hd("C:\\h", Some(AgentKind::Claude), Some(SID))],
+        };
+        let json = tabs_json(&s);
+        assert_eq!(
+            json,
+            format!(
+                r#"{{"tabs":[{{"cwd":"C:\\a"}},{{"cwd":"C:\\b"}},{{"cwd":"C:\\h","agent":"claude","session":"{SID}","hidden":{{"opener":"Mac Mini","open_id":"o-1","cols":90,"rows":30}}}}],"active":1}}"#
+            )
+        );
+        assert_eq!(parse_tabs(&json), s);
+        // A hidden entry before the strip (a hand-edited file) never shifts the front.
+        let raw = r#"{"tabs":[{"cwd":"C:\\h","hidden":{"opener":"PC"}},{"cwd":"C:\\a"},{"cwd":"C:\\b"}],"active":2}"#;
+        let p = parse_tabs(raw);
+        assert_eq!(p.tabs, vec![st("C:\\a", None), st("C:\\b", None)]);
+        assert_eq!(p.active, 1);
+        assert_eq!(p.hidden[0].opener, "PC");
+        assert_eq!(
+            (p.hidden[0].open_id.as_ref(), p.hidden[0].size),
+            (None, None)
+        );
+        // `active` on a hidden entry is the first strip tab.
+        let raw =
+            r#"{"tabs":[{"cwd":"C:\\a"},{"cwd":"C:\\h","hidden":{"opener":"PC"}}],"active":1}"#;
+        assert_eq!(parse_tabs(raw).active, 0);
+    }
+
+    /// Rule 40: a file from before rule 1302 (no `hidden` key, or a null one) reads exactly as before.
+    #[test]
+    fn an_older_tabs_json_reads_as_before() {
+        let raw = r#"{"tabs":[{"cwd":"C:\\a","agent":"claude"},{"cwd":"C:\\b","hidden":null}],"active":1}"#;
+        let p = parse_tabs(raw);
+        assert!(p.hidden.is_empty());
+        assert_eq!(p.tabs.len(), 2);
+        assert_eq!(p.active, 1);
+        // A remote tab never turns hidden.
+        let raw = r#"{"tabs":[{"cwd":"/p","remote":{"machine":"mac"},"hidden":{"opener":"PC"}}],"active":0}"#;
+        let p = parse_tabs(raw);
+        assert!(p.hidden.is_empty() && p.tabs[0].remote.is_some());
+    }
+
+    /// Rule 1306: a `hidden` entry that is not shaped right (no opener, an empty one, one too long, one with a control
+    /// character, a bad open id, not an object) still comes back hidden, with the parts it got wrong unknown. It is
+    /// never a strip tab, so a session another machine opened never shows on this screen.
+    #[test]
+    fn a_hidden_entry_with_a_bad_opener_restores_hidden_and_unnamed() {
+        let long = "m".repeat(MAX_OPENER_NAME + 1);
+        let long_entry = format!(r#"{{"opener":"{long}"}}"#);
+        for bad in [
+            r#"{"x":1}"#,
+            r#"{"opener":""}"#,
+            r#"{"opener":"P\u0007C"}"#,
+            r#"{"opener":"Mac\nMini"}"#,
+            r#"{"opener":7}"#,
+            long_entry.as_str(),
+            r#""PC""#,
+        ] {
+            let raw = format!(r#"{{"tabs":[{{"cwd":"C:\\h","hidden":{bad}}}],"active":0}}"#);
+            let p = parse_tabs(&raw);
+            assert!(p.tabs.is_empty(), "{bad}");
+            assert_eq!(p.hidden.len(), 1, "{bad}");
+            assert_eq!(p.hidden[0].opener, OPENER_UNNAMED, "{bad}");
+        }
+        // A bad open id is dropped; the good opener stays.
+        let raw =
+            r#"{"tabs":[{"cwd":"C:\\h","hidden":{"opener":"PC","open_id":"a b"}}],"active":0}"#;
+        let p = parse_tabs(raw);
+        assert!(p.tabs.is_empty());
+        assert_eq!(p.hidden[0].opener, "PC");
+        assert_eq!(p.hidden[0].open_id, None);
+        // The longest name `remote.hello` takes comes back whole.
+        let most = "m".repeat(MAX_OPENER_NAME);
+        let raw =
+            format!(r#"{{"tabs":[{{"cwd":"C:\\h","hidden":{{"opener":"{most}"}}}}],"active":0}}"#);
+        assert_eq!(parse_tabs(&raw).hidden[0].opener, most);
+    }
+
+    /// Max 2026-11-19: a file keeps at most [`MAX_HIDDEN`] hidden sessions.
+    #[test]
+    fn a_file_keeps_at_most_fifty_hidden_sessions() {
+        let items: Vec<String> = (0..MAX_HIDDEN + 5)
+            .map(|i| format!(r#"{{"cwd":"C:\\h{i}","hidden":{{"opener":"PC"}}}}"#))
+            .collect();
+        let raw = format!(r#"{{"tabs":[{}],"active":0}}"#, items.join(","));
+        assert_eq!(parse_tabs(&raw).hidden.len(), MAX_HIDDEN);
+    }
+
+    /// Rule 1286 for a hidden session: it resumes the Claude session it saved when it was used, comes back hidden
+    /// (never a strip tab), a strip tab never takes its session, and a gone folder drops it.
+    #[test]
+    fn a_restored_hidden_session_resumes_its_used_claude_session() {
+        const SID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+        let saved = SavedTabs {
+            tabs: vec![st("C:\\w", Some(AgentKind::Claude))],
+            active: 0,
+            hidden: vec![
+                hd("C:\\w", Some(AgentKind::Claude), Some(SID)),
+                hd("C:\\gone", Some(AgentKind::Claude), Some(SID)),
+                hd("C:\\w", None, None),
+            ],
+        };
+        let r = plan_restore_with(
+            &saved,
+            &|p| !p.contains("gone"),
+            &|_| vec![SID.to_string()],
+            &|_, id| id == SID,
+        );
+        assert_eq!(r.tabs.len(), 1);
+        assert_eq!(
+            r.tabs[0].resume.as_deref(),
+            Some(CLAUDE_NEW),
+            "the strip tab never takes the hidden session's"
+        );
+        assert_eq!(r.hidden.len(), 2, "the gone folder is dropped");
+        assert_eq!(r.hidden[0].resume.as_deref(), Some(SID));
+        assert_eq!(r.hidden[0].opener, "Mac Mini");
+        assert_eq!(r.hidden[0].open_id.as_deref(), Some("o-1"));
+        assert_eq!(r.hidden[0].size, Some((90, 30)));
+        assert_eq!(r.hidden[1].resume, None, "a plain shell");
+        // Unused: a new blank Claude.
+        let r = plan_restore_with(&saved, &all, &no_sessions, &|_, _| false);
+        assert_eq!(r.hidden[0].resume.as_deref(), Some(CLAUDE_NEW));
+    }
+
     #[test]
     fn parse_keeps_only_well_shaped_tabs() {
         let raw = r#"{"tabs":[{"cwd":"C:\\a","agent":"claude"},{"x":1},{"cwd":"C:\\b","agent":"vim"}],"active":9}"#;
@@ -675,6 +1003,7 @@ mod tests {
         let s = SavedTabs {
             tabs: vec![st("C:\\a", Some(AgentKind::Claude)), st("C:\\b", None)],
             active: 1,
+            hidden: Vec::new(),
         };
         let json = tabs_json(&s);
         assert_eq!(
@@ -689,6 +1018,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![st("C:\\gone", None), st("C:\\a", None), st("C:\\b", None)],
             active: 2,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &|p| p != "C:\\gone", &no_sessions);
         assert_eq!(
@@ -703,6 +1033,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![st("C:\\a", None), st("C:\\gone", None)],
             active: 1,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &|p| p != "C:\\gone", &no_sessions);
         assert_eq!(r.tabs, vec![rt("C:\\a", None, Some(0))]);
@@ -719,6 +1050,7 @@ mod tests {
         let gone = SavedTabs {
             tabs: vec![st("C:\\gone", None)],
             active: 0,
+            hidden: Vec::new(),
         };
         assert_eq!(plan_restore(&gone, &|_| false, &no_sessions), empty);
     }
@@ -731,6 +1063,7 @@ mod tests {
                 st("c:\\A", Some(AgentKind::Claude)),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &|_| vec!["new-id".into(), "old-id".into()]);
         let got: Vec<_> = r.tabs.iter().map(|t| t.resume.clone()).collect();
@@ -748,6 +1081,7 @@ mod tests {
                 st("C:\\a\\sub", Some(AgentKind::Claude)),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let asked = Mutex::new(Vec::<String>::new());
         plan_restore(&saved, &all, &|p| {
@@ -764,6 +1098,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![st("C:\\a", Some(AgentKind::Claude))],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &no_sessions);
         assert_eq!(r.tabs, vec![rt("C:\\a", Some(CLAUDE_NEW), Some(0))]);
@@ -791,6 +1126,7 @@ mod tests {
                 st("C:\\c", Some(AgentKind::Claude)),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let json = tabs_json(&s);
         assert_eq!(
@@ -829,6 +1165,7 @@ mod tests {
                 ..st("C:\\d", Some(AgentKind::Codex))
             }],
             active: 0,
+            hidden: Vec::new(),
         };
         assert_eq!(
             tabs_json(&codex),
@@ -849,6 +1186,7 @@ mod tests {
                 sst("C:\\w", "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e59"),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         // The folder lists USED and OLDER; only USED holds a user message (UNUSED has an empty transcript).
         let list = |_: &str| vec![USED.to_string(), OLDER.to_string(), UNUSED.to_string()];
@@ -882,6 +1220,7 @@ mod tests {
                 st("C:\\w", Some(AgentKind::Claude)),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let list = |_: &str| vec![USED.to_string(), OLDER.to_string()];
         let used = |_: &str, _: &str| true;
@@ -908,6 +1247,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![sst("C:\\w", USED), sst("C:\\v", USED)],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = resolve_restore(&saved, Arc::new(|_: &str| true), Arc::new(Used));
         let resumes: Vec<Option<&str>> = r.tabs.iter().map(|t| t.resume.as_deref()).collect();
@@ -919,6 +1259,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![st("C:\\a", None)],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &|_| vec!["new-id".into()]);
         assert_eq!(r.tabs, vec![rt("C:\\a", None, Some(0))]);
@@ -929,6 +1270,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![st("C:\\a", Some(AgentKind::Codex))],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &|_| panic!("codex must not ask for sessions"));
         assert_eq!(r.tabs[0].resume.as_deref(), Some("codex:last"));
@@ -939,6 +1281,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![st("C:\\a", Some(AgentKind::Agy))],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &|_| panic!("agy must not ask for sessions"));
         assert_eq!(r.tabs[0].resume.as_deref(), Some("agy:last"));
@@ -951,6 +1294,7 @@ mod tests {
         let mut plan = Restored {
             tabs: vec![rt("C:\\a", None, Some(0)), rt("C:\\b", None, Some(1))],
             active: 0,
+            hidden: Vec::new(),
         };
         let unchanged = plan.clone();
         with_launch_folders(&mut plan, &[]);
@@ -979,6 +1323,7 @@ mod tests {
                 st("C:\\b", None),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let now = Arc::new(AtomicUsize::new(0));
         let max = Arc::new(AtomicUsize::new(0));
@@ -1008,6 +1353,7 @@ mod tests {
         let saved = SavedTabs {
             tabs: vec![st("Z:\\nas", None), st("C:\\a", None), st("C:\\b", None)],
             active: 0,
+            hidden: Vec::new(),
         };
         let release = Arc::new(AtomicBool::new(false));
         let r2 = Arc::clone(&release);
@@ -1057,6 +1403,7 @@ mod tests {
                 st("C:\\ok", None),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &no_sessions);
         assert_eq!(r.tabs, vec![rt("C:\\ok", None, Some(9))]);
@@ -1082,6 +1429,7 @@ mod tests {
                 st("C:\\c", Some(AgentKind::Codex)),
             ],
             active: 2,
+            hidden: Vec::new(),
         };
         peek_state(&saved, &mut ids())
     }
@@ -1128,6 +1476,7 @@ mod tests {
                 st("C:\\c", None),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         peek_state(&saved, &mut ids())
     }
@@ -1145,6 +1494,7 @@ mod tests {
                 rt("C:\\c", None, Some(2)),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let mut n = ids();
         let s = settle_restore(&b.state, &b.slots, &r, &mut n);
@@ -1181,6 +1531,7 @@ mod tests {
                 rt("D:\\handed", None, None),
             ],
             active: 2,
+            hidden: Vec::new(),
         };
         let mut n = || "new".to_string();
         let s = settle_restore(&b.state, &b.slots, &r, &mut n);
@@ -1212,6 +1563,7 @@ mod tests {
         let r = Restored {
             tabs: vec![rt("C:\\a", None, Some(0))],
             active: 0,
+            hidden: Vec::new(),
         };
         let s = settle_restore(&state, &b.slots, &r, &mut ids());
         assert_eq!(tab_ids(&s.state), vec!["t1", "mine"]);
@@ -1227,6 +1579,7 @@ mod tests {
         let r = Restored {
             tabs: vec![rt("C:\\a", Some("x"), Some(0)), rt("C:\\c", None, Some(2))],
             active: 0,
+            hidden: Vec::new(),
         };
         let s = settle_restore(&state, &b.slots, &r, &mut ids());
         assert_eq!(tab_ids(&s.state), vec!["t3"]);
@@ -1247,6 +1600,7 @@ mod tests {
                 rt("D:\\handed", None, None),
             ],
             active: 1,
+            hidden: Vec::new(),
         };
         let mut n = || "new".to_string();
         let s = settle_restore(&state, &b.slots, &r, &mut n);
@@ -1263,6 +1617,7 @@ mod tests {
                 rt(r"C:\c", None, Some(2)),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         (b, r)
     }
@@ -1311,7 +1666,11 @@ mod tests {
                 session: None,
             })
             .collect();
-        let json = tabs_json(&SavedTabs { tabs, active: 119 });
+        let json = tabs_json(&SavedTabs {
+            tabs,
+            active: 119,
+            hidden: Vec::new(),
+        });
         let back = parse_tabs(&json);
         assert_eq!(
             back.tabs.len(),
@@ -1345,6 +1704,7 @@ mod tests {
                 st("/Users/me/ok", None),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let r = plan_restore(&saved, &all, &no_sessions);
         assert_eq!(r.tabs, vec![rt("/Users/me/ok", None, Some(7))]);
@@ -1374,6 +1734,7 @@ mod tests {
                 st("/", None),
             ],
             active: 2,
+            hidden: Vec::new(),
         };
         let back = parse_tabs(&tabs_json(&saved));
         assert_eq!(back, saved, "the file keeps every POSIX folder as it was");
@@ -1423,6 +1784,7 @@ mod remote_tests {
                 remote_tab("/Users/max/new", None, 0),
             ],
             active: 1,
+            hidden: Vec::new(),
         };
         let json = tabs_json(&saved);
         assert!(
@@ -1484,6 +1846,7 @@ mod remote_tests {
                 local(r"C:\gone"),
             ],
             active: 0,
+            hidden: Vec::new(),
         };
         let statted = std::sync::Mutex::new(Vec::<String>::new());
         let r = plan_restore(

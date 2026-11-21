@@ -1,12 +1,14 @@
 //! Remote sessions PR 2 on the UI thread: what a remote viewer's `remote.*` call changes in this window. The control
 //! channel's worker checked every param first (`ctl_app::AppDispatcher::remote_call`); here the tab must still be open.
 //!
-//! - `remote.open` opens a tab the way a person's new tab does, with a resume id that passed `valid_resume`; the same
-//!   `open_id` again is answered with the tab it opened (rule 1210).
-//! - `remote.attach` puts the tab's handle and output tail into the `RemoteHost`, so the polls never come here.
+//! - `remote.open` opens a hidden session (rule 1302): a shell and its agent no strip, badge or notification of this
+//!   window shows, with a resume id that passed `valid_resume`; the same `open_id` again is answered with the session
+//!   it opened (rule 1210).
+//! - Only hidden sessions answer the ops below; any other tab is `no_tab` (rule 1303).
+//! - `remote.attach` puts the session's handle and output tail into the `RemoteHost`, so the polls never come here.
 //! - `remote.input` types through `TermHandle::remote_input`, the typed path (rule 279).
-//! - `remote.resize` makes the remote viewer the size owner (rule 282); a release gives it back.
-//! - `remote.close` closes as a person's close does: an agent at work asks first (rule 48).
+//! - `remote.resize` sizes it (rule 282); a hidden session is remote-sized from birth and a release keeps its size.
+//! - `remote.close` ends it at once, never asking here (rule 1305).
 //!
 //! Nothing here ends a session that a viewer only stopped following (rule 280).
 
@@ -17,8 +19,36 @@ use flare_agent::reveal::agent_of_resume;
 use flare_ctl::{CtlError, code};
 use serde_json::{Value, json};
 
+use flare_tabs::restore::MAX_HIDDEN;
+
 use super::AppCtl;
 use crate::ctl_app::CtlOp;
+
+/// The opener's name when its link named none (an older bridge, rule 1211's `viewer_of`).
+pub(crate) use flare_tabs::restore::OPENER_UNNAMED;
+
+// Rule 1306: an opener's name is a machine's name, so restore keeps exactly what `remote.hello` takes.
+const _: () = assert!(flare_tabs::restore::MAX_OPENER_NAME == flare_ctl::session::MAX_MACHINE_NAME);
+
+/// A hidden session as the remote ops list it (rule 1303).
+pub(crate) struct HiddenRow {
+    pub id: String,
+    pub title: String,
+    pub folder: String,
+    pub state: &'static str,
+    pub agent: Option<&'static str>,
+    pub session: Option<String>,
+}
+
+/// Rule 1302: how the quit ask and the install hold name a hidden session at work: "<folder> (for <opener>)".
+pub(crate) fn hidden_label(folder: &str, opener: &str) -> String {
+    format!("{folder} (for {opener})")
+}
+
+/// Rule 1302: what a hidden session's agent hears when it asks for something this screen would show.
+pub(crate) fn hidden_unavailable(opener: &str) -> String {
+    format!("this session shows on {opener}; its panels cannot show there yet")
+}
 
 /// A remote tab's fitted conversation view (remote sessions PR 7, rule 1193): what the host last said of each remote
 /// tab, the tabs whose live terminal was taken back here, and what the window shows.
@@ -193,7 +223,10 @@ impl AppCtl {
         self.remote_host.clone()
     }
 
-    /// One `remote.*` op on the UI thread.
+    /// One `remote.*` op on the UI thread. Only hidden sessions answer (rule 1303): an op that names any other tab (one
+    /// of this window's own, or a remote tab it shows) is `no_tab`, so no screen but the opener's shows a session and
+    /// no machine follows another's viewer tab. The ops the worker answers (`output`, `snapshot`, `fetch`, `put`,
+    /// `convo`, `detach`) need a follow, and only `remote.attach` makes one, here.
     pub(super) fn ctl_remote(&mut self, op: CtlOp) -> Result<Value, CtlError> {
         let closed = || CtlError::new(code::NO_TAB, "that tab is closed");
         let not_running = || CtlError::new(code::UNAVAILABLE, "that tab's shell is not running");
@@ -202,16 +235,31 @@ impl AppCtl {
                 folder,
                 resume,
                 open_id,
+                opener,
             } => {
-                // Rule 1210: the same open sent again (its answer was lost to a broken link) gets the tab the first one
-                // opened, while that tab is still open; never a second tab.
+                // Rule 1210: the same open sent again (its answer was lost to a broken link) gets the session the
+                // first one opened, while that session is still there; never a second one, and never refused.
                 if let (Some(oid), Some(host)) = (open_id.as_deref(), self.remote_host.as_ref())
                     && let Some(o) = host.opened(oid)
-                    && self.is_shell_tab(&o.tab)
+                    && self.model.is_hidden(&o.tab)
                 {
                     return Ok(json!({"tab": o.tab, "session": o.session}));
                 }
-                let id = self.model.open_tab(&folder);
+                // Max 2026-11-19: one machine holds at most 50 hidden sessions.
+                if self.model.hidden().len() >= MAX_HIDDEN {
+                    return Err(CtlError::new(
+                        code::BUSY,
+                        format!(
+                            "this machine already runs {MAX_HIDDEN} sessions for other machines; end one there first"
+                        ),
+                    ));
+                }
+                let opener = opener.unwrap_or_else(|| OPENER_UNNAMED.to_string());
+                let now = self.now();
+                // Rule 1302: a hidden session, never a strip tab: nothing in front moves, nothing shows here.
+                let id = self
+                    .model
+                    .open_hidden(&folder, &opener, open_id.as_deref(), None, now);
                 // Only an id that passed the check is a resume (the worker checked it, and the host checks it again).
                 let resume = valid_resume(resume.as_deref()).map(str::to_string);
                 if let (Some(oid), Some(host)) = (open_id.as_deref(), self.remote_host.as_ref()) {
@@ -223,9 +271,13 @@ impl AppCtl {
                         },
                     );
                 }
-                self.deps.host.spawn(&id, &folder, resume.as_deref());
+                // Remote-sized from birth: the opener's first resize sizes it, the window's refits never do.
+                self.deps
+                    .host
+                    .spawn_hidden(&id, &folder, resume.as_deref(), None);
                 self.note_spawn(&id, &folder, resume.is_some());
                 self.hub.on_spawned(&id, &folder, resume.as_deref());
+                self.hub.on_hidden_tab(&id);
                 let kind = resume.as_deref().map(agent_of_resume);
                 if kind.is_some() {
                     self.model.set_agent(&id, kind);
@@ -235,7 +287,7 @@ impl AppCtl {
             }
             CtlOp::RemoteTabs => {
                 let tabs: Vec<Value> = self
-                    .tab_facts()
+                    .hidden_rows()
                     .into_iter()
                     .map(|f| {
                         json!({
@@ -249,8 +301,8 @@ impl AppCtl {
                     .collect();
                 Ok(json!({"tabs": tabs}))
             }
-            CtlOp::RemoteAttach { tab, conn } => {
-                if !self.is_shell_tab(&tab) {
+            CtlOp::RemoteAttach { tab, conn, viewer } => {
+                if !self.model.is_hidden(&tab) {
                     return Err(closed());
                 }
                 let host = self.remote_host.clone().ok_or_else(|| {
@@ -269,19 +321,22 @@ impl AppCtl {
                 let seq = tail.end();
                 let (cols, rows) = handle.size();
                 host.follow(&tab, conn, handle, tail);
-                // A tab that works as a viewer attaches holds the system awake from now (rule 296).
+                // The opener's machine may have been renamed since (rule 1199): the session takes its name now.
+                if let Some(v) = viewer.as_deref()
+                    && self.model.set_hidden_opener(&tab, v)
+                {
+                    self.refresh();
+                }
+                // A session that works holds the system awake, followed or not (rule 1302).
                 self.sync_keep_awake();
                 Ok(json!({"tab": tab, "cols": cols, "rows": rows, "seq": seq}))
             }
             CtlOp::RemoteInput { tab, intents } => {
-                if !self.is_shell_tab(&tab) {
+                if !self.model.is_hidden(&tab) {
                     return Err(closed());
                 }
                 let handle = self.handle_of(&tab).ok_or_else(not_running)?;
                 let typed = handle.remote_input(&intents);
-                // Rule 1212: the viewer that sizes the tab typed last, so an agent tab in front shows its fitted view here.
-                self.deps.host.note_viewer_typed(&tab);
-                self.push_remote_convo();
                 self.kick();
                 Ok(json!({"tab": tab, "typed": typed}))
             }
@@ -291,35 +346,42 @@ impl AppCtl {
                 rows,
                 viewer,
             } => {
-                if !self.is_shell_tab(&tab) {
+                if !self.model.is_hidden(&tab) {
                     return Err(closed());
                 }
                 if !self.deps.host.remote_resize(&tab, cols, rows) {
                     return Err(not_running());
                 }
-                // Rule 1211: the view names this viewer. It stands only once the viewer typed (rule 1212): an attach, a
-                // reconnect, a refit or a tab switch over there sends a size too, and none of those is typing.
+                // The host's fitted view names its viewer (rule 1211); a hidden session is never in front, so it never
+                // stands (removed in PR 3).
                 self.hconvo.sized_by(&tab, viewer.as_deref());
-                self.push_remote_convo();
-                self.kick();
+                // Saved with the session, so a restart brings it back at the opener's size (rule 1302).
+                let size = (
+                    u16::try_from(cols).unwrap_or(u16::MAX),
+                    u16::try_from(rows).unwrap_or(u16::MAX),
+                );
+                if self.model.set_hidden_size(&tab, size.0, size.1) {
+                    self.refresh();
+                } else {
+                    self.kick();
+                }
                 Ok(json!({"tab": tab, "cols": cols, "rows": rows}))
             }
             CtlOp::RemoteRelease { tab } => {
-                self.deps.host.take_size_back(&tab);
-                // The last viewer went (a detach or a dropped link): its work no longer holds the system awake.
+                if !self.model.is_hidden(&tab) {
+                    return Err(closed());
+                }
+                // Rule 1302: the last follower went; the session keeps its opener's size and runs on (rule 280).
                 self.sync_keep_awake();
-                // The size is this window's again: the terminal, not the fitted view (rule 1211).
-                self.push_remote_convo();
                 Ok(json!({"tab": tab}))
             }
             CtlOp::RemoteClose { tab } => {
-                if !self.model.state.tabs.iter().any(|t| t.id == tab) {
+                if !self.model.is_hidden(&tab) {
                     return Err(closed());
                 }
-                self.request_close(&tab);
-                // An agent at work asks first (rule 48): the tab is still there until the person answers.
-                let closed_now = !self.model.state.tabs.iter().any(|t| t.id == tab);
-                Ok(json!({"tab": tab, "closed": closed_now}))
+                // Rule 1305: nobody sits at this screen for it; the opener asked first.
+                self.close_hidden_now(&tab);
+                Ok(json!({"tab": tab, "closed": true}))
             }
             CtlOp::RemoteStatus => Ok(json!({"tabs": self.remote_status_tabs()})),
             _ => Err(CtlError::new(
@@ -329,17 +391,55 @@ impl AppCtl {
         }
     }
 
-    /// `remote.status` (remote sessions PR 4, rule 294): every shell tab in strip order as this window's own marks say
+    /// Every hidden session as the remote ops say it (rule 1303): its label among the hidden ones, folder, state word,
+    /// agent and Claude session, from this window's own marks. Never a strip tab (`tab_facts` is the strip's).
+    pub(crate) fn hidden_rows(&self) -> Vec<HiddenRow> {
+        use flare_agent::kinds::DetectedAgent as D;
+        let ind = self.hub.indicator();
+        self.model
+            .hidden()
+            .iter()
+            .zip(self.model.hidden_labels())
+            .map(|(h, title)| {
+                let id = h.tab.id.as_str();
+                let state = if ind.question_ids().contains(id) {
+                    "question"
+                } else if ind.failed_ids().contains(id) {
+                    "failed"
+                } else if ind.working_ids().contains(id) {
+                    "working"
+                } else if ind.done_ids().contains(id) {
+                    "done"
+                } else {
+                    "idle"
+                };
+                HiddenRow {
+                    id: h.tab.id.clone(),
+                    title,
+                    folder: h.tab.cwd.clone(),
+                    state,
+                    agent: match self.hub.agent_kind(id) {
+                        Some(D::Claude) => Some("claude"),
+                        Some(D::Codex) => Some("codex"),
+                        Some(D::Agy) => Some("agy"),
+                        Some(D::Other) | None => None,
+                    },
+                    session: self.hub.claude_session(id).map(str::to_string),
+                }
+            })
+            .collect()
+    }
+
+    /// `remote.status` (remote sessions PR 4, rules 294 and 1303): every hidden session as this window's own marks say
     /// it: one state word, the agent, its Claude session, the folder and title, how long it has worked, the words of
-    /// its question and the kind of its failure. Words only; nothing here is a path to read or a mark to copy.
+    /// its question and the kind of its failure. Words only; nothing here is a path to read or a mark to copy. Its
+    /// opener sizes it (`sized: viewer`, rule 1302).
     pub(crate) fn remote_status_tabs(&self) -> Vec<Value> {
         use flare_ctl::remote::{QUESTION_MAX, TabState};
-        self.tab_facts()
+        self.hidden_rows()
             .into_iter()
             .map(|f| {
                 let id = f.id.as_str();
-                // Who sizes the tab now (remote sessions PR 7): `host` once someone typed in this window, else the
-                // viewer that sent its size (rule 282). The other screen shows its fitted conversation view.
                 let sized = match self.deps.host.size_owner(id) {
                     crate::tab_host::SizeOwner::Local => "host",
                     crate::tab_host::SizeOwner::Remote => "viewer",
@@ -377,14 +477,28 @@ impl AppCtl {
             .collect()
     }
 
-    /// Rule 296: this host holds the system awake while a tab a remote viewer follows has an agent at work, and lets go
-    /// once none does, the last viewer goes, or the window ends (the hold is dropped with it).
+    /// Rule 1305: a hidden session ends at once, with no ask here (its opener asked), and never joins this window's
+    /// reopen list (rule 1236): it never showed here. Its followers hear `no_tab` from now.
+    pub(crate) fn close_hidden_now(&mut self, id: &str) {
+        self.note_close(id);
+        self.deps.host.kill(id);
+        self.working.remove(id);
+        self.restoring.remove(id);
+        self.model.close_hidden(id);
+        self.term.tab_closed(id);
+        self.forget_tab_surfaces(id);
+        self.refresh();
+    }
+    /// Rules 296 and 1302: this host holds the system awake while a hidden session (followed or not: nobody here sees
+    /// it, and its opener cannot reach a sleeping host) or a tab a remote viewer follows has an agent at work, and lets
+    /// go once none does or the window ends (the hold is dropped with it).
     pub(crate) fn sync_keep_awake(&mut self) {
-        let want = self.remote_host.as_ref().is_some_and(|h| {
-            h.followed_tabs()
-                .iter()
-                .any(|t| self.hub.working(t) && self.hub.agent_here(t))
-        });
+        let at_work = |t: &str| self.hub.working(t) && self.hub.agent_here(t);
+        let want = self.model.hidden().iter().any(|h| at_work(&h.tab.id))
+            || self
+                .remote_host
+                .as_ref()
+                .is_some_and(|h| h.followed_tabs().iter().any(|t| at_work(t)));
         match (want, self.awake_hold.is_some()) {
             (true, false) => {
                 self.awake_hold = self.keep_awake.as_ref().map(|k| k.hold());
@@ -475,22 +589,6 @@ impl AppCtl {
                 t.remote = Some(tag);
             }
         }
-    }
-
-    /// "Hide here only" (remote sessions PR 7, rule 1192): the remote tab goes from this window and its session goes
-    /// on on its machine (`remote.detach`, never `remote.close`), so nothing asks first. Its plain Close still ends it
-    /// everywhere and asks as any close does (rule 48).
-    pub(crate) fn hide_remote(&mut self, id: &str) {
-        if self.model.remote_of(id).is_none() {
-            return;
-        }
-        self.note_close(id);
-        self.deps.host.leave(id);
-        self.working.remove(id);
-        self.model.close(id);
-        self.term.tab_closed(id);
-        self.forget_tab_surfaces(id);
-        self.refresh();
     }
 
     /// Remote sessions PR 4 on the viewer (rule 294): a remote tab's link brought the host's status of it. Each remote
