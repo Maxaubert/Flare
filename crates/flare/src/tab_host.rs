@@ -132,6 +132,8 @@ pub struct TabHost {
     /// Remote-sized tabs whose viewer typed since it took the size (rule 1212): only these show the host's own fitted
     /// view. A size alone (an attach, a reconnect, a refit or a tab switch on the viewer) never counts as typing.
     viewer_typed: RefCell<std::collections::HashSet<String>>,
+    /// Hidden sessions (rule 1302): sized by their opener from birth and never handed back to this window.
+    hidden: RefCell<std::collections::HashSet<String>>,
 }
 
 impl TabHost {
@@ -173,6 +175,7 @@ impl TabHost {
             plugin_dir,
             remote_sized: RefCell::new(HashMap::new()),
             viewer_typed: RefCell::new(std::collections::HashSet::new()),
+            hidden: RefCell::new(std::collections::HashSet::new()),
         }
     }
 
@@ -223,6 +226,34 @@ impl TabHost {
         self.shell_ids.insert(id.to_string(), shell_id);
     }
 
+    /// A hidden session (rule 1302): a local shell as `spawn` starts it, but sized by its remote opener from birth. It
+    /// starts at `size` (the opener's last size, for a restored one) or this window's grid size until the opener's
+    /// first `remote.resize`, and the window's refits never touch it: nothing here hands its size back.
+    pub fn spawn_hidden(
+        &mut self,
+        id: &str,
+        cwd: &str,
+        resume: Option<&str>,
+        size: Option<(u16, u16)>,
+    ) {
+        if self.handles.contains_key(id) {
+            return;
+        }
+        let (cols, rows) = size
+            .map(|(c, r)| (usize::from(c), usize::from(r)))
+            .filter(|(c, r)| *c >= 2 && *r >= 1)
+            .unwrap_or(self.dims);
+        // Remote-owned before the shell starts, so no refit between the spawn and the first resize reaches it.
+        self.hidden.borrow_mut().insert(id.to_string());
+        self.remote_sized
+            .borrow_mut()
+            .insert(id.to_string(), (cols, rows));
+        // Born at that size: the handle and its shell start at it.
+        let window = std::mem::replace(&mut self.dims, (cols, rows));
+        self.spawn(id, cwd, resume);
+        self.dims = window;
+    }
+
     /// A remote tab (remote sessions PR 3, rule 287): a handle at the current grid size whose session is the host's,
     /// shown through a `RemotePty`. The folder is the host's: it is not remembered among this machine's folders, and
     /// no shell, resume or plugin of this machine is named (rules 290, 291).
@@ -269,20 +300,7 @@ impl TabHost {
         self.shell_ids.remove(id);
         self.hooked.remove(id);
         self.remote_sized.borrow_mut().remove(id);
-    }
-
-    /// A remote tab goes from this window and its host session goes on (remote sessions PR 7, "Hide here only", rule
-    /// 1192): the pty lets go (`remote.detach`), never `remote.close`. A no-op for a tab with no handle.
-    pub fn leave(&mut self, id: &str) {
-        if self.handles.remove(id).is_none() {
-            return;
-        }
-        self.mgr.leave(id);
-        self.order.retain(|x| x != id);
-        self.shell_ids.remove(id);
-        self.hooked.remove(id);
-        self.remote_sized.borrow_mut().remove(id);
-        self.viewer_typed.borrow_mut().remove(id);
+        self.hidden.borrow_mut().remove(id);
     }
 
     /// Who sets the tab's size now.
@@ -329,6 +347,10 @@ impl TabHost {
     /// The size goes back to this window (a key typed here, or the last remote viewer gone): the tab fits the grid
     /// area again. Never ends anything (rule 280).
     pub fn take_size_back(&self, id: &str) {
+        // A hidden session keeps its opener's size (rule 1302).
+        if self.hidden.borrow().contains(id) {
+            return;
+        }
         self.viewer_typed.borrow_mut().remove(id);
         if self.remote_sized.borrow_mut().remove(id).is_none() {
             return;
@@ -481,6 +503,7 @@ impl TabHost {
         self.shell_ids.clear();
         self.hooked.clear();
         self.remote_sized.borrow_mut().clear();
+        self.hidden.borrow_mut().clear();
         self.mgr.kill_all();
         let ok = self.mgr.shells_gone(QUIT_WAIT);
         if !ok {
@@ -605,8 +628,47 @@ mod tests {
         assert!(h.remote_resize("t1", 50, 20), "a reconnect after a release");
         assert!(!h.viewer_typed_last("t1"));
         h.note_viewer_typed("t1");
-        h.leave("t1");
+        h.kill("t1");
         assert!(!h.viewer_typed_last("t1"));
+    }
+
+    /// Rule 1302: a hidden session is born remote-sized, at its opener's saved size or the window's; the window's
+    /// refits, a key typed there and a release never hand its size to the window; the opener's resize still sizes it.
+    #[test]
+    fn a_hidden_session_is_remote_sized_from_birth_and_keeps_its_size() {
+        let (mut h, sp, _p) = host();
+        h.refit_all(100, 30);
+        h.spawn_hidden("t1", "C:\\a", None, Some((61, 19)));
+        h.spawn_hidden("t2", "C:\\b", None, None);
+        made(&sp, 2);
+        assert_eq!(h.size_owner("t1"), SizeOwner::Remote);
+        assert_eq!(h.size_owner("t2"), SizeOwner::Remote);
+        assert_eq!(h.handle("t1").unwrap().size(), (61, 19), "the saved size");
+        assert_eq!(
+            h.handle("t2").unwrap().size(),
+            (100, 30),
+            "the window's, until the opener sizes it"
+        );
+        h.refit_all(120, 40);
+        h.set_dims(120, 40, Some("t1"));
+        assert_eq!(h.handle("t1").unwrap().size(), (61, 19));
+        h.take_size_back("t1");
+        h.handle("t1").unwrap().send_text("y");
+        let _ = h.drain_events();
+        assert_eq!(h.size_owner("t1"), SizeOwner::Remote);
+        assert_eq!(
+            h.handle("t1").unwrap().size(),
+            (61, 19),
+            "never the window's"
+        );
+        assert!(h.remote_resize("t1", 70, 22));
+        assert_eq!(h.handle("t1").unwrap().size(), (70, 22));
+        h.spawn("t3", "C:\\c", None);
+        assert_eq!(
+            h.size_owner("t3"),
+            SizeOwner::Local,
+            "a strip tab is born local"
+        );
     }
 
     /// Rule 280: the size going back (a detach, a link gone) never ends the tab's shell.

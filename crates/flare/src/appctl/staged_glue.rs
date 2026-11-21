@@ -657,6 +657,10 @@ pub fn agent_may_install(signing: &Signing, mac: bool) -> Result<(), String> {
 /// What the start-up guard found, for the window glue.
 static STARTED: std::sync::OnceLock<(Layout, Start)> = std::sync::OnceLock::new();
 
+/// The run lock of a start the guard counted, kept until the process ends (rule 1335): while it is held, a start of
+/// another profile is no early death of the pending build.
+static RUN_LOCK: std::sync::OnceLock<staged::RunLock> = std::sync::OnceLock::new();
+
 /// The installed copy this exe is, if any: `<root>\current\<exe>` on Windows; on macOS a bundle in an
 /// `Applications` folder, whose root is `FLARE_STAGE_ROOT` or `~/Library/Application Support/Flare`. An `--e2e`
 /// run of a bundle uses only a root it was given, never the real one.
@@ -688,7 +692,10 @@ pub fn guard_at_start(argv: &[String], user_data_dir: Option<&Path>, e2e: bool) 
     let Some(layout) = installed_layout(&exe, e2e) else {
         return;
     };
-    let start = staged::on_start(&layout); // sync-ok: startup, before the window; one small file
+    let (start, run) = staged::on_start_holding(&layout); // sync-ok: startup, before the window; one small file
+    if let Some(run) = run {
+        let _ = RUN_LOCK.set(run);
+    }
     let back = match &start {
         Start::RollBack { commit } => {
             log::warn!("build {commit} died early twice; starting the last good build");

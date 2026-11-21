@@ -5,7 +5,9 @@
 //!
 //! Settings > Machines (PR 7, `machines_page`) adds and removes them; a hand edit still works. A machine whose id, host or user is not a plain word is left out when it is read
 //! (no option smuggled into ssh's argv, rule 290); an unknown `kind` reads as no kind and is never written back
-//! (rule 40). Saving writes the whole file at once (`write_atomic`, rule 36). Every read and write is a disk call:
+//! (rule 40). A read that is saved back is strict (`load_machines`, audit #3): a file that cannot be read whole, or that
+//! holds an entry left out, is an error and is never saved over. Saving writes the whole file at once (`write_atomic`,
+//! rule 36). Every read and write is a disk call:
 //! a worker's, never the UI thread's (rule 34).
 
 use flare_tabs::tabs::Os;
@@ -265,11 +267,82 @@ pub fn machines_file(profile: &Path) -> PathBuf {
     profile.join("machines.json")
 }
 
-/// BLOCKING (a file read): a worker's call. A missing or broken file is no machine.
+/// BLOCKING (a file read): a worker's call. A missing or broken file is no machine. Only for a read that is shown or
+/// used: a read that is saved back uses [`load_machines`] (audit #3).
 pub fn read_machines(path: &Path) -> Vec<Machine> {
     std::fs::read_to_string(path) // sync-ok: a link worker, the control channel's worker or a test, never the UI thread
-        .map(|raw| parse_machines(&raw))
+        .map(|raw| parse_machines(no_bom(&raw)))
         .unwrap_or_default()
+}
+
+/// A leading BOM (Notepad's UTF-8) is dropped, so a hand-edited file still reads.
+fn no_bom(raw: &str) -> &str {
+    raw.strip_prefix('\u{feff}').unwrap_or(raw)
+}
+
+/// Pure (audit #3): the entries of `key` in `raw`, for a read that is saved back. Blank text is an empty list. Text
+/// that is not JSON, no `key` list, or an entry that `parse` leaves out is an error: saving the list over such a file
+/// would wipe what it holds.
+fn strict<T>(raw: &str, key: &str, parse: fn(&str) -> Vec<T>) -> Result<Vec<T>, String> {
+    let raw = no_bom(raw);
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let v: Value = serde_json::from_str(raw).map_err(|_| "it is not valid JSON".to_string())?;
+    let Some(n) = v.get(key).and_then(Value::as_array).map(Vec::len) else {
+        return Err(format!("it has no \"{key}\" list"));
+    };
+    let list = parse(raw);
+    match n - list.len() {
+        0 => Ok(list),
+        1 => Err("one entry in it is not one Flare can use".into()),
+        bad => Err(format!("{bad} entries in it are not ones Flare can use")),
+    }
+}
+
+/// Pure (audit #3): the machines of `machines.json`, or why the file cannot be saved over.
+pub fn parse_machines_strict(raw: &str) -> Result<Vec<Machine>, String> {
+    strict(raw, "machines", parse_machines)
+}
+
+/// Pure (audit #3): the computers of `machines_in.json`, or why the file cannot be saved over.
+pub fn parse_incoming_strict(raw: &str) -> Result<Vec<Incoming>, String> {
+    strict(raw, "linked_in", parse_incoming)
+}
+
+/// BLOCKING (a file read), a worker's call (audit #3): the list in `path` for a read that is saved back. No file is an
+/// empty list (a first run). A file that cannot be read, or that `parse` refuses, is the line that says so, and the
+/// caller saves nothing.
+pub fn load_list<T>(
+    path: &Path,
+    parse: fn(&str) -> Result<Vec<T>, String>,
+) -> Result<Vec<T>, String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let why = match std::fs::read_to_string(path) {
+        // sync-ok: a worker's call
+        Ok(raw) => match parse(&raw) {
+            Ok(list) => return Ok(list),
+            Err(why) => why,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => format!("it could not be read ({e})"),
+    };
+    Err(format!(
+        "{name} was not changed: {why}. Fix the file or move it away, then try again."
+    ))
+}
+
+/// BLOCKING: [`load_list`] for `machines.json`.
+pub fn load_machines(path: &Path) -> Result<Vec<Machine>, String> {
+    load_list(path, parse_machines_strict)
+}
+
+/// BLOCKING: [`load_list`] for `machines_in.json`.
+pub fn load_incoming(path: &Path) -> Result<Vec<Incoming>, String> {
+    load_list(path, parse_incoming_strict)
 }
 
 /// The machines as the app reads them: a port, so a test needs no disk.
@@ -298,6 +371,11 @@ impl FileMachines {
     /// Writes the whole list at once (a temp file, then a rename, rule 36). BLOCKING: a worker's call.
     pub fn save(&self, machines: &[Machine]) -> std::io::Result<()> {
         flare_settings::atomic::write_atomic(&self.path, &machines_json(machines))
+    }
+
+    /// The list for a read that is saved back (audit #3): an unreadable or malformed file is an error. BLOCKING.
+    pub fn load(&self) -> Result<Vec<Machine>, String> {
+        load_machines(&self.path)
     }
 }
 
@@ -474,6 +552,52 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["machines.json"]);
+    }
+
+    /// Audit #3: a read that is saved back. No file and a blank file are an empty list (a first run); a file that is
+    /// not JSON, has no list, or has an entry Flare leaves out is an error, never an empty or shorter list.
+    #[test]
+    fn a_broken_list_file_is_an_error_and_no_file_is_an_empty_list() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let file = FileMachines::new(dir.path());
+        let path = machines_file(dir.path());
+        let inp = incoming_file(dir.path());
+        assert_eq!(file.load(), Ok(Vec::new()), "no file");
+        assert_eq!(load_incoming(&inp), Ok(Vec::new()), "no file");
+        std::fs::write(&path, "  \n").unwrap();
+        assert_eq!(file.load(), Ok(Vec::new()), "a blank file");
+        file.save(&[mac()]).unwrap();
+        assert_eq!(file.load(), Ok(vec![mac()]));
+        let good = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("\u{feff}{good}")).unwrap();
+        assert_eq!(file.load(), Ok(vec![mac()]), "a BOM");
+        // The documented hand edit with a trailing comma.
+        let comma = good.replacen("}\n  ]", "},\n  ]", 1);
+        assert_ne!(comma, good);
+        for broken in [
+            comma,
+            "{}".to_string(),
+            r#"{"machines":{}}"#.to_string(),
+            good.replace("mac-mini", "-oProxyCommand=x"),
+        ] {
+            std::fs::write(&path, &broken).unwrap();
+            let e = file.load().expect_err(&broken);
+            assert!(e.starts_with("machines.json was not changed"), "{e}");
+        }
+        assert!(
+            parse_machines_strict(r#"{"machines":[{"id":"a","ssh":"a"},{"id":"-b"}]}"#)
+                .unwrap_err()
+                .contains("one entry")
+        );
+        std::fs::write(&inp, "no").unwrap();
+        assert!(
+            load_incoming(&inp)
+                .unwrap_err()
+                .starts_with("machines_in.json")
+        );
+        // Bytes that are not UTF-8: the read itself fails.
+        std::fs::write(&inp, [0xff, 0xfe, 0x00, 0xc3]).unwrap();
+        assert!(load_incoming(&inp).is_err());
     }
 
     /// Rule 1260: the computers that reach this one read back as written; one whose key is no plain base64 (it would

@@ -247,6 +247,12 @@ pub struct AgentHub {
     remote_said: HashMap<String, String>,
     /// The words of a remote tab's question, as its host read them off its screen (rule 294).
     remote_question: HashMap<String, String>,
+    /// The agent a remote tab's host names in its status, idle or not (rule 1305: the opener asks before a Close while
+    /// one is there). Gone with the tab.
+    remote_kind: HashMap<String, DetectedAgent>,
+    /// Hidden sessions this machine runs for another machine (rule 1302): tracked as any tab (`remote.status` reads
+    /// their marks and question), but they never ring, count or take dictation here (rule 1304).
+    hidden: HashSet<String>,
     diag: AgentDiag,
     poll: Option<Box<dyn PollCtl>>,
     tx: Sender<PollMsg>,
@@ -274,6 +280,8 @@ impl AgentHub {
             remote: HashSet::new(),
             remote_said: HashMap::new(),
             remote_question: HashMap::new(),
+            remote_kind: HashMap::new(),
+            hidden: HashSet::new(),
             diag,
             poll: None,
             tx,
@@ -448,9 +456,11 @@ impl AgentHub {
     }
 
     /// The tabs whose agent has an open question now (the mark), in the order the hub heard of them.
+    /// A hidden session is never one (rule 1304): its question rings on its opener only.
     pub fn question_tabs(&self) -> Vec<String> {
         self.order
             .iter()
+            .filter(|t| !self.hidden.contains(*t))
             .filter(|t| self.ind.question_ids().contains(*t) && self.ind.agent_ids().contains(*t))
             .cloned()
             .collect()
@@ -625,6 +635,17 @@ impl AgentHub {
         self.remote.contains(tab)
     }
 
+    /// `tab` is a hidden session (rule 1302), right after `on_spawned`: its question, badge count and dictation are
+    /// its opener's, never this machine's (rule 1304).
+    pub fn on_hidden_tab(&mut self, tab: &str) {
+        self.hidden.insert(tab.to_string());
+    }
+
+    /// The agent a remote tab's host names, idle or not (rule 1305).
+    pub fn remote_agent(&self, tab: &str) -> Option<DetectedAgent> {
+        self.remote_kind.get(tab).copied()
+    }
+
     /// A remote tab's host said what its agent does (remote sessions PR 4, rule 294): the question's words, the
     /// session, and one state word. The word last applied is skipped while the marks still show it, so a status read
     /// again after a reconnect raises nothing; done and failed are never copied (`Indicator::remote_mark`).
@@ -633,6 +654,21 @@ impl AgentHub {
             return;
         }
         let now = self.now();
+        // Before any early return: an idle Claude there is still an agent the opener asks about (rule 1305).
+        let kind = st.agent.as_deref().and_then(|k| match k {
+            "claude" => Some(DetectedAgent::Claude),
+            "codex" => Some(DetectedAgent::Codex),
+            "agy" => Some(DetectedAgent::Agy),
+            _ => None,
+        });
+        match kind {
+            Some(k) => {
+                self.remote_kind.insert(tab.to_string(), k);
+            }
+            None => {
+                self.remote_kind.remove(tab);
+            }
+        }
         let question = st
             .question
             .as_deref()
@@ -671,12 +707,6 @@ impl AgentHub {
             return;
         };
         self.remote_said.insert(tab.to_string(), st.state.clone());
-        let kind = st.agent.as_deref().and_then(|k| match k {
-            "claude" => Some(DetectedAgent::Claude),
-            "codex" => Some(DetectedAgent::Codex),
-            "agy" => Some(DetectedAgent::Agy),
-            _ => None,
-        });
         self.ind.remote_mark(now, tab, mark, kind);
         self.settle(now);
     }
@@ -699,6 +729,8 @@ impl AgentHub {
         self.remote.remove(tab);
         self.remote_said.remove(tab);
         self.remote_question.remove(tab);
+        self.remote_kind.remove(tab);
+        self.hidden.remove(tab);
         self.ind.forget(tab);
         self.arms.remove(tab);
         if let Some(mut w) = self.watches.remove(tab) {
@@ -727,9 +759,11 @@ impl AgentHub {
     /// `failed`) and its Claude session (N25, M8 Task 11). The label is the folder's name here;
     /// the window may put the tab's own title over it. `orchestrator` is always false (D9) and
     /// `copy` is the link's to fill.
+    /// A hidden session is never one (rule 1302): dictation on this machine never routes words to it.
     pub fn send_tabs(&self) -> Vec<SendTab> {
         self.order
             .iter()
+            .filter(|tab| !self.hidden.contains(*tab))
             .map(|tab| {
                 let cwd = self.folders.get(tab).cloned().unwrap_or_default();
                 let label = cwd
@@ -832,7 +866,10 @@ impl AgentHub {
                 .watches
                 .get_mut(&tab)
                 .and_then(|w| w.poll(now, &HandleRows(&handle)));
+            // A hidden session's question is read (its opener hears the words through `remote.status`) but never said
+            // on this machine (rule 1304).
             if let Some(q) = shown
+                && !self.hidden.contains(&tab)
                 && let Some(token) = (self.deps.token)(&tab)
             {
                 (self.deps.post_question)(token, q);
@@ -946,12 +983,25 @@ impl AgentHub {
         self.ind.failed_kind(tab)
     }
 
+    /// The tabs that want a look (the taskbar badge): hidden sessions never count (rule 1304).
     pub fn attention(&self, sw: &Switches) -> Attention {
+        let seen = |s: &HashSet<String>| -> HashSet<String> {
+            s.iter()
+                .filter(|t| !self.hidden.contains(*t))
+                .cloned()
+                .collect()
+        };
+        let (done, question, working, failed) = (
+            seen(self.ind.done_ids()),
+            seen(self.ind.question_ids()),
+            seen(self.ind.working_ids()),
+            seen(self.ind.failed_ids()),
+        );
         attention_count(&AttentionIn {
-            done: self.ind.done_ids(),
-            question: self.ind.question_ids(),
-            working: self.ind.working_ids(),
-            failed: Some(self.ind.failed_ids()),
+            done: &done,
+            question: &question,
+            working: &working,
+            failed: Some(&failed),
             done_on: sw.done_on,
             question_on: sw.question_on,
             failed_on: sw.failed_on,
