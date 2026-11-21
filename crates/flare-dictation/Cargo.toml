@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 flare-shells = { path = "../flare-shells" }
 flare-win = { path = "../flare-win" }
-flare-diag = { path = "../flare-diag" }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
