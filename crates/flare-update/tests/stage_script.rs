@@ -123,21 +123,32 @@ fn the_stage_script_refuses_a_folder_that_is_no_install_and_a_missing_build() {
 mod mac {
     use super::*;
 
-    /// Runs the Mac stage script on `app` into `root`. Nothing is built and the real root is never named.
-    fn stage_mac(root: &Path, app: &Path) -> std::process::Output {
-        let script = repo_root()
+    fn mac_script() -> PathBuf {
+        repo_root()
             .join("tools")
             .join("release")
             .join("mac")
-            .join("stage-install.sh");
-        Command::new("/bin/bash")
-            .arg(&script)
+            .join("stage-install.sh")
+    }
+
+    /// Runs the Mac stage script on `app` into `root`. Nothing is built and the real root is never named. The fake
+    /// bundles are unsigned, so these runs allow an ad hoc stage (rule 1356).
+    fn stage_mac(root: &Path, app: &Path) -> std::process::Output {
+        stage_mac_with(root, app, true)
+    }
+
+    fn stage_mac_with(root: &Path, app: &Path, allow_adhoc: bool) -> std::process::Output {
+        let mut cmd = Command::new("/bin/bash");
+        cmd.arg(mac_script())
             .env("FLARE_STAGE_ROOT", root)
             .env("FLARE_STAGE_APP", app)
             .env("FLARE_STAGE_REPO", repo_root())
             .env_remove("FLARE_MAC_SIGN_IDENTITY")
-            .output()
-            .expect("the script runs")
+            .env_remove("FLARE_STAGE_ALLOW_ADHOC");
+        if allow_adhoc {
+            cmd.env("FLARE_STAGE_ALLOW_ADHOC", "1");
+        }
+        cmd.output().expect("the script runs")
     }
 
     fn fake_bundle(app: &Path, exe: &str) {
@@ -237,5 +248,185 @@ mod mac {
             assert!(!out.status.success(), "{} refused", bad.display());
             assert!(!bad.join("staged").exists());
         }
+    }
+
+    /// Rule 1356: an unsigned (ad hoc) bundle is never staged without `FLARE_STAGE_ALLOW_ADHOC=1`, and the refusal
+    /// leaves the stage already there as it was. `codesign -dv` only reads the bundle.
+    #[test]
+    fn the_mac_stage_script_refuses_a_bundle_that_is_not_developer_id_signed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Support").join("Flare");
+        let built = dir.path().join("build").join("Flare.app");
+        fake_bundle(&built, "exe one");
+        let out = stage_mac(&root, &built);
+        assert!(out.status.success(), "{}", say(&out));
+        let before = std::fs::read(root.join("staged/staged.json")).unwrap();
+
+        std::fs::write(built.join("Contents/MacOS/Flare"), "exe two").unwrap();
+        let out = stage_mac_with(&root, &built, false);
+        assert!(!out.status.success(), "an unsigned bundle is refused");
+        assert!(
+            say(&out).contains("not signed with Developer ID"),
+            "{}",
+            say(&out)
+        );
+        assert_eq!(
+            std::fs::read(root.join("staged/staged.json")).unwrap(),
+            before
+        );
+        assert_eq!(
+            std::fs::read(root.join("staged/Flare.app/Contents/MacOS/Flare")).unwrap(),
+            b"exe one"
+        );
+        assert!(!root.join("staged.tmp").exists());
+    }
+
+    /// A fake checkout whose make-app.sh records the identity it got, plus fake `security` and `codesign` first on
+    /// PATH: the build path runs with no Keychain and no real signing (rule 1356).
+    struct FakeBuild {
+        _dir: tempfile::TempDir,
+        repo: PathBuf,
+        bin: PathBuf,
+        root: PathBuf,
+        seen: PathBuf,
+    }
+
+    fn write_exe(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn fake_build(identities: &str) -> FakeBuild {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let bin = dir.path().join("bin");
+        let root = dir.path().join("Support").join("Flare");
+        let seen = dir.path().join("identity.txt");
+        write_exe(
+            &repo.join("tools/release/mac/make-app.sh"),
+            &format!(
+                "#!/bin/bash\nset -e\nprintf '%s' \"${{FLARE_MAC_SIGN_IDENTITY:-}}\" >'{}'\n\
+                 mkdir -p \"$FLARE_MAC_OUT/Flare.app/Contents/MacOS\"\n\
+                 echo exe >\"$FLARE_MAC_OUT/Flare.app/Contents/MacOS/Flare\"\n",
+                seen.display()
+            ),
+        );
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "fake"]);
+        let list = dir.path().join("identities.txt");
+        std::fs::write(&list, identities).unwrap();
+        write_exe(
+            &bin.join("security"),
+            &format!("#!/bin/bash\ncat '{}'\n", list.display()),
+        );
+        // Developer ID when make-app.sh got an identity, ad hoc otherwise.
+        write_exe(
+            &bin.join("codesign"),
+            &format!(
+                "#!/bin/bash\nif [ -s '{}' ]; then\n\
+                 printf 'Authority=Developer ID Application: MAX AUBERT (WV7BY8CUM8)\\nTeamIdentifier=WV7BY8CUM8\\n' >&2\n\
+                 else\nprintf 'Signature=adhoc\\nTeamIdentifier=not set\\n' >&2\nfi\n",
+                seen.display()
+            ),
+        );
+        FakeBuild {
+            _dir: dir,
+            repo,
+            bin,
+            root,
+            seen,
+        }
+    }
+
+    fn build_and_stage(f: &FakeBuild, allow_adhoc: bool) -> std::process::Output {
+        let path = format!(
+            "{}:{}",
+            f.bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut cmd = Command::new("/bin/bash");
+        cmd.arg(mac_script())
+            .env("PATH", path)
+            .env("FLARE_STAGE_ROOT", &f.root)
+            .env("FLARE_STAGE_REPO", &f.repo)
+            .env_remove("FLARE_STAGE_APP")
+            .env_remove("FLARE_MAC_SIGN_IDENTITY")
+            .env_remove("FLARE_STAGE_ALLOW_ADHOC");
+        if allow_adhoc {
+            cmd.env("FLARE_STAGE_ALLOW_ADHOC", "1");
+        }
+        cmd.output().expect("the script runs")
+    }
+
+    #[test]
+    fn the_mac_stage_script_signs_with_the_keychains_developer_id_and_prefers_the_owners_team() {
+        let f = fake_build(
+            "  1) AAAA \"Apple Development: Someone (ZZZZZZZZZZ)\"\n\
+               2) BBBB \"Developer ID Application: Other Team (QQQQQQQQQQ)\"\n\
+               3) CCCC \"Developer ID Application: MAX AUBERT (WV7BY8CUM8)\"\n\
+                  3 valid identities found\n",
+        );
+        let out = build_and_stage(&f, false);
+        assert!(out.status.success(), "{}", say(&out));
+        assert_eq!(
+            std::fs::read_to_string(&f.seen).unwrap(),
+            "Developer ID Application: MAX AUBERT (WV7BY8CUM8)"
+        );
+        assert!(say(&out).contains("signed with Developer ID: an agent may install it"));
+        assert!(f.root.join("staged/staged.json").exists());
+
+        // Another team's Developer ID is used when it is the only one.
+        let f = fake_build(
+            "  1) BBBB \"Developer ID Application: Other Team (QQQQQQQQQQ)\"\n     1 valid identities found\n",
+        );
+        let out = build_and_stage(&f, false);
+        assert!(out.status.success(), "{}", say(&out));
+        assert_eq!(
+            std::fs::read_to_string(&f.seen).unwrap(),
+            "Developer ID Application: Other Team (QQQQQQQQQQ)"
+        );
+    }
+
+    #[test]
+    fn the_mac_stage_script_refuses_to_build_ad_hoc_unless_allowed() {
+        let none = "     0 valid identities found\n";
+        let f = fake_build(none);
+        let out = build_and_stage(&f, false);
+        assert!(!out.status.success(), "no Developer ID identity: refused");
+        assert!(
+            say(&out).contains("FLARE_STAGE_ALLOW_ADHOC=1"),
+            "{}",
+            say(&out)
+        );
+        assert!(!f.seen.exists(), "nothing was built");
+        assert!(!f.root.join("staged").exists());
+
+        let f = fake_build(none);
+        let out = build_and_stage(&f, true);
+        assert!(out.status.success(), "{}", say(&out));
+        assert_eq!(std::fs::read_to_string(&f.seen).unwrap(), "");
+        assert!(say(&out).contains("not signed with Developer ID: only a click"));
+        assert!(f.root.join("staged/staged.json").exists());
     }
 }

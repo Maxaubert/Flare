@@ -2217,7 +2217,7 @@ only when the person clicks "Build ready". How to stage: `docs/shipping.md`, "In
   a click under a stand-in Claude asks and Escape keeps the build; idle, nothing installs; a click installs; the new
   process answers on the same pipe, parked, its tab back, confirmed after 20 s). The chip's box is `ui.rect staged-chip`.
 - **macOS (2026-11-11, rule 1132).** The unit is the whole bundle: `tools/release/mac/stage-install.sh` stages
-  `~/Library/Application Support/Flare/staged/Flare.app` and `staged.json` (names relative to the bundle); a `.app` in an
+  `~/Library/Application Support/Flare/staged/Flare.app` and `staged.json` (names relative to the bundle; only a Developer ID build unless `FLARE_STAGE_ALLOW_ADHOC=1`, rule 1356); a `.app` in an
   `Applications` folder is an installed copy (`Layout::from_bundle_exe`), ad hoc or not; the swap renames the running
   bundle to `Flare.app.old`, renames the stage in (same volume, else `NotReady::OtherVolume`) and checks the hashes in
   place; the restart is `open -n <bundle>`; the watch polls the manifest every 2 s. How to stage: `docs/shipping.md`.
