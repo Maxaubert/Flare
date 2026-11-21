@@ -412,9 +412,21 @@ fn a_computer_found_twice_after_a_name_conflict_shows_once() {
     };
     let mac = Some(Os::Mac);
     let list = merge_nearby(vec![
-        nb("Office-Mac-Mini (2)", "Office-Mac-Mini", mac, 47790, &["192.0.2.242"]),
+        nb(
+            "Office-Mac-Mini (2)",
+            "Office-Mac-Mini",
+            mac,
+            47790,
+            &["192.0.2.242"],
+        ),
         nb("home-pc", "home-pc", Some(Os::Pc), 47790, &["192.0.2.20"]),
-        nb("Office-Mac-Mini", "Office-Mac-Mini", mac, 47790, &["fe80::1", "192.0.2.76"]),
+        nb(
+            "Office-Mac-Mini",
+            "Office-Mac-Mini",
+            mac,
+            47790,
+            &["fe80::1", "192.0.2.76"],
+        ),
     ]);
     let ids: Vec<&str> = list.iter().map(|n| n.id.as_str()).collect();
     assert_eq!(

@@ -980,10 +980,8 @@ fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
             rows[idx]["logo_icon"] == json!(true),
             "the machine's logo fills in the label's ink",
         );
-        ctx.ok(
-            idx + 1 == rows.len(),
-            "the machine's row is the menu's last",
-        );
+        // Rule 1357: this PC's "Choose a folder…" first, the machine right under it, the recents after.
+        ctx.ok(idx == 1, "the machine's row is the menu's second");
         ctx.ok(
             rows[idx]["hint"] == json!("choose folder"),
             "the machine's row says it chooses a folder",
