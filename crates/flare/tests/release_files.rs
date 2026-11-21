@@ -545,6 +545,40 @@ fn pwsh() -> Option<&'static str> {
     })
 }
 
+/// Rule 1341: `gh` prints the generated notes as many lines, and PowerShell keeps them as an array. `notes.ps1`
+/// joins them with line breaks, so the notes keep their headings and bullets (before, `WriteAllText` joined them with
+/// spaces into one line). A fake `gh` stands in for the network.
+#[test]
+fn the_release_notes_keep_their_line_breaks() {
+    let Some(ps) = pwsh() else {
+        eprintln!("no PowerShell here");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("notes.md");
+    let run = dir.path().join("run.ps1");
+    let quote = |p: &std::path::Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
+    fs::write(
+        &run,
+        format!(
+            "function gh {{ $global:LASTEXITCODE = 0; '## What''s changed'; ''; '* one'; '* two' }}\n& {} -Tag v1 -Out {}\n",
+            quote(&root().join(NOTES)),
+            quote(&out)
+        ),
+    )
+    .unwrap();
+    let ok = std::process::Command::new(ps)
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(&run)
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{ok:?}");
+    assert_eq!(
+        fs::read_to_string(&out).unwrap(),
+        "## What's changed\n\n* one\n* two"
+    );
+}
+
 fn run_gate(deny_toml: &str, live: bool) -> i32 {
     let dir = std::env::temp_dir().join(format!(
         "flare-gate-{}-{}",

@@ -5303,6 +5303,24 @@ boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-s
 `a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
 (`flare-device/src/target.rs`). Source: Max, 2026-11-19.
 
+1341. **The release notes keep their line breaks.** Audit 2026-11-21, finding #10 (issue #306). `gh api --jq .body`
+prints the generated notes as many lines, and PowerShell keeps them as an array. `tools/release/notes.ps1` joins
+them with line breaks before `WriteAllText`, which would join them with spaces. Before, every heading and bullet of
+`notes.md` (vpk's `--releaseNotes` and the update window's notes) ran together on one line. Held by
+`the_release_notes_keep_their_line_breaks` (`crates/flare/tests/release_files.rs`, a fake `gh`).
+
+1342. **No Mac release script pipes a program into a grep that quits early.** Audit 2026-11-21, findings #20 and #21
+(issue #306). Under `set -o pipefail`, `spctl ... | grep -q` fails with 141 when grep quits at the match and spctl
+gets a SIGPIPE on its next line (commit 14de4121 hit the same thing in `stage-install.sh`). `pack.sh`'s
+`check_bundle` reads spctl's whole answer into a variable first, and `lib.sh`'s `make_dmg` sends it through `tee`
+into `spctl-dmg-app.txt` and greps the file, as it already does for the DMG. Held by
+`no_mac_script_pipes_into_a_grep_that_quits_early` (`crates/flare-cef/tests/mac_release_files.rs`).
+
+1343. **A failed Computer sharing setup puts the sshd firewall rule back.** Audit 2026-11-21, finding #32 (issue
+#306). For a server Flare starts, `windows_on_script` sets the `OpenSSH-Server-In-TCP` rule to Private and on. It
+keeps the rule's old `Enabled` and `Profile` first, and the `catch` block sets them back when a later step fails
+(for example the `config` check), as it does for the service, its config and its start type.
+`crates/flare/src/sharing.rs`. Held by `a_failed_setup_puts_the_sshd_firewall_rule_back`.
 1337. **A machines list that cannot be read whole is never saved over.** Audit 2026-11-21, finding #3 (issue #306). A
 read that is saved back uses `load_machines` / `load_incoming` (`crates/flare/src/machines.rs`), never the lenient
 `read_machines` or `list_in`. No file and a blank file are an empty list, so a first run works. A file that cannot be
