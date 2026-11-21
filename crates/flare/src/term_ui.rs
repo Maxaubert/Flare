@@ -520,6 +520,17 @@ pub(crate) fn previewable(
     flare_surfaces::preview::loadable(&real, &kind).then_some((kind, real))
 }
 
+/// The link mark under the pointer, or none when the pointer is off the cells: `row_c` is clamped, so the strip below
+/// the last row or the padding would otherwise find a link in the nearest edge row. Hover, press, release and the
+/// menu all ask here, so a link opens only where the hand cursor shows (rule 1354).
+fn link_under(tab: &TabInfo, hit: &Hit, row_c: usize) -> Option<LinkMark> {
+    if !hit.inside {
+        return None;
+    }
+    tab.handle
+        .with_emu_quiet(|em| em.link_at_view(row_c, hit.col))
+}
+
 /// The menu's path for a file link (a path between marks): read from the tab's folder, a folder when the text ends in a
 /// separator. Nothing is statted: the row a person picks is vetted on a worker.
 fn marked_path_at(target: &LinkTarget, tab: &TabInfo, home: &str) -> Option<TermPathAt> {
@@ -1079,11 +1090,7 @@ impl TermUi {
                 // A press on a link is Flare's even when the program owns the mouse: the pointer already
                 // shows the hand there, and a left click opens it (owner 2026-10-25: Claude Code's links did
                 // not open, only the menu's "Open link" did). The program gets neither the press nor the release.
-                let on_link = mouse_owned
-                    && tab
-                        .handle
-                        .with_emu_quiet(|em| em.link_at_view(row_c, col))
-                        .is_some();
+                let on_link = mouse_owned && link_under(tab, hit, row_c).is_some();
                 if mouse_owned && !on_link {
                     self.reporting = true;
                     self.press = None;
@@ -1113,7 +1120,7 @@ impl TermUi {
                     let out = machine.press(&em.sel_env(), &p, has);
                     em.sel_apply(out);
                 });
-                let mark = tab.handle.with_emu_quiet(|em| em.link_at_view(row_c, col));
+                let mark = link_under(tab, hit, row_c);
                 self.press = Some(PressInfo {
                     x_dev: dev.0,
                     y_dev: dev.1,
@@ -1193,11 +1200,7 @@ impl TermUi {
             }
             return;
         }
-        let mark = if hit.inside {
-            tab.handle.with_emu_quiet(|em| em.link_at_view(row_c, col))
-        } else {
-            None
-        };
+        let mark = link_under(tab, hit, row_c);
         let changed = self.set_hover(mark.as_ref().map(|_| (row_c, col)));
         self.thumb_point(tab, g, (row_c, col), mark.clone());
         let kind = if mark.is_some() {
@@ -1277,7 +1280,7 @@ impl TermUi {
                 if dragged {
                     return None;
                 }
-                let release = tab.handle.with_emu_quiet(|em| em.link_at_view(row_c, col));
+                let release = link_under(tab, hit, row_c);
                 match (&p.mark, &release) {
                     (Some(a), Some(b)) if a == b => self.click_link(tab, a),
                     // A press and a release on different links open neither, and send no arrows.
@@ -1311,7 +1314,12 @@ impl TermUi {
                         (col, row_c),
                     );
                 }
-                let ctx = tab.handle.with_emu_quiet(|em| em.context_at(row_c, col));
+                let mut ctx = tab.handle.with_emu_quiet(|em| em.context_at(row_c, col));
+                if !hit.inside {
+                    // Off the cells (the strip below the last row, the padding): the menu offers no link (rule 1354).
+                    ctx.link = None;
+                    ctx.link_text = None;
+                }
                 let path = ctx
                     .link
                     .as_ref()
@@ -2759,6 +2767,23 @@ mod tests {
         assert!(r.urls.borrow().is_empty());
         let m = out.open_menu.expect("a menu");
         assert_eq!(m.link.as_deref(), Some("https://a.io/x"));
+    }
+
+    /// Rule 1354: below the last row the pointer is off the cells; the clamped row must not find the link in the
+    /// edge row, for a left click or for the menu.
+    #[test]
+    fn a_click_below_the_last_row_opens_no_link_and_the_menu_offers_none() {
+        let mut r = Rig::new(1.0);
+        r.feed(&format!("{}see https://a.io/x ok", "\r\n".repeat(ROWS - 1)));
+        r.frame();
+        // On the link itself it is a link (the rig is right).
+        let on = r.right_click(8, ROWS - 1).open_menu.expect("a menu");
+        assert_eq!(on.link.as_deref(), Some("https://a.io/x"));
+        // One row below the grid: the same column, off the cells.
+        r.click(8, ROWS);
+        assert!(r.urls.borrow().is_empty(), "no link opens off the cells");
+        let off = r.right_click(8, ROWS).open_menu.expect("a menu");
+        assert_eq!(off.link, None, "the menu offers no link off the cells");
     }
 
     #[test]

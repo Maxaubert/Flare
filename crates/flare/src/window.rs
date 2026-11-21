@@ -1174,7 +1174,7 @@ pub fn run_window(
                 mgr.live_pids().into_iter().map(|(_, pid)| pid).collect()
             }));
         }
-        let argv: Vec<String> = std::env::args().collect();
+        let argv: Vec<String> = crate::startup::args();
         let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup, before any window
         let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup, before any window
         // The clipboard and the openers are the real ones; under --e2e in-memory stand-ins that never
@@ -1584,7 +1584,7 @@ pub fn run_window(
                     restart: crate::appctl::staged_glue::spawn_exe(),
                     watch: true,
                     user_data_dir: args.user_data_dir.clone(),
-                    argv: std::env::args().skip(1).collect(),
+                    argv: crate::startup::args_after_exe(),
                     e2e_dir: args.e2e.then(|| inst.profile.dir.clone()),
                 },
             );
@@ -2692,8 +2692,15 @@ fn place_ime(
     // follow typing. The cursor's line is its text.
     #[cfg(target_os = "macos")]
     {
-        let line =
-            handle.with_emu_quiet(|e| e.row_text(held.line.clamp(0, i64::from(i32::MAX)) as i32));
+        // The column is a cell; the line skips wide spacers, so the caret's index is the char that cell holds
+        // (rule 1352).
+        let (line, col) = handle.with_emu_quiet(|e| {
+            let row = held.line.clamp(0, i64::from(i32::MAX)) as i32;
+            (
+                e.row_text(row),
+                e.row_char_index(row, held.x.max(0) as usize),
+            )
+        });
         let m = host.metrics();
         let to_i32 =
             |v: usize, by: u32| (v as i64 * i64::from(by)).clamp(0, i64::from(i32::MAX)) as i32;
@@ -2713,7 +2720,7 @@ fn place_ime(
                     h: to_i32(dims.1, m.cell_h),
                 },
                 line,
-                col: held.x.max(0) as usize,
+                col,
             }),
         );
     }

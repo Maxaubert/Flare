@@ -5025,3 +5025,41 @@ reads the unknown kind as nothing and never writes it back (rule 40). Second hal
 boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
 `a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
 (`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+
+1350. **A transcript read that starts on a line boundary keeps that line.** Audit #46 (issue #306): `read_last_until`
+reads at most the last `READ_BYTES` and dropped everything up to the first line break when it started past byte 0. If
+the byte before the start was a line break, the first line was whole and was dropped too. It now reads one byte more
+and drops through the first line break, so only a line the window really cuts is lost. Held by
+`read_last_keeps_a_whole_line_that_starts_right_at_the_window` (`flare-convo/tests/said.rs`).
+
+1351. **Media paused by one worker is resumed by any later one.** Audit #24 (issue #306): a pause token's ids mean
+something only to the port that paused them (`PausedSet`, audit L36). When the worker was
+dropped as wedged, crashed or was disposed, a late answer's undo or the caller's resume went to a fresh port with an
+empty set, and nothing played again. Every port of one `MediaPause` now shares one store (`sharing` in
+`flare-dictation/src/media.rs`). The test `Fake` keeps what it paused the same way, so a port that did not share the
+store would resume nothing. Held by `a_late_answer_after_the_worker_was_dropped_leaves_no_new_worker` and
+`can_be_used_again_after_dispose_the_next_pause_starts_a_fresh_worker` (`media.rs`).
+
+1352. **The macOS accessibility caret is a char index, not a cell column.** Audit #31 (issue #306): `caret_line` got
+the cursor's cell column, but `row_text` skips wide-char spacer cells, so after "日本語" the caret index was past the
+right char, or past the end with spaces padded in. `window.rs` now maps the cell to its char with
+`Emulator::row_char_index` (spacers add nothing, a combining mark adds one). Held by
+`a_cell_column_maps_to_its_char_in_row_text` (`flare-term/src/emulator.rs`).
+
+1353. **A command line argument that is not Unicode never panics Flare.** Audit #37 (issue #306): `std::env::args`
+panics on such an argument, and Explorer's "Open in Flare" passes any folder's path, so the first launch and a
+second launch's hand-off crashed. Flare reads `args_os` through `startup::args` (`utf8_args`): a non-Unicode
+argument is skipped and the exe stays first. Held by `an_argument_that_is_not_unicode_is_skipped_not_a_panic` and
+`no_source_reads_the_command_line_with_env_args` (`flare/src/startup.rs`).
+
+1354. **A link opens only where the hand cursor shows.** Audit #41 (issue #306): hover asks for a link only when the
+pointer is inside the cells, but press, release and the context menu used the clamped row, so a click in the strip
+below the last row or in the padding opened the link of the nearest edge row, and the menu offered it. All four now
+ask `link_under` in `term_ui.rs`, which finds no link off the cells. Held by
+`a_click_below_the_last_row_opens_no_link_and_the_menu_offers_none` (`term_ui.rs`).
+
+1355. **A background page that crashes or fails its load has its view closed.** Audit #42 (issue #306):
+`on_background_event` forgot the page on a failed load or `Gone` but never closed its view, and
+`close_background_keeping` closes only a page it still knows, so the hidden view stayed while a panel or another
+plugin kept the browser up. It now calls `close_view` there, as `on_bar_event` does with `close_bar`. Held by
+`a_background_page_that_crashes_or_fails_its_load_has_its_view_closed` (`appctl/tests/mods_tests.rs`).

@@ -214,13 +214,15 @@ pub fn read_last_until(path: &Path, max: usize, end: u64) -> std::io::Result<Vec
         Err(e) => return Err(e),
     };
     let len = file.metadata()?.len().min(end); // sync-ok: runs on the control channel's worker
-    let start = len.saturating_sub(READ_BYTES);
+    // When the window starts past byte 0, read one byte before it too, so a line that starts right at the window's
+    // start (the byte before is a '\n') is kept whole and only a line the window really cuts is dropped (rule 1350).
+    let start = len.saturating_sub(READ_BYTES).saturating_sub(1);
     file.seek(SeekFrom::Start(start))?; // sync-ok: runs on the control channel's worker
     let mut bytes = Vec::new();
     (&mut file).take(len - start).read_to_end(&mut bytes)?; // sync-ok: runs on the control channel's worker
     let mut text = String::from_utf8_lossy(&bytes);
-    if start > 0 {
-        // The read began inside a line: it is not a whole one.
+    if len > READ_BYTES {
+        // Drop everything through the first '\n': the rest of a cut line, or just the '\n' before a whole one.
         let cut = text.find('\n').map_or(text.len(), |i| i + 1);
         text = std::borrow::Cow::Owned(text[cut..].to_string());
     }

@@ -57,9 +57,9 @@ pub fn bootstrap() {
     }
     // `--print-aumid` prints this run's taskbar identity (honouring --user-data-dir=) and exits, so an
     // install script can stamp it on a shortcut; before anything else starts.
-    if std::env::args().any(|a| a == "--print-aumid") {
+    if crate::startup::args().iter().any(|a| a == "--print-aumid") {
         crate::attach_parent_console();
-        let argv: Vec<String> = std::env::args().skip(1).collect();
+        let argv: Vec<String> = crate::startup::args_after_exe();
         if let Some(bad) = malformed_profile_arg(&argv) {
             eprintln!("--print-aumid: `{bad}` is not --user-data-dir=<path>");
             std::process::exit(2);
@@ -67,7 +67,7 @@ pub fn bootstrap() {
         println!("{}", effective_aumid());
         std::process::exit(0);
     }
-    e2e::init(std::env::args().any(|a| a == "--e2e"));
+    e2e::init(crate::startup::args().iter().any(|a| a == "--e2e"));
     let aumid = effective_aumid();
     velopack_feed::bootstrap(
         Hooks {
@@ -140,7 +140,7 @@ pub fn malformed_profile_arg(argv: &[String]) -> Option<&str> {
 /// run with its own `--user-data-dir` (see `flare_win::names::aumid_for_profile`), or with the profile
 /// its exe's name gives it (rule 1207, `startup::effective_user_data_dir`). Toasts must use this same value.
 pub fn effective_aumid() -> String {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<String> = crate::startup::args_after_exe();
     let dir = crate::startup::effective_user_data_dir(profile_arg(&argv));
     aumid_for_profile(dir.as_deref())
 }
