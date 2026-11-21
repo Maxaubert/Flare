@@ -403,6 +403,7 @@ pub(super) fn write_tabs(profile: &Path, folders: &[PathBuf]) -> Result<(), Stri
             })
             .collect(),
         active: 0,
+        hidden: Vec::new(),
     };
     store.save(&saved);
     store.flush();

@@ -215,9 +215,16 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let pos = win.position();
     let size = win.size();
 
-    let (front, tabs_cwd, settings_open, settings_front) = {
+    let (front, tabs_cwd, settings_open, settings_front, hidden) = {
         let c = ctx.ctl.try_borrow().map_err(|_| "the controller is busy")?;
         let st = &c.model().state;
+        // Rule 1302: the sessions this machine runs for another machine, never in the strip.
+        let hidden: Vec<Value> = c
+            .model()
+            .hidden()
+            .iter()
+            .map(|h| json!({"id": h.tab.id, "cwd": h.tab.cwd, "opener": h.opener}))
+            .collect();
         (
             st.active_id.clone(),
             st.tabs
@@ -228,6 +235,7 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
                 .iter()
                 .any(|t| t.kind == flare_tabs::tabs::TabKind::Settings),
             st.active_id.as_deref() == Some(flare_tabs::tabs::SETTINGS_ID),
+            hidden,
         )
     };
     let tabs: Vec<Value> = rows_of(ctx)
@@ -302,6 +310,7 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         },
         "front": front,
         "tabs": tabs,
+        "hidden": hidden,
         "sidebar": {
             "open": app.get_layout_vertical() && !app.get_sidebar_collapsed(),
             "collapsed": app.get_sidebar_collapsed(),
@@ -767,6 +776,7 @@ mod tests {
                     })
                     .collect(),
                 active: 0,
+                hidden: Vec::new(),
             };
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
             let prefs = PrefStore::memory();

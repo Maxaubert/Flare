@@ -29,6 +29,9 @@ on:
     types: [completed]
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   VPK_VERSION: 1.2.161
@@ -47,7 +50,7 @@ jobs:
       publish: ${{ steps.plan.outputs.publish }}
       environment: ${{ steps.plan.outputs.environment }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
@@ -104,7 +107,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.plan.outputs.sha }}
 
@@ -147,7 +150,7 @@ jobs:
         if: steps.gate.outputs.go == 'true'
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.gate.outputs.go == 'true'
 
       # No actions/cache for CEF here: the framework this job signs with the Developer ID is downloaded fresh into
@@ -159,7 +162,7 @@ jobs:
           brew install ninja cmake zstd || true
           echo "CEF_PATH=$RUNNER_TEMP/flare-cef" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         if: steps.gate.outputs.go == 'true'
         with:
           dotnet-version: 8.0.x
@@ -236,7 +239,7 @@ jobs:
 
       - name: Keep the packages and the DMG
         if: steps.gate.outputs.go == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: flare-macos-arm64-${{ needs.plan.outputs.version }}
           path: |
