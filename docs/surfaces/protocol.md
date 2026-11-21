@@ -383,6 +383,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `remote.hello` (the `remote` grant's row: it is **no** in every other one, and for `bridge`) | **no** | **no** (no permission opens it) | yes |
 | `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close`, `remote.status`, `remote.convo`, `remote.fetch`, `remote.put` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
 | `open.remote` (remote sessions PR 5; **no** for `remote` and `bridge`) | yes, with no prompt (owner decision); the tab it opens takes no typing from it (rule 299) | **no** (no permission opens it) | yes |
+| `install.staged` (2026-11-20; **no** for `remote` and `bridge`) | yes; it arms the install, which waits for every agent to be idle (rule 1326) | **no** (no permission opens it) | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
 browser, and open a tab that shows a session on another machine (`open.remote`, rule 299, amending rule 188). It
@@ -1161,6 +1162,21 @@ resume}`) connects on the tab's own worker, so the answer never waits for the ot
 does not name is `not_found` with one line that lists the ones it does. The opened tab takes no typing from the
 agent: the agent grant has no `remote.*`, `shell.input` or `tabs.input`, and an agent names no tab but its own. Timeout:
 15 s.
+
+### install.staged (2026-11-20, rule 1326)
+
+Installs the staged build of this installed copy the way a click on "Build ready" does, armed: the install starts only
+once no agent in any tab works or waits on a question and no question of Flare's own is up, held for 60 s; then the
+10 s toast with Cancel, the swap and the restart (sessions resume). Callers: the agent (`install_staged_build` in
+`flare-mcp`) and `flare --install-staged [--check]` (no token, so the agent grant); never a mod, a remote link or the
+bridge. Listed in `capabilities` in an installed copy only.
+
+Params: `check` (bool, optional, default false: only report, arm nothing). Unknown params are `bad_params`.
+
+Result, at once: `{state, why?, commit?, short?, built_at?, signed?, developer_id?, signer?}`. `state` is `armed`,
+`installing` (the countdown or the swap runs), `none` (nothing staged, the stage is not ready, or it changed while it was
+read), `refused` (no installed copy; on macOS a stage not signed with Developer ID) or `staged` (a check, nothing
+armed). `signed` is `developer-id`, `ad-hoc`, `other`, `unsigned`, `invalid` or `not-checked` (Windows). Timeout: 15 s.
 
 ## 6. Errors
 

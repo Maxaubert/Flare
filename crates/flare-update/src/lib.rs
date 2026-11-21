@@ -10,6 +10,7 @@ pub mod groups;
 pub mod handoff;
 pub mod notes;
 pub mod preview;
+pub mod signing;
 pub mod staged;
 pub mod staged_flow;
 pub mod types;
