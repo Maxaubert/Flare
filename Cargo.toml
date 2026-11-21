@@ -47,18 +47,18 @@ undocumented_unsafe_blocks = "warn"
 [workspace.dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg-wgpu", "renderer-software", "unstable-wgpu-30", "unstable-winit-030", "unstable-fontique-011", "accessibility"] }
 slint-build = "=1.18.1"
-wgpu = { version = "=30.0.1", default-features = false, features = ["std", "dx12", "metal", "wgsl", "parking_lot"] }
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "dx12", "metal", "wgsl", "parking_lot"] }
 cosmic-text = { version = "=0.19.0", default-features = false, features = ["std", "swash"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
-unicode-width = "=0.2.2"
+unicode-width = "=0.2.3"
 png = "=0.18.1"
 # The app icon picker draws the chosen icon for the Dock and the window (rule 1230): the version Slint already pulls in.
 resvg = { version = "=0.48.1", default-features = false }
 # The panel image viewer decodes png, jpeg, gif, bmp, webp and ico on a worker (Surfaces stage 1).
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }
-pollster = "=1.0.1"
+pollster = "=1.0.2"
 bytemuck = { version = "=1.25.2", features = ["derive"] }
-log = "=0.4.34"
+log = "=0.4.35"
 env_logger = "=0.11.11"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_WindowsAndMessaging", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization", "Win32_System_RemoteDesktop", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_JobObjects", "Win32_System_Ole", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Wdk_System_Threading", "Win32_System_Registry", "Win32_System_Time", "Win32_System_Diagnostics_Debug", "Win32_Media", "Win32_Media_Audio", "Win32_Security_Cryptography", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
 windows = { version = "=0.62.2", default-features = false, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Media_Control", "Foundation", "Foundation_Collections", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "UI_Notifications", "Data_Xml_Dom"] }
@@ -68,17 +68,17 @@ portable-pty = "=0.9.0"
 anyhow = "1"
 # The macOS process table (libproc, sysctl, kqueue) and signals; the same version portable-pty pulls in.
 libc = "=0.2.191"
-regex = "=1.13.1"
+regex = "=1.13.2"
 memchr = "=2.8.3"
 base64 = "=0.22.1"
 url = "=2.5.8"
-uuid = { version = "=1.28.0", features = ["v4"] }
+uuid = { version = "=1.29.3", features = ["v4"] }
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-rusty-leveldb = "=4.0.1"
-unicode-normalization = "=0.1.25"
+serde_json = { version = "=1.0.154", features = ["preserve_order"] }
+rusty-leveldb = "=4.0.2"
+unicode-normalization = "=0.1.26"
 fancy-regex = "=0.19.2"
 rfd = { version = "=0.17.2", default-features = false }
 raw-window-handle = "=0.6.2"
@@ -96,13 +96,13 @@ dispatch2 = "=0.3.1"
 # is fetched by cef-dll-sys's build script into `$CEF_PATH/<version>` (set it to ~/Library/Caches/flare-cef) or the
 # target dir, never the repo. macOS only: no other target pulls either crate.
 cef = { version = "=156.2.0", default-features = false, features = ["sandbox"] }
-cef-dll-sys = { version = "=156.2.0", default-features = false, features = ["sandbox"] }
+cef-dll-sys = { version = "=156.6.0", default-features = false, features = ["sandbox"] }
 # The window server's list (the screen rule's evidence in the CEF tests): the version objc2-app-kit already pulls in.
 objc2-core-graphics = "=0.3.2"
 objc2-core-foundation = "=0.3.2"
 velopack = "=1.2.161"
-embed-resource = "=3.0.11"
-ureq = "=3.4.2"
+embed-resource = "=3.0.12"
+ureq = "=3.5.2"
 # The web host probe's HTTPS server with a self-signed certificate (macOS tests only); the same rustls ureq uses.
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 libloading = "=0.8.9"
@@ -119,7 +119,7 @@ webview2-com = "=0.39.1"
 # RUSTSEC-2026-0414 (>= 0.13.5) and RUSTSEC-2026-0433 (>= 0.13.6); it is 11 days old on 2026-11-10, so the age rule
 # gives way to the advisory rule, as for zip below. Slint's i-slint-common shares this copy.
 pulldown-cmark = { version = "=0.13.6", default-features = false }
-zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
+zip = { version = "=9.7.0", default-features = false, features = ["deflate"] }
 # Machine pairing PR 3 (2026-11-14): the 6-digit code is a SPAKE2 password (RFC 9382; RustCrypto PAKEs, the crate Magic
 # Wormhole uses; 0.4.0 is from 2023-07), the confirmed key is split with HKDF and checked with HMAC (SHA-256, the sha2
 # above), and the channel after it is ChaCha20-Poly1305. All are the 2022-2023 releases on sha2 0.10, the generation
