@@ -115,6 +115,8 @@ pub struct GridHost {
     /// The time the frame and the settings read (tests hand in their own).
     clock: Box<dyn Fn() -> Instant>,
     pub stats: FrameStats,
+    /// The rows of the painted frames, for a row that flips and back (rule 1324).
+    rows_watch: crate::pulse_watch::RowWatch,
 }
 
 impl GridHost {
@@ -140,6 +142,7 @@ impl GridHost {
             caret_shape: CaretShape::Block,
             blink: CaretBlink::new(crate::caret_blink::system_period()),
             caret_can_blink: false,
+            rows_watch: crate::pulse_watch::RowWatch::default(),
             drawn_lit: true,
             clock: Box::new(Instant::now),
             stats: FrameStats::new(120),
@@ -332,6 +335,7 @@ impl GridHost {
         self.source = source;
         self.dims = None;
         self.dirty = true;
+        self.rows_watch.reset();
         // A tab coming to the front shows its caret lit at once.
         self.blink.activity((self.clock)());
     }
@@ -381,6 +385,7 @@ impl GridHost {
             self.blink.activity(t);
         }
         self.source.grid_into(&mut self.grid_buf);
+        crate::pulse_watch::log_rows(&self.rows_watch.observe(&self.grid_buf, now));
         self.grid_buf.cursor.hollow = self.hollow_cursor;
         self.grid_buf.cursor.shape = self.caret_shape;
         self.caret_can_blink =

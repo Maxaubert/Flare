@@ -1,5 +1,7 @@
 //! The kinds of panel. `image`, `text`, `web` and `changes` are built; the rest are named now so the
-//! store can keep them and later stages only add a viewer.
+//! store can keep them and later stages only add a viewer. `device` (a phone simulator, issue #248, rule 1316) is
+//! named and stored but not built until the device panel's PR 4a: a build without its viewer must never hand a
+//! `sim/<udid>` target to the file preview.
 
 /// The longest mod id (a folder name under the plugins folder).
 const MOD_ID_MAX: usize = 64;
@@ -11,6 +13,8 @@ pub enum PanelKind {
     Text,
     Web,
     Changes,
+    /// A live phone simulator, target `sim/<udid>` (the `flare-device` crate; Slint kind 5 once built).
+    Device,
     /// A panel a mod provides: `mod:<id>`.
     Mod(String),
 }
@@ -23,6 +27,7 @@ impl PanelKind {
             PanelKind::Text => "text".into(),
             PanelKind::Web => "web".into(),
             PanelKind::Changes => "changes".into(),
+            PanelKind::Device => "device".into(),
             PanelKind::Mod(id) => format!("mod:{id}"),
         }
     }
@@ -35,6 +40,7 @@ impl PanelKind {
             "text" => PanelKind::Text,
             "web" => PanelKind::Web,
             "changes" => PanelKind::Changes,
+            "device" => PanelKind::Device,
             other => {
                 let id = other.strip_prefix("mod:")?;
                 if !valid_mod_id(id) {
@@ -51,7 +57,8 @@ impl PanelKind {
     }
 
     /// True for the kinds this build can draw. A stored panel of another kind is kept in the file
-    /// but not shown until a later stage builds its viewer.
+    /// but not shown until a later stage builds its viewer. `Device` stays false until its viewer lands (device
+    /// panel PR 4a), so restore and `show` never check a `sim/<udid>` target as a file.
     pub fn is_built(&self) -> bool {
         matches!(
             self,
@@ -99,6 +106,7 @@ mod tests {
             PanelKind::Text,
             PanelKind::Web,
             PanelKind::Changes,
+            PanelKind::Device,
             PanelKind::Mod("notes".into()),
         ];
         for k in all {
@@ -142,5 +150,35 @@ mod tests {
         assert_eq!(PanelKind::Changes.convo_target(), Some("changes"));
         assert_eq!(PanelKind::Web.convo_target(), None);
         assert!(!PanelKind::Mod("x".into()).is_native());
+    }
+
+    #[test]
+    fn device_round_trips_by_name() {
+        assert_eq!(PanelKind::Device.name(), "device");
+        assert_eq!(PanelKind::parse("device"), Some(PanelKind::Device));
+        for s in ["Device", "devices", "device:", "sim", "mod:device:x"] {
+            assert_eq!(PanelKind::parse(s), None, "{s:?}");
+        }
+        // A mod may still be called device: it is a mod, not the device panel.
+        assert_eq!(
+            PanelKind::parse("mod:device"),
+            Some(PanelKind::Mod("device".into()))
+        );
+    }
+
+    #[test]
+    fn device_is_not_built_yet() {
+        // Kept in the file, not shown, until the device panel's PR 4a builds its viewer (rule 1316).
+        assert!(!PanelKind::Device.is_built());
+        assert!(
+            PanelKind::Device.is_native(),
+            "drawn by Slint, not web content"
+        );
+        assert!(!PanelKind::Device.is_convo());
+        assert_eq!(
+            PanelKind::Device.fixed_target(),
+            None,
+            "its target is the device"
+        );
     }
 }

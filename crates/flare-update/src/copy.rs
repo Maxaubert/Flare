@@ -93,6 +93,14 @@ pub const STAGED_COUNTDOWN: &str = "Installing the new build and restarting";
 pub const STAGED_CANCEL: &str = "Cancel";
 /// A swap that failed and put everything back.
 pub const STAGED_FAILED: &str = "The build could not be installed; nothing changed";
+/// The chip's accessible name while an agent's install waits for every agent to be idle (2026-11-20).
+pub const STAGED_CHIP_ARMED_ARIA: &str =
+    "Build ready, installs when every agent is idle; click to install now";
+
+/// Said once when an agent asks for the install (`install.staged`): it waits for every agent to be idle.
+pub fn staged_armed(commit: &str) -> String {
+    format!("Build {commit} installs when every agent is idle")
+}
 
 /// Said once by the first start of a new build.
 pub fn staged_installed(commit: &str) -> String {
@@ -112,6 +120,10 @@ mod tests {
     fn the_staged_build_words() {
         assert_eq!(staged_installed("abc1234"), "Installed abc1234");
         assert_eq!(
+            staged_armed("abc1234"),
+            "Build abc1234 installs when every agent is idle"
+        );
+        assert_eq!(
             staged_rolled_back("abc1234"),
             "Build abc1234 did not start, so the last build is back"
         );
@@ -120,6 +132,8 @@ mod tests {
             STAGED_CHIP_ARIA,
             STAGED_COUNTDOWN,
             STAGED_FAILED,
+            STAGED_CHIP_ARMED_ARIA,
+            staged_armed("abc1234").as_str(),
         ] {
             assert!(!s.contains('\u{2014}'), "no em-dash: {s}");
         }
