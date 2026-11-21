@@ -111,7 +111,8 @@ pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
 ### On the Mac (2026-11-11, rule 1132)
 
 For Max's ad hoc `/Applications/Flare.app`. Max runs Claude Code inside it, so **an agent never replaces that bundle**:
-only Max's click on "Build ready" does. Always stage a Mac build this way, so it shows as an update in the running app:
+only the running app does, on Max's click on "Build ready" or an agent's armed install (below, rule 1326). Always stage a
+Mac build this way, so it shows as an update in the running app:
 
 ```
 tools/release/mac/stage-install.sh
@@ -136,6 +137,29 @@ tools/release/mac/stage-install.sh
   folders, accessibility) after an install. The bundle id (`com.flare.terminal`) stays the same.
 - First install: a build from before this feature cannot read the Mac stage. Max installs one build with it by hand
   once; from then on every stage shows as "Build ready".
+
+### An agent installs the staged build (2026-11-20, rule 1326)
+
+Max, 2026-11-20: agents may install the staged build themselves, and "always stage and install the signed build". So
+stage a Developer ID build on the Mac:
+
+```
+FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" tools/release/mac/stage-install.sh
+```
+
+then install it with the agent's `install_staged_build` tool (the `flare-status` plugin's MCP server) or the command
+
+```
+/Applications/Flare.app/Contents/MacOS/Flare --install-staged          # arm the install
+/Applications/Flare.app/Contents/MacOS/Flare --install-staged --check  # only report the stage
+```
+
+(Windows: `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe --install-staged`). It does what the click does, armed: the
+install waits until no agent in any tab works or waits on a question (the caller too, so end the turn), for a minute
+without a break, then the 10 s toast with Cancel, the swap and the restart; sessions resume. It answers at once with
+`armed`, `installing`, `none` or `refused` (why), the commit and whether the stage is Developer ID signed. On the Mac an
+ad hoc stage is refused (`codesign` checks the staged bundle); Max's own click still installs any stage. Exit codes: 0
+armed, installing or staged; 2 nothing staged; 3 refused; 1 no Flare running on that profile.
 
 ## SmartScreen
 

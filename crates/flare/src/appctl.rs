@@ -4561,6 +4561,8 @@ impl AppCtl {
                 let tab = self.open_remote(&machine, &folder, resume.as_deref(), front);
                 Ok(json!({"tab": tab, "machine": machine, "folder": folder}))
             }
+            // Rule 1326: an agent's install of the staged build, armed until every agent is idle (`staged_glue`).
+            CtlOp::InstallStaged { sig, check } => Ok(self.staged_arm(&sig, check)),
             // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }

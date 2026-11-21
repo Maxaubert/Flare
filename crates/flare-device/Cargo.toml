@@ -1,0 +1,20 @@
+[package]
+name = "flare-device"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+
+# The device panel (issue #248): a live phone simulator beside a tab. PR 1 is the pure model only: targets, the
+# source trait and its fake, the 60 fps cap and ring ownership, coordinates, the US keymap, the UI tree filter, the
+# touch indicators, the agent job, the sim host's wire protocol and the version table. Nothing is wired yet.
+[dependencies]
+# The agent cursor's glide and the border (indicator.rs), the target limits (target.rs).
+flare-surfaces = { path = "../flare-surfaces" }
+# `clean_text` for UI-tree labels (untrusted text, tree.rs).
+flare-ctl = { path = "../flare-ctl" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

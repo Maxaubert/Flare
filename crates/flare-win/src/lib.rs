@@ -34,6 +34,9 @@ pub mod material;
 #[path = "macos/menu_bar.rs"]
 pub mod menu_bar;
 pub mod menu_spec;
+#[cfg(target_os = "macos")]
+#[path = "macos/metal_layer.rs"]
+pub mod metal_layer;
 pub mod monitors;
 pub mod motion;
 #[cfg(target_os = "macos")]

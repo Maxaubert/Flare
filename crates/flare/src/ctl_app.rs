@@ -398,6 +398,13 @@ pub enum CtlOp {
         /// (rule 1302), since a tab it opened would show on this screen.
         caller: Option<String>,
     },
+    /// `install.staged` (rule 1326): the call's worker read the stage (`sig`, `Manifest::signature`) and checked who
+    /// signed it; the window arms its flow for that stage (or with `check` only says where it stands). Answered at once
+    /// with `{state, why?}`; the install itself waits for every agent to be idle.
+    InstallStaged {
+        sig: String,
+        check: bool,
+    },
 }
 
 /// Where `browser.navigate` sends the page.
@@ -468,6 +475,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
             CtlOp::RemoteStatus => "CtlOp::RemoteStatus",
             CtlOp::OpenRemote { .. } => "CtlOp::OpenRemote",
+            CtlOp::InstallStaged { .. } => "CtlOp::InstallStaged",
         })
     }
 }
@@ -569,6 +577,11 @@ pub struct AppDispatcher {
     /// Remote sessions (PR 5): the machines `open.remote` may name (the profile's `machines.json`). Without it
     /// `open.remote` is neither listed nor answered.
     machines: Option<Arc<dyn crate::machines::MachinesPort>>,
+    /// The staged build of an installed copy (rule 1326): `install.staged` reads it. Without it (a build run from a
+    /// build folder) `install.staged` is not listed and answers `refused`.
+    staged: Option<crate::appctl::staged_glue::StagedProbe>,
+    /// Whether `install.staged` holds an agent to a Developer ID build (macOS; a test sets it).
+    staged_mac: bool,
 }
 
 /// The longest host folder `open.remote` takes, in bytes.
@@ -605,7 +618,82 @@ impl AppDispatcher {
             clock: Instant::now,
             remote: None,
             machines: None,
+            staged: None,
+            staged_mac: cfg!(target_os = "macos"),
         }
+    }
+
+    /// An installed copy (rule 1326): `install.staged` reads the stage with `probe`. `mac` holds the agent to a
+    /// Developer ID build.
+    pub fn with_staged(
+        mut self,
+        probe: crate::appctl::staged_glue::StagedProbe,
+        mac: bool,
+    ) -> Self {
+        self.staged = Some(probe);
+        self.staged_mac = mac;
+        self
+    }
+
+    /// `install.staged` (rule 1326): the agent's (the `install_staged_build` tool, `flare --install-staged`). It does
+    /// what a click on "Build ready" does, but armed: the install starts only once every agent is idle (the caller's
+    /// own turn included), so it never cuts off a session. Read here, on the call's worker: the stage's manifest and
+    /// who signed it (`codesign`, a fraction of a second). On macOS an agent installs only a Developer ID build.
+    /// Answered at once: `state` is `armed`, `installing`, `none` or `refused` (`staged` for a `check`), with the
+    /// commit, `signed` and a `why` when there is one.
+    fn install_staged(&self, params: &Value) -> Result<Value, CtlError> {
+        only_fields(params, &["check"], "install.staged")?;
+        let check = match params.get("check") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                return Err(CtlError::new(
+                    code::BAD_PARAMS,
+                    "check must be true or false",
+                ));
+            }
+        };
+        let Some(probe) = self.staged.as_ref() else {
+            return Ok(json!({
+                "state": "refused",
+                "why": "this Flare is not an installed copy (it runs from a build folder), so it installs no staged build",
+            }));
+        };
+        let look = match probe() {
+            Ok(Some(l)) => l,
+            Ok(None) => return Ok(json!({"state": "none", "why": "no build is staged"})),
+            Err(why) => {
+                return Ok(
+                    json!({"state": "none", "why": format!("the stage is not ready: {why}")}),
+                );
+            }
+        };
+        let mut out = json!({
+            "commit": look.commit,
+            "short": flare_update::staged::short(&look.commit),
+            "built_at": look.built_at,
+            "signed": look.signing.word(),
+            "developer_id": look.signing.developer_id(),
+            "signer": look.signing.describe(),
+        });
+        if !check
+            && let Err(why) =
+                crate::appctl::staged_glue::agent_may_install(&look.signing, self.staged_mac)
+        {
+            out["state"] = json!("refused");
+            out["why"] = json!(why);
+            return Ok(out);
+        }
+        let answer = self.ask(CtlOp::InstallStaged {
+            sig: look.sig,
+            check,
+        })?;
+        for k in ["state", "why"] {
+            if let Some(v) = answer.get(k) {
+                out[k] = v.clone();
+            }
+        }
+        Ok(out)
     }
 
     /// Serves remote sessions (PR 2): the bridge key resolves to the bridge grant and `remote.*` is answered.
@@ -2994,6 +3082,10 @@ impl Dispatcher for AppDispatcher {
         if self.machines.is_some() {
             all.push(Method::OpenRemoteSession);
         }
+        // Installing the staged build (rule 1326) only in an installed copy.
+        if self.staged.is_some() {
+            all.push(Method::InstallStaged);
+        }
         // Remote sessions (PR 2) only where this run serves them.
         if self.remote.is_some() {
             all.extend(
@@ -3287,6 +3379,7 @@ impl AppDispatcher {
             | Method::RemoteFetch
             | Method::RemotePut => self.remote_call(ctx, method, &params),
             Method::OpenRemoteSession => self.open_remote(ctx, &params),
+            Method::InstallStaged => self.install_staged(&params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?
@@ -3368,6 +3461,13 @@ impl CtlServer {
         }
         if let Some(r) = remote {
             d = d.with_remote(r);
+        }
+        // An installed copy (rule 1326): the agent may install the staged build.
+        if let Some((layout, _)) = crate::appctl::staged_glue::started() {
+            d = d.with_staged(
+                crate::appctl::staged_glue::staged_probe(layout),
+                cfg!(target_os = "macos"),
+            );
         }
         let dispatcher = Arc::new(d);
         // sync-ok: startup, creates the pipe and its accept thread
@@ -6358,6 +6458,112 @@ mod tests {
             )),
             code::UNAVAILABLE
         );
+    }
+
+    /// Rule 1326: `install.staged` reads the stage on the worker, says its commit and signer, holds an agent on macOS to
+    /// a Developer ID build (before the window hears of it), and hands the window the stage's signature to arm. A run
+    /// that is no installed copy neither lists it nor installs anything.
+    #[test]
+    fn install_staged_reports_the_stage_and_its_signer_and_arms_only_a_developer_id_build() {
+        use crate::appctl::staged_glue::{StagedLook, StagedProbe};
+        use flare_update::signing::Signing;
+        let look = |signing: Signing| StagedLook {
+            commit: "65273b3c9b148ffac563d7ec2616eb1f77557c5c".into(),
+            built_at: "2026-11-20T07:38:41Z".into(),
+            sig: "sig-1".into(),
+            signing,
+        };
+        let probe = |l: Option<StagedLook>| -> StagedProbe { Arc::new(move || Ok(l.clone())) };
+        let dev = Signing::DeveloperId {
+            authority: "Developer ID Application: MAX AUBERT (WV7BY8CUM8)".into(),
+            team: Some("WV7BY8CUM8".into()),
+        };
+        let c = agent_in_tab();
+        // A Developer ID build: the window arms the stage it was read as.
+        let seen_sig = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen_sig.clone();
+        let r = rig(
+            move |op| match op {
+                CtlOp::InstallStaged { sig, check } => {
+                    s2.lock().unwrap().push((sig.clone(), *check));
+                    Ok(json!({"state": if *check { "staged" } else { "armed" }}))
+                }
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let ops = r.ops.clone();
+        let d = r.d.with_staged(probe(Some(look(dev.clone()))), true);
+        assert!(d.capabilities().contains(&Method::InstallStaged));
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "armed");
+        assert_eq!(v["commit"], "65273b3c9b148ffac563d7ec2616eb1f77557c5c");
+        assert_eq!(v["short"], "65273b3");
+        assert_eq!(v["signed"], "developer-id");
+        assert_eq!(v["developer_id"], true);
+        assert_eq!(v["signer"], "Developer ID (WV7BY8CUM8)");
+        let v = d
+            .call(&c, Method::InstallStaged, json!({"check": true}))
+            .unwrap();
+        assert_eq!(v["state"], "staged");
+        assert_eq!(
+            *seen_sig.lock().unwrap(),
+            [("sig-1".to_string(), false), ("sig-1".to_string(), true)]
+        );
+        assert_eq!(ops.lock().unwrap().len(), 2);
+        for bad in [json!({"check": "yes"}), json!({"now": true})] {
+            assert_eq!(
+                code_of(d.call(&c, Method::InstallStaged, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        // An ad hoc build on a Mac: refused before the window hears of it; a check still reports it.
+        let r = rig(|_| Ok(json!({"state": "staged"})), false, &[]);
+        let ops = r.ops.clone();
+        let d = r.d.with_staged(probe(Some(look(Signing::AdHoc))), true);
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "refused");
+        assert_eq!(v["signed"], "ad-hoc");
+        assert_eq!(v["developer_id"], false);
+        assert!(
+            v["why"]
+                .as_str()
+                .unwrap()
+                .contains("not signed with Developer ID"),
+            "{v}"
+        );
+        assert!(ops.lock().unwrap().is_empty(), "nothing armed");
+        let v = d
+            .call(&c, Method::InstallStaged, json!({"check": true}))
+            .unwrap();
+        assert_eq!(v["state"], "staged");
+        // Windows has no Developer ID: a stage there is armed as it is.
+        let r = rig(|_| Ok(json!({"state": "armed"})), false, &[]);
+        let not_checked = Signing::NotChecked {
+            why: "Windows builds carry no Developer ID".into(),
+        };
+        let d = r.d.with_staged(probe(Some(look(not_checked))), false);
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(
+            (v["state"].as_str(), v["signed"].as_str()),
+            (Some("armed"), Some("not-checked"))
+        );
+        // Nothing staged.
+        let r = rig(|_| Ok(json!({})), false, &[]);
+        let ops = r.ops.clone();
+        let d = r.d.with_staged(probe(None), true);
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "none");
+        assert!(ops.lock().unwrap().is_empty());
+        // No installed copy.
+        let bare = rig(|_| Ok(json!({})), false, &[]);
+        assert!(!bare.d.capabilities().contains(&Method::InstallStaged));
+        let v = bare.d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "refused");
+        assert!(v["why"].as_str().unwrap().contains("not an installed copy"));
+        assert!(bare.ops.lock().unwrap().is_empty());
     }
 
     /// `remote.open` names a host folder: absolute, there on the disk (asked on the worker), with a resume id that is a
