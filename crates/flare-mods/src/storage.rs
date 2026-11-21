@@ -8,7 +8,8 @@
 //!   thread), and kept in memory; each plugin has its own lock, so a slow disk for one never holds another.
 //! - A set is answered at once and written on a worker of its own: the first write right away, later ones at most
 //!   every [`WRITE_EVERY`] (2 a second, design 13), each the newest state (sets in between are coalesced). A write
-//!   goes to a `.tmp` file that is renamed over the old one, so the file is always a whole object (rule 36).
+//!   goes to a `.tmp` file that is renamed over the old one, so the file is always a whole object (rule 36). A quit
+//!   or a session end writes what still waits at once ([`Storage::flush_all`], rule 1328).
 //! - A file that is not a JSON object (damaged, or edited by hand) reads as empty and is replaced by the next write.
 //!
 //! The size is kept as the compact JSON the file holds, entry by entry, so a set never serialises the whole store.
@@ -34,8 +35,17 @@ const READ_MAX: u64 = 2 * MAX_BYTES as u64;
 /// Every plugin's store. Shared by the dispatcher's workers; holds no secret.
 pub struct Storage {
     dir: PathBuf,
-    slots: Mutex<HashMap<String, Arc<Mutex<Slot>>>>,
+    slots: Mutex<HashMap<String, Arc<Store>>>,
     write_every: Duration,
+}
+
+/// One plugin's store: its state, and the lock its file writes take.
+#[derive(Default)]
+struct Store {
+    state: Mutex<Slot>,
+    /// Held from taking the state to the end of its write, by the writer and by [`Storage::flush_all`], so the writes
+    /// land in the order they took the state and never share the `.tmp` file (rule 1328).
+    io: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -165,7 +175,7 @@ impl Storage {
         self.dir.join(format!("{id}.json"))
     }
 
-    fn slot(&self, id: &str) -> Arc<Mutex<Slot>> {
+    fn slot(&self, id: &str) -> Arc<Store> {
         Arc::clone(lock(&self.slots).entry(id.to_string()).or_default())
     }
 
@@ -175,7 +185,7 @@ impl Storage {
             check_key(k)?;
         }
         let slot = self.slot(id);
-        let mut s = lock(&slot);
+        let mut s = lock(&slot.state);
         s.load(&self.file_of(id));
         let map = s.map.as_ref().expect("loaded");
         Ok(match key {
@@ -193,7 +203,7 @@ impl Storage {
         }
         let slot = self.slot(id);
         {
-            let mut s = lock(&slot);
+            let mut s = lock(&slot.state);
             s.load(&self.file_of(id));
             match key {
                 Some(k) => {
@@ -254,7 +264,7 @@ impl Storage {
     /// The bytes the plugin's store takes now, as its file would hold it (tests and the probe).
     pub fn bytes_of(&self, id: &str) -> usize {
         let slot = self.slot(id);
-        let mut s = lock(&slot);
+        let mut s = lock(&slot.state);
         s.load(&self.file_of(id));
         s.bytes
     }
@@ -262,21 +272,21 @@ impl Storage {
     /// Whether every change of the plugin's store is on the disk (or failed to get there).
     pub fn is_idle(&self, id: &str) -> bool {
         let slot = self.slot(id);
-        let s = lock(&slot);
+        let s = lock(&slot.state);
         !s.writing
     }
 
     /// What the last write of the plugin's store said, when it failed.
     pub fn last_error(&self, id: &str) -> Option<String> {
         let slot = self.slot(id);
-        let s = lock(&slot);
+        let s = lock(&slot.state);
         s.error.clone()
     }
 
     /// The plugin's store is let go from memory (the next call reads its file again).
     pub fn forget(&self, id: &str) {
         let slot = self.slot(id);
-        let mut s = lock(&slot);
+        let mut s = lock(&slot.state);
         if !s.writing {
             *s = Slot::default();
         }
@@ -289,7 +299,7 @@ impl Storage {
         let t = Instant::now();
         loop {
             {
-                let mut s = lock(&slot);
+                let mut s = lock(&slot.state);
                 if !s.writing || t.elapsed() > Duration::from_secs(2) {
                     *s = Slot::default();
                     break;
@@ -308,7 +318,7 @@ impl Storage {
 
     /// One writer per store, on its own thread: it writes the newest state, at most every `write_every`, until
     /// nothing is left to write.
-    fn start_writer(&self, id: &str, slot: Arc<Mutex<Slot>>) {
+    fn start_writer(&self, id: &str, slot: Arc<Store>) {
         let file = self.file_of(id);
         let dir = self.dir.clone();
         let every = self.write_every;
@@ -317,31 +327,16 @@ impl Storage {
             move || {
                 loop {
                     let wait = {
-                        let s = lock(&slot);
+                        let s = lock(&slot.state);
                         s.last_write
                             .map_or(Duration::ZERO, |t| every.saturating_sub(t.elapsed()))
                     };
                     if !wait.is_zero() {
                         std::thread::sleep(wait); // sync-ok: the storage writer's own thread
                     }
-                    let data = {
-                        let mut s = lock(&slot);
-                        if !s.dirty {
-                            s.writing = false;
-                            return;
-                        }
-                        s.dirty = false;
-                        serde_json::to_string(s.map.as_ref().unwrap_or(&Map::new()))
-                            .unwrap_or_else(|_| "{}".into())
-                    };
-                    let _ = std::fs::create_dir_all(&dir); // sync-ok: the storage writer's own thread
-                    let result = write_atomic(&file, &data);
-                    let mut s = lock(&slot);
-                    s.last_write = Some(Instant::now());
-                    s.error = result.err().map(|e| {
-                        log::warn!("a plugin's storage was not written: {e}");
-                        e.to_string()
-                    });
+                    if !write_dirty(&slot, &file, &dir, true) {
+                        return;
+                    }
                 }
             }
         };
@@ -350,11 +345,51 @@ impl Storage {
             .spawn(job)
         {
             log::warn!("could not start the plugin storage writer: {e}");
-            let mut s = lock(&slot);
+            let mut s = lock(&slot.state);
             s.writing = false;
             s.error = Some(e.to_string());
         }
     }
+
+    /// Writes every store with a change not on the disk yet, now, on the caller's thread: Flare quits or the session
+    /// ends, and a writer still sleeping out its spacing would die with the process (rule 1328). A write in flight
+    /// is waited for, never raced. A writer that wakes afterwards finds nothing left and ends.
+    pub fn flush_all(&self) {
+        let stores: Vec<(String, Arc<Store>)> = lock(&self.slots)
+            .iter()
+            .map(|(id, s)| (id.clone(), Arc::clone(s)))
+            .collect();
+        for (id, store) in stores {
+            write_dirty(&store, &self.file_of(&id), &self.dir, false);
+        }
+    }
+}
+
+/// Writes the store's newest state to `file` when it holds a change not on the disk yet; false when it holds none.
+/// The state is taken and written under the store's io lock. For its `writer`, finding nothing to write ends its
+/// turn (`writing` turns false under the same lock a set checks, so no change is left without a writer).
+fn write_dirty(store: &Store, file: &Path, dir: &Path, writer: bool) -> bool {
+    let _io = lock(&store.io);
+    let data = {
+        let mut s = lock(&store.state);
+        if !s.dirty {
+            if writer {
+                s.writing = false;
+            }
+            return false;
+        }
+        s.dirty = false;
+        serde_json::to_string(s.map.as_ref().unwrap_or(&Map::new())).unwrap_or_else(|_| "{}".into())
+    };
+    let _ = std::fs::create_dir_all(dir); // sync-ok: the storage writer's thread, or the quit flush
+    let result = write_atomic(file, &data);
+    let mut s = lock(&store.state);
+    s.last_write = Some(Instant::now());
+    s.error = result.err().map(|e| {
+        log::warn!("a plugin's storage was not written: {e}");
+        e.to_string()
+    });
+    true
 }
 
 #[cfg(test)]
@@ -494,6 +529,33 @@ mod tests {
         wait_idle(&s, "p");
         assert_eq!(on_disk(&s, "p"), json!({"n": 39}));
         assert!(s.last_error("p").is_none());
+    }
+
+    #[test]
+    fn a_flush_writes_a_set_still_waiting_for_its_spacing_at_once() {
+        // Rule 1328: Flare quits while the writer sleeps out the spacing; the flush on the way out writes it.
+        let dir = tempfile::tempdir().unwrap();
+        let s = Storage::new(dir.path()).with_write_every(Duration::from_secs(60));
+        s.set("p", Some("n"), json!(1)).unwrap();
+        // The first write goes out at once; wait for it to land.
+        let t = Instant::now();
+        while !s.file_of("p").exists() || on_disk(&s, "p") != json!({"n": 1}) {
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "the first write never landed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        s.set("p", Some("n"), json!(2)).unwrap();
+        s.set("q", None, json!({"k": "v"})).unwrap();
+        s.flush_all();
+        assert_eq!(on_disk(&s, "p"), json!({"n": 2}));
+        assert_eq!(on_disk(&s, "q"), json!({"k": "v"}));
+        // A store with nothing waiting is left alone; a second flush has nothing to do.
+        let untouched = s.file_of("r");
+        let _ = s.get("r", None).unwrap();
+        s.flush_all();
+        assert!(!untouched.exists());
     }
 
     #[test]

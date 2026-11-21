@@ -52,6 +52,35 @@ pub enum RemoteIntent {
     Key(KeyEvent),
     Text(String),
     Paste(String),
+    /// A mouse event over a cell (rule 1317): a report on the host only while its program asked for one.
+    Mouse(RemoteMouse),
+}
+
+/// What the pointer did in a remote mouse intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteMouseAct {
+    Press,
+    Release,
+    Motion,
+    WheelUp,
+    WheelDown,
+}
+
+/// One mouse event a remote viewer's terminal reported (rule 1317): the act, the button (None for a wheel and for a
+/// motion with no button held), the 0-based cell and the modifiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteMouse {
+    pub act: RemoteMouseAct,
+    pub button: Option<crate::mouse_report::MouseButton>,
+    pub col: u16,
+    pub row: u16,
+    pub mods: crate::mouse_report::MouseMods,
+}
+
+impl RemoteMouse {
+    pub fn is_motion(&self) -> bool {
+        self.act == RemoteMouseAct::Motion
+    }
 }
 
 /// Who typed last in a tab: this machine (the person, dictation, a plugin) or a remote viewer. The size of a tab follows
@@ -75,6 +104,10 @@ pub struct RemoteSnapshot {
     pub rows: usize,
     /// Clear, home, then the lines joined by CR LF: what a fresh emulator is fed to show the same text.
     pub data: Vec<u8>,
+    /// The mouse reports the program asked for when the text was read, and whether in SGR (rule 1317): the viewer's
+    /// terminal takes them, so a click on a restored or caught-up tab still reaches the program.
+    pub mouse: crate::click_caret::MouseTracking,
+    pub sgr_mouse: bool,
 }
 
 fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -629,10 +662,71 @@ impl TermHandle {
                     }
                     ok
                 }
+                RemoteIntent::Mouse(m) => self.remote_mouse(m),
             };
             wrote += usize::from(ok);
         }
         wrote
+    }
+
+    /// A remote viewer's mouse event (rule 1317), encoded with this tab's own modes: nothing while the program here asked
+    /// for no mouse reports, or for a cell outside this grid, or for an event its tracking mode does not report. A
+    /// wheel is a wheel report only (never a scroll of this view, never arrow keys). A press or a release counts as
+    /// the remote typist's typing, as a key does; a motion or a wheel is only a report (rule 9). True when a report was
+    /// written.
+    fn remote_mouse(&self, m: &RemoteMouse) -> bool {
+        use crate::click_caret::MouseTracking;
+        use crate::mouse_report::{MouseEvt, MouseKind, encode_mouse};
+        let mode = self.mode();
+        if mode.mouse == MouseTracking::None {
+            return false;
+        }
+        let (cols, rows) = self.size();
+        let (col, row) = (usize::from(m.col), usize::from(m.row));
+        if col >= cols || row >= rows {
+            return false;
+        }
+        let kind = match m.act {
+            RemoteMouseAct::Press => MouseKind::Press,
+            RemoteMouseAct::Release => MouseKind::Release,
+            RemoteMouseAct::Motion => MouseKind::Move,
+            RemoteMouseAct::WheelUp | RemoteMouseAct::WheelDown => {
+                let ctx = WheelContext {
+                    mouse: mode.mouse,
+                    sgr_mouse: mode.sgr_mouse,
+                    alt_screen: mode.alt_screen,
+                    alternate_scroll: mode.alternate_scroll,
+                    app_cursor: mode.app_cursor,
+                };
+                let notch = if m.act == RemoteMouseAct::WheelUp {
+                    1
+                } else {
+                    -1
+                };
+                return match wheel_action(notch, &ctx, col, row) {
+                    WheelAction::Bytes(b) => {
+                        self.write_report(&b);
+                        true
+                    }
+                    _ => false,
+                };
+            }
+        };
+        let evt = MouseEvt {
+            kind,
+            button: m.button,
+            col,
+            row,
+            mods: m.mods,
+        };
+        let Some(bytes) = encode_mouse(&evt, mode.mouse, mode.sgr_mouse) else {
+            return false;
+        };
+        self.write_report(&bytes);
+        if kind != MouseKind::Move {
+            self.sh.mark_typed_by(Typist::Remote);
+        }
+        true
     }
 
     /// Who typed in this tab last, or None before anyone did (the size owner of rule 282).
@@ -688,6 +782,7 @@ impl TermHandle {
                 (start..rows as i32).map(|l| e.row_text(l)).collect()
             };
             let (line, col) = e.cursor();
+            let mode = e.mode();
             drop(e);
             self.sh.handle(evs);
             let mut data = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
@@ -701,6 +796,8 @@ impl TermHandle {
                 cols,
                 rows,
                 data,
+                mouse: mode.mouse,
+                sgr_mouse: mode.sgr_mouse,
             }
         })
     }
@@ -970,6 +1067,97 @@ mod tests {
         // A local key after it makes this machine the last typist again.
         assert!(t.h.send_key(&key_a()));
         assert_eq!(t.h.last_typist(), Some(Typist::Local));
+    }
+
+    fn remote_click(act: RemoteMouseAct, col: u16, row: u16) -> RemoteIntent {
+        RemoteIntent::Mouse(RemoteMouse {
+            act,
+            button: (!matches!(act, RemoteMouseAct::WheelUp | RemoteMouseAct::WheelDown))
+                .then_some(crate::mouse_report::MouseButton::Left),
+            col,
+            row,
+            mods: crate::mouse_report::MouseMods::default(),
+        })
+    }
+
+    /// Rule 1317: a remote mouse event is written only while the program here asked for mouse reports, in the encoding
+    /// it asked for and through its tracking mode's filter; a wheel is a report, never a scroll of this view; a cell
+    /// outside this grid writes nothing. A press or a release is the remote typist's typing, a motion is not.
+    #[test]
+    fn a_remote_mouse_event_is_written_only_while_the_program_asked_for_reports() {
+        use RemoteMouseAct as A;
+        let t = T::started();
+        feed_lines(&t, 60);
+        t.h.scroll_view(5);
+        let off = t.h.with_emu_quiet(|e| e.display_offset());
+        let all = [
+            remote_click(A::Press, 3, 1),
+            remote_click(A::Release, 3, 1),
+            remote_click(A::Motion, 4, 1),
+            remote_click(A::WheelUp, 3, 1),
+        ];
+        // No mouse mode: nothing at all, the view stays where it is, and nobody typed.
+        assert_eq!(t.h.remote_input(&all), 0);
+        assert_eq!(t.h.with_emu_quiet(|e| e.display_offset()), off);
+        assert_eq!(t.h.last_typist(), None);
+        // Clicks only (1000) in SGR (1006): the press and the release, never the motion.
+        t.fake().feed(b"\x1b[?1000h\x1b[?1006h");
+        wait_until("the mouse mode", || t.h.mode().sgr_mouse);
+        assert_eq!(t.h.remote_input(&all[..3]), 2);
+        wait_until("the reports", || t.fake().written().len() >= 18);
+        assert_eq!(t.fake().written(), b"\x1b[<0;4;2M\x1b[<0;4;2m".to_vec());
+        assert_eq!(t.h.last_typist(), Some(Typist::Remote));
+        // A wheel is a wheel report.
+        assert_eq!(t.h.remote_input(&all[3..]), 1);
+        wait_until("the wheel", || t.fake().written().len() >= 28);
+        assert!(t.fake().written().ends_with(b"\x1b[<64;4;2M"));
+        // Outside the grid: nothing.
+        let (cols, rows) = t.h.size();
+        let far = remote_click(A::Press, cols as u16, 0);
+        let low = remote_click(A::Press, 0, rows as u16);
+        assert_eq!(t.h.remote_input(&[far, low]), 0);
+        // Any motion (1003): a motion is written, and it is no typing.
+        t.fake().feed(b"\x1b[?1003h");
+        wait_until("any motion", || {
+            t.h.mode().mouse == crate::click_caret::MouseTracking::Any
+        });
+        t.h.send_key(&key_a());
+        wait_until("the key", || t.fake().written().ends_with(b"a"));
+        let before = t.fake().written().len();
+        assert_eq!(t.h.remote_input(&all[2..3]), 1);
+        wait_until("the motion", || t.fake().written().len() > before);
+        assert!(t.fake().written().ends_with(b"\x1b[<32;5;2M"));
+        assert_eq!(
+            t.h.last_typist(),
+            Some(Typist::Local),
+            "a motion is no typing"
+        );
+        // The default encoding when SGR is off.
+        t.fake().feed(b"\x1b[?1006l");
+        wait_until("no sgr", || !t.h.mode().sgr_mouse);
+        let before = t.fake().written().len();
+        assert_eq!(t.h.remote_input(&all[..1]), 1);
+        wait_until("the default report", || t.fake().written().len() > before);
+        assert!(
+            t.fake()
+                .written()
+                .ends_with(&[0x1b, b'[', b'M', 32, 36, 34])
+        );
+    }
+
+    /// Rule 1317: a snapshot names the mouse reports the program asked for, so the viewer's terminal can take them.
+    #[test]
+    fn a_snapshot_names_the_programs_mouse_mode() {
+        use crate::click_caret::MouseTracking;
+        let t = T::started();
+        let mgr = Arc::clone(&t.h.sh.mgr);
+        let _tail = mgr.subscribe_tail("a").expect("a tail");
+        let snap = t.h.remote_snapshot(10).expect("a snapshot");
+        assert_eq!((snap.mouse, snap.sgr_mouse), (MouseTracking::None, false));
+        t.fake().feed(b"\x1b[?1002h\x1b[?1006h");
+        wait_until("the mouse mode", || t.h.mode().sgr_mouse);
+        let snap = t.h.remote_snapshot(10).expect("a snapshot");
+        assert_eq!((snap.mouse, snap.sgr_mouse), (MouseTracking::Drag, true));
     }
 
     #[test]

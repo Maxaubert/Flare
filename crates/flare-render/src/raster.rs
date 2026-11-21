@@ -327,8 +327,9 @@ impl Rasterizer {
         // Presentation (UTS #51), the way Terminal.app, kitty and Ghostty pick: a text-presentation
         // character (U+23FA, U+2764 without VS16) that cosmic-text's common fallback sent to the
         // colour emoji face is drawn from a text face when one has it, and an emoji asked for with
-        // VS16 that a text face took (Menlo has U+2764) comes from the emoji face. macOS only:
-        // Windows has no such lists, so its glyphs stay as cosmic-text picks them.
+        // VS16 that a text face took (Menlo has U+2764) comes from the emoji face. Windows has the
+        // text list only (Segoe UI Symbol, rule 1301): an emoji asked for with VS16 stays as
+        // cosmic-text picks it.
         let from_emoji_face = run
             .glyphs
             .iter()
@@ -835,6 +836,35 @@ mod tests {
             let g = glyph_settled(&mut r, &key(text)).expect(text);
             assert_eq!(g.kind, GlyphKind::Color, "{text:?} is an emoji");
         }
+    }
+
+    /// Rule 1301: on Windows, U+23FA (the bullet Claude Code prints on macOS, seen in a Mac tab on
+    /// this PC) draws from a text face, not as a Segoe UI Emoji tile; a default emoji stays colour.
+    #[cfg(windows)]
+    #[test]
+    fn a_text_presentation_symbol_draws_from_a_text_face_on_windows() {
+        if !installed("Segoe UI Symbol") || !installed("Segoe UI Emoji") {
+            eprintln!("skipped: no Segoe UI Symbol or Segoe UI Emoji on this machine");
+            return;
+        }
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        // The bullet, and the spinner stars and marks Claude Code draws on macOS.
+        for text in [
+            "\u{23FA}",
+            "\u{23FA}\u{FE0E}",
+            "\u{2733}",
+            "\u{2736}",
+            "\u{273B}",
+            "\u{273D}",
+            "\u{2714}",
+            "\u{26A0}",
+        ] {
+            let g = glyph_settled(&mut r, &key(text)).expect(text);
+            assert_eq!(g.kind, GlyphKind::Mask, "{text:?} came from a colour face");
+            assert!(g.data.iter().any(|&a| a > 0), "{text:?} drew nothing");
+        }
+        let g = glyph_settled(&mut r, &key("\u{1F600}")).expect("emoji");
+        assert_eq!(g.kind, GlyphKind::Color, "a default emoji stays colour");
     }
 
     #[test]

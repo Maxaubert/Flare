@@ -282,6 +282,66 @@ fn session_read_gives_the_last_two_hundred_entries_to_a_plugin_that_holds_sessio
     assert_eq!(e.code, code::FORBIDDEN);
 }
 
+/// Rule 1306: a hidden session (one another machine opened here) is never a plugin's to read. A plugin that names it
+/// gets exactly what a tab that does not exist gets, so it learns nothing. A call made with that session's own tab
+/// token still reads it.
+#[test]
+fn session_read_never_gives_a_plugin_a_hidden_session_but_its_own_token_reads_it() {
+    let (f, _a, _b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| bare_plugin(r, "reader", &["sessions", "tabs"]));
+    turn(&f, "reader", true);
+    bg_up(&f, &slot, "reader");
+    let h = f
+        .ctl
+        .borrow_mut()
+        .model
+        .open_hidden(r"C:\h", "Mac Mini", None, None, 0);
+    assert!(f.ctl.borrow().model.is_hidden(&h));
+    let hidden = bg_call(&f, &slot, "reader", 1, "session.read", json!({"tab": h}));
+    let unknown = bg_call(
+        &f,
+        &slot,
+        "reader",
+        2,
+        "session.read",
+        json!({"tab": "t-none"}),
+    );
+    assert_eq!(code_of_reply(&hidden), "no_tab");
+    assert_eq!(
+        hidden["error"], unknown["error"],
+        "the same answer as no tab"
+    );
+    assert!(hidden.get("result").is_none());
+    // The window itself: a plugin's ask is refused, the opener's (and the session's own token's) is answered.
+    let ctl = f.ctl.borrow();
+    let refused = ctl.ctl_session_of(&h, false).unwrap_err();
+    let none = ctl.ctl_session_of("t-none", false).unwrap_err();
+    assert_eq!(
+        (&refused.code, &refused.message),
+        (&none.code, &none.message)
+    );
+    assert_eq!(ctl.ctl_session_of(&h, true).unwrap()["folder"], r"C:\h");
+    drop(ctl);
+    // The session's own tab token, with a plugin's grant (its own rate limit): its own session answers.
+    let own = CallContext {
+        conn: 7,
+        client: "test".into(),
+        client_version: String::new(),
+        grant: Grant::Mod {
+            id: "hook".into(),
+            permissions: vec![flare_ctl::Permission::Sessions, flare_ctl::Permission::Tabs],
+            plugin: true,
+        },
+        tab: Some(h.clone()),
+        cancel: Default::default(),
+    };
+    let rx = call_on_thread(&w.dispatcher, own, Method::SessionRead, json!({}));
+    let v = answer_of(&f, &rx).expect("its own session answers");
+    assert_eq!(v["tab"], h);
+    assert_eq!(v["session"], Value::Null);
+}
+
 /// Bracketed paste is on in the tab (the program asked for it, as Claude Code does).
 fn bracketed(f: &Fx, tab: &str) {
     let h = f.ctl.borrow().handle_of(tab).expect("the tab's terminal");

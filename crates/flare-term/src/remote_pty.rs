@@ -7,15 +7,16 @@
 //! `remote.output` and pushes the bytes in for the pty's reader.
 //!
 //! Typing never crosses the link as raw bytes (rule 279). The writer turns what the tab wrote back into the keys, text
-//! and pastes the person typed ([`decode_typing`]), and the host encodes them again with its own modes. A sequence
-//! that is no key (a mouse report, a focus report) is not sent. The answers the tab's emulator gives the program's
+//! and pastes the person typed ([`decode_typing`]), and the host encodes them again with its own modes. A mouse report
+//! crosses as a mouse intent the host writes again only while its program asked for one (rule 1317); a sequence that is
+//! no key and no mouse report (a focus report) is not sent. The answers the tab's emulator gives the program's
 //! questions are not typing and never reach the writer: the host's own emulator answers them
 //! (`SessionManager::write_reply`).
 //!
 //! Closing the tab ends the session everywhere (`kill`: `remote.close`); the quit of this Flare and a dropped pty only
 //! let go of it (`leave`: `remote.detach`), and the host session goes on (rule 288).
 
-use crate::handle::RemoteIntent;
+use crate::handle::{RemoteIntent, RemoteMouse, RemoteMouseAct};
 use crate::keys::KeyEvent;
 use crate::pty::PtyProcess;
 use std::collections::VecDeque;
@@ -67,6 +68,9 @@ impl LinkState {
 #[derive(Default)]
 struct LiveInner {
     host_tab: Mutex<Option<String>>,
+    /// This tab's `remote.open` id (rule 1210), made when the tab is made and saved with it, so the tab finds its
+    /// session again after the host's Flare restarted (`remote.find`, rule 1307). None: a tab saved before the key.
+    open_id: Mutex<Option<String>>,
     seq: AtomicU64,
     state: AtomicU8,
     /// The host's newest status of the tab that the window has not taken yet (remote sessions PR 4).
@@ -196,10 +200,12 @@ pub struct HostStatus {
 pub struct RemoteLive(Arc<LiveInner>);
 
 impl RemoteLive {
-    /// A tab that is opened fresh (`host_tab` None) or brought back (`host_tab` Some, from `tabs.json`).
-    pub fn new(host_tab: Option<String>, seq: u64) -> Self {
+    /// A tab that is opened fresh (`host_tab` None) or brought back (`host_tab` Some, from `tabs.json`), with its open
+    /// id (rule 1307; None for a tab saved before the key).
+    pub fn new(host_tab: Option<String>, seq: u64, open_id: Option<String>) -> Self {
         let live = Self::default();
         *lk(&live.0.host_tab) = host_tab;
+        *lk(&live.0.open_id) = open_id;
         live.0.seq.store(seq, Ordering::SeqCst);
         live
     }
@@ -211,6 +217,18 @@ impl RemoteLive {
 
     pub fn set_host_tab(&self, tab: &str) {
         *lk(&self.0.host_tab) = Some(tab.to_string());
+    }
+
+    /// This tab's open id (rule 1307), if it has one.
+    pub fn open_id(&self) -> Option<String> {
+        lk(&self.0.open_id).clone()
+    }
+
+    /// This tab's open id, made now when it has none (a tab that never reached its host's `remote.open`).
+    pub fn open_id_or_new(&self) -> String {
+        lk(&self.0.open_id)
+            .get_or_insert_with(crate::session::new_ctl_token)
+            .clone()
     }
 
     /// The host's output number the tab has read up to.
@@ -316,6 +334,7 @@ impl std::fmt::Debug for RemoteLive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteLive")
             .field("host_tab", &self.host_tab())
+            .field("open_id", &self.open_id().is_some())
             .field("seq", &self.seq())
             .field("link", &self.link())
             .finish()
@@ -476,8 +495,24 @@ impl RemoteIo {
             return;
         }
         let now = Instant::now();
-        o.typed_at.extend(std::iter::repeat_n(now, intents.len()));
-        o.intents.extend(intents);
+        for i in intents {
+            // A motion right after a motion with the same button and modifiers takes its place (rule 1317): only the
+            // pointer's last place crosses, so a moving mouse never floods the link.
+            if let RemoteIntent::Mouse(m) = &i
+                && m.is_motion()
+                && let Some(RemoteIntent::Mouse(last)) = o.intents.last()
+                && last.is_motion()
+                && last.button == m.button
+                && last.mods == m.mods
+            {
+                let n = o.intents.len() - 1;
+                o.intents[n] = i;
+                o.typed_at[n] = now;
+                continue;
+            }
+            o.intents.push(i);
+            o.typed_at.push(now);
+        }
         drop(o);
         self.out_cv.notify_all();
     }
@@ -727,6 +762,109 @@ fn csi_key(params: &str, fin: u8) -> Option<KeyEvent> {
     }
 }
 
+/// The mouse event an xterm button code is (rule 1317): the low two bits the button (3: none), +4 Shift, +8 Alt, +16
+/// Ctrl, +32 a motion, +64 a wheel (its low bit down). `release`: the SGR report ended in `m`. Extra buttons (128 and
+/// up), a sideways wheel and anything that is no event of [`RemoteMouseAct`] are None. `col` and `row` are 0-based.
+fn mouse_of_code(cb: u32, col: u32, row: u32, release: bool) -> Option<RemoteMouse> {
+    use crate::mouse_report::{MouseButton, MouseMods};
+    if cb >= 128 {
+        return None;
+    }
+    let mods = MouseMods {
+        shift: cb & 4 != 0,
+        alt: cb & 8 != 0,
+        ctrl: cb & 16 != 0,
+    };
+    let motion = cb & 32 != 0;
+    let low = cb & 3;
+    let button = match low {
+        0 => Some(MouseButton::Left),
+        1 => Some(MouseButton::Middle),
+        2 => Some(MouseButton::Right),
+        _ => None,
+    };
+    let (act, button) = if cb & 64 != 0 {
+        match (low, motion || release) {
+            (0, false) => (RemoteMouseAct::WheelUp, None),
+            (1, false) => (RemoteMouseAct::WheelDown, None),
+            _ => return None,
+        }
+    } else if motion {
+        if release {
+            return None;
+        }
+        (RemoteMouseAct::Motion, button)
+    } else if release {
+        (RemoteMouseAct::Release, Some(button?))
+    } else if button.is_none() {
+        // The default encoding's release names no button: it crosses as the left one, which the host's default
+        // encoding drops again (a release there is button 3 whatever was held).
+        (RemoteMouseAct::Release, Some(MouseButton::Left))
+    } else {
+        (RemoteMouseAct::Press, button)
+    };
+    Some(RemoteMouse {
+        act,
+        button,
+        col: u16::try_from(col).ok()?,
+        row: u16::try_from(row).ok()?,
+        mods,
+    })
+}
+
+/// An SGR mouse report's mouse event (`params` after `ESC [ <`, `fin` its final byte): `b;x;y` with a 1-based cell,
+/// then `M` (a press or a motion) or `m` (a release).
+fn sgr_mouse(params: &str, fin: u8) -> Option<RemoteMouse> {
+    let release = match fin {
+        b'M' => false,
+        b'm' => true,
+        _ => return None,
+    };
+    let mut nums = params.split(';').map(|p| p.parse::<u32>().ok());
+    let (Some(Some(cb)), Some(Some(x)), Some(Some(y)), None) =
+        (nums.next(), nums.next(), nums.next(), nums.next())
+    else {
+        return None;
+    };
+    mouse_of_code(cb, x.checked_sub(1)?, y.checked_sub(1)?, release)
+}
+
+/// One character at the start of `s` and its length in bytes.
+fn first_char(s: &[u8]) -> Option<(char, usize)> {
+    let len = match *s.first()? {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        _ => return None,
+    };
+    let c = std::str::from_utf8(s.get(..len)?).ok()?.chars().next()?;
+    Some((c, len))
+}
+
+/// A mouse report in the default encoding at the start of `s` (`ESC [ M`, then the code + 32 and the 1-based column and
+/// row + 32, each one character): its mouse event, and the bytes it used. A report cut short uses the rest.
+fn legacy_mouse(s: &[u8]) -> (Option<RemoteIntent>, usize) {
+    let mut at = 3;
+    let mut vals = [0u32; 3];
+    for v in &mut vals {
+        let Some((c, len)) = first_char(&s[at.min(s.len())..]) else {
+            return (None, s.len());
+        };
+        *v = u32::from(c);
+        at += len;
+    }
+    let ev = (|| {
+        mouse_of_code(
+            vals[0].checked_sub(32)?,
+            vals[1].checked_sub(33)?,
+            vals[2].checked_sub(33)?,
+            false,
+        )
+    })();
+    (ev.map(RemoteIntent::Mouse), at)
+}
+
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
@@ -768,6 +906,10 @@ fn decode_escape(s: &[u8]) -> (Option<RemoteIntent>, usize) {
                     used,
                 );
             }
+            // A mouse report in the default encoding: `ESC [ M` and three characters (rule 1317).
+            if s.get(2) == Some(&b'M') {
+                return legacy_mouse(s);
+            }
             let mut j = 2;
             while j < s.len() && (0x20..=0x3f).contains(&s[j]) {
                 j += 1;
@@ -775,6 +917,9 @@ fn decode_escape(s: &[u8]) -> (Option<RemoteIntent>, usize) {
             match s.get(j) {
                 Some(&fin) if (0x40..=0x7e).contains(&fin) => {
                     let params = String::from_utf8_lossy(&s[2..j]);
+                    if let Some(sgr) = params.strip_prefix('<') {
+                        return (sgr_mouse(sgr, fin).map(RemoteIntent::Mouse), j + 1);
+                    }
                     (csi_key(&params, fin).map(RemoteIntent::Key), j + 1)
                 }
                 // `ESC [` with nothing after it is Alt+[ (what `encode_key` makes of it).
@@ -853,8 +998,9 @@ fn flush_text(text: &mut Vec<u8>, out: &mut Vec<RemoteIntent>) {
 /// Pure: what a tab wrote to its pty, as the keys, text and pastes it was (rule 279). `encode_key` read backwards: a
 /// control byte is its Ctrl chord (or Enter, Tab, Backspace), an escape sequence the named key with its modifiers
 /// (CSI and SS3 alike, so the host encodes the arrows with its own cursor mode), `ESC` and a character that character
-/// with Alt, a bracketed paste a paste, and every run of plain characters a text. Anything else (a mouse or focus
-/// report, a string sequence) is no typing and is left out. Each write is read on its own: a key never spans two.
+/// with Alt, a bracketed paste a paste, a mouse report (SGR or the default encoding) a mouse intent (rule 1317), and
+/// every run of plain characters a text. Anything else (a focus report, a string sequence, an extra mouse button) is no
+/// typing and is left out. Each write is read on its own: a key never spans two.
 pub fn decode_typing(bytes: &[u8]) -> Vec<RemoteIntent> {
     let mut out = Vec::new();
     let mut text = Vec::new();
@@ -980,6 +1126,41 @@ impl SignalStrip {
         }
         out
     }
+}
+
+/// The word for a mouse tracking mode in a `remote.snapshot` answer's `mouse` (rule 1317).
+pub fn mouse_mode_word(m: crate::click_caret::MouseTracking) -> &'static str {
+    use crate::click_caret::MouseTracking as T;
+    match m {
+        T::None => "none",
+        T::X10 => "x10",
+        T::Vt200 => "click",
+        T::Drag => "drag",
+        T::Any => "any",
+    }
+}
+
+/// Pure: the mouse modes a snapshot's answer named (rule 1317), as the bytes that set them on the viewer's terminal:
+/// every mouse mode off first, then the one the host's program asked for and SGR when it asked. Built here from the
+/// word, never taken from the host's bytes, so nothing but a mouse mode rides on it (rule 289). None for a word this
+/// end does not know (a newer host's): the viewer's modes stay as they are.
+pub fn mouse_mode_bytes(word: &str, sgr: bool) -> Option<Vec<u8>> {
+    let set = match word {
+        "none" => None,
+        "x10" => Some(9),
+        "click" => Some(1000),
+        "drag" => Some(1002),
+        "any" => Some(1003),
+        _ => return None,
+    };
+    let mut out = b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l".to_vec();
+    if let Some(n) = set {
+        out.extend_from_slice(format!("\x1b[?{n}h").as_bytes());
+        if sgr {
+            out.extend_from_slice(b"\x1b[?1006h");
+        }
+    }
+    Some(out)
 }
 
 /// Pure: the end of a snapshot that puts the cursor back where the host's is (rule 293). The snapshot's last line is
@@ -1146,6 +1327,7 @@ mod tests {
                         }
                         RemoteIntent::Text(t) => again.extend(t.as_bytes()),
                         RemoteIntent::Paste(_) => panic!("a key is no paste: {k:?}"),
+                        RemoteIntent::Mouse(_) => panic!("a key is no mouse: {k:?}"),
                     }
                 }
                 assert_eq!(again, bytes, "{k:?} (app cursor {app_cursor}) -> {back:?}");
@@ -1172,12 +1354,20 @@ mod tests {
         );
     }
 
-    /// Rule 279: a report the tab makes is no typing, and no raw escape sequence ever becomes text.
+    /// Rule 279 (amended by 1317): a report the tab makes is no typing, a mouse report crosses only as a mouse intent,
+    /// and no raw escape sequence ever becomes text.
     #[test]
-    fn mouse_focus_and_string_sequences_are_never_sent() {
+    fn focus_and_string_sequences_are_never_sent() {
         for b in [
-            &b"\x1b[<0;10;5M"[..],
-            b"\x1b[<64;3;3m",
+            &b"\x1b[<64;3;3m"[..],
+            b"\x1b[<128;3;3M",
+            b"\x1b[<66;3;3M",
+            b"\x1b[<0;0;5M",
+            b"\x1b[<0;1M",
+            b"\x1b[<0;1;1;1M",
+            b"\x1b[<0;1;1x",
+            b"\x1b[<3;1;1m",
+            b"\x1b[<32;1;1m",
             b"\x1b[I",
             b"\x1b[O",
             b"\x1b]11;rgb:0000/0000/0000\x07",
@@ -1187,10 +1377,202 @@ mod tests {
         ] {
             assert!(decode_typing(b).is_empty(), "{b:?}");
         }
-        for i in decode_typing(b"a\x1b[<0;1;1Mb\x9b2J") {
+        for i in decode_typing(b"a\x1b[<0;1;1Mb\x9b2J\x1b[M") {
             if let RemoteIntent::Text(t) = i {
                 assert!(!t.chars().any(char::is_control), "{t:?}");
             }
+        }
+    }
+
+    fn mouse(
+        act: RemoteMouseAct,
+        button: Option<crate::mouse_report::MouseButton>,
+        col: u16,
+        row: u16,
+    ) -> RemoteIntent {
+        RemoteIntent::Mouse(RemoteMouse {
+            act,
+            button,
+            col,
+            row,
+            mods: crate::mouse_report::MouseMods::default(),
+        })
+    }
+
+    /// Rule 1317: an SGR mouse report is the mouse event it says, with a 0-based cell; the default encoding too, its
+    /// release crossing as the left button. A click among typing keeps its place.
+    #[test]
+    fn a_mouse_report_decodes_to_a_mouse_intent() {
+        use crate::mouse_report::{MouseButton as B, MouseMods};
+        assert_eq!(
+            decode_typing(b"\x1b[<0;10;5M\x1b[<0;10;5m"),
+            vec![
+                mouse(RemoteMouseAct::Press, Some(B::Left), 9, 4),
+                mouse(RemoteMouseAct::Release, Some(B::Left), 9, 4),
+            ]
+        );
+        assert_eq!(
+            decode_typing(b"\x1b[<2;1;1M\x1b[<1;1;1m"),
+            vec![
+                mouse(RemoteMouseAct::Press, Some(B::Right), 0, 0),
+                mouse(RemoteMouseAct::Release, Some(B::Middle), 0, 0),
+            ]
+        );
+        assert_eq!(
+            decode_typing(b"\x1b[<32;4;2M\x1b[<35;5;2M"),
+            vec![
+                mouse(RemoteMouseAct::Motion, Some(B::Left), 3, 1),
+                mouse(RemoteMouseAct::Motion, None, 4, 1),
+            ]
+        );
+        assert_eq!(
+            decode_typing(b"\x1b[<64;3;3M\x1b[<65;3;3M"),
+            vec![
+                mouse(RemoteMouseAct::WheelUp, None, 2, 2),
+                mouse(RemoteMouseAct::WheelDown, None, 2, 2),
+            ]
+        );
+        let RemoteIntent::Mouse(m) = &decode_typing(b"\x1b[<28;1;1M")[0] else {
+            panic!("a mouse intent");
+        };
+        assert_eq!(
+            m.mods,
+            MouseMods {
+                shift: true,
+                alt: true,
+                ctrl: true
+            }
+        );
+        // The default encoding: press, release (no button named), and a column past 94 as UTF-8.
+        assert_eq!(
+            decode_typing(b"\x1b[M %#\x1b[M#%#"),
+            vec![
+                mouse(RemoteMouseAct::Press, Some(B::Left), 4, 2),
+                mouse(RemoteMouseAct::Release, Some(B::Left), 4, 2),
+            ]
+        );
+        assert_eq!(
+            decode_typing("\x1b[M \u{84}!".as_bytes()),
+            vec![mouse(RemoteMouseAct::Press, Some(B::Left), 99, 0)]
+        );
+        assert_eq!(
+            decode_typing(b"ab\x1b[<0;2;1Mc\r"),
+            vec![
+                RemoteIntent::Text("ab".into()),
+                mouse(RemoteMouseAct::Press, Some(B::Left), 1, 0),
+                RemoteIntent::Text("c".into()),
+                RemoteIntent::Key(key("Enter", "Enter")),
+            ]
+        );
+    }
+
+    /// Rule 1317: every report the local encoder makes decodes to an event the host encodes back to the same bytes.
+    #[test]
+    fn every_mouse_report_round_trips_through_the_encoder() {
+        use crate::click_caret::MouseTracking;
+        use crate::handle::RemoteMouseAct as A;
+        use crate::mouse_report::{MouseButton as B, MouseEvt, MouseKind, MouseMods, encode_mouse};
+        for sgr in [true, false] {
+            for (kind, button) in [
+                (MouseKind::Press, Some(B::Left)),
+                (MouseKind::Press, Some(B::Middle)),
+                (MouseKind::Press, Some(B::Right)),
+                (MouseKind::Release, Some(B::Right)),
+                (MouseKind::Move, Some(B::Left)),
+                (MouseKind::Move, None),
+            ] {
+                for m in 0..8u8 {
+                    let e = MouseEvt {
+                        kind,
+                        button,
+                        col: 7,
+                        row: 120,
+                        mods: MouseMods {
+                            shift: m & 1 != 0,
+                            alt: m & 2 != 0,
+                            ctrl: m & 4 != 0,
+                        },
+                    };
+                    let bytes = encode_mouse(&e, MouseTracking::Any, sgr).unwrap();
+                    let back = decode_typing(&bytes);
+                    let [RemoteIntent::Mouse(r)] = back.as_slice() else {
+                        panic!("{bytes:?} -> {back:?}");
+                    };
+                    let again = MouseEvt {
+                        kind: match r.act {
+                            A::Press => MouseKind::Press,
+                            A::Release => MouseKind::Release,
+                            A::Motion => MouseKind::Move,
+                            _ => panic!("no wheel"),
+                        },
+                        button: r.button,
+                        col: usize::from(r.col),
+                        row: usize::from(r.row),
+                        mods: r.mods,
+                    };
+                    assert_eq!(
+                        encode_mouse(&again, MouseTracking::Any, sgr).unwrap(),
+                        bytes,
+                        "{e:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Rule 1317: a motion right after a motion with the same button and modifiers takes its place in the outbox, so
+    /// only the pointer's last place crosses; a press, a key or another button keeps its own place.
+    #[test]
+    fn mouse_motion_coalesces_in_the_outbox() {
+        use crate::mouse_report::MouseButton as B;
+        let (mut p, io) = pty();
+        let mut w = p.take_writer().unwrap();
+        for x in 1..=50 {
+            w.write_all(format!("\x1b[<35;{x};1M").as_bytes()).unwrap();
+        }
+        w.write_all(b"\x1b[<0;50;1M").unwrap();
+        for x in 50..=80 {
+            w.write_all(format!("\x1b[<32;{x};2M").as_bytes()).unwrap();
+        }
+        w.write_all(b"\x1b[<0;80;2m").unwrap();
+        w.write_all(b"\x1b[<35;81;2M\x1b[<35;82;2Mx\x1b[<35;83;2M")
+            .unwrap();
+        let o = io.take_outgoing(Duration::ZERO);
+        assert_eq!(
+            o.intents,
+            vec![
+                mouse(RemoteMouseAct::Motion, None, 49, 0),
+                mouse(RemoteMouseAct::Press, Some(B::Left), 49, 0),
+                mouse(RemoteMouseAct::Motion, Some(B::Left), 79, 1),
+                mouse(RemoteMouseAct::Release, Some(B::Left), 79, 1),
+                mouse(RemoteMouseAct::Motion, None, 81, 1),
+                RemoteIntent::Text("x".into()),
+                mouse(RemoteMouseAct::Motion, None, 82, 1),
+            ]
+        );
+        assert_eq!(o.typed_at.len(), o.intents.len());
+    }
+
+    /// Rule 1317: a snapshot's mouse mode is set on the viewer from its word only: every mode off, then the one named;
+    /// a word this end does not know changes nothing.
+    #[test]
+    fn a_snapshots_mouse_mode_is_built_from_its_word() {
+        use crate::click_caret::MouseTracking as T;
+        let off = b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l".to_vec();
+        assert_eq!(mouse_mode_bytes("none", true), Some(off.clone()));
+        let mut drag = off.clone();
+        drag.extend_from_slice(b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(mouse_mode_bytes("drag", true), Some(drag));
+        let mut click = off;
+        click.extend_from_slice(b"\x1b[?1000h");
+        assert_eq!(mouse_mode_bytes("click", false), Some(click));
+        assert_eq!(mouse_mode_bytes("\x1b]0;x\x07", true), None);
+        assert_eq!(mouse_mode_bytes("pixels", true), None);
+        for t in [T::None, T::X10, T::Vt200, T::Drag, T::Any] {
+            assert!(
+                mouse_mode_bytes(mouse_mode_word(t), true).is_some(),
+                "{t:?}"
+            );
         }
     }
 
@@ -1342,14 +1724,28 @@ mod tests {
 
     #[test]
     fn the_live_state_is_shared_and_equal_only_to_itself() {
-        let a = RemoteLive::new(Some("t1".into()), 7);
+        let a = RemoteLive::new(Some("t1".into()), 7, None);
         let b = a.clone();
         b.set_seq(9);
         b.set_link(LinkState::Live);
         assert_eq!(a.seq(), 9);
         assert_eq!(a.link(), LinkState::Live);
         assert_eq!(a, b);
-        assert_ne!(a, RemoteLive::new(Some("t1".into()), 9));
+        assert_ne!(a, RemoteLive::new(Some("t1".into()), 9, None));
+    }
+
+    /// Rule 1307: a tab keeps the open id it was made with; one with none gets one once, and keeps it.
+    #[test]
+    fn a_tab_keeps_its_open_id_and_one_with_none_gets_one_once() {
+        let a = RemoteLive::new(None, 0, Some("o-1".into()));
+        assert_eq!(a.open_id().as_deref(), Some("o-1"));
+        assert_eq!(a.open_id_or_new(), "o-1");
+        let b = RemoteLive::default();
+        assert_eq!(b.open_id(), None);
+        let made = b.open_id_or_new();
+        assert_eq!(made.len(), 64);
+        assert_eq!(b.open_id_or_new(), made);
+        assert_eq!(b.open_id(), Some(made));
     }
 
     /// Remote sessions PR 6: file work waits for the link in the order asked; once the link ends, what still waits is

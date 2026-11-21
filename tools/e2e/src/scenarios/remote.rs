@@ -279,8 +279,19 @@ fn front_rows_until(
     what: &str,
     want: impl Fn(&str) -> bool,
 ) -> Result<String, String> {
+    front_rows_within(ctx, app, what, 30_000, want)
+}
+
+/// As [`front_rows_until`], waiting up to `ms`.
+fn front_rows_within(
+    ctx: &mut Ctx,
+    app: &mut App,
+    what: &str,
+    ms: u64,
+    want: impl Fn(&str) -> bool,
+) -> Result<String, String> {
     let mut text = String::new();
-    let ok = ctx.until(what, 30_000, &mut || {
+    let ok = ctx.until(what, ms, &mut || {
         text = super::input_b::rows(app);
         want(&text)
     });
@@ -306,9 +317,19 @@ pub fn remote_viewer(ctx: &mut Ctx) -> Result<(), String> {
     r
 }
 
+/// The host's strip tab count and its hidden sessions (rule 1302: a session another machine opened is never a strip
+/// tab), from `app.state`.
+fn host_counts(app: &mut App) -> (usize, usize) {
+    let v = probe(app, "app.state", Value::Null);
+    (
+        v["tabs"].as_array().map_or(0, Vec::len),
+        v["hidden"].as_array().map_or(0, Vec::len),
+    )
+}
+
 fn viewer_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
     prompt(host)?;
-    let host_tabs = host.session.state()?.tabs.len();
+    let (host_tabs, host_hidden) = host_counts(host);
     let world = ctx.new_world();
     let exe = ctx.exe.clone();
     let mut a = ctx.launch_in(
@@ -323,13 +344,17 @@ fn viewer_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
             t.contains("PS ")
         })?;
         let mut more = 0;
-        ctx.until("the host has the new tab", 20_000, &mut || {
-            more = host.session.state().map_or(0, |s| s.tabs.len());
-            more > host_tabs
+        ctx.until("the host has the new session", 20_000, &mut || {
+            more = host_counts(host).1;
+            more > host_hidden
         });
         ctx.ok(
-            more == host_tabs + 1,
-            "remote.open opened one tab on the host",
+            more == host_hidden + 1,
+            "remote.open opened one hidden session on the host",
+        );
+        ctx.ok(
+            host_counts(host).0 == host_tabs,
+            "the host's strip shows nothing new (rule 1302)",
         );
         type_line(&mut a, &format!("echo {VIEW_MARK}"))?;
         let t = front_rows_until(ctx, &mut a, "the typed command's output", |t| {
@@ -345,7 +370,7 @@ fn viewer_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
     typed?;
     ctx.ok(quit, "the viewer quits");
     ctx.ok(
-        host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs + 1,
+        host_counts(host) == (host_tabs, host_hidden + 1),
         "the viewer's quit leaves the host's session running",
     );
 
@@ -366,8 +391,8 @@ fn viewer_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
             "after a restart the host's lines show once each",
         );
         ctx.ok(
-            host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs + 1,
-            "the restore attached and opened no new host tab",
+            host_counts(host) == (host_tabs, host_hidden + 1),
+            "the restore attached and opened no new host session",
         );
         type_line(&mut a, &format!("echo {VIEW_MARK_2}"))?;
         let t = front_rows_until(ctx, &mut a, "typing after the restore", |t| {
@@ -486,10 +511,12 @@ fn open_on(
         crate::ctx::park_problems(&park).is_empty(),
         format!("the hidden host's window is parked, no-activate and not in front ({park})"),
     );
-    let tabs = b.state()?.tabs.len();
+    let hidden = b
+        .probe("app.state", Value::Null)
+        .map_or(0, |v| v["hidden"].as_array().map_or(0, Vec::len));
     ctx.ok(
-        tabs >= 1,
-        format!("the host holds the session ({tabs} tabs)"),
+        hidden == 1,
+        format!("the host holds the session hidden (rule 1302, {hidden} hidden)"),
     );
     type_line(a, &format!("echo {OPEN_MARK}"))?;
     let t = front_rows_until(ctx, a, "typing reaches the hidden host", |t| {
@@ -499,11 +526,49 @@ fn open_on(
         t.matches(OPEN_MARK).count() == 2,
         "the command and its output show once each on the viewer",
     );
+
+    // Rule 1307: B's Flare quits (it saves the hidden session) and the viewer's next link starts it again, hidden. The
+    // session comes back under a new id; the viewer's tab finds it by its open id and goes on, with one line.
+    let _ = b.call(&Request::Quit { force: true });
+    drop(b);
+    ctx.until("the host's Flare to quit", 15_000, &mut || {
+        crate::session::Session::connect(&hw.profile, Duration::from_millis(200)).is_err()
+    });
+    let t = front_rows_within(ctx, a, "the restart line on the viewer", 90_000, |t| {
+        t.contains("Flare restarted on")
+    })?;
+    ctx.ok(
+        t.matches("Flare restarted on").count() == 1,
+        "the viewer's tab goes on after the host's restart, with one line (rule 1307)",
+    );
+    let mut b = crate::session::Session::connect(&hw.profile, Duration::from_secs(20))
+        .map_err(|e| format!("the restarted host's hook: {e}"))?;
+    b.hello()?;
+    let hidden = b
+        .probe("app.state", Value::Null)
+        .map_or(0, |v| v["hidden"].as_array().map_or(0, Vec::len));
+    ctx.ok(
+        hidden == 1,
+        format!("the restarted host holds the one session hidden, no second one ({hidden} hidden)"),
+    );
+    // The restored shell starts fresh: on a slow runner its prompt comes after the line, and typing before it lands in
+    // a shell that is not reading yet (seen on macOS CI).
+    front_rows_until(ctx, a, "the restored shell's prompt", |t| t.contains("PS "))?;
+    type_line(a, &format!("echo {OPEN_MARK_2}"))?;
+    let t = front_rows_until(ctx, a, "typing reaches the found session", |t| {
+        t.matches(OPEN_MARK_2).count() >= 2
+    })?;
+    ctx.ok(
+        t.matches(OPEN_MARK_2).count() == 2,
+        "the found session takes typing, and its output shows once",
+    );
     Ok(())
 }
 
 /// What is typed into the tab `remoteOpen` opens. Written here in full: nothing else is sent to the host's shell.
 const OPEN_MARK: &str = "remote-open-5";
+/// What is typed into it after the host's restart (rule 1307).
+const OPEN_MARK_2: &str = "remote-open-6";
 
 // ---- remote sessions PR 4: `remoteStatus`, the host's agent marks on the viewer ----
 
@@ -619,7 +684,7 @@ fn status_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
         ctx.ok(
             toast_count(host) == 0,
             format!(
-                "none on the host for a tab the viewer follows ({})",
+                "none on the host for a hidden session (rule 1304, {})",
                 toast_count(host)
             ),
         );
@@ -820,7 +885,9 @@ fn files_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
 
 /// `remoteUi` (remote sessions PR 7): the + menu of Flare A lists the machine its `machines.json` links, with the
 /// machine's logo; picking it opens the folder browser at B's home (rule 1282, listed with `remote.ls` over the stdio
-/// loopback, no ssh), and its Open here opens a shell tab on Flare B (the host) there; the tab wears the machine's logo. Its menu's "Hide here only" lets it go here and B's session goes on.
+/// loopback, no ssh), and its Open here opens a session on Flare B (the host) there, hidden on B (rule 1302: B's strip
+/// keeps its tab count); the tab wears the machine's logo. Its menu has no "Hide here only"; its Close ends the session
+/// on B with no ask there (rule 1305).
 /// Both are offscreen on the hidden desktop, as every launch here.
 /// A probe's answer, Null when it fails (`tour::probe` is Windows-only).
 fn probe(app: &mut App, name: &str, arg: Value) -> Value {
@@ -868,7 +935,7 @@ fn click_row(app: &mut App, idx: usize, last: bool) -> Result<(), String> {
 
 fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
     prompt(host)?;
-    let host_tabs = host.session.state()?.tabs.len();
+    let (host_tabs, host_hidden) = host_counts(host);
     let world = ctx.new_world();
     std::fs::create_dir_all(&world.profile).map_err(|e| e.to_string())?;
     std::fs::write(
@@ -953,11 +1020,18 @@ fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
             |t| t.contains("PS "),
         )?;
         let mut more = 0;
-        ctx.until("the host has the new tab", 20_000, &mut || {
-            more = host.session.state().map_or(0, |s| s.tabs.len());
-            more > host_tabs
+        ctx.until("the host has the new session", 20_000, &mut || {
+            more = host_counts(host).1;
+            more > host_hidden
         });
-        ctx.ok(more == host_tabs + 1, "the pick opened one tab on the host");
+        ctx.ok(
+            more == host_hidden + 1,
+            "the pick opened one hidden session on the host",
+        );
+        ctx.ok(
+            host_counts(host).0 == host_tabs,
+            "the host's strip has the same tab count as before (rule 1302)",
+        );
         let tabs = probe(&mut a, "app.state", Value::Null)["tabs"].clone();
         let front = tabs
             .as_array()
@@ -977,30 +1051,40 @@ fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
                 .is_some_and(|t| t.starts_with("Loopback: ")),
             "its tooltip names the machine",
         );
-        // Hide here only: gone from the viewer, still open on the host.
+        // No "Hide here only" (Max 2026-11-19); Close ends the session on the host with no ask there (rule 1305).
         let rect = super::input_b::css(&front["rect"]).ok_or("no tab rectangle")?;
         a.session.right_click(
             (rect.0 + rect.2 / 2.0) as f32,
             (rect.1 + rect.3 / 2.0) as f32,
         )?;
         let rows = open_menu_labels(ctx, &mut a);
-        let hide = rows
+        ctx.ok(
+            !rows.iter().any(|r| r["label"] == json!("Hide here only")),
+            "the remote tab's menu has no Hide here only",
+        );
+        let close = rows
             .iter()
-            .position(|r| r["label"] == json!("Hide here only"))
-            .ok_or("no Hide here only on the remote tab's menu")?;
-        click_row(&mut a, hide, false)?;
+            .position(|r| r["label"] == json!("Close tab"))
+            .ok_or("no Close tab on the remote tab's menu")?;
+        click_row(&mut a, close, false)?;
         let mut left = 0;
         ctx.until("the remote tab gone from the viewer", 10_000, &mut || {
             left = a.session.state().map_or(usize::MAX, |s| s.tabs.len());
             left == local_tabs
         });
+        ctx.ok(left == local_tabs, "Close takes the tab from the viewer");
+        let mut ended = (0, 0);
+        ctx.until("the host's session ended", 10_000, &mut || {
+            ended = host_counts(host);
+            ended.1 == host_hidden
+        });
         ctx.ok(
-            left == local_tabs,
-            "Hide here only takes the tab from the viewer",
+            ended == (host_tabs, host_hidden),
+            "Close ended the host's hidden session",
         );
         ctx.ok(
-            host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs + 1,
-            "the host's session goes on",
+            probe(host, "app.state", Value::Null)["dialog"]["open"] == json!(false),
+            "and asked nothing on the host",
         );
         Ok(())
     })();
