@@ -5277,6 +5277,13 @@ anything but a Developer ID leaf (`signing::parse_display`); the person's click 
 `work_in_an_agents_countdown_waits_for_idle_again_without_asking`,
 `a_question_holds_an_agents_install_and_the_persons_cancel_ends_it`. Source: Max, 2026-11-20.
 
+1330. **Every app chord on a letter or the comma falls back to the physical key.** Ctrl+T, Ctrl+W, Ctrl+F, Ctrl+Shift+K,
+Ctrl+Shift+B, the agent key Ctrl+S and Ctrl+, (and their Cmd forms on a Mac) compared the raw key text with an ASCII
+letter, so a Russian layout ("е" on KeyT, "ц" on KeyW, "б" on Comma) never matched them while Ctrl+Shift+T did. Every
+chord now reads its key through `letter` or `key_is` in `crates/flare-tabs/src/keymap.rs`: an ASCII key name decides
+alone (Dvorak), and only a key named outside ASCII falls back to its physical code (rule 8). Held by
+`every_chord_works_on_a_russian_layout_by_its_physical_key`. Source: audit 2026-11-18, issue #273 finding 9.
+
 ## Device panel (2026-11-19)
 
 Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
