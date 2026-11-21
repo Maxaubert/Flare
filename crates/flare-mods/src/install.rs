@@ -44,6 +44,12 @@ pub const MAX_PATH_CHARS: usize = 200;
 pub const MAX_DEPTH: usize = 8;
 /// Install's working folder inside the plugins folder.
 pub const STAGING: &str = ".staging";
+/// The folder of a stage that the zip is unpacked into. The staged plugin sits beside it at `<stage>\<id>`, so no id
+/// may be this name: `_` is outside the id alphabet (rule 1329).
+const UNPACKED: &str = "_zip";
+/// The folder of a stage that the copy an update replaces is moved aside to; not an id either (rule 1329). Not led
+/// by a dot: on macOS it goes to the Trash, where Finder hides such a name.
+const ASIDE: &str = "_replaced";
 
 /// The Windows reparse-point attribute, in a zip entry's external attributes (a link or a junction).
 const REPARSE_ATTRIBUTE: u32 = 0x400;
@@ -321,7 +327,7 @@ pub fn stage(zip: &Path, plugins: &Path) -> Result<Staged, String> {
         .map_err(|e| format!("the plugins folder cannot be written: {e}"))?;
     // From here the staging folder is deleted on any refusal (and, once staged, by the Staged).
     let mut guard = RootGuard(Some(root.clone()));
-    let unpacked = root.join("zip");
+    let unpacked = root.join(UNPACKED);
     fs::create_dir(&unpacked) // sync-ok: install worker
         .map_err(|e| format!("the plugins folder cannot be written: {e}"))?;
     extract(zip, &unpacked)?;
@@ -381,7 +387,7 @@ pub fn commit(
         return Err(format!("\"{id}\" is not a plugin id"));
     }
     let target = plugins.join(&id);
-    let aside = staged.root.join("replaced");
+    let aside = staged.root.join(ASIDE);
     let replaced = fs::symlink_metadata(&target).is_ok(); // sync-ok: install worker
     if replaced {
         fs::rename(&target, &aside) // sync-ok: install worker
@@ -858,10 +864,49 @@ mod tests {
         assert!(remove(&plugins, "../x", &noop_recycle).is_err());
     }
 
+    /// A manifest like [`PLUGIN`] with its own `id`.
+    fn plugin_with_id(id: &str) -> String {
+        PLUGIN.replace(r#""id":"demo""#, &format!(r#""id":"{id}""#))
+    }
+
+    #[test]
+    fn the_staging_names_never_match_a_plugin_id() {
+        // Rule 1329: a plugin may be called "replaced" or "zip", the names install once used inside its stage.
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        for id in ["replaced", "zip"] {
+            assert!(valid_id(id));
+            let manifest = plugin_with_id(id);
+            for (round, html) in [b"v1", b"v2"].iter().enumerate() {
+                // Packed in a top folder named as the id, as a zip of the plugin's folder is.
+                let top = format!("{id}/");
+                let z = write_zip(
+                    dir.path(),
+                    &zip_of(&[
+                        (&top, b""),
+                        (&format!("{id}/plugin.json"), manifest.as_bytes()),
+                        (&format!("{id}/panel.html"), &html[..]),
+                    ]),
+                );
+                let s = stage(&z, &plugins).unwrap_or_else(|e| panic!("{id}: {e}"));
+                let done =
+                    commit(s, &plugins, &noop_recycle).unwrap_or_else(|e| panic!("{id}: {e}"));
+                assert_eq!(done.replaced, round == 1, "{id}");
+                assert_eq!(
+                    fs::read(plugins.join(id).join("panel.html")).unwrap(),
+                    &html[..],
+                    "{id}"
+                );
+            }
+        }
+        // No other id can meet them either.
+        assert!(!valid_id(UNPACKED) && !valid_id(ASIDE));
+    }
+
     #[test]
     fn leftovers_of_an_earlier_run_are_cleared() {
         let dir = tempfile::tempdir().unwrap();
-        let left = dir.path().join(STAGING).join("abc").join("zip");
+        let left = dir.path().join(STAGING).join("abc").join(UNPACKED);
         fs::create_dir_all(&left).unwrap();
         fs::write(left.join("f"), b"x").unwrap();
         clean_staging(dir.path());
