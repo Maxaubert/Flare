@@ -26,8 +26,15 @@ component SideRow inherits Rectangle {
     property <bool> left-held: false;
     property <bool> hov: ta.has-hover || xta.has-hover || hb1.hovered || hb2.hovered;
     // The plugins' hover buttons show while the row is hovered, left of the decor; the name gives them room.
-    property <bool> hov-shown: root.hov && root.tab.hov-count > 0 && !root.carrying;
-    property <length> hov-w: root.hov-shown ? root.tab.hov-count * 22px + (root.tab.hov-count - 1) * 3px : 0px;
+    // Only the buttons that fit between the name's start (56 px, past the icon band) and the decor show: a narrow
+    // row or a crowded one shows one, or none (audit 2026-11-18, rule 1332). The room is taken at the end box's
+    // hovered width, not its gliding one, so a button never flickers while the X slides in.
+    property <length> hov-room: card.width - 8px - (root.has-ring ? 38px : 18px) - 6px
+        - (pill.width > 0 ? pill.width + 4px : 0px) - 56px;
+    property <int> hov-fit: root.hov-room >= 2 * 22px + 3px ? 2 : root.hov-room >= 22px ? 1 : 0;
+    property <int> hov-n: min(root.tab.hov-count, root.hov-fit);
+    property <bool> hov-shown: root.hov && root.hov-n > 0 && !root.carrying;
+    property <length> hov-w: root.hov-shown ? root.hov-n * 22px + (root.hov-n - 1) * 3px : 0px;
     // The ring of a tab coming back; the X slides in beside it on hover.
     property <int> ring-state: root.tab.mark-kind == 1 ? root.tab.mark-state : 0;
     property <bool> has-ring: root.tab.loading || root.ring-state != 0;
@@ -185,7 +192,7 @@ component SideRow inherits Rectangle {
         hb2 := PluginChip {
             x: hb1.x + 22px + 3px;
             y: hb1.y;
-            visible: root.hov-shown && root.tab.hov-count > 1;
+            visible: root.hov-shown && root.hov-n > 1;
             cmd: root.tab.hov2-cmd;
             letter: root.tab.hov2-letter;
             tip-text: root.tab.hov2-tip;
