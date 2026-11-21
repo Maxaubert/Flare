@@ -25,8 +25,32 @@ use flare_win::single_instance::{
     encode_handoff, instance_names, send_handoff_with, serve,
 };
 use flare_win::window_state::WindowStateStore;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// The process's command line as text, the exe first. `std::env::args` panics on an argument that is not valid
+/// Unicode, and Explorer's "Open in Flare" verb passes any folder's path, so this reads `args_os` instead
+/// (`utf8_args`, rule 1353).
+pub fn args() -> Vec<String> {
+    utf8_args(std::env::args_os())
+}
+
+/// [`args`] after the exe: the flags and folders.
+pub fn args_after_exe() -> Vec<String> {
+    args().into_iter().skip(1).collect()
+}
+
+/// Pure: the arguments that are valid Unicode, in order. One that is not is skipped (Flare cannot name that
+/// folder, so it opens without it and does not crash). The exe stays first, read lossily, so a caller that drops
+/// it never drops a real argument instead.
+pub fn utf8_args(raw: impl IntoIterator<Item = OsString>) -> Vec<String> {
+    let mut raw = raw.into_iter();
+    let exe = raw.next().map(|e| e.to_string_lossy().into_owned());
+    exe.into_iter()
+        .chain(raw.filter_map(|a| a.into_string().ok()))
+        .collect()
+}
 
 /// The profile folder: the flag's path, else `<APPDATA>\Flare`, else `<temp>\Flare`.
 pub fn profile_dir(user_data_dir: Option<&Path>, appdata: Option<&str>) -> PathBuf {
@@ -737,6 +761,58 @@ pub fn help_warm_work() {
 mod tests {
     use super::*;
     use flare_tabs::close_flow::NAME_INK;
+
+    /// An argument that is not valid Unicode (an unpaired surrogate on Windows, a stray byte on Unix).
+    #[cfg(windows)]
+    fn not_unicode() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0x66, 0xD800, 0x6F])
+    }
+    #[cfg(unix)]
+    fn not_unicode() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![b'f', 0xFF, b'o'])
+    }
+
+    /// Rule 1353: a non-Unicode argument (Explorer's verb on such a folder) is skipped, not a panic; the rest keep
+    /// their order and the exe stays first.
+    #[test]
+    fn an_argument_that_is_not_unicode_is_skipped_not_a_panic() {
+        let got = utf8_args([
+            OsString::from("flare.exe"),
+            OsString::from("--e2e"),
+            not_unicode(),
+            OsString::from("C:\\ok"),
+        ]);
+        assert_eq!(got, ["flare.exe", "--e2e", "C:\\ok"]);
+        // A non-Unicode exe path is kept, lossily, so dropping the exe still drops only the exe.
+        let got = utf8_args([not_unicode(), OsString::from("C:\\ok")]);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1], "C:\\ok");
+        assert!(utf8_args(Vec::<OsString>::new()).is_empty());
+    }
+
+    /// Rule 1353: the process's own command line is read through `utf8_args`, never `std::env::args`.
+    #[test]
+    fn no_source_reads_the_command_line_with_env_args() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let needle = ["std::env::", "args()"].concat();
+        let mut stack = vec![src];
+        let mut scanned = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(!text.contains(&needle), "{} calls {needle}", path.display());
+                    scanned += 1;
+                }
+            }
+        }
+        assert!(scanned > 20);
+    }
     use flare_tabs::model::TabModel;
     use flare_tabs::restore::{Restored, RestoredTab, SavedTab, SavedTabs};
     use flare_win::window_state::WindowState;
