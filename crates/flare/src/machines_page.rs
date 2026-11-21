@@ -1596,7 +1596,7 @@ mod tests {
         use flare_settings::page::machines::TYPE_ADDRESS;
         let mut io = FakeIo::default();
         io.answers.insert(
-            ("192.168.0.139".into(), "flare".into()),
+            ("192.0.2.139".into(), "flare".into()),
             facts("0.4.2", Some(Os::Mac)),
         );
         let mut r = Rig::new(io);
@@ -1607,29 +1607,29 @@ mod tests {
         assert!(!r.page.info().add.can_add());
         r.page.set_pick(TYPE_ADDRESS);
         assert!(r.page.info().add.typing() && !r.page.info().add.can_add());
-        r.page.set_address("192.168.0.139:2222");
+        r.page.set_address("192.0.2.139:2222");
         r.page.set_user("max");
         assert!(r.page.info().add.can_add());
         r.page.submit();
         r.settle();
         let saved = r.io.list();
         assert_eq!(saved.len(), 1, "{:?}", r.page.info().add.error);
-        assert_eq!(saved[0].host.as_deref(), Some("192.168.0.139"));
-        assert_eq!(saved[0].ssh, "192.168.0.139");
+        assert_eq!(saved[0].host.as_deref(), Some("192.0.2.139"));
+        assert_eq!(saved[0].ssh, "192.0.2.139");
         assert_eq!(saved[0].user.as_deref(), Some("max"));
         assert_eq!(saved[0].port, Some(2222));
-        assert_eq!(saved[0].name, "192.168.0.139");
-        assert_eq!(r.page.info().machines[0].address, "192.168.0.139");
+        assert_eq!(saved[0].name, "192.0.2.139");
+        assert_eq!(r.page.info().machines[0].address, "192.0.2.139");
         assert!(!r.page.info().add.open, "the dialog closes");
         // The same address again is refused before any check.
         let probes = r.io.probes.lock().unwrap().len();
         r.page.open_form();
         r.page.set_pick(TYPE_ADDRESS);
-        r.page.set_address("max@192.168.0.139:2222");
+        r.page.set_address("max@192.0.2.139:2222");
         r.page.submit();
         assert_eq!(
             r.page.info().add.error.as_deref(),
-            Some("192.168.0.139 is linked already, as 192.168.0.139.")
+            Some("192.0.2.139 is linked already, as 192.0.2.139.")
         );
         assert_eq!(r.io.probes.lock().unwrap().len(), probes);
     }
@@ -1963,10 +1963,10 @@ mod tests {
     #[test]
     fn the_dialog_finds_each_ssh_hosts_system_and_keeps_it() {
         let mut io = FakeIo {
-            hosts: vec!["evo-x2".into(), "pi".into(), "nas".into(), "old".into()],
+            hosts: vec!["home-pc".into(), "pi".into(), "nas".into(), "old".into()],
             ..FakeIo::default()
         };
-        io.os_answers.insert("evo-x2".into(), MachineOs::Pc);
+        io.os_answers.insert("home-pc".into(), MachineOs::Pc);
         io.os_answers.insert("pi".into(), MachineOs::Linux);
         // Found on an earlier visit; nothing answers now (a VPN in the way).
         io.known
@@ -1999,7 +1999,7 @@ mod tests {
         assert_eq!(
             systems(&r),
             [
-                ("evo-x2".to_string(), None),
+                ("home-pc".to_string(), None),
                 ("pi".into(), None),
                 ("nas".into(), None),
                 ("old".into(), Some(MachineOs::Mac)),
@@ -2010,7 +2010,7 @@ mod tests {
         assert_eq!(
             systems(&r),
             [
-                ("evo-x2".to_string(), Some(MachineOs::Pc)),
+                ("home-pc".to_string(), Some(MachineOs::Pc)),
                 ("pi".into(), Some(MachineOs::Linux)),
                 ("nas".into(), None),
                 ("old".into(), Some(MachineOs::Mac)),
@@ -2018,7 +2018,7 @@ mod tests {
         );
         let mut asked = r.io.os_asked.lock().unwrap().clone();
         asked.sort();
-        assert_eq!(asked, ["evo-x2", "nas", "old", "pi"]);
+        assert_eq!(asked, ["home-pc", "nas", "old", "pi"]);
         // The saved machine draws its host's logo; its kind is left as it was.
         let info = r.page.info();
         assert_eq!(info.machines[0].os, Some(MachineOs::Linux));
@@ -2047,9 +2047,9 @@ mod tests {
         assert_eq!(r.io.os_asked.lock().unwrap().len(), 9);
     }
 
-    /// Rule 1300 (Max, 2026-11-18: "only the Mac has an icon in the machine picker, evo-x2 doesn't have one. It should
+    /// Rule 1300 (Max, 2026-11-18: "only the Mac has an icon in the machine picker, home-pc doesn't have one. It should
     /// have a Windows icon, and that should be automatic if possible; otherwise don't show any icon, but only after
-    /// it's connected"). evo-x2 is off when the dialog first looks, so it has no logo; a host that answered nothing is
+    /// it's connected"). home-pc is off when the dialog first looks, so it has no logo; a host that answered nothing is
     /// asked again when the dialog opens again. Once a link said a computer's system (a machine added or paired, by
     /// the host it names or the same address; a computer that reaches this one), its SSH host wears that logo, and it
     /// is kept in the cache. What a greeting said never becomes a machine's `kind`.
@@ -2059,12 +2059,12 @@ mod tests {
         *io.named.get_mut().unwrap() = vec![
             SshHost {
                 alias: "mac".into(),
-                host_name: "192.168.0.120".into(),
+                host_name: "192.0.2.120".into(),
                 ..SshHost::default()
             },
             SshHost {
-                alias: "evo-x2".into(),
-                host_name: "100.105.158.52".into(),
+                alias: "home-pc".into(),
+                host_name: "198.51.100.52".into(),
                 ..SshHost::default()
             },
             SshHost {
@@ -2075,17 +2075,17 @@ mod tests {
         ];
         // The Mac paired by its address (machines.json has no alias for it); only the Mac's greeting says nothing.
         *io.list.get_mut().unwrap() = vec![Machine {
-            id: "maxs-mac-mini".into(),
-            name: "Maxs-Mac-Mini".into(),
+            id: "office-mac-mini".into(),
+            name: "Office-Mac-Mini".into(),
             kind: Some(Os::Mac),
-            ssh: "192.168.0.120".into(),
-            host: Some("192.168.0.120".into()),
+            ssh: "192.0.2.120".into(),
+            host: Some("192.0.2.120".into()),
             flare: "flare".into(),
             ..Default::default()
         }];
-        // evo-x2's Stable install answers through cmd once it is up (rule 1207).
+        // home-pc's Stable install answers through cmd once it is up (rule 1207).
         io.answers.insert(
-            ("evo-x2".into(), FLARE_CANDIDATES[1].into()),
+            ("home-pc".into(), FLARE_CANDIDATES[1].into()),
             facts("0.3.0", Some(Os::Pc)),
         );
         let mut r = Rig::new(io);
@@ -2105,10 +2105,10 @@ mod tests {
             systems(&r),
             [
                 ("mac".to_string(), Some(MachineOs::Mac)),
-                ("evo-x2".into(), None),
+                ("home-pc".into(), None),
                 ("desk".into(), None),
             ],
-            "the paired Mac's word shows on its host; evo-x2, off, has no logo"
+            "the paired Mac's word shows on its host; home-pc, off, has no logo"
         );
         // A computer that paired to reach this one, from Desk's address, said it is a PC.
         r.io.incoming.lock().unwrap().push(Incoming {
@@ -2119,8 +2119,8 @@ mod tests {
             key: "AAAA".into(),
             ..Default::default()
         });
-        // evo-x2 is connected: Add finds Flare there and its hello says it is a PC.
-        r.page.set_pick("evo-x2");
+        // home-pc is connected: Add finds Flare there and its hello says it is a PC.
+        r.page.set_pick("home-pc");
         r.page.submit();
         r.settle();
         r.page.page_shown();
@@ -2129,7 +2129,7 @@ mod tests {
             systems(&r),
             [
                 ("mac".to_string(), Some(MachineOs::Mac)),
-                ("evo-x2".into(), Some(MachineOs::Pc)),
+                ("home-pc".into(), Some(MachineOs::Pc)),
                 ("desk".into(), Some(MachineOs::Pc)),
             ]
         );
@@ -2137,9 +2137,9 @@ mod tests {
             .page
             .machines()
             .iter()
-            .find(|m| m.ssh == "evo-x2")
+            .find(|m| m.ssh == "home-pc")
             .cloned()
-            .expect("evo-x2 is linked");
+            .expect("home-pc is linked");
         assert_eq!(evo.kind, Some(Os::Pc), "its kind is what its hello said");
         // Kept for the next time.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2148,11 +2148,11 @@ mod tests {
         }
         let known = r.io.known.lock().unwrap().clone();
         assert_eq!(
-            known.get(&("evo-x2".to_string(), "100.105.158.52".to_string())),
+            known.get(&("home-pc".to_string(), "198.51.100.52".to_string())),
             Some(&MachineOs::Pc)
         );
         assert_eq!(
-            known.get(&("mac".to_string(), "192.168.0.120".to_string())),
+            known.get(&("mac".to_string(), "192.0.2.120".to_string())),
             Some(&MachineOs::Mac)
         );
     }

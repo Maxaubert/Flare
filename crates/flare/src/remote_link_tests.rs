@@ -971,10 +971,10 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
         id: "pc".into(),
         name: "Max's PC".into(),
         kind: Some(Os::Pc),
-        ssh: "192.168.0.139".into(),
+        ssh: "192.0.2.139".into(),
         user: Some("max".into()),
         flare: "flare".into(),
-        host: Some("192.168.0.139".into()),
+        host: Some("192.0.2.139".into()),
         port: Some(2222),
         key: Some("/Users/max/Library/Flare/id_flare_ed25519".into()),
         known_hosts: Some(r"C:\Users\John Doe\AppData\Flare\known_hosts".into()),
@@ -1002,7 +1002,7 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
             "-l",
             "max",
             "--",
-            "192.168.0.139",
+            "192.0.2.139",
             r#"cmd /c "flare" --serve-remote"#,
         ]
     );
@@ -1049,9 +1049,9 @@ fn flares_key_is_made_private_before_ssh_runs_with_it() {
         id: "mac".into(),
         name: "Mac".into(),
         kind: Some(Os::Mac),
-        ssh: "192.168.0.120".into(),
+        ssh: "192.0.2.120".into(),
         flare: "flare".into(),
-        host: Some("192.168.0.120".into()),
+        host: Some("192.0.2.120".into()),
         key: Some(key.to_string_lossy().into_owned()),
         ..Machine::default()
     };
@@ -1091,7 +1091,7 @@ fn flares_key_is_made_private_before_ssh_runs_with_it() {
 #[test]
 fn machines_json_reads_and_writes_the_address_port_key_and_known_hosts() {
     let raw = r#"{"machines":[
-        {"id":"pc","name":"Max's PC","kind":"pc","host":"192.168.0.139","port":2222,"user":"max",
+        {"id":"pc","name":"Max's PC","kind":"pc","host":"192.0.2.139","port":2222,"user":"max",
          "key":"C:/Flare/id_flare_ed25519","known_hosts":"C:/Flare/known_hosts"},
         {"id":"bad-port","ssh":"x","port":70000},
         {"id":"zero-port","ssh":"x","port":0},
@@ -1102,11 +1102,8 @@ fn machines_json_reads_and_writes_the_address_port_key_and_known_hosts() {
     let ms = parse_machines(raw);
     assert_eq!(ms.len(), 1, "{ms:?}");
     let pc = &ms[0];
-    assert_eq!(
-        pc.ssh, "192.168.0.139",
-        "the address stands in for the alias"
-    );
-    assert_eq!(pc.target(), "192.168.0.139");
+    assert_eq!(pc.ssh, "192.0.2.139", "the address stands in for the alias");
+    assert_eq!(pc.target(), "192.0.2.139");
     assert_eq!(pc.port, Some(2222));
     assert_eq!(pc.key.as_deref(), Some("C:/Flare/id_flare_ed25519"));
     assert_eq!(pc.known_hosts.as_deref(), Some("C:/Flare/known_hosts"));

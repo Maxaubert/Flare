@@ -154,8 +154,8 @@ pub fn nearby_of(
     })
 }
 
-/// Pure: an announcement's instance name without the " (N)" an mDNS name conflict adds (`Maxs-Mac-Mini (2)` is
-/// `Maxs-Mac-Mini`).
+/// Pure: an announcement's instance name without the " (N)" an mDNS name conflict adds (`Office-Mac-Mini (2)` is
+/// `Office-Mac-Mini`).
 fn base_instance(id: &str) -> &str {
     let inst = id
         .strip_suffix(SERVICE)
@@ -1368,7 +1368,7 @@ impl RealPairNet {
 /// Pure: the mDNS host name the announcement's address records go under (rule 1256): the computer name in letters,
 /// digits and dashes, then `-flare.local.`. Never the computer's own `.local` name: macOS' mDNSResponder (and Windows'
 /// own responder) answer that one, and a second answer from `mdns-sd` is a name conflict, after which macOS renames
-/// the Mac ("Maxs-Mac-mini (2)"). The readable name stays in the instance name and the TXT `name`.
+/// the Mac ("Office-Mac-mini (2)"). The readable name stays in the instance name and the TXT `name`.
 pub fn mdns_host(name: &str) -> String {
     let mut h: String = name
         .chars()
