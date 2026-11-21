@@ -212,6 +212,8 @@ export component SetSaveButton inherits Rectangle {
         changed has-hover => {
             if ta.has-hover {
                 root.tip(root.title, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
             }
         }
     }
@@ -352,6 +354,8 @@ export component SetRowButton inherits Rectangle {
         changed has-hover => {
             if self.has-hover && root.title != "" {
                 root.tip(root.title, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else if !self.has-hover {
+                root.tip("", 0px, 0px, 0px, 0px);
             }
         }
     }

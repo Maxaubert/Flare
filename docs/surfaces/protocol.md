@@ -166,8 +166,8 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     `& < > ( ) @ ^ |` (cmd would strip its quotes), `" % ! $`, a backquote or a quote mark from U+2018 to U+201F is
     refused, except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, which the host's shell expands (rule 1208). The worker says `remote.hello` (90 s, PR 5), then `remote.open
     {folder, resume?, open_id}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
-    restored one, then `remote.resize` with the tab's size. Rule 1210: `open_id` is a random id the worker makes once
-    per tab and sends with every open of it, so an open whose answer a broken link lost, sent again on the next link,
+    restored one, then `remote.resize` with the tab's size. Rule 1210: `open_id` is a random id made once per tab (with
+    the tab, and saved with it since rule 1307) and sent with every open of it, so an open whose answer a broken link lost, sent again on the next link,
     is answered with the tab the first one opened; an older host refuses the unknown param (`bad_params` naming
     `open_id`) and the worker opens again without it on the same link. A `remote.attach` answered `unavailable` (a tab
     opened a moment ago whose shell is not running yet) is sent again on the same link every 250 ms for up to 10 s
@@ -177,7 +177,9 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     tab shows one line saying so. A `no_tab` end drops the kept typing: it is never typed into another host tab. A tab that has shown nothing yet starts from `remote.snapshot`;
     after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
     snapshot instead), with the agent's signals taken out of what it catches up on (rule 289). Then, one call at a time:
-    the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries),
+    the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries;
+    a mouse motion right after a motion takes its place, a call of motion alone waits 40 ms after the last one, and a
+    mouse event is never kept while the link is down, rule 1317),
     the last size asked as one `remote.resize`, and a `remote.output {since}` poll every 30 ms while output flows,
     backing off to 250 ms when idle, and a `remote.status {}` poll every 1.5 s (the first at once after each attach;
     remote sessions PR 4). The tab's own entry in the answer is handed to the window when it changed (the first after
@@ -207,7 +209,12 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     that answered, else with the quoting that answered (rule 1208); a refusal ends the search. On the
     host, a renamed copy (`FlareStable.exe`) started with no `--user-data-dir` serves `%APPDATA%\<its name>`, the
     profile its shortcut names. A call that fails
-    with `no_tab` ends the tab as a shell that exits; any other broken
+    with `no_tab` sends `remote.find {open_id}` once on the same link (2026-11-19, rule 1307; the open id is now made
+    with the tab and saved in `tabs.json` as `remote: {.., open_id}`): `{tab}` follows the new id from a fresh snapshot
+    and shows "Flare restarted on <machine>. The session goes on." (the kept typing is dropped); `no_tab` leaves the tab
+    with the red line "This session was ended on <machine>." and ends its link (rule 1308); `unavailable` is asked
+    again every 250 ms for up to 10 s, then the link is tried again later; `unknown_method` (an older host), or a tab
+    saved before the open id, ends the tab as a shell that exits, as before; any other broken
     call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
     (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`
     only, `FLARE_E2E_REMOTE_COMMAND` (a JSON argv) replaces ssh with a loopback `flare --serve-remote` of another profile,
@@ -997,11 +1004,13 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
 - `remote.open {folder, resume?}` -> `{tab, session}`. `folder` is an absolute host path with no control character,
   asked of the disk on the worker (`bad_params`, `not_found`), or `~` alone: the host's home folder (remote sessions
   PR 7, the + menu's shell on a machine, whose home the viewer does not know; `~/x` is still `bad_params`); `resume`
-  must pass `valid_resume` (`bad_params`). The window opens a tab there the way a new tab opens, resuming that
-  session. 60 s. `open_id` (optional, 2026-11-13, rule 1210): 1 to 64 ASCII letters, digits, `-` or `_`
+  must pass `valid_resume` (`bad_params`). The host opens a hidden session there (2026-11-19, rule 1302): a shell and
+  its agent as a new tab, resuming that session, but never in the host's strip, sidebar, badge or notifications. It is
+  sized by the viewer from birth and keeps the opener's name (the bridge's `hello` client, else "another computer").
+  A host holds at most 50: a 51st is `busy`. 60 s. `open_id` (optional, 2026-11-13, rule 1210): 1 to 64 ASCII letters, digits, `-` or `_`
   (`bad_params`), the viewer's id for this tab's open. The host remembers the last 64 ids for 10 minutes each; an
-  `open_id` it remembers, whose tab is still open, is answered with that tab and its `session`, and no second tab
-  opens. A host older than this refuses the param as unknown (`bad_params`), and the viewer opens without it.
+  `open_id` it remembers, whose session is still there, is answered with that session and its `session`, and no second
+  one opens (never `busy`). A host older than this refuses the param as unknown (`bad_params`), and the viewer opens without it.
 - `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home; `~`
   alone is the home too, as for `remote.open`, rule 1282; `~/x` is `bad_params`), read on the worker: folders first,
   then by name, at most 500 entries, names with a control character left out. Host paths only, and `path` in the answer
@@ -1009,7 +1018,10 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   read. 60 s. The viewer's folder browser asks it over a short link of its own and asks the home with no `path`, so a
   host from before rule 1282 answers it too. Never the agent's: no pipe grant reaches `remote.*`.
 - `remote.tabs {}` -> `{tabs: [{tab, cwd, title, state, session}]}`. `state` is `working`, `question`, `done`, `failed`
-  or `idle`, as `tabs.list` tells a plugin.
+  or `idle`, as `tabs.list` tells a plugin. Only the host's hidden sessions (2026-11-19, rule 1303): never a tab of its
+  strip, never a remote tab it shows.
+- Every method below that names a tab answers `no_tab` for a tab that is not a hidden session of the host (rule 1303),
+  so a host's own tabs and the remote tabs it shows are never followed from another machine.
 - `remote.attach {tab}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
   shell prints is numbered and kept in a 4 MiB ring (made at the first attach, kept for the session's life, fed after the
   tab's own sink so it never blocks it, rule 281). `seq` is the number the next byte gets. `no_tab` (closed),
@@ -1023,20 +1035,35 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   (sanitised on the host as a local paste, rule 1, bracketed when the program asked). At most 64 KB of text a call,
   key names at most 32 bytes and key text 16, neither with a control character; anything else is `bad_params` and
   nothing of the call is typed. At most 50 calls a second on one tab (`rate_limited`). `typed` counts the intents
-  that wrote something. It counts as typing (an answer key answers a question as a local key does).
+  that wrote something. It counts as typing (an answer key answers a question as a local key does). Rule 1317
+  (2026-11-19): an intent may also be `{"mouse": {kind, button?, col, row, shift?, alt?, ctrl?}}`: `kind` one of
+  `press`, `release`, `motion`, `wheel_up`, `wheel_down`; `button` `left`, `middle` or `right` (needed by a press and a
+  release, never on a wheel); `col` under 1000 and `row` under 500, 0-based; each counts 16 bytes. The host writes it
+  as a mouse report in the encoding its program asked for (SGR or the default), only while that program asked for mouse
+  reports and its tracking mode reports that event, and only for a cell inside the tab's grid; else it writes nothing
+  (`typed` leaves it out). A wheel is a wheel report, never a scroll of the host's view. A press or a release counts as
+  the remote typist's typing; a motion or a wheel does not. A host older than rule 1317 answers `bad_params` "no intent
+  is called mouse" and types nothing of the call: the viewer sends the call again without its mouse intents and sends
+  none on that link after.
 - `remote.resize {tab, cols, rows}` -> `{tab, cols, rows}`. Clamped to 2..1000 columns and 1..500 rows, never refused;
   the tab takes that size and the remote viewer owns it: the window's refits pass the tab by until a key is typed here
   (the last typist wins, rule 282). While it does and the viewer has typed (`remote.input`) since it took the size, an
   agent tab in front in the host's window shows its fitted conversation view, naming the viewer's machine from the
   bridge's `hello`, and a key or a click there takes the size back (2026-11-13, rules 1211 and 1212). A size alone (an
-  attach, a reconnect, a refit) leaves the host's terminal up; the answer does not change.
+  attach, a reconnect, a refit) leaves the host's terminal up; the answer does not change. Since 2026-11-19 only hidden
+  sessions take a viewer's size; they are remote-sized from birth, never in the host's front (so the fitted view above
+  never stands), keep the size when the last follower goes, and the host saves it with them (rule 1302).
 - `remote.output {tab, since, max?}` -> `{tab, from, to, data, gap}`. The followed tab's bytes from `since` on,
   base64, at most `max` (default 256 KiB, at most 1 MiB). The next poll's `since` is `to`: each byte comes once, in
   order. `gap: true` when `since` is older than the ring (or newer than the end): bytes were lost, `data` starts at
   the oldest kept, and the viewer asks for `remote.snapshot`. Answered on the worker, never the UI thread. `no_tab`
   when no connection follows the tab (send `remote.attach` first). Polled in short calls: events are lossy and never
   sent to a link.
-- `remote.snapshot {tab, styled?}` -> `{tab, seq, cols, rows, styled, data}`. The tab's whole screen and history above
+- `remote.snapshot {tab, styled?}` -> `{tab, seq, cols, rows, styled, data, mouse, sgr_mouse}`. Rule 1317: `mouse` names
+  the mouse reports the tab's program asked for when the text was read (`none`, `x10`, `click`, `drag`, `any`) and
+  `sgr_mouse` whether in SGR; the viewer sets that mode on its own terminal from the word (every mouse mode off, then the
+  one named), so a click on a restored or caught-up tab still reaches the program. An older host sends neither and the
+  viewer's modes stay; an unknown word changes nothing. The tab's whole screen and history above
   it, 1000 lines at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and
   right that put the cursor where the host's is, rule 293; no modes), read while no batch of output is being parsed,
   so it holds every byte before `seq` and none after: `remote.output {since: seq}` goes on from it with no byte twice.
@@ -1048,10 +1075,21 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   `styled` is not true or false: `bad_params`. A host older than rule 1213 refuses the param (`bad_params` naming
   `styled`); the viewer then asks plain on the same link and leaves it out for the tab from then on, and keeps the
   SGRs (and nothing else) only of an answer that says `styled: true` (`styled_snapshot`).
-- `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
-  in the host's window (rule 48), and `closed` is false until the person there answers.
+- `remote.close {tab}` -> `{tab, closed}`. Ends the hidden session at once, `closed: true`: nobody sits at the host's
+  screen for it, so the host never asks (2026-11-19, rule 1305; the viewer asks first while the host's status names an
+  agent). It never joins the host's Ctrl+Shift+T list. Before 2026-11-19 it closed a strip tab the way a person's close
+  does, asking in the host's window while an agent worked (rule 48).
+- `remote.find {open_id}` -> `{tab}` (2026-11-19, rule 1307). The hidden session whose `remote.open` carried this
+  `open_id`, by its tab id now: after the host's Flare restarted, every hidden session comes back under a new id, and its
+  opener finds it again with the open id it saved. Only hidden sessions are searched, never a strip tab or a viewer tab.
+  `open_id` is required and checked as `remote.open`'s (1 to 64 ASCII letters, digits, `-` or `_`; anything else, or
+  another field, is `bad_params`). `no_tab` when no hidden session holds it (its shell ended on the host, or it was never
+  there); `unavailable` while the host has not restored its saved tabs yet (a passing refusal: ask again). It opens and
+  follows nothing. A short call, sent once more after a broken pipe connection (it changes nothing). A host older than
+  2026-11-19 has no such method (`unknown_method`).
 - `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, sized, working_for?, question_text?,
-  failed?}], seq}` (remote sessions PR 4, rule 294; `sized` PR 7, rule 1193). Every shell tab of the host in strip order, as the host's own marks say it:
+  failed?}], seq}` (remote sessions PR 4, rule 294; `sized` PR 7, rule 1193). Every hidden session of the host (2026-11-19, rule 1303; before, every shell tab in strip order), as the host's own
+  marks say it:
   `state` is one word, `question`, `failed`, `working`, `done` or `idle`, in that order of weight
   (`flare_ctl::remote::TabState`); `kind` the agent the host found (`claude`, `codex`, `agy`, or null); `session` its
   Claude session; `working_for` the milliseconds it has worked (only while `working`); `question_text` the words of

@@ -114,7 +114,7 @@ fn main() {
     startup_trace::mark(startup_trace::Phase::Main);
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<String> = startup::args_after_exe();
     let env_renderer = std::env::var("FLARE_RENDERER").ok();
     // The GPU device is built on a worker thread while the rest of start-up runs (Task 64).
     let prewarm = backend::prewarm_if_gpu(&argv, env_renderer.as_deref());
@@ -373,7 +373,7 @@ const AFTER_PID_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The command line with the exe first, as `folders_from_argv` expects it.
 fn argv_with_exe() -> Vec<String> {
-    std::env::args().collect()
+    startup::args()
 }
 
 /// The release build has no console of its own (windows subsystem). A headless mode run from a

@@ -355,3 +355,39 @@ fn a_crumb_goes_to_its_folder_and_the_last_goes_nowhere() {
         "every crumb but the last answers, in order"
     );
 }
+
+/// Rule 1348: crumbs that fit start at the left as before; a path too long for the row keeps its end (the current
+/// folder) in view and cuts the start instead, at every scale.
+#[test]
+fn a_long_path_keeps_the_current_folder_in_view() {
+    for s in SCALES {
+        let h = harness(s);
+        open(&h);
+        let (bx, bw) = (h.comp.get_crumbs_x(), h.comp.get_crumbs_w());
+        assert!(
+            (h.comp.get_crumb_row_x() - bx).abs() < 0.5,
+            "scale {s}: short crumbs moved"
+        );
+        assert!(h.comp.get_crumb_row_w() < bw, "scale {s}");
+        h.comp.set_crumbs(crumbs(&[
+            "home-pc",
+            "\u{2026}",
+            "a-rather-long-project-folder",
+            "another-long-folder-name",
+            "the-current-folder-with-a-long-name",
+        ]));
+        h.advance(0);
+        h.render();
+        let (x, w) = (h.comp.get_crumb_row_x(), h.comp.get_crumb_row_w());
+        assert!(
+            w > bw,
+            "scale {s}: the path should be too long ({w} in {bw})"
+        );
+        assert!(
+            (x + w - (bx + bw)).abs() < 0.5,
+            "scale {s}: the row ends at {} but the box at {}",
+            x + w,
+            bx + bw
+        );
+    }
+}

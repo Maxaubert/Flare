@@ -180,6 +180,8 @@ export component DictationWidget inherits Window {
     out property <length> card-w: card.width;
     out property <length> card-h: card.height;
     out property <length> rows-y: 116px;
+    // How far the pick rows are scrolled (0 unless the window was capped to a short work area).
+    out property <length> rows-scroll: 0px;
 
     property <length> head-y: root.phase >= 4 ? (card.height - 34px) / 2 : 14px;
     property <string> placeholder: root.starting ? "Starting the speech engine" : "Speak now";
@@ -351,34 +353,44 @@ export component DictationWidget inherits Window {
                 overflow: elide;
             }
         }
-        if root.phase == 3 : VerticalLayout {
+        // The rows scroll when the window was capped to a short work area (rule 1344); at its own height the face has
+        // room for every row and nothing moves.
+        if root.phase == 3 : Flickable {
             x: 16px;
             y: root.rows-y;
             width: card.width - 32px;
-            spacing: 4px;
-            alignment: start;
-            for item[i] in root.items : Rectangle {
-                height: item.header ? 26px : 44px;
-                if item.header : Text {
-                    x: 4px;
-                    y: i == 0 ? 2px : 6px;
-                    width: parent.width - 8px;
-                    height: 18px;
-                    text: item.label;
-                    font-family: Theme.font-ui;
-                    font-size: 13px;
-                    font-weight: 600;
-                    color: root.dim;
-                    overflow: elide;
-                    wrap: no-wrap;
-                }
-                if !item.header : WidgetRow {
-                    width: parent.width;
-                    item: item;
-                    ink: root.ink;
-                    dim: root.dim;
-                    accent: root.accent;
-                    chosen(id) => { root.pick(id); }
+            height: max(0px, card.height - root.rows-y - 12px - 18px - 4px);
+            content-width: self.width;
+            content-height: max(self.height, rows-col.preferred-height);
+            interactive: false;
+            changed content-y => { root.rows-scroll = -self.content-y; }
+            rows-col := VerticalLayout {
+                width: parent.width;
+                spacing: 4px;
+                alignment: start;
+                for item[i] in root.items : Rectangle {
+                    height: item.header ? 26px : 44px;
+                    if item.header : Text {
+                        x: 4px;
+                        y: i == 0 ? 2px : 6px;
+                        width: parent.width - 8px;
+                        height: 18px;
+                        text: item.label;
+                        font-family: Theme.font-ui;
+                        font-size: 13px;
+                        font-weight: 600;
+                        color: root.dim;
+                        overflow: elide;
+                        wrap: no-wrap;
+                    }
+                    if !item.header : WidgetRow {
+                        width: parent.width;
+                        item: item;
+                        ink: root.ink;
+                        dim: root.dim;
+                        accent: root.accent;
+                        chosen(id) => { root.pick(id); }
+                    }
                 }
             }
         }

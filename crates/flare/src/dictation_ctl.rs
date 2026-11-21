@@ -2071,6 +2071,8 @@ struct Run {
     /// asked for again, must not mark the new one inactive.
     flight: u64,
     failure: Option<flare_dictation::store::Failure>,
+    /// The failure is a remove's (audit #33): a file was still held, so the model is still there.
+    remove_failed: bool,
 }
 
 static RUNS: std::sync::LazyLock<Mutex<HashMap<String, Run>>> =
@@ -2187,6 +2189,9 @@ pub(crate) fn installed_for_page(id: &str, check: impl FnOnce() -> bool) -> bool
     yes
 }
 
+/// What a row says when its Remove left a file on disk (audit #33).
+const REMOVE_FAILED: &str = "It could not be removed. A file is still in use.";
+
 /// The download state of a catalogue entry: its percentage while it runs, the failure of its last end.
 pub fn run_view(id: &str, bytes: u64) -> (Option<u32>, Option<&'static str>) {
     let r = runs().get(id).cloned().unwrap_or_default();
@@ -2199,6 +2204,7 @@ pub fn run_view(id: &str, bytes: u64) -> (Option<u32>, Option<&'static str>) {
     });
     let failure = match r.failure {
         None | Some(flare_dictation::store::Failure::Cancelled) => None,
+        Some(_) if r.remove_failed => Some(REMOVE_FAILED),
         Some(f) => Some(f.text()),
     };
     (pct, failure)
@@ -2237,6 +2243,7 @@ pub(crate) fn scene_page(
                 active: true,
                 flight: 0,
                 failure: None,
+                remove_failed: false,
             },
         );
     }
@@ -2628,6 +2635,7 @@ fn download_item(id: &str) {
             active: true,
             flight,
             failure: None,
+            remove_failed: false,
         },
     );
     let for_progress = id.to_string();
@@ -2690,17 +2698,35 @@ fn remove_item(id: &str) {
     std::thread::Builder::new()
         .name("flare-dict-remove".into())
         .spawn(move || {
-            let _ = rx.recv();
-            post_ui(move || {
-                runs().remove(&id);
-                forget_absent(&id);
-                if active_model() == id {
-                    page_put(7, "");
-                }
-                page_changed();
-            });
+            // No answer at all is no proof the files went: it reads as the disk failure.
+            let end = rx
+                .recv()
+                .unwrap_or(Err(flare_dictation::store::Failure::Disk));
+            post_ui(move || finish_remove(&id, end));
         })
         .ok();
+}
+
+/// A remove ended (on the UI thread). Gone: the row forgets its run and an active model is deselected. Audit #33: a
+/// file still held (`Err(Disk)`) keeps the model selected, and the row says the failure.
+fn finish_remove(id: &str, end: Result<(), flare_dictation::store::Failure>) {
+    match end {
+        Ok(()) => {
+            runs().remove(id);
+            if active_model() == id {
+                page_put(7, "");
+            }
+        }
+        Err(f) => {
+            let mut runs = runs();
+            let r = runs.entry(id.to_string()).or_default();
+            r.active = false;
+            r.failure = Some(f);
+            r.remove_failed = true;
+        }
+    }
+    forget_absent(id);
+    page_changed();
 }
 
 fn stop_engine_now() {
@@ -5364,6 +5390,20 @@ mod page_tests {
         assert_eq!(run_view("base", 5), (None, Some("The download failed.")));
         assert!(page_button("base", "cancel"));
         let _ = &p;
+    }
+
+    /// Audit #33: a Remove that left a file on disk keeps the model selected and the row says so; one that worked
+    /// clears both.
+    #[test]
+    fn a_remove_that_left_a_file_keeps_the_model_and_says_so() {
+        let _p = page(["a", "b", "c"]);
+        page_put(7, "base");
+        finish_remove("base", Err(flare_dictation::store::Failure::Disk));
+        assert_eq!(active_model(), "base", "still the model in use");
+        assert_eq!(run_view("base", 5), (None, Some(REMOVE_FAILED)));
+        finish_remove("base", Ok(()));
+        assert!(active_model().is_empty());
+        assert_eq!(run_view("base", 5), (None, None));
     }
 
     /// Audit L46: a "not installed" answer is not asked of the disk again at once, and a download ending clears it.

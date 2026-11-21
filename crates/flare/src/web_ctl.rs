@@ -2016,6 +2016,18 @@ impl WebCtl {
         v
     }
 
+    /// Forgets the plugin's background page and closes its view, as `close_bar` does for a bar. A failed load or a
+    /// crashed page leaves the view in the host, and `close_background_keeping` closes only a page it still knows,
+    /// so without this the hidden view stayed while anything else kept the browser up (rule 1355). The browser
+    /// itself is let go by `close_background_keeping` when the plugin's end is handled.
+    fn drop_background_view(&mut self, plugin: &str) {
+        if self.backgrounds.remove(plugin).is_some()
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.close_view(&flare_web::Slot::background(plugin));
+        }
+    }
+
     /// What a background page's view said, for the window: its messages, its load and its end. Anything else of
     /// it (a title, a focus) is nobody's business.
     fn on_background_event(&mut self, plugin: &str, e: WebEvent) -> Option<WebOut> {
@@ -2035,13 +2047,13 @@ impl WebCtl {
                     ready: true,
                 }
             } else {
-                self.backgrounds.remove(plugin);
+                self.drop_background_view(plugin);
                 WebOut::BgLost {
                     plugin: plugin.to_string(),
                 }
             }),
             WebEvent::Failed { .. } | WebEvent::Gone { .. } => {
-                self.backgrounds.remove(plugin);
+                self.drop_background_view(plugin);
                 Some(WebOut::BgLost {
                     plugin: plugin.to_string(),
                 })

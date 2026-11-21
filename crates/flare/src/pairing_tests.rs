@@ -398,6 +398,46 @@ fn an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses() {
     assert!(nearby_of(&full, &txt(&[("proto", "1")]), addrs, 0).is_none());
 }
 
+/// Rule 1297: a computer on Ethernet and WiFi at once is found as `Office-Mac-Mini` and `Office-Mac-Mini (2)`; it shows
+/// once, with both addresses. Another computer, or the same name with another port or system, stays apart.
+#[test]
+fn a_computer_found_twice_after_a_name_conflict_shows_once() {
+    let nb = |inst: &str, name: &str, os: Option<Os>, port: u16, addrs: &[&str]| Nearby {
+        id: format!("{inst}.{SERVICE}"),
+        name: name.into(),
+        os,
+        version: "0.1.0".into(),
+        addrs: addrs.iter().map(|a| a.parse().unwrap()).collect(),
+        port,
+    };
+    let mac = Some(Os::Mac);
+    let list = merge_nearby(vec![
+        nb("Office-Mac-Mini (2)", "Office-Mac-Mini", mac, 47790, &["192.0.2.242"]),
+        nb("home-pc", "home-pc", Some(Os::Pc), 47790, &["192.0.2.20"]),
+        nb("Office-Mac-Mini", "Office-Mac-Mini", mac, 47790, &["fe80::1", "192.0.2.76"]),
+    ]);
+    let ids: Vec<&str> = list.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            format!("Office-Mac-Mini.{SERVICE}").as_str(),
+            format!("home-pc.{SERVICE}").as_str()
+        ]
+    );
+    let shown: Vec<String> = list[0].addrs.iter().map(ToString::to_string).collect();
+    // Its own addresses first (as announced), the renamed copy's after: a copy is never tried first.
+    assert_eq!(shown, ["fe80::1", "192.0.2.76", "192.0.2.242"]);
+
+    // Not the same computer: another port, another system, or a suffix that is not a number.
+    let apart = merge_nearby(vec![
+        nb("studio", "studio", mac, 47790, &["10.0.0.2"]),
+        nb("studio (2)", "studio", mac, 47791, &["10.0.0.3"]),
+        nb("studio (3)", "studio", Some(Os::Pc), 47790, &["10.0.0.4"]),
+        nb("studio (x)", "studio", mac, 47790, &["10.0.0.5"]),
+    ]);
+    assert_eq!(apart.len(), 4);
+}
+
 /// Rule 1256: the announcement says the name, the system, Flare's version and the protocol, and nothing else.
 #[test]
 fn the_announcement_carries_no_secret() {
@@ -954,6 +994,49 @@ fn removing_a_computer_that_reaches_this_one_removes_its_key() {
     );
 }
 
+/// Audit #3: when `machines_in.json` cannot be read whole, Remove leaves the key and the file alone and says why.
+#[test]
+fn removing_a_computer_with_a_broken_list_leaves_its_key_and_says_why() {
+    let hub = Arc::new(Hub::default());
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
+    *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
+        id: "mini".into(),
+        name: "Mini".into(),
+        key: parse_public_key(&host_key(), &[ED25519]).unwrap().key,
+        admin: Some(false),
+        ..Default::default()
+    }];
+    let why = "machines_in.json was not changed: it is not valid JSON".to_string();
+    *host.io.broken.lock().unwrap() = Some(why.clone());
+    host.page.page_shown();
+    until(&mut [&mut host], "read", |p| {
+        !p[0].page.info().machines.is_empty()
+    });
+    let notice = |p: &Page| match p.page.sharing().ask() {
+        Some(crate::sharing::SharingAsk::Notice(l)) => Some(l.clone()),
+        _ => None,
+    };
+    assert_eq!(
+        notice(&host).as_deref(),
+        Some(why.as_str()),
+        "shown with the page"
+    );
+    host.page
+        .sharing_button(flare_settings::page::machines::SHARING_PRIMARY);
+    assert!(notice(&host).is_none());
+    host.page.remove(&format!("{INCOMING_PREFIX}mini"));
+    until(&mut [&mut host], "the notice", |p| {
+        p[0].page.sharing().ask().is_some()
+    });
+    assert_eq!(notice(&host).as_deref(), Some(why.as_str()));
+    assert!(
+        host.os.removed_keys.lock().unwrap().is_empty(),
+        "the key stays"
+    );
+    assert_eq!(host.io.list_in().len(), 1);
+    assert_eq!(host.io.saves.load(Ordering::SeqCst), 0);
+}
+
 /// Rule 1260: a computer whose key is in `administrators_authorized_keys` is removed with one elevated script.
 #[test]
 fn removing_a_computer_whose_key_is_in_the_admin_file_asks_once() {
@@ -1055,6 +1138,47 @@ fn nothing_goes_in_when_the_answer_cannot_be_made() {
         assert!(os.user_keys.lock().unwrap().is_empty(), "{broken}");
         assert!(os.scripts.lock().unwrap().is_empty(), "{broken}");
         assert!(host_io.list_in().is_empty(), "{broken}");
+    }
+}
+
+/// Audit #3: a list file that cannot be read whole is never saved over. The host refuses before the key goes in; the
+/// viewer stops before it sends its key. Neither side saves anything, and the files keep what they held.
+#[test]
+fn a_broken_list_file_stops_pairing_and_is_not_saved_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let why = "the file was not changed: it is not valid JSON".to_string();
+    for side in ["host", "viewer"] {
+        let os = Arc::new(FakeOs::new(Platform::Windows));
+        let (host_io, view_io) = (Arc::new(FakeIo::default()), Arc::new(FakeIo::default()));
+        let broken = if side == "host" { &host_io } else { &view_io };
+        *broken.broken.lock().unwrap() = Some(why.clone());
+        let (v, host_events, ht) = host_thread(Arc::clone(&os), Arc::clone(&host_io));
+        let (codes, view_events, vt) =
+            viewer_thread(v, Arc::clone(&view_io), PairFiles::new(dir.path()));
+        let HostEvent::Ask { code, .. } = next(&host_events) else {
+            panic!("ask");
+        };
+        next(&view_events);
+        codes.send(code).unwrap();
+        let ViewerEvent::Failed(line) = next(&view_events) else {
+            panic!("{side}: the viewer fails");
+        };
+        if side == "viewer" {
+            assert_eq!(line, why, "the viewer says why");
+        }
+        vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        assert!(
+            os.user_keys.lock().unwrap().is_empty(),
+            "{side}: no key went in"
+        );
+        for io in [&host_io, &view_io] {
+            assert_eq!(
+                io.saves.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{side}"
+            );
+        }
     }
 }
 
