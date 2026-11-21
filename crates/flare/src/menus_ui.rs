@@ -357,8 +357,8 @@ fn starter_hint(path: &str, home: &str) -> String {
 /// row and the note).
 /// After them, one row per linked machine (remote sessions PR 7, [`machine_rows`]).
 /// `open` holds the folders of the open local tabs (rule 1269): an unpinned folder among them is left out, so the
-/// menu offers only folders that have no tab yet. A pin always stays. A hidden folder leaves its spot empty; no
-/// older recent or starter takes it, and no note appears.
+/// menu offers only folders that have no tab yet. A pin always stays. A hidden folder's spot goes to the next older
+/// recent without a tab, then to a starter (rule 1298); no note appears for folders that are only hidden.
 pub fn plus_menu_rows(
     prefs: &PrefStore,
     starters: &[String],
@@ -409,15 +409,22 @@ fn folder_rows(
     has_remote: bool,
     open: &[String],
 ) -> Vec<(MenuRowData, String)> {
-    let (pinned, recent) = (pinned_roots(prefs), recent_roots(prefs));
-    let mut places = place_rows(&pinned, &recent);
-    let mut fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
+    let (pinned, history) = (pinned_roots(prefs), recent_roots(prefs));
     let mut choose = MenuRowData::plain(CHOOSE_FOLDER);
     choose.icon = GLYPH_FOLDER;
     let mut rows = vec![(choose, String::new())];
-    // Rule 1269: worked out over every known folder first, so a hidden one frees no spot and brings no note.
-    let known = !places.is_empty() || !fill.is_empty();
-    places.retain(|p| p.pinned || !is_open_folder(&p.path, open));
+    // Rule 1269: a folder with an open tab is left out, and nothing known at all is the only time the note shows.
+    let known = !pinned.is_empty()
+        || !history.is_empty()
+        || !starter_fill(&pinned, &history, starters, RECENT_SHOWN).is_empty();
+    // Rule 1298 (Max, 2026-11-18: the menu showed no recent folder while his five newest all had a tab): the open
+    // folders leave the history before the newest five are taken, so older recents without a tab fill their spots.
+    let recent: Vec<String> = history
+        .into_iter()
+        .filter(|r| !is_open_folder(r, open))
+        .collect();
+    let places = place_rows(&pinned, &recent);
+    let mut fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
     fill.retain(|s| !is_open_folder(s, open));
     if !known {
         if has_remote {
@@ -476,10 +483,6 @@ pub fn toggle_pin_in_menu(
     toggle_pin(prefs, &path.clone());
     *rows = plus_menu_rows(prefs, starters, home, machines, open);
 }
-
-/// A remote tab's menu row after Close tab (remote sessions PR 7, rule 1192): the tab goes from this window and the
-/// session goes on on its machine.
-pub const HIDE_HERE: &str = "Hide here only";
 
 /// A tab's own menu: Close tab (with its key) and, for a folder tab only, Copy folder path.
 /// Settings has no folder, and copying "" would blank the clipboard.
@@ -878,7 +881,8 @@ mod tests {
         rows.iter().map(|(_, p)| p.as_str()).collect()
     }
 
-    /// Rule 1269: a recent folder whose tab is open is left out of the folder menu; its spot stays empty.
+    /// Rule 1269: a recent folder whose tab is open is left out of the folder menu (rule 1298: an older recent takes its
+    /// spot, when there is one).
     #[test]
     fn an_open_tabs_recent_folder_is_left_out_of_the_menu() {
         let prefs = PrefStore::memory();
@@ -897,6 +901,48 @@ mod tests {
         assert_eq!(
             labels(&plus_menu_rows(&prefs, &[], "", &[], &all)),
             [CHOOSE_FOLDER]
+        );
+    }
+
+    /// Rule 1298 (Max, 2026-11-18): his twelve recents, the seven newest each with an open tab. The menu showed "Choose
+    /// a folder…" and the machine alone; the five newest recents without a tab are listed now, and a starter fills a
+    /// spot only when no older recent is left.
+    #[test]
+    fn older_recents_fill_the_spots_of_folders_that_have_a_tab() {
+        use crate::machines::Machine;
+        let prefs = PrefStore::memory();
+        let all: Vec<String> = (0..12).map(|i| format!(r"C:\g\r{i:02}")).collect();
+        // remember_root puts the newest first: r00 ends up newest.
+        for p in all.iter().rev() {
+            remember_root(&prefs, p);
+        }
+        let open: Vec<String> = all[..7].to_vec();
+        let mac = Machine {
+            id: "mac".into(),
+            name: "Mac Mini".into(),
+            kind: Some(flare_tabs::tabs::Os::Mac),
+            ssh: "mini".into(),
+            user: None,
+            flare: "flare".into(),
+            host: None,
+            port: None,
+            key: None,
+            known_hosts: None,
+            host_key: None,
+        };
+        let rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &open);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "r07", "r08", "r09", "r10", "r11", "Mac Mini"]
+        );
+        assert!(rows[1].0.group && rows[1].0.trailing_icon == Some(GLYPH_PIN));
+        // Only three recents without a tab: a starter makes up the rest, never one with a tab.
+        let starters = vec![r"C:\g\r00".to_string(), r"C:\s\docs".to_string()];
+        let few: Vec<String> = all[..9].to_vec();
+        let rows = plus_menu_rows(&prefs, &starters, "", &[], &few);
+        assert_eq!(
+            paths(&rows),
+            ["", r"C:\g\r09", r"C:\g\r10", r"C:\g\r11", r"C:\s\docs"]
         );
     }
 

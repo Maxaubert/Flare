@@ -349,16 +349,16 @@ intents (the only text it ever sends), reads the output, resizes, detaches, atta
 offscreen: B, the host, in the scenario's world, and A, the viewer, in a second world. A is launched with
 `FLARE_E2E_REMOTE_COMMAND` (a loopback `flare --serve-remote --user-data-dir=<B's profile>` in place of ssh) and
 `FLARE_E2E_REMOTE_OPEN` (a remote tab in B's folder at start). It waits for B's prompt in A's grid, checks B gained one
-tab, types `echo remote-view-7` into A (the only text it ever sends there, plus `echo remote-view-8` later) and reads the
+hidden session and no strip tab (`app.state`'s `hidden`, rule 1302), types `echo remote-view-7` into A (the only text it ever sends there, plus `echo remote-view-8` later) and reads the
 output in A's grid, once each. A quits (B's session goes on) and starts again without the open: the restored tab
-attaches to the same host tab (B opens none), shows B's lines once each, and takes typing again.
+attaches to the same host session (B opens none), shows B's lines once each, and takes typing again.
 
 `remoteStatus` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 4, Windows only for now) runs the same two
 Flares, each in a world of its own with "Notify me when an agent asks" on in its profile. A's window is away
 (`Focus {on: false}`). Typed into A's remote tab, so they run on B: the stand-in agent process (`agent_proc`, so B's
 own poll believes the hooks), then the hook lines `working`, `question` and `done` (`[Console]::Write` of the OSC 777
 line, text this file wrote). A's `agent.state` shows the tab working, then asking; A's `notify.log` holds one
-notification and B's none (rule 295); then A shows its own finished mark. A quits and starts again without the open:
+notification and B's none (rules 295, 1304); then A shows its own finished mark. A quits and starts again without the open:
 the restored tab attaches, B's status still says `done`, and after 4 s A shows no finished mark and no notification
 (rule 294).
 
@@ -369,8 +369,12 @@ the restored tab attaches, B's status still says `done`, and after 4 s A shows n
 no Flare for B and starts `flare --start-hidden --user-data-dir=<B's profile> --e2e` (`--e2e` passed on, so B is a test
 app with its hook, on the hidden desktop it inherits from A). The scenario waits for B's prompt in A's front tab, connects
 to B's hook by its profile, checks `window.park` (off every screen, no-activate, not in front, rule 301) and that B
-holds the session, types `echo remote-open-5` into A (the only text it sends) and reads it once each. It asks B to quit
-and reaps B by its profile at the end. `crates/flare/tests/serve_remote.rs` runs every serve process with `--no-start`,
+holds the session, types `echo remote-open-5` into A (the only text it sends) and reads it once each. Rule 1307 (remote
+on opener PR 2): it then asks B to quit (B saves the hidden session) and waits for B's pipe to go. A's link starts B
+again through the serve process; B restores the session hidden under a new id, and A's tab finds it by its open id
+(`remote.find`). The scenario waits up to 90 s for the line "Flare restarted on" in A's front tab (once), checks that
+B holds one hidden session, types `echo remote-open-6` and reads it once each. It asks B to quit and reaps B by its
+profile at the end. `crates/flare/tests/serve_remote.rs` runs every serve process with `--no-start`,
 so no unit test ever starts a Flare hidden.
 
 `remoteFiles` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 6, Windows only for now) runs the two Flares of
@@ -385,9 +389,10 @@ are the same both ways round; the Mac to PC direction is on the by-hand list
 `remoteUi` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 7, Windows only for now) runs B as `remoteViewer`
 does, and A with tabs along the top, a folder of its own and `machines.json` naming one machine (`loop`, "Loopback",
 kind `pc`) that `FLARE_E2E_REMOTE_COMMAND` joins to B. A right-click on A's + lists "Loopback" as the menu's last row
-with the Windows logo; a click on it opens a tab on B (one more tab there) whose prompt shows in A, and A's new tab
-wears the PC logo (`app.state`'s `machine`) and a tooltip that starts with "Loopback: ". A right-click on that tab and
-"Hide here only" take it from A while B keeps its session (rule 1192). Nothing is typed into either shell.
+with the Windows logo; a click on it opens a hidden session on B (one more in `app.state`'s `hidden`, the same strip tab
+count, rule 1302) whose prompt shows in A, and A's new tab wears the PC logo (`app.state`'s `machine`) and a tooltip
+that starts with "Loopback: ". A right-click on that tab has no "Hide here only"; its Close tab takes it from A and
+ends B's session with no ask on B (rules 1192, 1305). Nothing is typed into either shell.
 
 ## Agent browser scenarios (Surfaces stage 4)
 

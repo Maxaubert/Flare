@@ -119,6 +119,7 @@ fn may_retry(m: Method) -> bool {
             | Method::RemoteStatus
             | Method::RemoteConvo
             | Method::RemoteFetch
+            | Method::RemoteFind
     )
 }
 
@@ -725,6 +726,8 @@ mod tests {
         assert!(!may_retry(Method::RemoteOpen) && !may_retry(Method::RemoteClose));
         // A fetched chunk is read again as it was; a put chunk is never written twice (rule 304).
         assert!(may_retry(Method::RemoteFetch) && !may_retry(Method::RemotePut));
+        // Rule 1307: a find changes nothing, and it follows no tab.
+        assert!(may_retry(Method::RemoteFind) && !on_anchor(Method::RemoteFind));
     }
 
     /// Rule 277 over real OS pipes: the serve side's stdout is protocol lines and nothing else, a banner before the

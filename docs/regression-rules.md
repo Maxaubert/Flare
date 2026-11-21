@@ -730,7 +730,7 @@ by `a_click_while_the_next_page_loads_names_the_page_the_text_came_from`, `an_an
 255. **The person's arrow is typed unsent, framed, and reaches the agent's next look once.** (CHANGED 2026-11-15 by rule 1268: a Claude tab whose hooks named its session gets nothing typed and hears of the kept arrow in the quiet context; other agents keep the typed frame.) On release the browser is asked, with no page script, what is under the head (`DOM.getNodeForLocation`, then `Accessibility.getPartialAXTree` read by `agent_web::pointed_at`), and `ask_agent::frame_arrow` frames it: the site, `> points at:` with the role and the name gated, on one line, capped and stripped of double quotes, `> at:` and how to see it. It goes through `deliver_ask` like Ask agent (rules 188, 234: never Enter, never to a tab that is not in front). The arrow is kept for `USER_ARROW_MS` or until the page moves on; the next look gets `user_arrow` `{from, to, ref, role, name}` with a ref made by `RefMap::ref_for` when the look did not list the element, and the arrow drawn on its screenshot (`blend_onto_rgba`), then it is gone. Native: `crates/flare/src/web_ctl/arrows.rs`, `crates/flare/src/ask_agent.rs`, `crates/flare/src/appctl/sessions_glue.rs`, `crates/flare-surfaces/src/agent_web.rs`, `agent_job.rs`. Held by `the_person_drags_an_arrow_and_its_frame_is_typed_unsent`, `the_next_look_gets_the_persons_arrow_with_a_ref_once_and_then_it_goes`, `an_arrow_at_an_element_the_look_does_not_list_gets_a_ref_of_its_own`, `the_persons_arrow_is_kept_five_minutes_or_until_the_page_moves_on`, `when_the_browser_names_nothing_under_the_arrow_the_frame_says_so`, `a_hostile_element_name_stays_one_quoted_capped_line_of_the_frame`, `an_arrow_on_a_buttons_label_names_the_button_and_one_on_nothing_named_says_its_role` and `the_screenshot_gets_the_arrow_where_it_was_drawn_at_the_looks_scale`. Source: the same spec, section 2.
 256. **The draw mode takes the mouse, never the keyboard, and every way out cancels it.** "Draw arrow" shows only on a tab with an agent, on a web page or a mini-app (never a plugin's page), and not while a pop-up is open (`push_draw_arrow`). The pad (`PadWindow`) is a layered popup owned by Flare's window, every pixel at alpha 1, `WS_EX_NOACTIVATE`, answering `MA_NOACTIVATE`; the probe of 2026-11-10 (`pad_probe`, a hidden desktop) found it catches the press, drag and release while the page keeps the focus. The agent tick reads the pointer (a press that started before the mode is not one; the left button must be seen up first). The button again, a right click, Escape where it arrives (the key filter in the page, `on_key` in the window), a Flare menu, a tab switch, a pop-up and a navigation end it with nothing asked and nothing typed (`update_arrows`, `draw_tick`). Native: `crates/flare-win/src/agent_cursor.rs`, `crates/flare/src/web_ctl/arrows.rs`, `crates/flare/src/web_ctl.rs` (`key_filter`), `crates/flare/src/appctl.rs` (`on_key`), `crates/flare/ui/panel.slint`. Held by `every_cancel_ends_the_draw_mode_with_nothing_asked_and_nothing_typed`, `the_draw_button_shows_for_an_agent_on_a_web_page_and_never_over_a_popup`, `a_click_with_no_drag_points_at_the_target_from_up_and_left` and `pad_probe` (by hand). Source: the same spec, section 2.
 257. **The person's arrow stays on what it points at as the page scrolls.** Its ends are kept on the document (the viewport point plus the scroll `Page.getLayoutMetrics` gave at the release), never as fixed viewport points: a person who scrolled before sending saw the blue arrow sit over another element while the look named the first, and the agent got a picture and numbers that disagreed with the ref. While its page is in front the agent tick measures the scroll again every `POINT_MEASURE_MS` (`user_arrow_measure`, answered in `arrow_cdp`), the mark is drawn only while both ends show and not on a stale scroll (`update_arrows`), and a look gets `from` and `to` in its own viewport (`viewport.scroll`, added to `browser.look`), with `offscreen: true` and nothing drawn on the screenshot when the head is outside it; `browser_look`'s text says so instead of claiming it is drawn. Found by the review of 2026-11-10. Native: `crates/flare/src/web_ctl/arrows.rs`, `crates/flare-surfaces/src/agent_job.rs`, `crates/flare-mcp/src/browser.rs`. Held by `the_persons_arrow_stays_on_what_it_points_at_as_the_page_scrolls`, `a_look_after_a_scroll_gets_the_arrow_where_its_ends_are_now_and_off_screen_undrawn`, `a_look_with_the_persons_arrow_says_where_it_points_with_the_page_words_inside_the_markers` and `a_look_reports_the_picture_the_elements_and_numbers_them`. Source: the same spec, section 2.
-258. **A staged build installs only on a click, and the click asks first under a working agent.** "Build ready" has no menu: a click is install now. With an agent working, the close question ("Stop the agent and install the update?", Install and restart / Cancel) asks first and Cancel keeps the build on offer; with none, the 10 s toast with Cancel runs at once. Nothing installs on its own, however long the app is idle, and there is no Not today or Discard: a build stays on offer until it is installed or a new stage replaces it. Native: `flare_update::staged_flow` (`StagedFlow::click`, no idle clock, `needs_tick` false while a build only waits), `appctl::staged_glue` (`staged_chip_clicked`, `staged_ask`); tests `staged_flow::tests::nothing_installs_on_its_own`, `ui_tests::staged_flows::nothing_installs_on_its_own_after_a_minute_idle`, `a_click_under_a_working_agent_asks_first_and_cancel_keeps_the_build_on_offer`, and the offscreen e2e `clickInstall`. Source: Flare-native, `docs/superpowers/specs/2026-11-10-build-ready-one-click.md` (owner, 2026-11-10).
+258. **A staged build installs only on a click, and the click asks first under a working agent.** "Build ready" has no menu: a click is install now. With an agent working, the close question ("Stop the agent and install the update?", Install and restart / Cancel) asks first and Cancel keeps the build on offer; with none, the 10 s toast with Cancel runs at once. Nothing installs on its own, however long the app is idle, and there is no Not today or Discard: a build stays on offer until it is installed or a new stage replaces it. Native: `flare_update::staged_flow` (`StagedFlow::click`, no idle clock, `needs_tick` false while a build only waits), `appctl::staged_glue` (`staged_chip_clicked`, `staged_ask`); tests `staged_flow::tests::nothing_installs_on_its_own`, `ui_tests::staged_flows::nothing_installs_on_its_own_after_a_minute_idle`, `a_click_under_a_working_agent_asks_first_and_cancel_keeps_the_build_on_offer`, and the offscreen e2e `clickInstall`. Source: Flare-native, `docs/superpowers/specs/2026-11-10-build-ready-one-click.md` (owner, 2026-11-10). Amended by rule 1326 (2026-11-20): an agent may arm the install, which then starts on its own once every agent is idle.
 259. **A test waits for the event it checks and holds on any account.** A pty resize lands on the `flare-pty-resize` helper and a restored shell is spawned on a worker, so a test counts resizes only once the helpers are quiet and speaks to a restored shell only once its spawn is seen; a fixed count right after a step failed on every busy CI runner. A security descriptor is compared in the form Windows writes it (`canonical_dacl`), since the CI runner's built-in Administrator reads back as `LA`. A match arm names one agent kind (or one kind and `None`), so `no_source_file_lists_the_resumable_agents_by_hand` keeps finding real second lists. Found 2026-11-10: these four failed on every run of main. Native: `crates/flare/src/ui_tests/flows.rs`, `ui_tests/agent_flows/convo_flows.rs`, `crates/flare-ctl/tests/pipe.rs`, `crates/flare-agent/src/keys.rs`. Held by `the_slide_holds_the_terminals_size_and_fits_once`, `a_stored_conversation_panel_reopens_empty_until_the_transcript_loads`, `the_live_pipe_carries_the_owner_only_descriptor`, `the_built_in_administrator_reads_back_as_its_alias` and `no_source_file_lists_the_resumable_agents_by_hand`.
 260. **A test that names a well-known account builds it from the machine, not from the user.** Windows writes "LA" only for RID 500 of the local machine's account domain, so a test takes that domain from the computer name (`machine_account_domain`), never by cutting the RID off the current user's SID: on a domain or Entra ID account that prefix is another domain, whose RID 500 keeps its full SID. Found 2026-11-10 in review of 258: the alias test passed only on a local account. Native: `crates/flare-ctl/tests/pipe.rs`. Held by `the_built_in_administrator_reads_back_as_its_alias`.
 261. **The web panel's profile lives under the profile folder, so a login lasts as long as the profile.** Owner, 2026-11-10: "if I'm signed into Google once in the browser it should still be signed in the next time I open Flare". The hidden e2e `webLogins` (`tools/e2e/src/scenarios/web_logins.rs`: a local site on `127.0.0.1` sets a cookie for a year, a session cookie and `localStorage`; the page reads `document.cookie` itself) found that a persistent cookie and `localStorage` already survived a panel close, a quit (one set the moment before it too: the quit closes the views and lets the browser go, rule 28, so it writes its cookies) and the staged install's restart. What lost them: the default run (no `--user-data-dir`, the Dev copy `%LOCALAPPDATA%\Flare\current\Flare.exe`) kept the panel's folder at `%LOCALAPPDATA%\Flare\WebView2`, inside the Velopack root, which Setup moves aside and deletes on a reinstall and the uninstall deletes, while Stable (`--user-data-dir=%APPDATA%\FlareStable`) kept it under its profile. Native: `flare_surfaces::web::webview_folder(profile_dir)` is always `<profile>\WebView2` (the mini-apps' and plugins' folders stay its `-<kind>` siblings, never shared with the panel or Edge), and at start the default run moves the old folders once with `move_old_webview_folders` (only a folder whose new place is empty, so nothing is replaced and a second start does nothing). Dev and Stable are two profiles with two panel profiles: a login in one is not in the other, by design. A session-only cookie (a site's sign-in without "stay signed in") ends when the last web panel closes, since the browser ends with it (panels cost nothing while closed); `webLogins` holds that too. Held by `the_profile_lives_under_the_profile_folder_never_the_install_folder`, `the_old_place_is_only_the_default_runs_local_appdata_folder`, `the_old_folders_move_once_and_never_replace_what_is_there` (`crates/flare-surfaces/src/web.rs`) and `webLogins` (22 checks).
@@ -901,6 +901,8 @@ no way here (S3). Native: `crates/flare-ctl/src/remote.rs` (`parse_intents`), `c
 `remote_input_intents_round_trip_as_keys_text_and_pastes`, `remote_input_refuses_control_characters_in_text_and_keys`,
 `remote_input_is_capped_at_64_kb_and_1024_intents_a_call`, `remote_input_types_keys_text_and_a_sanitised_paste` and
 `remote_input_is_checked_and_rate_limited_before_the_window_types_it`. Source: remote sessions PR 2 (2026-11-12).
+Amended by rule 1317 (2026-11-19): a mouse report is a fourth intent, a checked mouse event the host writes again as
+a report with its own modes; it is no longer dropped on the viewer.
 280. **A remote detach or a dead link never kills a host session.** The session belongs to the host (owner decision):
 `remote.detach` only stops following the tab, and a link that drops (the serve process's stdin closes, its pipe
 connection closes, `client_gone`) only removes that connection from the tab's followers; when the last follower goes,
@@ -910,6 +912,8 @@ stay for quit. Native: `crates/flare/src/remote_host.rs` (`unfollow`, `gone`), `
 `remote.detach`), `appctl/remote_glue.rs`. Held by `a_remote_detach_or_a_dropped_link_never_closes_the_tab`,
 `a_tab_is_followed_until_its_last_connection_detaches_or_goes` and `taking_the_size_back_never_kills_the_shell`.
 Source: remote sessions PR 2 (2026-11-12).
+Amended by rule 1302 (2026-11-19): a hidden session keeps its opener's size when its last follower goes, and
+`remote.close` ends it at once with no ask on the host (rule 1305).
 281. **The output ring has a cap and never blocks the UI sink.** A followed tab's output is numbered (a `u64` that only
 goes up) and kept in a ring of 4 MiB (`TAIL_CAP`); older bytes drop off, and a `since` older than the ring answers
 `gap: true` and the bytes from the oldest kept, never a silent skip. The ring is fed in `Session::deliver` after the
@@ -982,9 +986,11 @@ drops what is no typing); the emulator's answers stay here (`SessionManager::wri
 `crates/flare/src/tab_host.rs` (`spawn_remote`), `term_ui.rs`, `appctl/surfaces7.rs`. Held by
 `a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token`,
 `typing_reaches_the_link_as_intents_and_replies_stay_here`, `decoded_typing_encodes_to_the_same_bytes_on_the_host`,
-`mouse_focus_and_string_sequences_are_never_sent`,
+`focus_and_string_sequences_are_never_sent` (a mouse report is a mouse intent since rule 1317),
 `a_remote_tab_never_starts_a_local_shell_and_the_quit_leaves_its_session` and
 `a_remote_tab_shows_the_hosts_output_and_takes_typing`. Source: remote sessions PR 3 (2026-11-12).
+Amended by rule 1307 (2026-11-19): a remote tab also saves its `open_id` in `remote` (`SavedRemote.open_id`); an older
+file reads as before.
 288. **A viewer's disconnect, quit or restart never ends the host session; the restore attaches again and is not new
 work.** Rules 37 and 38 for a remote tab. Closing the tab (`kill`) sends `remote.close`, which asks on the host as any
 close does (rule 48), and is still taken to the host when the link was down. The quit (`kill_all`, through
@@ -1002,6 +1008,9 @@ that is gone ends the tab as a shell that exits. A shape it does not know reads 
 `a_host_tab_that_is_gone_ends_the_tab`, `a_remote_tab_round_trips_through_tabs_json_beside_a_local_one`,
 `the_restore_keeps_a_remote_tab_without_a_stat_and_attaches_it`, `a_remote_tab_saves_its_host_tab_and_the_output_read`
 and the e2e `remoteViewer`. Source: remote sessions PR 3 (2026-11-12).
+Amended by rule 1307 (2026-11-19): a host tab that is gone is looked for once by the tab's open id (`remote.find`)
+before the tab ends; a tab saved before the open id ends as before, and a session whose shell ended on the host leaves
+the tab with one red line (rule 1308).
 289. **Replayed output never raises an agent mark.** What a remote tab shows as it attaches is the past: the snapshot is
 plain text (`plain_snapshot` takes every sequence out of it), and what a reconnect catches up on has the agent's
 signals (OSC 777, OSC 7501) taken out (`SignalStrip`, which keeps a signal cut across the end of the replay out whole).
@@ -1074,8 +1083,10 @@ the viewer: its hub holds the question mark (live OSC 777, or the host's status)
 viewer's notifier shows it once per episode as for any tab (rule 206). The host's notifier leaves out every tab a
 remote viewer follows, so the same question never rings on both machines; a tab nobody follows notifies on the host as
 before, and the host's strip still shows the mark. Native: `crates/flare/src/appctl/surfaces7.rs` (`notify_update`),
-`agent_hub.rs` (`question_text` of a remote tab). Held by `a_question_in_a_followed_tab_is_the_viewers_to_notify` and
+`agent_hub.rs` (`question_text` of a remote tab). Held by `a_hidden_sessions_question_never_rings_on_the_host_followed_or_not` and
 `a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice`. Source: remote sessions PR 4 (2026-11-12).
+Amended by rule 1304 (2026-11-19): a session another machine opens is hidden on the host and never rings there,
+followed or not; the host's own strip tabs are never followed (rule 1303).
 296. **The host holds sleep only while a remote-followed session works, and lets go on every exit path.** Owner
 decision 2026-11-12: the machine that runs a remote session stays awake while it works, and sleeps as usual once all
 are idle. The window holds one `Hold` while any tab a remote viewer follows has an agent at work (`working` and an
@@ -1089,9 +1100,11 @@ locks. Under `--e2e` a counter stands in. Native: `crates/flare-win/src/keep_awa
 `crates/flare/src/appctl/remote_glue.rs` (`sync_keep_awake`). Held by
 `the_system_is_held_from_the_first_hold_to_the_last_drop`, `the_fake_counts_holds_and_a_drop_lets_go`,
 `the_system_keep_awake_takes_and_lets_go_without_waiting`,
-`a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after` and, on a real Mac (CI's macOS job),
+`a_working_hidden_session_holds_the_host_awake_with_no_follower` and, on a real Mac (CI's macOS job),
 `keep_awake::sys::tests::a_hold_makes_one_real_assertion_and_its_last_drop_releases_it` (`pmset -g assertions` lists
 the process's one Flare assertion while held and none after). Source: remote sessions PR 4 (2026-11-12).
+Amended by rule 1302 (2026-11-19): a hidden session at work holds the system awake followed or not (nobody on the host
+sees it, and its opener cannot reach a sleeping host).
 297. **Conversation entries cross the link as numbered `Entry` values; no host path does.** `remote.convo {tab, since}`
 answers the followed tab's Claude session as entries (role, text, tool, time) the host numbers from 1 per tab. The host
 finds the transcript from the tab's session and folder with its own Claude folder, so a Mac's project slug and a PC's
@@ -1249,8 +1262,10 @@ after "Close tab": the tab goes from this window and its pty lets go the quit's 
 session goes on on its machine and nothing asks. A local tab has no such row. Native:
 `crates/flare/src/appctl/remote_glue.rs` (`hide_remote`), `crates/flare/src/tab_host.rs` (`TabHost::leave`),
 `crates/flare-term/src/session.rs` (`SessionManager::leave`), `crates/flare/src/menus_ui.rs` (`HIDE_HERE`). Held by
-`ui_tests::term::flow::hide_here_only_detaches_and_close_ends_the_session_everywhere` and the e2e `remoteUi`. Source:
-remote sessions PR 7 (2026-11-12), plan R-new-25.
+`ui_tests::term::flow::a_remote_tabs_menu_has_close_and_no_hide_here_only` and the e2e `remoteUi`. Source:
+remote sessions PR 7 (2026-11-12), plan R-new-25. Amended 2026-11-19 (Max): "Hide here only" is gone, since it left a
+hidden session nobody sees (`hide_remote`, `HIDE_HERE` and `TabHost::leave` removed; the quit still detaches through
+`SessionManager::leave`, rule 288); the host closes a hidden session at once and the opener asks instead (rule 1305).
 1193. **While the other machine sizes a remote tab, this screen shows its conversation fitted to the window, never a
 terminal at the other window's size; a click or a key takes the terminal back.** The live terminal has one size, the
 last typist's (rule 282). The host's `remote.status` says who that is (`sized`: `host` or `viewer`). While the host
@@ -2744,7 +2759,8 @@ bundle's record, the lock, the cross-volume refusal as a pure function), `stage_
 bundle with `FLARE_STAGE_APP` and `FLARE_STAGE_ROOT`) and `ui_tests::staged_flows` (`a_mac_bundle_...`,
 `the_mac_restart_...`, `an_installed_mac_bundle_...`). An ad hoc signature changes per build, so macOS may ask for
 permissions again after an install. Source: Max, "always stage apps so they show as update here in the ui"
-(2026-11-11).
+(2026-11-11). Amended by rule 1326 (2026-11-20): an agent may also arm the install of a Developer ID stage; the app
+still does the swap, once every agent is idle.
 1137. **macOS: the default dictation key Ctrl+Cmd works in Flare's window, and a missing Input Monitoring is asked for
 and logged, never silence.** Max switched dictation on (Large v3 Turbo downloaded) and the key did nothing, with not
 one dictation line in the diag log (owner, 2026-11-11). Root cause: macOS' winit (`flagsChanged:`) queues a modifier's
@@ -3531,7 +3547,9 @@ that it was not sent. A `no_tab` end drops the kept typing: it is never typed in
 `the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole`),
 `remote_host::tests::an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them`,
 `ctl_app::tests::remote_open_checks_the_host_folder_and_the_resume_id_first` and
-`remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_tab`. Source: Max, 2026-11-13.
+`remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_session`. Source: Max, 2026-11-13.
+Amended by rule 1307 (2026-11-19): the open id is made when the tab is made (not per link worker) and saved with the
+tab in `tabs.json`, so a restored tab sends the same one and finds its session after the host's Flare restarted.
 1211. **The host's own window shows the fitted conversation view while a remote viewer sizes an agent tab.** The
 owner's design (spec "Size" and "The other screen"): the live terminal has one size, the last typist's, and the other
 screen shows the conversation instead of a squeezed terminal. Rule 1193 gave the viewer that view; the host kept
@@ -3552,7 +3570,7 @@ character. Native: `appctl/remote_glue.rs` (`host_view_stands`, `HostConvoView`,
 `appctl::remote_glue::tests` (the switching rule, the reads taken once, another session or tab starting over, the
 viewer named), `ctl_app::tests::remote_resize_names_the_viewer_the_bridge_said`,
 `serve_remote::tests::the_bridge_names_the_links_machine_to_the_running_flare` and
-`remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab` (every shipped scale:
+(until 2026-11-19) `remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab` (every shipped scale:
 the view and its machine, a key and a click taking the size back, the release, a plain shell, another tab in front).
 Source: Max, 2026-11-13.
 1212. **A viewer's size alone never puts the host's fitted view up; only its typing does.** Found 2026-11-13 by an
@@ -3567,8 +3585,11 @@ tab), and the size coming back here clears it (`take_size_back`: a key typed her
 tab's size as rule 282 says; only the view waits for the viewer's typing. After a reconnect the viewer types once
 before the view returns. Native: `tab_host.rs` (`viewer_typed`, `note_viewer_typed`, `viewer_typed_last`),
 `appctl/remote_glue.rs` (`CtlOp::RemoteInput`, `host_convo_want`, `host_view_stands`). Held by
-`tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and
+`tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and (until 2026-11-19)
 `remote_flows::a_viewers_size_alone_never_puts_the_hosts_fitted_view_up`. Source: independent review, 2026-11-13.
+Note 2026-11-19 (rules 1302, 1303): only a hidden session can be sized by a viewer now, and it is never in the host's
+front, so the host's own fitted view (rules 1211, 1212) can no longer stand; its two window flow tests were removed with
+that, and the code goes in the remote-on-opener plan's PR 3 (rule 1309).
 
 1213. **A remote tab's Preview chip opens through an ssh tunnel, its folder joins the recent folders with its machine,
 its snapshot keeps the host's colours, and a dropped folder is copied whole.** Owner approved 2026-11-13. (1) A remote
@@ -4557,8 +4578,9 @@ e2e `brand` scenario (the box ends 16 px under Cancel). Source: Max, 2026-11-15,
 the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
 recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
 choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
-case. A folder below or beside it is another folder. A hidden folder frees no spot: no older recent and no starter
-takes it, and no "No recent folders" note appears, so the list just has fewer rows. A remote tab's folder is on
+case. A folder below or beside it is another folder. A hidden folder brings no "No recent folders" note. (Amended by
+rule 1298 on 2026-11-18: its spot now goes to the next older recent without a tab, then to a starter; it no longer
+stays empty.) A remote tab's folder is on
 another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
 menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
 `menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
@@ -4897,7 +4919,7 @@ plain rows, active and not, hover square and click) and the strip guard
 row updates while hovered). Source: Max, 2026-11-17.
 
 1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
-screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
+screenshot of Settings > Machines > Add a computer listing "Office-Mac-Mini" (nearby, with the Apple logo) and then
 "mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
 read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
 first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
@@ -4909,6 +4931,61 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1297. **A computer found twice after an mDNS name conflict shows once in the Machine drop-down.** Max, 2026-11-18, a
+screenshot of Settings > Machines > Add a computer listing "Office-Mac-Mini" twice, both with the Apple logo, after a
+router update put the Mac on Ethernet and WiFi at once: "fix the duplicate issue". The Mac's Flare heard its own
+announcement on the other network, took it for another computer and renamed itself `Office-Mac-Mini (2)` there (mdns-sd
+conflict handling), so the browse found two instances. Entries whose instance names match once a trailing " (N)" goes,
+with the same TXT name, system and port, are one computer: the one without the suffix stays, its own addresses first and the other's after (an announcement is not
+proof, so a copy is never tried first) (`merge_nearby` in `flare/src/pairing.rs`). Another port, another system or a suffix that is not a number
+stays apart. Held by `a_computer_found_twice_after_a_name_conflict_shows_once` (`flare/src/pairing_tests.rs`). Source:
+Max, 2026-11-18.
+1298. **Older recents fill the folder menu's spots that open tabs leave.** Max, 2026-11-18: "the new tab right click
+menu only shows choose a folder on this machine or the mac, no recent folders". His `flare.recentRoots` held twelve
+folders, and the seven newest each had an open tab. Rule 1269 took the newest five first and then hid those with a
+tab, and a hidden folder's spot stayed empty, so all five spots were empty and only "Choose a folder…" and the
+machine's row were left (no remote recents were kept yet). Now the folders with an open local tab leave the history
+before the newest five are taken: the five newest recents without a tab are listed, and a starter fills a spot only
+when no older recent is left (never one with a tab). A pin still always stays. The "No recent folders" note still
+shows only when nothing at all is known (no pin, no history, no starter), never because folders are hidden. The
+remote recents and the machine rows are as rule 1282 left them. Native: `menus_ui::folder_rows`. Held by
+`older_recents_fill_the_spots_of_folders_that_have_a_tab` (Max's twelve recents with seven open, and the starter case)
+and the rule 1269 tests (`menus_ui.rs`). Source: Max, 2026-11-18.
+
+1299. **A click in the remote folder browser only picks; a double-click goes in.** Max, 2026-11-18: "when i pick
+choose folder on mac it shows a file picker in the users folder which is fine but clicking anything like i clicked
+documents just reopens the users folder it doesnt go into documents, and it happens on single click". Each click on
+a row called `push_rfolder`, which set new rows and crumbs models on the window. Slint then built every row again:
+`changed rows` scrolled the list back to its top (the folder looked opened again), and the second press of a
+double-click landed on a new row item, so Slint reset its click count and `double-clicked` never fired: nothing was
+ever entered. The tests called `invoke_rfolder_pick` and `invoke_rfolder_enter` directly, and the preview never swaps
+its model, so none saw it. Now a pick (a click, Up or Down) puts only the picked row and the footer's path on the
+window (`push_rfolder_pick`); the rows and crumbs models are set only when a listing comes in or the dialog opens or
+closes. One click picks (highlight, footer path), a double-click enters, Enter is still Open here (rule 1282), and Open
+here opens the picked folder. Native: `appctl/remote_folder_glue.rs`; the window shows the list's place and scroll as
+`rfolder-list-x`, `rfolder-list-y`, `rfolder-list-w` and `rfolder-scrolled`. Held by
+`in_the_window_one_click_picks_and_a_double_click_goes_in` (`ui_tests/term.rs`: the real pointer in the whole window,
+a fake lister that records each asked path: one click asks nothing and the list stays scrolled where it was, a
+double-click asks the child path and the crumbs follow). Source: Max, 2026-11-18.
+
+1300. **An SSH host wears the system a link said, and one that answered nothing is asked again.** Max, 2026-11-18:
+"only the mac has an icon in the machine picker, the evo x2 doesnt have one, it should have a windows icon and that
+stuff should be automatic if possible otherwise dont show any icon there, but only after its connected". The picker
+is Settings > Machines > Add a machine's Machine drop-down. The Mac there is the nearby computer, with the logo its
+announcement carries (its `mac` SSH host is left out by rule 1285). evo-x2 (`HostName 100.105.158.52`, a Windows PC
+over a VPN) is an SSH host whose logo comes only from rule 1278's look (its SSH greeting, then `uname -s`); it was not
+reachable when the dialog looked, so nothing was found, and the dialog looked only once a visit. Now: (1) an SSH host
+takes the system a link said for the same computer: a linked machine's `kind` (its own `remote.hello` at Add, or the
+pairing), matched by the host it names or by its address against the host's `HostName` (`same_host`, the rule 1285
+comparison), else a computer that reaches this one by the address it paired from. That word wins over a greeting, and
+it is kept in `host_os.json` on a worker, so the logo stays after the machine is removed. (2) A host that answered
+nothing is looked at again each time the dialog opens, so its logo comes once it can be reached; a host with a system
+is not asked again in the visit. A host nothing said anything about still draws no logo. What a greeting said is
+never a machine's `kind` (rules 1207, 1208, 1278). Native: `MachinesPage::{os_learnt, os_of_host, keep_learnt_os,
+open_form}`, `flare_settings::page::machines::same_host`. Held by
+`an_ssh_host_wears_the_system_its_link_said_once_connected` and
+`the_dialog_finds_each_ssh_hosts_system_and_keeps_it` (`machines_page.rs`). Source: Max, 2026-11-18.
 
 1286. **A Claude tab whose session was never used comes back as a new blank Claude, never another session.** Max,
 2026-11-18: "if a session is open but never has a message sent, when flare then restarts it contineus a random session
@@ -4945,6 +5022,14 @@ SESSION_NEW}`, `TabModel::set_session`, `AppCtl::session_to_save`, `flare_agent:
 `a_tab_resumes_its_own_session_and_a_never_used_one_comes_back_blank`,
 `a_closed_claude_tab_never_used_comes_back_as_a_new_blank_claude` and
 `a_new_blank_claude_is_claude_with_no_session_and_not_new_work`. Source: Max, 2026-11-18.
+
+1301. **On Windows, Claude Code's macOS bullet (U+23FA) draws as a plain dot, not an emoji tile.** Max, 2026-11-19,
+screenshots of a Mac tab on the PC: each Claude reply started with a blue emoji tile instead of the dot a PC tab shows
+("it's not an emoji, it should just be a dot"), and the spinner's star (U+2733) was a green emoji tile too. Claude Code prints U+23FA on macOS and U+25CF on Windows; cosmic-text's
+fallback sent U+23FA to Segoe UI Emoji. Windows now lists Segoe UI Symbol as its text-symbol face
+(`TEXT_SYMBOL_FAMILIES` in `flare-render/src/font_catalog.rs`), so a text-presentation character the emoji face took is
+drawn from it, as rule 1131 does on macOS (the bullet, the spinner stars U+2733, U+2736, U+273B, U+273D, and marks such as U+2714 and U+26A0); with VS16, or a default emoji, it stays colour. Held by
+`a_text_presentation_symbol_draws_from_a_text_face_on_windows` (`flare-render/src/raster.rs`). Source: Max, 2026-11-19.
 Follow-up 2026-11-19, Max: "no sessions continue now, all started with an empty session". Every Claude tab saved
 `"new"` and came back blank, for two reasons. (1) The hub took a session the hooks named (`HostEvent::Osc777` in
 `agent_hub.rs`) without counting it as a change, and the window saves sessions only on `AgentHub::take_changed`
@@ -4961,6 +5046,168 @@ with the same id. Held by `a_named_session_is_a_change_even_when_no_mark_moves` 
 `a_session_named_after_the_work_showed_is_saved_and_kept_while_its_claude_stays` (`appctl`) and
 `zsh_runs_a_restored_tabs_resume_before_its_first_folder_report` (`flare-term/tests/real_shells_macos.rs`, a real
 zsh with a stand-in `claude`).
+1302. **A session another machine opened runs hidden on its host.** Max, 2026-11-19: "on the machine its running on, it
+will be in the background, you wont see it, only on the machine that started it remotely." `remote.open` makes a hidden
+session (`TabModel::open_hidden`), never a strip tab: the model keeps it in a list of its own (`TabModel::hidden`, never
+`state.tabs`), so no strip tab, sidebar row, Ctrl+Tab or Ctrl+1..9 stop, used-list entry, front pick, Ctrl+Shift+T
+entry, badge, attention count, taskbar flash, plugin tab (`tabs.list`, the `tabs` and `agent` events) or dictation
+target ever shows it. It keeps its opener's machine name (`ctl_app::viewer_of`; "another computer" when the bridge named
+none, renamed at each attach), its `open_id` and its size. It is born remote-sized (`TabHost::spawn_hidden`): its
+opener's saved size, or the window's grid size until the opener's first `remote.resize`; the window's refits, a key
+typed there and the last follower going never hand its size back (amends 280). A hidden session at work holds the
+system awake, followed or not (amends 296). The quit ask and the install hold count it and name it "<folder> (for
+<opener>)" (`busy_hidden`). Its agent's calls that would show something on this screen (a panel, a `show_*` tool, the
+browser panel, a mini-app, a mod's panel or tool, a fill, a badge or progress, the session bar) answer `unavailable`:
+"this session shows on <opener>; its panels cannot show there yet" (`AppCtl::hidden_refusal`, ahead of every handler);
+its hooks' `panel.state`, `tabs.list` of its own tab, its folder and `session.read` still answer; its `open.remote` is
+refused too (a tab it opened would show here, in front on an empty strip). A hidden session whose shell ends, or never
+starts, goes, and its followers hear `no_tab`. `tabs.json` saves it after the strip as a tab with
+`hidden: {opener, open_id, cols, rows}` (`active` counts strip tabs only); an older Flare reads it as a local tab (rule
+40). The restore brings it back hidden with a new id, its Claude session resumed as rule 1286 says. A machine holds at
+most 50 (`MAX_HIDDEN`, Max 2026-11-19): a 51st `remote.open` is refused (`busy`, said on the opener in one line), a
+retried open (rule 1210) never is. Native: `crates/flare-tabs/src/model.rs` (`Hidden`, `open_hidden`, `close_hidden`,
+`saved`, `settle`), `restore.rs` (`SavedHidden`, `RestoredHidden`, `parse_tabs`, `tabs_json`, `plan_restore_with`),
+`crates/flare/src/tab_host.rs` (`spawn_hidden`), `appctl/remote_glue.rs` (`CtlOp::RemoteOpen`, `sync_keep_awake`),
+`appctl.rs` (`sync_hub`, `sync_model_agents`, `restored`, `busy_hidden`, `hidden_refusal`, `host_wake`),
+`agent_hub.rs` (`on_hidden_tab`). Held by `flare_tabs::model::hidden_tests`, the hidden tests of
+`flare_tabs::restore::tests`, `tab_host::tests::a_hidden_session_is_remote_sized_from_birth_and_keeps_its_size` and
+`ui_tests::agent_flows::remote_flows` (`a_remote_open_makes_a_hidden_session_with_its_opener_name`,
+`a_remote_open_sent_again_with_its_open_id_opens_no_second_session`,
+`a_hidden_session_keeps_its_size_when_its_last_follower_goes`,
+`a_working_hidden_session_holds_the_host_awake_with_no_follower`,
+`the_quit_ask_names_a_working_hidden_session_for_its_opener`,
+`a_hidden_tabs_agent_cannot_open_a_panel_or_front_the_window`,
+`plugins_tabs_list_and_events_leave_hidden_sessions_out`, `a_hidden_session_whose_shell_ends_goes`,
+`a_hidden_session_whose_shell_never_starts_goes`,
+`a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed`) and the e2e
+`remoteViewer`, `remoteOpen` and `remoteUi`. Source: Max, 2026-11-19, plan `2026-11-19-remote-session-on-opener.md` PR 1.
+1303. **The remote ops answer only for hidden sessions.** `remote.status` and `remote.tabs` list only hidden sessions
+(`hidden_rows`, never `tab_facts`), and `remote.attach`, `input`, `resize`, `release` and `close` answer `no_tab` for a
+tab that is not one: a strip tab of the host and a remote tab the host shows alike. The ops the control channel's worker
+answers itself (`output`, `snapshot`, `fetch`, `put`, `convo`, `detach`) need a follow, and only `remote.attach` of a
+hidden session makes one. So one session shows on one screen, and no machine follows another's viewer tab (no mirror
+chains; reused from closed PR #281). Native: `crates/flare/src/appctl/remote_glue.rs` (`ctl_remote`). Held by
+`remote_flows::every_remote_op_refuses_a_tab_that_is_not_hidden` and
+`remote_flows::remote_status_and_tabs_list_only_hidden_sessions`. Source: Max, 2026-11-19.
+1304. **A hidden session's question rings only on its opener.** The host's notifier, its question posts, its taskbar
+badge and attention count and its bell flash leave hidden sessions out, followed or not (amends 295): the hub marks them
+(`AgentHub::on_hidden_tab`) and `question_tabs`, `attention`, `send_tabs` and the screen question post skip them, while
+`remote.status` still says their state word and question to the opener. Native: `crates/flare/src/agent_hub.rs`,
+`appctl.rs` (`host_wake`'s bell). Held by `remote_flows::a_hidden_sessions_question_never_rings_on_the_host_followed_or_not`.
+Source: Max, 2026-11-19.
+1305. **`remote.close` ends a hidden session at once on the host; the opener asks first.** Nobody sits at the host's
+screen for a hidden session, so `remote.close` ends it with no ask there (`close_hidden_now`) and it never joins the
+host's Ctrl+Shift+T list (amends 1192 for the host side). The opener asks before closing a remote tab while its host's
+status names an agent, idle or not (`AgentHub::remote_agent`, kept before any early return of `on_remote_status`;
+`AppCtl::close_asks`), so an idle Claude tab never closes unasked on both machines. Native:
+`crates/flare/src/appctl/remote_glue.rs`, `appctl.rs` (`close_asks`, `agent_named`), `agent_hub.rs`. Held by
+`remote_flows::a_remote_close_ends_a_hidden_session_without_asking_on_the_host` and
+`ui_tests::term::flow::the_opener_asks_before_closing_an_idle_remote_claude_tab`. Source: Max, 2026-11-19.
+1306. **A hidden session is no plugin's to read, and its opener's name passes one check everywhere.** A plugin's
+`session.read` that names a hidden session (rule 1302) gets `no_tab` "that tab is closed", the answer a tab that does not
+exist gets, so it learns nothing (`CtlOp::SessionOf { hidden_ok }`, `AppCtl::ctl_session_of`). Only a call made with
+that session's own tab token, and its opener's `remote.fetch` and `remote.convo`, read it. The same holds for a call
+that would show something on a hidden session (rule 1302): only its own token hears `unavailable` naming the opener. A
+plugin that names it (a badge, progress, its panel, its bar, a fill or `browser.fill.page`) gets the answer a tab that
+does not exist gets, byte for byte: `AppCtl::hidden_refusal` passes it by (the op's `own` is false, set by the worker
+from `AppDispatcher::owns`, the one "own" check), and the op's own handler answers a hidden tab as an unknown one,
+`is_shell_tab` false for it, its earlier checks in the same order. An opener's name is checked
+the same way when the session opens (`open_hidden`), when the opener names itself again (`set_hidden_opener`, a name it
+refuses changes nothing), at restore and in `viewer_of`: trimmed, not empty, at most `MAX_OPENER_NAME` (256, the same as
+`flare_ctl::session::MAX_MACHINE_NAME`, a compile-time check holds them equal) characters, no control character
+(`flare_tabs::restore::valid_opener`). A saved tab with any `hidden` value but null is a hidden session: a bad opener
+comes back as "another computer", a bad open id or size as none, and it never comes back as a strip tab (a session another
+machine opened never shows on this screen). Native: `crates/flare/src/ctl_app.rs` (`session_read`, `viewer_of`),
+`appctl/sessions_glue.rs`, `appctl/remote_glue.rs`, `crates/flare-tabs/src/restore.rs` (`valid_opener`, `parse_hidden`),
+`model.rs`. Held by
+`mods_tests::plugin_sessions::session_read_never_gives_a_plugin_a_hidden_session_but_its_own_token_reads_it`,
+`remote_flows::a_plugin_naming_a_hidden_tab_hears_what_an_unknown_tab_hears`,
+`flare_tabs::restore::tests::a_hidden_entry_with_a_bad_opener_restores_hidden_and_unnamed` and
+`flare_tabs::model::hidden_tests::an_opener_name_is_checked_the_same_at_open_rename_and_restore`. Source: the security
+review of PR #289, 2026-11-19.
+1307. **The opener finds its session again after the host's Flare restarted.** A restart of the host's Flare (a quit, an
+update, a crash) brings each hidden session back under a new tab id (rule 1302), so the opener's saved `host_tab` gets
+`no_tab`. That needs ids no earlier run gave: the window clock starts at 0 each run, so strip ids repeat (`t0-6` after
+every start), and a restarted host gave the same id to whatever tab took that place, which the opener then followed
+(found by the e2e). A hidden session's id is `h<run>-<n>` (`TabModel` `hidden_id`, a random word per run), so a saved
+id from an earlier run is always `no_tab`. The remote tab's `open_id` (rule 1210) is made with the tab on the UI thread (`AppCtl::open_remote`) and saved
+in `tabs.json` as `remote: {.., open_id}` (`SavedRemote.open_id`; an older file reads as before, a bad id is dropped
+alone, rule 40). On `no_tab` at attach or in the polls, the link sends `remote.find {open_id}` once per link life, on the
+same link (`Worker::find`): `{tab}` sets the new host tab, drops the typing kept for the lost one (never typed into
+another tab), takes a fresh snapshot and then says "Flare restarted on <machine>. The session goes on." in one line
+(once the host's screen is quiet, at least 500 ms after the snapshot: a Windows console can repaint after the resize);
+the same id (only the follow was lost) goes on from the number read, with no line. `unknown_method` (an older host) or no
+open id (a tab saved before the key, which stays without one) ends the tab as before. Any other refusal is passing:
+`unavailable` is asked again every 250 ms for up to 10 s on the same link, then the link is tried again later; it never
+ends the tab. The host (`CtlOp::RemoteFind`) searches only its hidden sessions (`TabModel::hidden`, `Hidden::open_id`),
+never a strip tab, and answers `unavailable` until its saved tabs are restored (`TabModel::restore_done`), so an opener
+that comes back during the restore never hears a false end. No name check: the open id is the opener's own random id,
+and a Mac's host name can change (rule 1199). `remote.find` is idempotent (`may_retry`), rides no anchor and is in the
+`remote` namespace (no grant change, no protocol bump, rule 278). Native: `crates/flare/src/remote_link.rs`
+(`Worker::session`, `follow`, `find`, `Step::Gone`, `restarted_line`), `crates/flare-term/src/remote_pty.rs`
+(`RemoteLive::open_id`, `open_id_or_new`), `crates/flare-tabs/src/restore.rs` (`SavedRemote`, `parse_remote`,
+`tabs_json`), `model.rs` (`saved`), `crates/flare/src/appctl.rs` (`open_remote`, `restored`), `appctl/remote_glue.rs`
+(`CtlOp::RemoteFind`), `ctl_app.rs`, `serve_remote.rs` (`may_retry`), `crates/flare-ctl/src/method.rs`. Held by
+`remote_link::tests` (`a_no_tab_after_a_host_restart_finds_the_session_by_open_id_and_takes_a_snapshot`,
+`a_restored_tab_finds_its_session_after_a_host_restart_while_away`, `an_older_host_without_find_ends_the_tab_as_before`,
+`kept_typing_is_never_sent_to_the_found_tab`, `a_find_the_host_cannot_answer_yet_is_asked_again_on_the_same_link`,
+`a_find_refused_past_the_patience_tries_the_link_again_and_never_ends_the_tab`, `a_host_tab_that_is_gone_ends_the_tab`),
+`remote_flows::remote_find_answers_only_for_a_hidden_sessions_open_id`,
+`remote_flows::a_restored_hidden_session_comes_back_hidden_at_its_size_and_resumed`,
+`ctl_app::tests::remote_find_answers_only_for_a_known_open_id`,
+`flare_tabs::restore::remote_tests::a_remote_tab_saves_and_restores_its_open_id`,
+`flare_tabs::restore::remote_tests::an_older_tabs_json_reads_as_before`,
+`flare_term::remote_pty::tests::a_tab_keeps_its_open_id_and_one_with_none_gets_one_once`,
+`flare_tabs::model::hidden_tests::a_hidden_sessions_id_is_never_one_an_earlier_run_gave` and the e2e `remoteOpen` (the
+host's Flare quits and starts again). Source: Max, 2026-11-19, plan `2026-11-19-remote-session-on-opener.md` PR 2.
+1308. **A remote tab whose session ended on its host says so and stays.** When a hidden session's shell exits on the
+host (rule 1302: it goes, and its followers hear `no_tab`), the opener's `remote.find` (rule 1307) finds nothing. The tab
+then stays open with one red line, "This session was ended on <machine>.", and its link ends; it is not ended as a shell
+that exits, so the line can be read. The opener's own close never shows it (its link ends first). There is no Settings
+list, Show here or End on the host (Max 2026-11-19, after the mockups), so this is the only "ended there" case. Native:
+`crates/flare/src/remote_link.rs` (`Worker::find`, `ended_line`). Held by
+`remote_link::tests::an_ended_answer_leaves_the_tab_with_its_line`,
+`remote_link::tests::typing_kept_for_a_host_tab_that_is_gone_is_typed_nowhere` and
+`remote_flows::remote_find_answers_only_for_a_hidden_sessions_open_id`. Source: Max, 2026-11-19 ("was ended on" stays
+only for a session that ended on the host by itself).
+1317. **A click in a remote tab reaches the host's program as a mouse intent.** Claude Code's AskUserQuestion menu (and
+any program that asks for mouse reports) did nothing when clicked in a remote tab: the viewer's `decode_typing` dropped
+every mouse report, since only typed intents cross the link (rule 279). A mouse report is now an intent of its own,
+never raw bytes. The viewer decodes the SGR report (`ESC [ < b ; x ; y M/m`) and the default one (`ESC [ M` and three
+characters) into an act (press, release, motion, wheel up, wheel down), a button, a 0-based cell and Shift, Alt and Ctrl;
+an extra button, a sideways wheel or a malformed report is still dropped. `remote.input` checks it whole (a known kind,
+a button that fits it, `col` under 1000 and `row` under 500, no other field; else `bad_params` and nothing of the call
+is typed), and the viewer leaves out a cell past those limits before it sends. The host writes it with `encode_mouse` and
+its own tab's modes, only while its program asked for mouse reports and its tracking mode reports that event, and only
+for a cell inside its grid; a wheel is a wheel report and never scrolls the host's view. A press or a release counts as
+the remote typist's typing (rule 282); a motion or a wheel is only a report (rule 9). Motion cannot flood the link: a
+motion right after a motion with the same button and modifiers takes its place in the tab's outbox, and the link sends
+a call of motion alone at most once each 40 ms (`MOTION_GAP`, half the 50 calls a second), the last place always sent.
+A mouse event is never kept while the link is down (rule 1210): a late click would land on a changed screen. An older
+host refuses the kind (`bad_params` "no intent is called mouse"): the call goes again without its mouse intents, so the
+keys in it still arrive, and that link sends none after; the link stays. `remote.snapshot` also answers `mouse` and
+`sgr_mouse`, and the viewer sets that mouse mode on its terminal from the word alone (every mouse mode off, then the one
+named; an unknown word or an older host's answer changes nothing), so a click on a restored or caught-up tab still
+reaches the program. Native: `crates/flare-ctl/src/remote.rs` (`MouseIntent`, `parse_mouse`, `intents_json`),
+`crates/flare-term/src/remote_pty.rs` (`sgr_mouse`, `legacy_mouse`, `RemoteIo::type_in`, `mouse_mode_bytes`),
+`crates/flare-term/src/handle.rs` (`remote_mouse`, `remote_snapshot_with`), `crates/flare/src/remote_link.rs`
+(`MotionPace`, `send_typing`, `KeptTyping::keep`, `snapshot`), `crates/flare/src/ctl_app.rs`. Held by
+`remote::tests::remote_input_mouse_intents_round_trip`,
+`remote::tests::remote_input_refuses_a_mouse_intent_that_is_out_of_bounds_or_malformed`,
+`remote_pty::tests::a_mouse_report_decodes_to_a_mouse_intent`,
+`remote_pty::tests::every_mouse_report_round_trips_through_the_encoder`,
+`remote_pty::tests::mouse_motion_coalesces_in_the_outbox`, `remote_pty::tests::a_snapshots_mouse_mode_is_built_from_its_word`,
+`handle::tests::a_remote_mouse_event_is_written_only_while_the_program_asked_for_reports`,
+`handle::tests::a_snapshot_names_the_programs_mouse_mode`,
+`remote_link::tests::a_click_reaches_the_host_as_mouse_intents_in_order_with_the_typing`,
+`remote_link::tests::an_older_host_without_mouse_intents_still_gets_the_keys_and_the_link_stays`,
+`remote_link::tests::a_click_while_the_link_is_down_is_never_sent_later`,
+`remote_link::tests::a_dragged_mouse_is_paced_and_its_last_place_arrives`,
+`remote_link::tests::a_snapshots_mouse_mode_reaches_the_tabs_terminal`,
+`remote_link::tests::a_mouse_intent_past_the_limits_is_left_out_of_the_call`,
+`ui_tests::term::a_click_on_a_remote_tab_in_mouse_mode_reaches_the_link_as_mouse_intents` and
+`remote_flows::a_click_from_the_opener_picks_an_option_in_the_hidden_sessions_menu`. Source: Max, 2026-11-19 (a click
+on an option of Claude Code's question menu in a remote tab did nothing).
 
 1324. **A pulse on screen leaves evidence in the diagnostics log: a row or the frame's geometry that flips and back
 is logged.** Max, 2026-11-20, a screenshot of Claude Code's status line: "the shell flickering is not fixed these
@@ -5006,6 +5253,29 @@ older write never lands over a newer one and they never share the `.tmp` file. H
 updated (its old copy could not move onto its own new copy), and a plugin with id `zip` in a top folder could never be
 installed. `_` is not allowed in an id, so no id meets them. Not led by a dot: on macOS the aside copy goes to the
 Trash, where Finder hides such names. Held by `the_staging_names_never_match_a_plugin_id` (`flare-mods/src/install.rs`).
+1326. **An agent may install the staged build, and it never cuts off a session: the install is armed until every agent
+is idle; on a Mac only a Developer ID build.** Max, 2026-11-20: agents should be able to install the staged build
+themselves, doing what the click on "Build ready" does, and "always stage and install the signed build". `install.staged`
+(the `install_staged_build` tool, `flare --install-staged [--check]`) is its own namespace that only the agent and the
+app enter; no plugin permission, remote link or bridge reaches it. It answers at once (`armed`, `installing`, `none`,
+`refused` with why, or `staged` for a check) with the commit and `signed`. Armed, the flow reads every 250 ms whether no
+agent works, none waits on a question (`AgentHub::question_tabs`) and no question of Flare's own is up
+(`staged_flow::all_idle`); that must hold for `IDLE_MS` (60 s) without a break, so the calling agent's own turn ends
+first. Then the 10 s toast with Cancel; work or a question in it, or during the swap, puts it back to waiting (the swap
+is taken back), never asking the person. The person's Cancel, a failed swap or a new stage disarm it, and the person's click on the chip takes over (the click's rules apply: the close question under a working agent, else at once). On macOS the
+call's worker runs `codesign --verify --deep --strict` and `codesign -dv` on the staged bundle and refuses an agent
+anything but a Developer ID leaf (`signing::parse_display`); the person's click installs any stage, as before. Native:
+`crates/flare-update/src/{staged_flow,signing}.rs`, `crates/flare/src/appctl/staged_glue.rs` (`staged_arm`,
+`staged_tick`), `crates/flare/src/ctl_app.rs` (`install_staged`), `crates/flare-ctl/src/{method,grant,install}.rs`,
+`crates/flare-mcp/src/lib.rs`, `crates/flare/src/cli_install.rs`. Held by
+`staged_flow::tests::an_armed_build_counts_down_only_after_a_full_minute_of_idle`,
+`work_in_the_countdown_keeps_it_armed_and_cancel_or_a_new_stage_disarm_it`,
+`the_persons_click_takes_over_an_agents_ask`, `signing::tests`,
+`grant::tests::only_the_agent_and_the_app_install_the_staged_build`,
+`ctl_app::tests::install_staged_reports_the_stage_and_its_signer_and_arms_only_a_developer_id_build` and
+`ui_tests::staged_flows::an_agents_install_waits_for_every_agent_idle_a_minute_then_installs_like_the_click`,
+`work_in_an_agents_countdown_waits_for_idle_again_without_asking`,
+`a_question_holds_an_agents_install_and_the_persons_cancel_ends_it`. Source: Max, 2026-11-20.
 
 ## Device panel (2026-11-19)
 
