@@ -5,7 +5,8 @@
 //! Typing crosses the link as intents, never as raw bytes (rule 2, and rule 279 for the one exception): a key is the
 //! key the person pressed (its name, its physical code, its text and modifiers), encoded into bytes on the host by the
 //! same encoder a local key goes through; a text is what an input method or dictation committed, with no control
-//! character; a paste is sanitised on the host the way a local paste is (rule 1).
+//! character; a paste is sanitised on the host the way a local paste is (rule 1); a mouse event is an act, a button, a
+//! cell and modifiers, written as a report on the host only while the program there asked for one (rule 1317).
 
 use serde_json::{Map, Value, json};
 
@@ -238,6 +239,109 @@ pub enum Intent {
     Text(String),
     /// A paste: sanitised on the host (`sanitize_paste`) and bracketed when the program asked.
     Paste(String),
+    /// A mouse event over a cell (rule 1317): written on the host as a mouse report only while the program there asked
+    /// for one, in the encoding it asked for.
+    Mouse(MouseIntent),
+}
+
+/// What the pointer did (a mouse intent's `kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseAct {
+    Press,
+    Release,
+    /// A move, with a button held or none.
+    Motion,
+    WheelUp,
+    WheelDown,
+}
+
+impl MouseAct {
+    const ALL: [MouseAct; 5] = [
+        MouseAct::Press,
+        MouseAct::Release,
+        MouseAct::Motion,
+        MouseAct::WheelUp,
+        MouseAct::WheelDown,
+    ];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            MouseAct::Press => "press",
+            MouseAct::Release => "release",
+            MouseAct::Motion => "motion",
+            MouseAct::WheelUp => "wheel_up",
+            MouseAct::WheelDown => "wheel_down",
+        }
+    }
+
+    fn parse(word: &str) -> Option<MouseAct> {
+        MouseAct::ALL.into_iter().find(|a| a.word() == word)
+    }
+}
+
+/// A mouse button of a mouse intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseBtn {
+    Left,
+    Middle,
+    Right,
+}
+
+impl MouseBtn {
+    const ALL: [MouseBtn; 3] = [MouseBtn::Left, MouseBtn::Middle, MouseBtn::Right];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            MouseBtn::Left => "left",
+            MouseBtn::Middle => "middle",
+            MouseBtn::Right => "right",
+        }
+    }
+
+    fn parse(word: &str) -> Option<MouseBtn> {
+        MouseBtn::ALL.into_iter().find(|b| b.word() == word)
+    }
+}
+
+/// One mouse event as the viewer's terminal reported it: what happened, the button (a press and a release need one, a
+/// motion may have one, a wheel has none), the 0-based cell (under [`MAX_COLS`] and [`MAX_ROWS`]) and the modifiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MouseIntent {
+    pub act: MouseAct,
+    pub button: Option<MouseBtn>,
+    pub col: u16,
+    pub row: u16,
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
+}
+
+impl MouseIntent {
+    /// Whether the cell is one `remote.input` takes: under [`MAX_COLS`] and [`MAX_ROWS`].
+    pub fn in_bounds(&self) -> bool {
+        self.col < MAX_COLS && self.row < MAX_ROWS
+    }
+
+    /// Whether the button fits the act: a press and a release need one, a wheel has none.
+    pub fn button_fits(&self) -> bool {
+        match self.act {
+            MouseAct::Press | MouseAct::Release => self.button.is_some(),
+            MouseAct::Motion => true,
+            MouseAct::WheelUp | MouseAct::WheelDown => self.button.is_none(),
+        }
+    }
+}
+
+/// The weight a mouse intent counts toward [`MAX_INPUT_BYTES`]: a short, fixed size.
+pub const MOUSE_WEIGHT: usize = 16;
+
+/// The weight of one intent toward [`MAX_INPUT_BYTES`], as the host counts it.
+pub fn intent_weight(i: &Intent) -> usize {
+    match i {
+        Intent::Key(k) => k.key.len() + k.code.len() + k.text.as_ref().map_or(0, String::len),
+        Intent::Text(s) | Intent::Paste(s) => s.len(),
+        Intent::Mouse(_) => MOUSE_WEIGHT,
+    }
 }
 
 fn bad(msg: impl Into<String>) -> CtlError {
@@ -304,9 +408,65 @@ fn parse_key(v: &Value) -> Result<KeyIntent, CtlError> {
     })
 }
 
+fn mouse_cell(o: &Map<String, Value>, field: &str, max: u16) -> Result<u16, CtlError> {
+    match o.get(field).and_then(Value::as_u64) {
+        Some(n) if n < u64::from(max) => Ok(n as u16),
+        _ => Err(bad(format!(
+            "a mouse intent's {field} is a whole number under {max}"
+        ))),
+    }
+}
+
+fn parse_mouse(v: &Value) -> Result<MouseIntent, CtlError> {
+    let Some(o) = v.as_object() else {
+        return Err(bad("a mouse intent is an object"));
+    };
+    for k in o.keys() {
+        if !matches!(
+            k.as_str(),
+            "kind" | "button" | "col" | "row" | "shift" | "alt" | "ctrl"
+        ) {
+            return Err(bad(format!("a mouse intent has no field {k}")));
+        }
+    }
+    let Some(act) = o
+        .get("kind")
+        .and_then(Value::as_str)
+        .and_then(MouseAct::parse)
+    else {
+        return Err(bad(
+            "a mouse intent's kind is press, release, motion, wheel_up or wheel_down",
+        ));
+    };
+    let button = match o.get("button") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(
+            MouseBtn::parse(s)
+                .ok_or_else(|| bad("a mouse intent's button is left, middle or right"))?,
+        ),
+        Some(_) => return Err(bad("a mouse intent's button is a string")),
+    };
+    let m = MouseIntent {
+        act,
+        button,
+        col: mouse_cell(o, "col", MAX_COLS)?,
+        row: mouse_cell(o, "row", MAX_ROWS)?,
+        shift: key_flag(o, "shift")?,
+        alt: key_flag(o, "alt")?,
+        ctrl: key_flag(o, "ctrl")?,
+    };
+    if !m.button_fits() {
+        return Err(bad(
+            "a press or a release needs its button, and a wheel has none",
+        ));
+    }
+    Ok(m)
+}
+
 /// The intents of a `remote.input` call's `intents` param, every one checked: a list of 1 to [`MAX_INTENTS`] objects,
-/// each with exactly one of `key` (an object), `text` or `paste` (strings); text with no control character; at most
-/// [`MAX_INPUT_BYTES`] of text in all. Anything else is `bad_params`, and nothing of the call is typed.
+/// each with exactly one of `key` (an object), `text` or `paste` (strings) or `mouse` (an object, rule 1317); text with
+/// no control character; at most [`MAX_INPUT_BYTES`] of text in all. Anything else is `bad_params`, and nothing of the
+/// call is typed.
 pub fn parse_intents(v: Option<&Value>) -> Result<Vec<Intent>, CtlError> {
     let Some(list) = v.and_then(Value::as_array) else {
         return Err(bad("intents is a list"));
@@ -323,7 +483,9 @@ pub fn parse_intents(v: Option<&Value>) -> Result<Vec<Intent>, CtlError> {
     let mut out = Vec::with_capacity(list.len());
     for item in list {
         let Some(o) = item.as_object().filter(|o| o.len() == 1) else {
-            return Err(bad("an intent is an object with one of key, text or paste"));
+            return Err(bad(
+                "an intent is an object with one of key, text, paste or mouse",
+            ));
         };
         let (kind, value) = o.iter().next().expect("one field");
         let intent = match (kind.as_str(), value) {
@@ -345,13 +507,11 @@ pub fn parse_intents(v: Option<&Value>) -> Result<Vec<Intent>, CtlError> {
                 }
                 Intent::Paste(s.clone())
             }
+            ("mouse", v) => Intent::Mouse(parse_mouse(v)?),
             ("text" | "paste", _) => return Err(bad(format!("a {kind} intent is a string"))),
             _ => return Err(bad(format!("no intent is called {kind}"))),
         };
-        bytes += match &intent {
-            Intent::Key(k) => k.key.len() + k.code.len() + k.text.as_ref().map_or(0, String::len),
-            Intent::Text(s) | Intent::Paste(s) => s.len(),
-        };
+        bytes += intent_weight(&intent);
         if bytes > MAX_INPUT_BYTES {
             return Err(bad(format!(
                 "one remote.input carries at most {} KB",
@@ -388,6 +548,18 @@ pub fn intents_json(intents: &[Intent]) -> Value {
                 }
                 Intent::Text(s) => json!({"text": s}),
                 Intent::Paste(s) => json!({"paste": s}),
+                Intent::Mouse(m) => {
+                    let mut o = json!({"kind": m.act.word(), "col": m.col, "row": m.row});
+                    if let Some(b) = m.button {
+                        o["button"] = json!(b.word());
+                    }
+                    for (name, on) in [("shift", m.shift), ("alt", m.alt), ("ctrl", m.ctrl)] {
+                        if on {
+                            o[name] = json!(true);
+                        }
+                    }
+                    json!({"mouse": o})
+                }
             })
             .collect(),
     )
@@ -452,6 +624,77 @@ mod tests {
             Intent::Paste("one\r\ntwo\t\x1b[201~".into()),
         ];
         assert_eq!(parsed(intents_json(&intents)).unwrap(), intents);
+    }
+
+    fn mouse(act: MouseAct, button: Option<MouseBtn>, col: u16, row: u16) -> MouseIntent {
+        MouseIntent {
+            act,
+            button,
+            col,
+            row,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        }
+    }
+
+    /// Rule 1317: a mouse intent round-trips with its act, button, cell and modifiers.
+    #[test]
+    fn remote_input_mouse_intents_round_trip() {
+        let mut ctrl_drag = mouse(MouseAct::Motion, Some(MouseBtn::Left), 4, 2);
+        ctrl_drag.ctrl = true;
+        ctrl_drag.shift = true;
+        let intents = vec![
+            Intent::Mouse(mouse(MouseAct::Press, Some(MouseBtn::Left), 0, 0)),
+            Intent::Mouse(ctrl_drag),
+            Intent::Mouse(mouse(MouseAct::Motion, None, 7, 9)),
+            Intent::Mouse(mouse(
+                MouseAct::Release,
+                Some(MouseBtn::Right),
+                MAX_COLS - 1,
+                MAX_ROWS - 1,
+            )),
+            Intent::Mouse(mouse(MouseAct::WheelUp, None, 3, 3)),
+            Intent::Mouse(mouse(MouseAct::WheelDown, None, 3, 3)),
+            Intent::Key(KeyIntent {
+                key: "Enter".into(),
+                code: "Enter".into(),
+                ..KeyIntent::default()
+            }),
+        ];
+        assert_eq!(parsed(intents_json(&intents)).unwrap(), intents);
+        assert_eq!(
+            intents_json(&intents[0..1]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": 0, "row": 0}}])
+        );
+    }
+
+    /// Rule 1317: a mouse intent is checked whole: a known kind, a button that fits it, a cell inside the limits and
+    /// no field of its own; anything else refuses the call.
+    #[test]
+    fn remote_input_refuses_a_mouse_intent_that_is_out_of_bounds_or_malformed() {
+        for v in [
+            json!([{"mouse": "click"}]),
+            json!([{"mouse": {}}]),
+            json!([{"mouse": {"kind": "click", "button": "left", "col": 1, "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "col": 1, "row": 1}}]),
+            json!([{"mouse": {"kind": "release", "col": 1, "row": 1}}]),
+            json!([{"mouse": {"kind": "wheel_up", "button": "left", "col": 1, "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": "back", "col": 1, "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": 0, "col": 1, "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": -1, "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": 1.5, "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": MAX_COLS, "row": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": 1, "row": MAX_ROWS}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": 1, "row": 1, "meta": true}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": 1, "row": 1, "ctrl": 1}}]),
+            json!([{"mouse": {"kind": "press", "button": "left", "col": 1, "row": 1, "raw": "\u{1b}[<0;1;1M"}}]),
+        ] {
+            assert_eq!(parsed(v.clone()).unwrap_err().code, code::BAD_PARAMS, "{v}");
+        }
+        // A motion may carry a button or none.
+        assert!(parsed(json!([{"mouse": {"kind": "motion", "col": 1, "row": 1}}])).is_ok());
     }
 
     #[test]

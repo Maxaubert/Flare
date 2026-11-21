@@ -62,6 +62,11 @@ struct HostState {
     /// still restoring its tabs).
     no_find: bool,
     find_not_yet: u32,
+    /// Rule 1317: an older host that knows no mouse intent, the mouse mode its snapshots name (None: an older host
+    /// that names none), and when each `remote.input` came.
+    no_mouse: bool,
+    snapshot_mouse: Option<(&'static str, bool)>,
+    input_at: Vec<Instant>,
 }
 
 #[derive(Clone, Default)]
@@ -147,9 +152,22 @@ impl FakeHost {
                 if styled {
                     v["styled"] = json!(true);
                 }
+                if let Some((word, sgr)) = st.snapshot_mouse {
+                    v["mouse"] = json!(word);
+                    v["sgr_mouse"] = json!(sgr);
+                }
                 Ok(v)
             }
             Method::RemoteInput => {
+                st.input_at.push(Instant::now());
+                if st.no_mouse
+                    && p["intents"]
+                        .as_array()
+                        .is_some_and(|a| a.iter().any(|i| i.get("mouse").is_some()))
+                {
+                    // What an older host's `parse_intents` answers, and it types nothing of the call.
+                    return Err(CtlError::new(code::BAD_PARAMS, "no intent is called mouse"));
+                }
                 let intents = parse_intents(p.get("intents"))?;
                 let n = intents.len();
                 st.tabs
@@ -517,6 +535,166 @@ fn typing_reaches_the_host_as_intents_and_sizes_as_the_last_one() {
     wait_for("the size", || {
         lk(&r.host).tabs["h1"].sizes.last() == Some(&(100, 30))
     });
+}
+
+fn press(col: u16, row: u16) -> Intent {
+    Intent::Mouse(MouseIntent {
+        act: MouseAct::Press,
+        button: Some(MouseBtn::Left),
+        col,
+        row,
+        shift: false,
+        alt: false,
+        ctrl: false,
+    })
+}
+
+fn release(col: u16, row: u16) -> Intent {
+    let Intent::Mouse(mut m) = press(col, row) else {
+        unreachable!()
+    };
+    m.act = MouseAct::Release;
+    Intent::Mouse(m)
+}
+
+/// Rule 1317: a click the tab's terminal reports reaches the host as mouse intents, in order with the typing.
+#[test]
+fn a_click_reaches_the_host_as_mouse_intents_in_order_with_the_typing() {
+    let mut r = rig();
+    r.live_on();
+    r.writer.write_all(b"\x1b[<0;5;3M\x1b[<0;5;3m").unwrap();
+    r.writer.write_all(b"\r").unwrap();
+    wait_for("the click", || r.host.typed("h1").len() >= 3);
+    assert_eq!(
+        r.host.typed("h1"),
+        vec![
+            press(4, 2),
+            release(4, 2),
+            Intent::Key(KeyIntent {
+                key: "Enter".into(),
+                code: "Enter".into(),
+                ..KeyIntent::default()
+            }),
+        ]
+    );
+}
+
+/// Rule 1317: an older host refuses a call with a mouse intent (and types nothing of it): the call goes again without
+/// the mouse, so the keys in it still arrive, and the link sends no mouse intent after.
+#[test]
+fn an_older_host_without_mouse_intents_still_gets_the_keys_and_the_link_stays() {
+    let host = FakeHost::default();
+    lk(&host).no_mouse = true;
+    let mut r = rig_with(host, None);
+    r.live_on();
+    r.writer.write_all(b"a\x1b[<0;5;3Mb").unwrap();
+    wait_for("the keys", || r.host.typed("h1").len() >= 2);
+    assert_eq!(
+        r.host.typed("h1"),
+        vec![Intent::Text("a".into()), Intent::Text("b".into())]
+    );
+    let calls = r.host.calls("remote.input");
+    r.writer.write_all(b"\x1b[<0;5;3m").unwrap();
+    r.writer.write_all(b"c").unwrap();
+    wait_for("c", || r.host.typed("h1").len() >= 3);
+    assert_eq!(
+        r.host.calls("remote.input"),
+        calls + 1,
+        "no call with a mouse intent again"
+    );
+    assert_eq!(r.live.link(), LinkState::Live, "the link stays");
+}
+
+/// Rule 1317: a mouse event typed while the link is down is never kept; the keys are.
+#[test]
+fn a_click_while_the_link_is_down_is_never_sent_later() {
+    let mut r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() != LinkState::Live);
+    r.writer.write_all(b"\x1b[<0;5;3Mx\x1b[<0;5;3m").unwrap();
+    lk(&r.host).refuse = false;
+    wait_for("x", || !r.host.typed("h1").is_empty());
+    r.live_on();
+    std::thread::sleep(Duration::from_millis(50)); // sync-ok: test code only, nothing more may come
+    assert_eq!(r.host.typed("h1"), vec![Intent::Text("x".into())]);
+}
+
+/// Rule 1317: a dragged mouse sends at most one motion call each `MOTION_GAP`, and the pointer's last place always
+/// arrives; the press and release around it go at once.
+#[test]
+fn a_dragged_mouse_is_paced_and_its_last_place_arrives() {
+    let mut r = rig();
+    r.live_on();
+    r.writer.write_all(b"\x1b[<0;1;1M").unwrap();
+    let start = Instant::now();
+    let mut x = 1;
+    while start.elapsed() < Duration::from_millis(400) {
+        x += 1;
+        r.writer
+            .write_all(format!("\x1b[<32;{};1M", x % 900 + 1).as_bytes())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(1)); // sync-ok: test code only, a mouse moving
+    }
+    let last = (x % 900) as u16;
+    wait_for("the last place", || {
+        r.host
+            .typed("h1")
+            .iter()
+            .any(|i| matches!(i, Intent::Mouse(m) if m.act == MouseAct::Motion && m.col == last))
+    });
+    r.writer.write_all(b"\x1b[<0;1;1m").unwrap();
+    wait_for("the release", || {
+        r.host
+            .typed("h1")
+            .last()
+            .is_some_and(|i| matches!(i, Intent::Mouse(m) if m.act == MouseAct::Release))
+    });
+    let typed = r.host.typed("h1");
+    let motions = typed
+        .iter()
+        .filter(|i| matches!(i, Intent::Mouse(m) if m.act == MouseAct::Motion))
+        .count();
+    // 400 ms of motion at one call each 40 ms: about 10, never hundreds.
+    assert!(motions <= 16, "{motions} motions crossed");
+    let at = lk(&r.host).input_at.clone();
+    let quick = at
+        .windows(2)
+        .filter(|w| w[1].saturating_duration_since(w[0]) < MOTION_GAP / 2)
+        .count();
+    // The press, the first motion and the release go at once; motion alone never comes closer than the gap.
+    assert!(quick <= 3, "{quick} calls came closer than the gap");
+}
+
+/// Rule 1317: the mouse mode a snapshot names is set on this tab's terminal after the text; an older host names none
+/// and nothing is set.
+#[test]
+fn a_snapshots_mouse_mode_reaches_the_tabs_terminal() {
+    let host = FakeHost::default();
+    lk(&host).snapshot_mouse = Some(("drag", true));
+    let r = rig_with(host, None);
+    r.live_on();
+    wait_for("the modes", || r.text().contains("\x1b[?1002h\x1b[?1006h"));
+    let older = rig();
+    older.live_on();
+    assert!(!older.text().contains("\x1b[?100"), "{:?}", older.text());
+}
+
+/// Rule 279 (amended by 1317): a mouse intent over a cell the host would refuse is left out of the call, which keeps
+/// the typing around it.
+#[test]
+fn a_mouse_intent_past_the_limits_is_left_out_of_the_call() {
+    use flare_term::handle::{RemoteMouse, RemoteMouseAct};
+    let far = RemoteIntent::Mouse(RemoteMouse {
+        act: RemoteMouseAct::Press,
+        button: Some(flare_term::mouse_report::MouseButton::Left),
+        col: flare_ctl::remote::MAX_COLS,
+        row: 0,
+        mods: Default::default(),
+    });
+    let batches = input_batches(&[RemoteIntent::Text("a".into()), far]);
+    assert_eq!(batches, vec![vec![Intent::Text("a".into())]]);
 }
 
 /// Rule 288 and the reconnect: the link breaks, the host prints meanwhile, the tab attaches again and goes on from

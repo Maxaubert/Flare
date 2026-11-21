@@ -33,17 +33,20 @@ use base64::Engine as _;
 use flare_ctl::framing::Wire;
 use flare_ctl::remote::{
     FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, FOLDER_DIRS_MAX, FOLDER_FILES_MAX, FOLDER_MAX, Intent,
-    KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, OUTPUT_MAX, chunks_of, intents_json,
+    KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, MouseAct, MouseBtn, MouseIntent, OUTPUT_MAX,
+    chunks_of, intent_weight, intents_json,
 };
 use flare_ctl::{
     Client, ClientError, CtlError, Method, RemoteHelloInfo, RemoteHelloParams, StdioWire, code,
 };
 use flare_tabs::tabs::Os;
 use flare_term::handle::RemoteIntent;
+use flare_term::handle::{RemoteMouse, RemoteMouseAct};
+use flare_term::mouse_report::MouseButton;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_term::remote_pty::{
     Errand, ErrandFail, Fetched, Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip,
-    Upload, UploadFolder, plain_snapshot, styled_snapshot,
+    Upload, UploadFolder, mouse_mode_bytes, plain_snapshot, styled_snapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -433,14 +436,96 @@ fn wire_intent(i: &RemoteIntent) -> Intent {
         }),
         RemoteIntent::Text(t) => Intent::Text(t.clone()),
         RemoteIntent::Paste(p) => Intent::Paste(p.clone()),
+        RemoteIntent::Mouse(m) => Intent::Mouse(wire_mouse(m)),
+    }
+}
+
+/// The wire form of a mouse event (rule 1317).
+fn wire_mouse(m: &RemoteMouse) -> MouseIntent {
+    MouseIntent {
+        act: match m.act {
+            RemoteMouseAct::Press => MouseAct::Press,
+            RemoteMouseAct::Release => MouseAct::Release,
+            RemoteMouseAct::Motion => MouseAct::Motion,
+            RemoteMouseAct::WheelUp => MouseAct::WheelUp,
+            RemoteMouseAct::WheelDown => MouseAct::WheelDown,
+        },
+        button: m.button.map(|b| match b {
+            MouseButton::Left => MouseBtn::Left,
+            MouseButton::Middle => MouseBtn::Middle,
+            MouseButton::Right => MouseBtn::Right,
+        }),
+        col: m.col,
+        row: m.row,
+        shift: m.mods.shift,
+        alt: m.mods.alt,
+        ctrl: m.mods.ctrl,
     }
 }
 
 /// The bytes an intent counts toward `MAX_INPUT_BYTES`, as the host counts them.
 fn weight(i: &Intent) -> usize {
-    match i {
-        Intent::Key(k) => k.key.len() + k.code.len() + k.text.as_ref().map_or(0, String::len),
-        Intent::Text(s) | Intent::Paste(s) => s.len(),
+    intent_weight(i)
+}
+
+/// The host refused a call for its mouse intents: an older Flare that knows none (rule 1317) answers `bad_params`
+/// naming the kind, and types nothing of the call.
+fn refuses_mouse(e: &CtlError) -> bool {
+    e.code == code::BAD_PARAMS && e.message.contains("no intent is called mouse")
+}
+
+/// The least time between two `remote.input` calls that carry only a pointer's motion (rule 1317): at most 25 a
+/// second, half the host's 50 calls a second on a tab, so a dragged mouse never spends the typing's share.
+pub const MOTION_GAP: Duration = Duration::from_millis(40);
+
+/// Paces a remote tab's mouse motion (rule 1317): typing that is only a motion waits until [`MOTION_GAP`] after the
+/// last motion sent, and a newer motion takes its place meanwhile. Anything else goes at once, with the motion held
+/// before it, in order.
+#[derive(Default)]
+pub struct MotionPace {
+    held: Option<RemoteIntent>,
+    last: Option<Instant>,
+}
+
+fn is_motion(i: &RemoteIntent) -> bool {
+    matches!(i, RemoteIntent::Mouse(m) if m.is_motion())
+}
+
+impl MotionPace {
+    /// What to send now of `typed` (with the motion held before it, if any).
+    pub fn pace(&mut self, typed: Vec<RemoteIntent>, now: Instant) -> Vec<RemoteIntent> {
+        let mut all: Vec<RemoteIntent> = self.held.take().into_iter().collect();
+        for i in typed {
+            if is_motion(&i) && all.last().is_some_and(is_motion) {
+                all.pop();
+            }
+            all.push(i);
+        }
+        let only_motion = !all.is_empty() && all.iter().all(is_motion);
+        if only_motion
+            && self
+                .last
+                .is_some_and(|t| now.saturating_duration_since(t) < MOTION_GAP)
+        {
+            self.held = all.pop();
+            return Vec::new();
+        }
+        if all.iter().any(is_motion) {
+            self.last = Some(now);
+        }
+        all
+    }
+
+    /// How long until the motion held may go, when one is held.
+    pub fn due(&self, now: Instant) -> Option<Duration> {
+        self.held.as_ref()?;
+        let at = self.last? + MOTION_GAP;
+        Some(at.saturating_duration_since(now))
+    }
+
+    /// The link went down: a motion held is dropped with it.
+    pub fn clear(&mut self) {
+        self.held = None;
     }
 }
 
@@ -463,13 +548,15 @@ fn pieces(s: &str) -> Vec<String> {
 }
 
 /// Pure: the typing as `remote.input` calls, in order, each within `MAX_INTENTS` and `MAX_INPUT_BYTES` (the host
-/// refuses a call over either, and types nothing of it). A long text or paste is cut on character boundaries.
+/// refuses a call over either, and types nothing of it). A long text or paste is cut on character boundaries. A mouse
+/// event over a cell the host would refuse (past `MAX_COLS` or `MAX_ROWS`) is left out, so it never costs the call.
 pub fn input_batches(typed: &[RemoteIntent]) -> Vec<Vec<Intent>> {
     let mut all: Vec<Intent> = Vec::new();
     for i in typed {
         match wire_intent(i) {
             Intent::Text(t) => all.extend(pieces(&t).into_iter().map(Intent::Text)),
             Intent::Paste(p) => all.extend(pieces(&p).into_iter().map(Intent::Paste)),
+            Intent::Mouse(m) if !m.in_bounds() => {}
             key => all.push(key),
         }
     }
@@ -915,6 +1002,8 @@ impl PtySpawner for RemoteSpawner {
             restart_line_at: None,
             kept: KeptTyping::default(),
             styled_on: true,
+            mouse_on: true,
+            pace: MotionPace::default(),
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -979,6 +1068,11 @@ struct Worker {
     kept: KeptTyping,
     /// Whether the host takes `remote.snapshot {styled}` (rule 1213; an older host refuses the param).
     styled_on: bool,
+    /// Whether the host of this link takes mouse intents (rule 1317; an older host refuses the kind). Asked again on
+    /// every new link, so a host that was updated meanwhile gets them.
+    mouse_on: bool,
+    /// The pace of the tab's mouse motion (rule 1317).
+    pace: MotionPace,
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -1071,6 +1165,10 @@ impl KeptTyping {
     ) {
         self.forget_old(now, max_age);
         for (n, i) in intents.into_iter().enumerate() {
+            // A mouse event is never kept (rule 1317): a click sent later would land on a screen that changed.
+            if matches!(i, RemoteIntent::Mouse(_)) {
+                continue;
+            }
             let w = weight(&wire_intent(&i));
             if self.full || self.bytes + w > KEPT_TYPING_MAX {
                 self.full = true;
@@ -1350,6 +1448,9 @@ impl Worker {
     /// breaks, the tab goes, or the host says the tab is gone ([`Step::Gone`]).
     fn follow(&mut self, link: &mut dyn Link, tab: &str) -> Step {
         let live = self.spec.live.clone();
+        // A new link asks again whether its host takes mouse intents; a motion held for the old one is gone (rule 1317).
+        self.mouse_on = true;
+        self.pace.clear();
         if let Some(step) = self.attach(link, tab) {
             return step;
         }
@@ -1548,6 +1649,13 @@ impl Worker {
             } else {
                 plain_snapshot(&data)
             });
+        // Rule 1317: the mouse reports the host's program asked for, set here from the answer's word, so a click on a
+        // restored or caught-up tab still reaches it. An older host names none: the modes here stay as they are.
+        if let Some(word) = v["mouse"].as_str()
+            && let Some(modes) = mouse_mode_bytes(word, v["sgr_mouse"].as_bool() == Some(true))
+        {
+            self.io.push_output(&modes);
+        }
         self.spec.live.set_seq(seq);
         Ok(())
     }
@@ -1727,19 +1835,9 @@ impl Worker {
                     return self.failed(e);
                 }
             }
-            for batch in input_batches(&out.intents) {
-                busy = true;
-                match link.call(
-                    Method::RemoteInput,
-                    json!({"tab": tab, "intents": intents_json(&batch)}),
-                    self.t.call,
-                ) {
-                    Ok(_) => {}
-                    Err(LinkError::Refused(e)) if e.code != code::NO_TAB => {
-                        log::warn!("remote.input refused: {}", e.message);
-                    }
-                    Err(e) => return self.failed(e),
-                }
+            let typed = self.pace.pace(out.intents, Instant::now());
+            if let Err(e) = self.send_typing(link, tab, typed, &mut busy) {
+                return self.failed(e);
             }
             // File work (remote sessions PR 6) comes after the typing asked before it, so a dropped file's path is
             // pasted where the person was typing.
@@ -1809,7 +1907,58 @@ impl Worker {
             } else {
                 next_backoff(idle, self.t.poll_max)
             };
+            // A motion held for its pace goes when its time comes, not at the next idle poll (rule 1317).
+            if let Some(due) = self.pace.due(Instant::now()) {
+                idle = idle.min(due.max(Duration::from_millis(1)));
+            }
         }
+    }
+
+    /// The typing as `remote.input` calls. A host that knows no mouse intent (an older Flare, rule 1317) refuses the
+    /// call whole: the call goes again without them, and this link sends none after. Any other refusal is logged and
+    /// that call's typing dropped, as before; a broken link or a gone tab is handed back.
+    fn send_typing(
+        &mut self,
+        link: &mut dyn Link,
+        tab: &str,
+        mut typed: Vec<RemoteIntent>,
+        busy: &mut bool,
+    ) -> Result<(), LinkError> {
+        if !self.mouse_on {
+            typed.retain(|i| !matches!(i, RemoteIntent::Mouse(_)));
+        }
+        for mut batch in input_batches(&typed) {
+            if !self.mouse_on {
+                batch.retain(|i| !matches!(i, Intent::Mouse(_)));
+                if batch.is_empty() {
+                    continue;
+                }
+            }
+            *busy = true;
+            loop {
+                match link.call(
+                    Method::RemoteInput,
+                    json!({"tab": tab, "intents": intents_json(&batch)}),
+                    self.t.call,
+                ) {
+                    Ok(_) => break,
+                    Err(LinkError::Refused(e)) if self.mouse_on && refuses_mouse(&e) => {
+                        log::info!("remote.input: an older host without mouse intents");
+                        self.mouse_on = false;
+                        batch.retain(|i| !matches!(i, Intent::Mouse(_)));
+                        if batch.is_empty() {
+                            break;
+                        }
+                    }
+                    Err(LinkError::Refused(e)) if e.code != code::NO_TAB => {
+                        log::warn!("remote.input refused: {}", e.message);
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(())
     }
 }
 

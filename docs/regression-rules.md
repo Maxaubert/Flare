@@ -901,6 +901,8 @@ no way here (S3). Native: `crates/flare-ctl/src/remote.rs` (`parse_intents`), `c
 `remote_input_intents_round_trip_as_keys_text_and_pastes`, `remote_input_refuses_control_characters_in_text_and_keys`,
 `remote_input_is_capped_at_64_kb_and_1024_intents_a_call`, `remote_input_types_keys_text_and_a_sanitised_paste` and
 `remote_input_is_checked_and_rate_limited_before_the_window_types_it`. Source: remote sessions PR 2 (2026-11-12).
+Amended by rule 1317 (2026-11-19): a mouse report is a fourth intent, a checked mouse event the host writes again as
+a report with its own modes; it is no longer dropped on the viewer.
 280. **A remote detach or a dead link never kills a host session.** The session belongs to the host (owner decision):
 `remote.detach` only stops following the tab, and a link that drops (the serve process's stdin closes, its pipe
 connection closes, `client_gone`) only removes that connection from the tab's followers; when the last follower goes,
@@ -984,7 +986,7 @@ drops what is no typing); the emulator's answers stay here (`SessionManager::wri
 `crates/flare/src/tab_host.rs` (`spawn_remote`), `term_ui.rs`, `appctl/surfaces7.rs`. Held by
 `a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token`,
 `typing_reaches_the_link_as_intents_and_replies_stay_here`, `decoded_typing_encodes_to_the_same_bytes_on_the_host`,
-`mouse_focus_and_string_sequences_are_never_sent`,
+`focus_and_string_sequences_are_never_sent` (a mouse report is a mouse intent since rule 1317),
 `a_remote_tab_never_starts_a_local_shell_and_the_quit_leaves_its_session` and
 `a_remote_tab_shows_the_hosts_output_and_takes_typing`. Source: remote sessions PR 3 (2026-11-12).
 Amended by rule 1307 (2026-11-19): a remote tab also saves its `open_id` in `remote` (`SavedRemote.open_id`); an older
@@ -5168,6 +5170,44 @@ list, Show here or End on the host (Max 2026-11-19, after the mockups), so this 
 `remote_link::tests::typing_kept_for_a_host_tab_that_is_gone_is_typed_nowhere` and
 `remote_flows::remote_find_answers_only_for_a_hidden_sessions_open_id`. Source: Max, 2026-11-19 ("was ended on" stays
 only for a session that ended on the host by itself).
+1317. **A click in a remote tab reaches the host's program as a mouse intent.** Claude Code's AskUserQuestion menu (and
+any program that asks for mouse reports) did nothing when clicked in a remote tab: the viewer's `decode_typing` dropped
+every mouse report, since only typed intents cross the link (rule 279). A mouse report is now an intent of its own,
+never raw bytes. The viewer decodes the SGR report (`ESC [ < b ; x ; y M/m`) and the default one (`ESC [ M` and three
+characters) into an act (press, release, motion, wheel up, wheel down), a button, a 0-based cell and Shift, Alt and Ctrl;
+an extra button, a sideways wheel or a malformed report is still dropped. `remote.input` checks it whole (a known kind,
+a button that fits it, `col` under 1000 and `row` under 500, no other field; else `bad_params` and nothing of the call
+is typed), and the viewer leaves out a cell past those limits before it sends. The host writes it with `encode_mouse` and
+its own tab's modes, only while its program asked for mouse reports and its tracking mode reports that event, and only
+for a cell inside its grid; a wheel is a wheel report and never scrolls the host's view. A press or a release counts as
+the remote typist's typing (rule 282); a motion or a wheel is only a report (rule 9). Motion cannot flood the link: a
+motion right after a motion with the same button and modifiers takes its place in the tab's outbox, and the link sends
+a call of motion alone at most once each 40 ms (`MOTION_GAP`, half the 50 calls a second), the last place always sent.
+A mouse event is never kept while the link is down (rule 1210): a late click would land on a changed screen. An older
+host refuses the kind (`bad_params` "no intent is called mouse"): the call goes again without its mouse intents, so the
+keys in it still arrive, and that link sends none after; the link stays. `remote.snapshot` also answers `mouse` and
+`sgr_mouse`, and the viewer sets that mouse mode on its terminal from the word alone (every mouse mode off, then the one
+named; an unknown word or an older host's answer changes nothing), so a click on a restored or caught-up tab still
+reaches the program. Native: `crates/flare-ctl/src/remote.rs` (`MouseIntent`, `parse_mouse`, `intents_json`),
+`crates/flare-term/src/remote_pty.rs` (`sgr_mouse`, `legacy_mouse`, `RemoteIo::type_in`, `mouse_mode_bytes`),
+`crates/flare-term/src/handle.rs` (`remote_mouse`, `remote_snapshot_with`), `crates/flare/src/remote_link.rs`
+(`MotionPace`, `send_typing`, `KeptTyping::keep`, `snapshot`), `crates/flare/src/ctl_app.rs`. Held by
+`remote::tests::remote_input_mouse_intents_round_trip`,
+`remote::tests::remote_input_refuses_a_mouse_intent_that_is_out_of_bounds_or_malformed`,
+`remote_pty::tests::a_mouse_report_decodes_to_a_mouse_intent`,
+`remote_pty::tests::every_mouse_report_round_trips_through_the_encoder`,
+`remote_pty::tests::mouse_motion_coalesces_in_the_outbox`, `remote_pty::tests::a_snapshots_mouse_mode_is_built_from_its_word`,
+`handle::tests::a_remote_mouse_event_is_written_only_while_the_program_asked_for_reports`,
+`handle::tests::a_snapshot_names_the_programs_mouse_mode`,
+`remote_link::tests::a_click_reaches_the_host_as_mouse_intents_in_order_with_the_typing`,
+`remote_link::tests::an_older_host_without_mouse_intents_still_gets_the_keys_and_the_link_stays`,
+`remote_link::tests::a_click_while_the_link_is_down_is_never_sent_later`,
+`remote_link::tests::a_dragged_mouse_is_paced_and_its_last_place_arrives`,
+`remote_link::tests::a_snapshots_mouse_mode_reaches_the_tabs_terminal`,
+`remote_link::tests::a_mouse_intent_past_the_limits_is_left_out_of_the_call`,
+`ui_tests::term::a_click_on_a_remote_tab_in_mouse_mode_reaches_the_link_as_mouse_intents` and
+`remote_flows::a_click_from_the_opener_picks_an_option_in_the_hidden_sessions_menu`. Source: Max, 2026-11-19 (a click
+on an option of Claude Code's question menu in a remote tab did nothing).
 
 1324. **A pulse on screen leaves evidence in the diagnostics log: a row or the frame's geometry that flips and back
 is logged.** Max, 2026-11-20, a screenshot of Claude Code's status line: "the shell flickering is not fixed these
