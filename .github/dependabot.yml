@@ -1,7 +1,8 @@
 # Weekly version bumps for the crates and the workflow actions (audit 2026-11-21, #36 of issue #308).
 # One grouped pull request per ecosystem keeps the PR count low. The crates are pinned with `=` versions;
 # Dependabot still proposes the bump and rewrites the pin. The actions are pinned to commit SHAs with a
-# version comment; Dependabot updates both.
+# version comment; Dependabot updates both. Only minor and patch bumps are grouped: a major bump comes as its own PR,
+# so a major that needs code or test changes (release_files.rs allows set majors) never blocks the small ones.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -12,6 +13,7 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
@@ -21,3 +23,4 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+        update-types: [minor, patch]
