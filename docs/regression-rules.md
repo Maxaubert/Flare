@@ -4558,8 +4558,9 @@ e2e `brand` scenario (the box ends 16 px under Cancel). Source: Max, 2026-11-15,
 the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
 recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
 choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
-case. A folder below or beside it is another folder. A hidden folder frees no spot: no older recent and no starter
-takes it, and no "No recent folders" note appears, so the list just has fewer rows. A remote tab's folder is on
+case. A folder below or beside it is another folder. A hidden folder brings no "No recent folders" note. (Amended by
+rule 1298 on 2026-11-18: its spot now goes to the next older recent without a tab, then to a starter; it no longer
+stays empty.) A remote tab's folder is on
 another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
 menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
 `menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
@@ -4910,6 +4911,52 @@ is looked up in DNS. The nearby entry stays (it has the logo and pairing); a hos
 `each_host_has_its_first_host_name_else_its_own_name` (`flare/src/ssh_config.rs`) and
 `an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down` (`flare/src/pairing_tests.rs`). Source: Max,
 2026-11-17.
+
+1298. **Older recents fill the folder menu's spots that open tabs leave.** Max, 2026-11-18: "the new tab right click
+menu only shows choose a folder on this machine or the mac, no recent folders". His `flare.recentRoots` held twelve
+folders, and the seven newest each had an open tab. Rule 1269 took the newest five first and then hid those with a
+tab, and a hidden folder's spot stayed empty, so all five spots were empty and only "Choose a folder…" and the
+machine's row were left (no remote recents were kept yet). Now the folders with an open local tab leave the history
+before the newest five are taken: the five newest recents without a tab are listed, and a starter fills a spot only
+when no older recent is left (never one with a tab). A pin still always stays. The "No recent folders" note still
+shows only when nothing at all is known (no pin, no history, no starter), never because folders are hidden. The
+remote recents and the machine rows are as rule 1282 left them. Native: `menus_ui::folder_rows`. Held by
+`older_recents_fill_the_spots_of_folders_that_have_a_tab` (Max's twelve recents with seven open, and the starter case)
+and the rule 1269 tests (`menus_ui.rs`). Source: Max, 2026-11-18.
+
+1299. **A click in the remote folder browser only picks; a double-click goes in.** Max, 2026-11-18: "when i pick
+choose folder on mac it shows a file picker in the users folder which is fine but clicking anything like i clicked
+documents just reopens the users folder it doesnt go into documents, and it happens on single click". Each click on
+a row called `push_rfolder`, which set new rows and crumbs models on the window. Slint then built every row again:
+`changed rows` scrolled the list back to its top (the folder looked opened again), and the second press of a
+double-click landed on a new row item, so Slint reset its click count and `double-clicked` never fired: nothing was
+ever entered. The tests called `invoke_rfolder_pick` and `invoke_rfolder_enter` directly, and the preview never swaps
+its model, so none saw it. Now a pick (a click, Up or Down) puts only the picked row and the footer's path on the
+window (`push_rfolder_pick`); the rows and crumbs models are set only when a listing comes in or the dialog opens or
+closes. One click picks (highlight, footer path), a double-click enters, Enter is still Open here (rule 1282), and Open
+here opens the picked folder. Native: `appctl/remote_folder_glue.rs`; the window shows the list's place and scroll as
+`rfolder-list-x`, `rfolder-list-y`, `rfolder-list-w` and `rfolder-scrolled`. Held by
+`in_the_window_one_click_picks_and_a_double_click_goes_in` (`ui_tests/term.rs`: the real pointer in the whole window,
+a fake lister that records each asked path: one click asks nothing and the list stays scrolled where it was, a
+double-click asks the child path and the crumbs follow). Source: Max, 2026-11-18.
+
+1300. **An SSH host wears the system a link said, and one that answered nothing is asked again.** Max, 2026-11-18:
+"only the mac has an icon in the machine picker, the evo x2 doesnt have one, it should have a windows icon and that
+stuff should be automatic if possible otherwise dont show any icon there, but only after its connected". The picker
+is Settings > Machines > Add a machine's Machine drop-down. The Mac there is the nearby computer, with the logo its
+announcement carries (its `mac` SSH host is left out by rule 1285). evo-x2 (`HostName 100.105.158.52`, a Windows PC
+over a VPN) is an SSH host whose logo comes only from rule 1278's look (its SSH greeting, then `uname -s`); it was not
+reachable when the dialog looked, so nothing was found, and the dialog looked only once a visit. Now: (1) an SSH host
+takes the system a link said for the same computer: a linked machine's `kind` (its own `remote.hello` at Add, or the
+pairing), matched by the host it names or by its address against the host's `HostName` (`same_host`, the rule 1285
+comparison), else a computer that reaches this one by the address it paired from. That word wins over a greeting, and
+it is kept in `host_os.json` on a worker, so the logo stays after the machine is removed. (2) A host that answered
+nothing is looked at again each time the dialog opens, so its logo comes once it can be reached; a host with a system
+is not asked again in the visit. A host nothing said anything about still draws no logo. What a greeting said is
+never a machine's `kind` (rules 1207, 1208, 1278). Native: `MachinesPage::{os_learnt, os_of_host, keep_learnt_os,
+open_form}`, `flare_settings::page::machines::same_host`. Held by
+`an_ssh_host_wears_the_system_its_link_said_once_connected` and
+`the_dialog_finds_each_ssh_hosts_system_and_keeps_it` (`machines_page.rs`). Source: Max, 2026-11-18.
 
 1286. **A Claude tab whose session was never used comes back as a new blank Claude, never another session.** Max,
 2026-11-18: "if a session is open but never has a message sent, when flare then restarts it contineus a random session

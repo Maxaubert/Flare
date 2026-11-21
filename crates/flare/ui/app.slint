@@ -810,6 +810,11 @@ export component AppWindow inherits Window {
     out property <length> rfolder-open-y: rfolder.open-y;
     out property <length> rfolder-open-w: rfolder.open-w;
     out property <length> rfolder-open-h: rfolder.open-h;
+    // Where its list is and how far it is scrolled, for the tests' pointer (rule 1299).
+    out property <length> rfolder-list-x: rfolder.list-x;
+    out property <length> rfolder-list-y: rfolder.list-y;
+    out property <length> rfolder-list-w: rfolder.list-w;
+    out property <length> rfolder-scrolled: rfolder.scrolled;
     // A secret ask with `verify` (rule 1274): 0 the field, 1 checking, 2 right (a green check), 3 ended by the plugin;
     // the checking line, and a result's heading and line.
     in property <int> pask-stage;
