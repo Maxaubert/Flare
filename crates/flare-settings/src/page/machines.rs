@@ -239,7 +239,7 @@ impl SshHost {
 }
 
 /// Pure: a host name or address as it is compared: no case, no space around it, no trailing dot and no `.local`
-/// (`Maxs-Mac-Mini.local.` is `maxs-mac-mini`); an address in its usual text (`::1`, not `0:0:...:1`).
+/// (`Office-Mac-Mini.local.` is `office-mac-mini`); an address in its usual text (`::1`, not `0:0:...:1`).
 fn host_key(s: &str) -> String {
     let s = s.trim();
     let s = s
@@ -517,7 +517,7 @@ mod tests {
                 id: "a1".into(),
                 name: "Max's PC".into(),
                 os: Some(MachineOs::Pc),
-                addrs: vec!["192.168.0.10".into()],
+                addrs: vec!["192.0.2.10".into()],
             }],
             &hosts,
         );
@@ -563,7 +563,7 @@ mod tests {
         let hosts = vec![
             SshHost {
                 os: Some(MachineOs::Pc),
-                ..host("evo-x2", "192.168.0.139")
+                ..host("home-pc", "192.0.2.139")
             },
             SshHost {
                 os: Some(MachineOs::Linux),
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(
             rows,
             [
-                ("evo-x2".to_string(), true, Some(MachineOs::Pc)),
+                ("home-pc".to_string(), true, Some(MachineOs::Pc)),
                 ("pi".into(), true, Some(MachineOs::Linux)),
                 ("nas".into(), true, None),
                 ("Type an address".into(), false, None),
@@ -595,26 +595,23 @@ mod tests {
     /// without case, a trailing dot or `.local`; one that matches nothing is another computer.
     #[test]
     fn an_ssh_host_is_a_nearby_computer_by_its_name_or_address() {
-        let mac = near(
-            "Maxs-Mac-Mini",
-            &["192.168.0.120", "192.168.0.47", "fe80::1"],
-        );
+        let mac = near("Office-Mac-Mini", &["192.0.2.120", "192.0.2.47", "fe80::1"]);
         for same in [
-            "192.168.0.120",
-            " 192.168.0.47 ",
-            "Maxs-Mac-Mini",
-            "maxs-mac-mini.local",
-            "MAXS-MAC-MINI.local.",
-            "Maxs-Mac-Mini.",
+            "192.0.2.120",
+            " 192.0.2.47 ",
+            "Office-Mac-Mini",
+            "office-mac-mini.local",
+            "OFFICE-MAC-MINI.local.",
+            "Office-Mac-Mini.",
             "fe80:0:0:0:0:0:0:1",
             "[fe80::1]",
         ] {
             assert!(same_computer(&host("mac", same), &mac), "{same} is the Mac");
         }
         for other in [
-            "192.168.0.12",
-            "192.168.0.1200",
-            "maxs-mac-mini.example.com",
+            "192.0.2.12",
+            "192.0.2.1200",
+            "office-mac-mini.example.com",
             "studio",
             "",
             ".local",
@@ -625,7 +622,10 @@ mod tests {
             );
         }
         // A host with no HostName reaches its own name.
-        assert!(same_computer(&SshHost::plain("Maxs-Mac-Mini.local"), &mac));
+        assert!(same_computer(
+            &SshHost::plain("Office-Mac-Mini.local"),
+            &mac
+        ));
     }
 
     /// Rule 1285 (Max, 2026-11-17: "remove the duplicate mac"): the SSH host `mac` that reaches the nearby Mac is left
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn an_ssh_host_that_is_a_nearby_computer_is_left_out_of_the_drop_down() {
         let hosts = vec![
-            host("mac", "192.168.0.120"),
+            host("mac", "192.0.2.120"),
             host("studio", "studio.lan"),
             SshHost::plain("nas"),
         ];
@@ -641,10 +641,10 @@ mod tests {
             |c: &[MachineChoice]| -> Vec<String> { c.iter().map(|c| c.label.clone()).collect() };
         assert_eq!(
             labels(&machine_choices(
-                &[near("Maxs-Mac-Mini", &["192.168.0.120"])],
+                &[near("Office-Mac-Mini", &["192.0.2.120"])],
                 &hosts
             )),
-            ["Maxs-Mac-Mini", "studio", "nas", "Type an address"]
+            ["Office-Mac-Mini", "studio", "nas", "Type an address"]
         );
         // Nothing nearby: every host is listed.
         assert_eq!(
@@ -667,7 +667,7 @@ mod tests {
         assert!(form("studio", "", false).can_add());
         assert!(!form("studio", "", true).can_add(), "a check runs");
         assert!(!form(TYPE_ADDRESS, "  ", false).can_add(), "no address");
-        assert!(form(TYPE_ADDRESS, "192.168.0.139", false).can_add());
+        assert!(form(TYPE_ADDRESS, "192.0.2.139", false).can_add());
         assert!(form(TYPE_ADDRESS, "", false).typing());
         assert!(!form("studio", "", false).typing());
     }

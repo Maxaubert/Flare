@@ -1445,7 +1445,7 @@ mod tests {
         use flare_settings::page::machines::TYPE_ADDRESS;
         let mut io = FakeIo::default();
         io.answers.insert(
-            ("192.168.0.139".into(), "flare".into()),
+            ("192.0.2.139".into(), "flare".into()),
             facts("0.4.2", Some(Os::Mac)),
         );
         let mut r = Rig::new(io);
@@ -1456,29 +1456,29 @@ mod tests {
         assert!(!r.page.info().add.can_add());
         r.page.set_pick(TYPE_ADDRESS);
         assert!(r.page.info().add.typing() && !r.page.info().add.can_add());
-        r.page.set_address("192.168.0.139:2222");
+        r.page.set_address("192.0.2.139:2222");
         r.page.set_user("max");
         assert!(r.page.info().add.can_add());
         r.page.submit();
         r.settle();
         let saved = r.io.list();
         assert_eq!(saved.len(), 1, "{:?}", r.page.info().add.error);
-        assert_eq!(saved[0].host.as_deref(), Some("192.168.0.139"));
-        assert_eq!(saved[0].ssh, "192.168.0.139");
+        assert_eq!(saved[0].host.as_deref(), Some("192.0.2.139"));
+        assert_eq!(saved[0].ssh, "192.0.2.139");
         assert_eq!(saved[0].user.as_deref(), Some("max"));
         assert_eq!(saved[0].port, Some(2222));
-        assert_eq!(saved[0].name, "192.168.0.139");
-        assert_eq!(r.page.info().machines[0].address, "192.168.0.139");
+        assert_eq!(saved[0].name, "192.0.2.139");
+        assert_eq!(r.page.info().machines[0].address, "192.0.2.139");
         assert!(!r.page.info().add.open, "the dialog closes");
         // The same address again is refused before any check.
         let probes = r.io.probes.lock().unwrap().len();
         r.page.open_form();
         r.page.set_pick(TYPE_ADDRESS);
-        r.page.set_address("max@192.168.0.139:2222");
+        r.page.set_address("max@192.0.2.139:2222");
         r.page.submit();
         assert_eq!(
             r.page.info().add.error.as_deref(),
-            Some("192.168.0.139 is linked already, as 192.168.0.139.")
+            Some("192.0.2.139 is linked already, as 192.0.2.139.")
         );
         assert_eq!(r.io.probes.lock().unwrap().len(), probes);
     }
@@ -1688,10 +1688,10 @@ mod tests {
     #[test]
     fn the_dialog_finds_each_ssh_hosts_system_and_keeps_it() {
         let mut io = FakeIo {
-            hosts: vec!["evo-x2".into(), "pi".into(), "nas".into(), "old".into()],
+            hosts: vec!["home-pc".into(), "pi".into(), "nas".into(), "old".into()],
             ..FakeIo::default()
         };
-        io.os_answers.insert("evo-x2".into(), MachineOs::Pc);
+        io.os_answers.insert("home-pc".into(), MachineOs::Pc);
         io.os_answers.insert("pi".into(), MachineOs::Linux);
         // Found on an earlier visit; nothing answers now (a VPN in the way).
         io.known
@@ -1724,7 +1724,7 @@ mod tests {
         assert_eq!(
             systems(&r),
             [
-                ("evo-x2".to_string(), None),
+                ("home-pc".to_string(), None),
                 ("pi".into(), None),
                 ("nas".into(), None),
                 ("old".into(), Some(MachineOs::Mac)),
@@ -1735,7 +1735,7 @@ mod tests {
         assert_eq!(
             systems(&r),
             [
-                ("evo-x2".to_string(), Some(MachineOs::Pc)),
+                ("home-pc".to_string(), Some(MachineOs::Pc)),
                 ("pi".into(), Some(MachineOs::Linux)),
                 ("nas".into(), None),
                 ("old".into(), Some(MachineOs::Mac)),
@@ -1743,7 +1743,7 @@ mod tests {
         );
         let mut asked = r.io.os_asked.lock().unwrap().clone();
         asked.sort();
-        assert_eq!(asked, ["evo-x2", "nas", "old", "pi"]);
+        assert_eq!(asked, ["home-pc", "nas", "old", "pi"]);
         // The saved machine draws its host's logo; its kind is left as it was.
         let info = r.page.info();
         assert_eq!(info.machines[0].os, Some(MachineOs::Linux));

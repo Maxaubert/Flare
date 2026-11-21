@@ -4784,7 +4784,7 @@ line is "Flare's key file is not private" (`SshProblem::KeyNotPrivate`), not "No
 `a_key_file_others_may_read_is_its_own_line` (`ssh_problem.rs`). Source: Max, 2026-11-17; ssh's own words on his PC.
 
 1278. **An SSH host in the Machine drop-down shows the logo of the system it runs, found by itself.** Max, 2026-11-17,
-on the same screenshot as rule 1285 (only the nearby Mac had a logo; "mac" and "evo-x2" had none): "id like it to
+on the same screenshot as rule 1285 (only the nearby Mac had a logo; "mac" and "home-pc" had none): "id like it to
 show either the windows, linux or mac icon automatically depending on the device". Approved mockup: every row of the
 drop-down lines up after the logo's space; a host whose system is not known yet shows no logo. While the Add a machine
 dialog is open, each SSH host (not one that is a computer listed nearby) is looked up once a visit of the page, at
@@ -4898,8 +4898,8 @@ plain rows, active and not, hover square and click) and the strip guard
 row updates while hovered). Source: Max, 2026-11-17.
 
 1285. **An SSH host that is a computer listed nearby is left out of the Machine drop-down.** Max, 2026-11-17, a
-screenshot of Settings > Machines > Add a computer listing "Maxs-Mac-Mini" (nearby, with the Apple logo) and then
-"mac" (his `~/.ssh/config` host, `HostName 192.168.0.120`), the same Mac: "remove the duplicate mac". Each SSH host is
+screenshot of Settings > Machines > Add a computer listing "Office-Mac-Mini" (nearby, with the Apple logo) and then
+"mac" (his `~/.ssh/config` host, `HostName 192.0.2.120`), the same Mac: "remove the duplicate mac". Each SSH host is
 read with the computer it reaches: its first `HostName` as ssh reads it (`%h` and `%%` filled in, lines before the
 first `Host` take every host, `Match` blocks none), else its own name (`ssh_config::named_hosts_with`). The host is
 left out when that name is the nearby computer's announced name or one of its announced addresses, without case, a

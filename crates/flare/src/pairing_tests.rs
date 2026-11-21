@@ -31,7 +31,7 @@ fn pc_nearby(port: u16) -> Nearby {
         name: "Max's PC".into(),
         os: Some(Os::Pc),
         version: "0.4.2".into(),
-        addrs: vec!["192.168.0.139".parse().unwrap()],
+        addrs: vec!["192.0.2.139".parse().unwrap()],
         port,
     }
 }
@@ -92,7 +92,7 @@ fn host_thread_cleaned(
         let Some(hello) = read_hello(&mut h) else {
             return;
         };
-        host_session(&mut h, "192.168.0.120", &hello, &ctx, 1, &|e| {
+        host_session(&mut h, "192.0.2.120", &hello, &ctx, 1, &|e| {
             let _ = lock(&tx).send(e);
         });
     });
@@ -120,7 +120,7 @@ fn viewer_thread(
         let tx = Mutex::new(tx);
         viewer_session(
             &mut s,
-            "192.168.0.139",
+            "192.0.2.139",
             &pc_nearby(1),
             &ctx,
             &codes_rx,
@@ -177,7 +177,7 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     assert_eq!(incoming[0].admin, Some(false), "the user's own file");
     assert_eq!(incoming.len(), 1);
     assert_eq!(incoming[0].name, "Max's Mac mini");
-    assert_eq!(incoming[0].address, "192.168.0.120");
+    assert_eq!(incoming[0].address, "192.0.2.120");
     assert_eq!(incoming[0].kind, Some(Os::Mac));
     assert_eq!(incoming[0].version, "0.4.2");
     assert!(lines[0].contains(&incoming[0].key));
@@ -188,7 +188,7 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     assert_eq!(m.id, id);
     assert_eq!(m.name, "Max's PC");
     assert_eq!(m.kind, Some(Os::Pc));
-    assert_eq!(m.host.as_deref(), Some("192.168.0.139"));
+    assert_eq!(m.host.as_deref(), Some("192.0.2.139"));
     assert_eq!(m.user.as_deref(), Some("max"));
     assert_eq!(m.port, None);
     assert_eq!(
@@ -200,7 +200,7 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     assert_eq!(m.known_hosts.as_deref(), Some(&*known.to_string_lossy()));
     let pinned = std::fs::read_to_string(&known).unwrap(); // sync-ok: a test waits for its threads and reads its own files
     let hk = parse_public_key(&host_key(), &HOST_KEY_TYPES).unwrap();
-    assert_eq!(pinned, format!("192.168.0.139 {}\n", hk.line()));
+    assert_eq!(pinned, format!("192.0.2.139 {}\n", hk.line()));
     // The key the host took is Flare's own key on the viewer.
     let public = std::fs::read_to_string(files.key_path().with_extension("pub")).unwrap(); // sync-ok: a test waits for its threads and reads its own files
     assert!(public.contains(&incoming[0].key));
@@ -209,7 +209,7 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     for want in [
         "IdentitiesOnly=yes",
         "StrictHostKeyChecking=yes",
-        "192.168.0.139",
+        "192.0.2.139",
         "max",
     ] {
         assert!(argv.iter().any(|a| a == want), "{want}: {argv:?}");
@@ -371,7 +371,7 @@ fn an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses() {
     let addrs: Vec<IpAddr> = vec![
         "fe80::1".parse().unwrap(),
         "127.0.0.1".parse().unwrap(),
-        "192.168.0.139".parse().unwrap(),
+        "192.0.2.139".parse().unwrap(),
     ];
     let full = format!("Max's PC.{SERVICE}");
     let n = nearby_of(
@@ -391,7 +391,7 @@ fn an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses() {
     assert_eq!(n.version, "0.4.2");
     assert_eq!(n.port, 41234);
     let shown: Vec<String> = n.addrs.iter().map(ToString::to_string).collect();
-    assert_eq!(shown, ["192.168.0.139", "fe80::1"]);
+    assert_eq!(shown, ["192.0.2.139", "fe80::1"]);
     let bare = nearby_of(&full, &txt(&[("proto", "1")]), addrs.clone(), 1).unwrap();
     assert_eq!(bare.name, "Max's PC", "the instance name");
     assert!(nearby_of(&full, &txt(&[("proto", "2")]), addrs.clone(), 1).is_none());
@@ -411,17 +411,17 @@ fn the_announcement_carries_no_secret() {
 /// Mac. The readable name stays in the instance name and the TXT.
 #[test]
 fn the_announcement_never_takes_the_computers_own_local_name() {
-    // gethostname on a Mac says "Maxs-Mac-mini.local"; `Me` leaves the `.local` off.
+    // gethostname on a Mac says "Office-Mac-mini.local"; `Me` leaves the `.local` off.
     for (name, own) in [
-        ("Maxs-Mac-mini", "Maxs-Mac-mini.local."),
-        ("DESKTOP-7Q2K", "DESKTOP-7Q2K.local."),
+        ("Office-Mac-mini", "Office-Mac-mini.local."),
+        ("DESKTOP-PC01", "DESKTOP-PC01.local."),
         ("Max's PC", "Max-s-PC.local."),
     ] {
         let host = mdns_host(name);
         assert_ne!(host.to_ascii_lowercase(), own.to_ascii_lowercase());
         assert!(host.ends_with("-flare.local."), "{host}");
     }
-    assert_eq!(mdns_host("Maxs-Mac-mini"), "Maxs-Mac-mini-flare.local.");
+    assert_eq!(mdns_host("Office-Mac-mini"), "Office-Mac-mini-flare.local.");
     assert_eq!(mdns_host("Max's PC"), "Max-s-PC-flare.local.");
     assert_eq!(mdns_host("..."), "computer-flare.local.");
     // One DNS label stays under 63 letters.
@@ -518,7 +518,7 @@ fn a_host_that_names_no_flare_path_pairs_with_the_viewers_default() {
         let Some(hello) = read_hello(&mut h) else {
             return;
         };
-        host_session(&mut h, "192.168.0.139", &hello, &ctx, 1, &|e| {
+        host_session(&mut h, "192.0.2.139", &hello, &ctx, 1, &|e| {
             let _ = lock(&tx).send(e);
         });
     });
@@ -603,7 +603,7 @@ fn until(pages: &mut [&mut Page], what: &str, cond: impl Fn(&[&mut Page]) -> boo
 #[test]
 fn no_free_pairing_port_says_so_once_and_announces_nothing() {
     let hub = Arc::new(Hub::default());
-    let mut p = page(&hub, "192.168.0.139", pc(), false);
+    let mut p = page(&hub, "192.0.2.139", pc(), false);
     *p.net.ports_taken.lock().unwrap() = true;
     let prefs = PrefStore::memory();
     flare_settings::machine_prefs::set_sharing_on(&prefs, true);
@@ -635,11 +635,11 @@ fn no_free_pairing_port_says_so_once_and_announces_nothing() {
 fn an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down() {
     use flare_settings::page::machines::{SshHost, machine_choices};
     let hub = Arc::new(Hub::default());
-    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    let mut view = page(&hub, "192.0.2.120", mac(), false);
     *view.io.named.lock().unwrap() = vec![
         SshHost {
             alias: "pc".into(),
-            host_name: "192.168.0.139".into(),
+            host_name: "192.0.2.139".into(),
             ..Default::default()
         },
         SshHost {
@@ -656,7 +656,7 @@ fn an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down() {
         !info.nearby.is_empty() && !info.ssh_hosts.is_empty()
     });
     let info = view.page.info();
-    assert_eq!(info.nearby[0].addrs, ["192.168.0.139"]);
+    assert_eq!(info.nearby[0].addrs, ["192.0.2.139"]);
     let labels: Vec<String> = machine_choices(&info.nearby, &info.ssh_hosts)
         .into_iter()
         .map(|c| c.label)
@@ -669,14 +669,14 @@ fn an_ssh_host_that_reaches_a_nearby_computer_is_left_out_of_the_drop_down() {
 #[test]
 fn two_computers_pair_from_the_dialog_and_list_each_other() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     assert!(host.page.pairing().hosting(), "sharing on: listening");
     let port = host.net.port().expect("announced with its port");
     assert_eq!(
         *host.net.announced.lock().unwrap(),
         [Some(("Max's PC".into(), port))]
     );
-    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    let mut view = page(&hub, "192.0.2.120", mac(), false);
     assert!(!view.page.pairing().hosting(), "sharing off: no port");
     *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
     view.page.page_shown();
@@ -726,13 +726,13 @@ fn two_computers_pair_from_the_dialog_and_list_each_other() {
     assert_eq!(on_host.len(), 1);
     assert_eq!(on_host[0].id, format!("{INCOMING_PREFIX}max-s-mac-mini"));
     assert_eq!(on_host[0].name, "Max's Mac mini");
-    assert_eq!(on_host[0].address, "192.168.0.120");
+    assert_eq!(on_host[0].address, "192.0.2.120");
     assert_eq!(on_host[0].status, LinkStatus::Linked);
     let saved = view.io.list();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].name, "Max's PC");
-    assert_eq!(saved[0].host.as_deref(), Some("192.168.0.139"));
-    assert_eq!(view.page.info().machines[0].address, "192.168.0.139");
+    assert_eq!(saved[0].host.as_deref(), Some("192.0.2.139"));
+    assert_eq!(view.page.info().machines[0].address, "192.0.2.139");
     assert_eq!(host.os.user_keys.lock().unwrap().len(), 1);
 }
 
@@ -740,9 +740,9 @@ fn two_computers_pair_from_the_dialog_and_list_each_other() {
 #[test]
 fn decline_on_the_host_ends_the_request() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     let port = host.net.port().unwrap();
-    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    let mut view = page(&hub, "192.0.2.120", mac(), false);
     *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
     view.page.open_form();
     until(&mut [&mut view], "nearby", |p| {
@@ -772,10 +772,10 @@ fn decline_on_the_host_ends_the_request() {
 #[test]
 fn a_second_request_while_one_shows_its_code_is_told_busy() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     let port = host.net.port().unwrap();
-    let mut first = page(&hub, "192.168.0.120", mac(), false);
-    let mut second = page(&hub, "192.168.0.121", mac(), false);
+    let mut first = page(&hub, "192.0.2.120", mac(), false);
+    let mut second = page(&hub, "192.0.2.121", mac(), false);
     for v in [&mut first, &mut second] {
         *v.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
         v.page.open_form();
@@ -861,9 +861,9 @@ fn wrong_codes_count_across_connections_and_the_lockout_grows() {
 #[test]
 fn hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     let port = host.net.port().unwrap();
-    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    let mut view = page(&hub, "192.0.2.120", mac(), false);
     *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
     view.page.open_form();
     until(&mut [&mut view], "nearby", |p| {
@@ -912,7 +912,7 @@ fn hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once() {
 #[test]
 fn turning_sharing_off_stops_the_announcement() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     assert!(host.page.pairing().hosting());
     host.page.sharing_switch(false);
     assert!(!host.page.pairing().hosting());
@@ -924,13 +924,13 @@ fn turning_sharing_off_stops_the_announcement() {
 #[test]
 fn removing_a_computer_that_reaches_this_one_removes_its_key() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     let key = parse_public_key(&host_key(), &[ED25519]).unwrap().key;
     *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
         id: "mini".into(),
         name: "Mini".into(),
         kind: Some(Os::Mac),
-        address: "192.168.0.120".into(),
+        address: "192.0.2.120".into(),
         version: "0.4.2".into(),
         key: key.clone(),
         admin: Some(false),
@@ -958,7 +958,7 @@ fn removing_a_computer_that_reaches_this_one_removes_its_key() {
 #[test]
 fn removing_a_computer_whose_key_is_in_the_admin_file_asks_once() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     *host.os.elevated.lock().unwrap() = Ok(crate::sharing::fake::ok_outcome(false, false, false));
     let key = parse_public_key(&host_key(), &[ED25519]).unwrap().key;
     *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
@@ -992,7 +992,7 @@ fn removing_an_older_entry_that_does_not_say_where_its_key_went_asks_the_switch_
         (false, false, false),
     ] {
         let hub = Arc::new(Hub::default());
-        let mut host = page(&hub, "192.168.0.139", pc(), true);
+        let mut host = page(&hub, "192.0.2.139", pc(), true);
         *host.os.elevated.lock().unwrap() =
             Ok(crate::sharing::fake::ok_outcome(false, false, false));
         host.os.admin_account.store(admin_account, Ordering::SeqCst);
@@ -1157,18 +1157,18 @@ fn turning_sharing_off_waits_for_a_request_that_runs() {
 #[test]
 fn turning_sharing_off_mid_request_leaves_no_computer_listed() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
         id: "mini".into(),
         name: "Mini".into(),
-        address: "192.168.0.120".into(),
+        address: "192.0.2.120".into(),
         key: parse_public_key(&host_key(), &[ED25519]).unwrap().key,
         ..Default::default()
     }];
     let (release, hold) = std::sync::mpsc::channel::<()>();
     *host.os.hold_add.lock().unwrap() = Some(hold);
     let port = host.net.port().unwrap();
-    let mut view = page(&hub, "192.168.0.110", mac(), false);
+    let mut view = page(&hub, "192.0.2.110", mac(), false);
     *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
     view.page.open_form();
     until(&mut [&mut view], "nearby", |p| {
@@ -1207,11 +1207,11 @@ fn turning_sharing_off_mid_request_leaves_no_computer_listed() {
 #[test]
 fn a_quiet_connection_holds_no_request_slot() {
     let hub = Arc::new(Hub::default());
-    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let mut host = page(&hub, "192.0.2.139", pc(), true);
     let port = host.net.port().unwrap();
-    let quiet = FakeNet::new(&hub, "192.168.0.66");
+    let quiet = FakeNet::new(&hub, "192.0.2.66");
     let _held = quiet.connect(&pc_nearby(port)).unwrap();
-    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    let mut view = page(&hub, "192.0.2.120", mac(), false);
     *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
     view.page.open_form();
     until(&mut [&mut view], "nearby", |p| {
@@ -1270,7 +1270,7 @@ fn pairing_never_replaces_a_machine_by_its_name() {
         name: "Max's PC".into(),
         ssh: "studio".into(),
         flare: "flare".into(),
-        host: Some("192.168.0.139".into()),
+        host: Some("192.0.2.139".into()),
         ..Machine::default()
     };
     *view_io.list.lock().unwrap() = vec![mine.clone()];

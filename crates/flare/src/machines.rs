@@ -484,7 +484,7 @@ mod tests {
             id: "max-s-mac-mini".into(),
             name: "Max's Mac mini".into(),
             kind: Some(Os::Mac),
-            address: "192.168.0.120".into(),
+            address: "192.0.2.120".into(),
             version: "0.4.2".into(),
             key: "AAAAC3NzaC1lZDI1NTE5AAAAIA+/=".into(),
             admin: Some(true),
@@ -536,7 +536,7 @@ mod tests {
         let pc = Machine {
             id: "pc".into(),
             name: "PC".into(),
-            ssh: "192.168.0.139".into(),
+            ssh: "192.0.2.139".into(),
             user: Some("Max Aubert".into()),
             flare: "flare".into(),
             host_key: Some("AAAAC3NzaC1lZDI1NTE5AAAAIA+/=".into()),
