@@ -1,7 +1,8 @@
 # Remote sessions shown only on the opener: implementation plan (2026-11-19)
 
 Spec: `docs/superpowers/specs/2026-11-19-remote-session-on-opener-design.md`.
-Status: draft for Max's approval, together with the spec. Not started.
+Status: approved by Max 2026-11-19. PR 1 built (branch `feat/remote-on-opener-1`, #289); PR 2 built (branch
+`feat/remote-on-opener-2`, no mockup: Max dropped the Settings list).
 Replaces: `docs/superpowers/plans/2026-11-18-import-remote-sessions.md` (PRs #281, #282, #284, #286 closed).
 
 Three code PRs, in order. Each builds and passes its own tests. PR 1 and PR 2 are installed and released together:
@@ -20,10 +21,10 @@ Check `docs/regression-rules.md` again before each PR and renumber if another PR
 | 1303 | The remote ops answer only for hidden sessions: `remote.status` and `remote.tabs` list only them, and every op that names any other tab (host's own or a viewer tab) is `no_tab`. One screen per session, no mirror chains. | 1 |
 | 1304 | A hidden session's question rings only on its opener: the host's notifier, sounds and badge leave it out, followed or not (amends 295). | 1 |
 | 1305 | `remote.close` ends a hidden session at once on the host, never asking there; the opener asks first while an agent is there (amends 1192 for the host side). | 1 |
-| 1306 | The opener finds its session after a host restart: it saves its `open_id`, and on `no_tab` asks `remote.find` once and attaches to the new id with a snapshot (amends 288, 1210). | 2 |
-| 1307 | Settings > Machines on the host lists hidden sessions by opener with Show here (a local tab in front, followers dropped) and End (rule 48 ask on the host, not in the reopen list). | 2 |
-| 1308 | A remote tab whose session moved or ended on its host says so in one red line, from `remote.find`'s answer. | 2 |
-| 1309 | The fitted conversation views and `remote.convo` are gone (retires 297, 1193, 1211, 1212); "Hide here only" is gone if Max agrees (amends 1192). | 3 |
+| 1306 | (Taken by PR 1's security fix: no plugin reads a hidden session; one opener-name check.) | 1 |
+| 1307 | The opener finds its session after a host restart: it saves its `open_id`, and on `no_tab` asks `remote.find` once and attaches to the new id with a snapshot (amends 288, 1210). (Was 1306 in this table.) | 2 |
+| 1308 | A remote tab whose session ended on its host by itself (its shell exited) stays with one red line, from `remote.find`'s `no_tab`. (The Settings list, Show here and End, the old 1307, were dropped by Max's update below.) | 2 |
+| 1309 | The fitted conversation views and `remote.convo` are gone (retires 297, 1193, 1211, 1212). ("Hide here only" went in PR 1, Max 2026-11-19, as an amend note on 1192.) | 3 |
 
 Existing rules to respect and cite: 34 (blocking work on workers), 37 and 40 (tabs.json, unknown keys), 48 (close
 ask), 206 (one ring per episode), 278 (no protocol bump), 279 to 305 (remote sessions), 1192, 1199 (Mac host name),
@@ -31,8 +32,10 @@ ask), 206 (one ring per episode), 278 (no protocol bump), 279 to 305 (remote ses
 
 ## Shared decisions (every PR)
 
-- No `REMOTE_PROTOCOL` bump (rule 278). One new method, `remote.find`, added to the relayed list in
-  `serve_remote.rs`. No grant change.
+- No `REMOTE_PROTOCOL` bump (rule 278). One new method, `remote.find` (PR 2). Correction: the bridge relays by namespace
+  (`grant.rs`), there is no relayed list; `remote.find` touches `method.rs` (the enum, `ALL`, `name`, `parse`,
+  `namespace`, `timeout`, its tests), the `ctl_app.rs` dispatch and `serve_remote.rs` `may_retry` (find is idempotent). No
+  grant change.
 - Hidden sessions live in a list of their own in the tab model (`TabModel::hidden`, not in `state.tabs`). The 22
   `state.tabs` sites in `appctl` (strip, sidebar, MRU, Ctrl+Tab, front picks, `busy_agents`, `tab_facts` and the rest)
   then skip them. Sites that must see them read the new list: the remote ops, `remote.status`, keep-awake, the quit
@@ -110,6 +113,44 @@ Branch `feat/remote-on-opener-1`. Released together with PR 2 (see the top). An 
 
 ---
 
+### PR 1 as built: corrections to the plan above (2026-11-19)
+
+Where the code disagreed with the plan, PR 1 follows the code:
+- **Save format.** `SavedTabs.hidden: Vec<SavedHidden>` (not `SavedTab.hidden`): `parse_tabs` moves hidden entries to
+  their own list, so `peek_state`, the slots and `settle_restore_from` never see them; `active` counts strip tabs only.
+  The file keeps the plan's shape (`hidden: {opener, open_id, cols, rows}` on a tab after the strip). `Restored.hidden`
+  carries them; `plan_restore_with` stats their folders and shares the saved and taken sessions with the strip tabs;
+  `TabModel::settle` adds them hidden and returns their spawns last; `AppCtl::restored` spawns them with
+  `TabHost::spawn_hidden` at the saved size.
+- **Birth size.** `remote.open` gets no `cols`/`rows`: a new opener sending them would get `bad_params` from an older
+  host (`only_fields`). A hidden session is remote-owned from birth instead (`TabHost::spawn_hidden`, at the window's
+  grid size until the opener's first `remote.resize`, which follows the attach), never handed back
+  (`take_size_back` and a local key pass it by), and its last size is saved.
+- **The remote gate.** Only `remote.attach` makes a follow, and it refuses any tab that is not hidden, so the ops the
+  worker answers (`output`, `snapshot`, `fetch`, `put`, `convo`, `detach`) refuse them too. `RemoteRelease` and
+  `RemoteClose` check it as well. `remote.status`/`remote.tabs` build from `hidden_rows` (`tab_facts` stays the strip's).
+- **Token ops from a hidden tab.** `is_shell_tab` stays strip-only. One guard ahead of every UI-thread handler
+  (`AppCtl::hidden_refusal`) answers `unavailable` for panels, `show_*`, the browser, mini-apps, mods, fill, badge,
+  progress and the session bar; `PanelState` (the hooks), `tabs.list` of its own tab, `TabCwd` and `SessionOf` answer
+  for it (`session_tab_folder`). `notice.show` and `open.remote` carry no tab: left as they are (see PR 2).
+- **Lifecycle sites that read only `state.tabs`.** `sync_hub`, `sync_model_agents` and `prune_restoring` read the hidden
+  list too; the hub knows hidden ids (`on_hidden_tab`) and leaves them out of `question_tabs`, `attention`, `send_tabs`
+  and the screen question post; the bell flash and the dev chip skip them; `HostEvent::Exited` drops a hidden session.
+- **Close.** `close_hidden_now` (no `remember_closed`, no ask). `request_close` stays strip-only (no End on the host,
+  see Max's update below).
+- **Opener ask.** `AgentHub::remote_agent` keeps the host's `kind` before `on_remote_status` returns early;
+  `AppCtl::close_asks` uses it (not `agent_present`, which the install ask also reads).
+- **Opener name.** `RemoteAttach` carries `viewer_of` and renames the session's opener.
+- **Cap.** 50 hidden sessions per machine (`MAX_HIDDEN`), `busy` on the 51st, after the open-id dedupe.
+- **"Hide here only"** removed in PR 1 (Max 2026-11-19), with `TabHost::leave`.
+- **Tests removed.** The two host fitted view flows (rules 1211, 1212) cannot hold once only hidden sessions are sized
+  by a viewer; the code goes in PR 3.
+
+PR 2 must also pick up: `SavedRemote.open_id` and `RemoteLive::new` / the `remote_link.rs` worker spawn carrying the
+tab's open id (the opener side is untouched in PR 1); `remote.find` as corrected above (it reads `Hidden::open_id`).
+PR 1 refuses `open.remote` from a hidden session's agent (`CtlOp::OpenRemote.caller`); `notice.show` is a plugin's
+call only, never an agent tab token's, so it needs nothing.
+
 ## PR 2: The opener finds its session again, Settings list, Show here and End
 
 Branch `feat/remote-on-opener-2`. Needs PR 1.
@@ -151,9 +192,52 @@ and wait for his yes.
 
 ---
 
+### PR 2 as built: corrections to the plan above (2026-11-19)
+
+Branch `feat/remote-on-opener-2`, on top of PR 1 (#289); it ships with PR 1 and merges after it. Scope per Max's update
+at the end (no Settings list, no Show here, no End, no mockup step). Where the code disagreed with the plan, PR 2
+follows the code:
+- **Rule numbers.** 1306 went to PR 1's security fix, so PR 2 takes 1307 (`remote.find`) and 1308 (the "was ended on"
+  line). PR 3 keeps 1309.
+- **Where the open id lives.** In `RemoteLive` (`open_id`, `open_id_or_new`), not `RemoteSpec`: the link worker and the
+  save both read the live state. `AppCtl::open_remote` makes it on the UI thread when the tab is made; `restored` keeps
+  the saved one, makes one for a tab the host never answered, and leaves a tab with a `host_tab` and no open id without
+  one (a tab from before the key ends once, as the spec's "Mixed versions" says). The worker's per-worker id is gone.
+  `SavedRemote.open_id` is in its `PartialEq`, so a new id writes `tabs.json`.
+- **One find per link life.** `Worker::session` now connects and opens (`link_and_tab`), then loops on `follow` (attach,
+  catch-up, kept typing, polls). Every `no_tab` (attach, the polls, a file errand) becomes `Step::Gone`, and the session
+  asks `find` once, on the same link. A second `no_tab` in the same life ends the tab as before.
+- **The answers.** `{tab}` with a new id: new host tab, fresh snapshot, then the line (after the snapshot, which clears
+  the screen); the convo mirror starts again. `{tab}` with the same id (only the follow was lost): attach again and
+  catch up, no line. `no_tab`: the red line, and the tab stays (the link ends without `finish`, as a refused open does);
+  it is never ended as a shell that exits, or the window would close the tab and the line with it. `unknown_method`, or
+  no open id: ends as before. Any other refusal never ends the tab: `unavailable` is asked again on the same link
+  (`attach_retry`, up to `attach_patience`), then `Step::Down`. This replaces the spec's "tries once more, then ends with
+  the ended line": an end on a passing refusal would show "ended" for a session that runs.
+- **Host restore race.** The host answers `unavailable` until `TabModel::restore_done()`, so an opener that comes back
+  while the host restores never hears `no_tab` for a session that is about to come back.
+- **No opener-name check** on `remote.find`: the open id is the opener's random id, and a Mac's name can change (rule
+  1199). Only hidden sessions are searched.
+- **Kept typing** is dropped at the `no_tab`, and again for typing that came in during the find, so nothing typed for the
+  lost tab reaches the found one. A size asked meanwhile is kept; a close or leave during the find is sent to the found
+  tab.
+- **Hidden ids per run (found by the e2e).** The window clock starts at 0 each run, so ids repeat across restarts
+  (`t0-1`): the restarted host gave the restored session the old id, the opener attached to it without a `no_tab`, and
+  could as well have followed another tab that took the place. A hidden session's id is now `h<run>-<n>`
+  (`TabModel` `hidden_id`, a random word made with the model), so an id saved in an earlier run is always `no_tab`.
+  Strip ids are unchanged.
+- **The restart line waits** until the found session's output is quiet, at least 500 ms after the snapshot
+  (`RESTART_LINE_QUIET`): a Windows host's console can repaint after the resize and wipe a line said at once.
+- **Machine name in the lines** is the tab's machine id (`RemoteSpec.machine`), as the link's other lines use.
+- **e2e.** `remoteOpen` (not `remoteUi`) restarts the host: its host is the one the serve process starts hidden, so the
+  viewer's next link starts it again the same way. The scenario asks B to quit, waits for the restart line on A, checks
+  B holds one hidden session, and types once more.
+- **Test fixture.** `remote_flows::open_from` now also waits for the hidden session's handle: under a loaded run an
+  attach right after the spawn was `unavailable` (two PR 1 tests failed once that way).
+
 ## PR 3: Remove what one screen no longer needs
 
-Branch `feat/remote-on-opener-3`. Needs PR 1. Waits for Max's answer on "Hide here only".
+Branch `feat/remote-on-opener-3`. Needs PR 1.
 
 **Files.**
 - Remove: `RemoteConvoView`, `HostConvoView`, `host_view_stands`, `host_convo_*`, `HOST_CONVO_EVERY_MS`,
@@ -162,13 +246,13 @@ Branch `feat/remote-on-opener-3`. Needs PR 1. Waits for Max's answer on "Hide he
   in `crates/flare/ui/app.slint` and `remote_convo.slint`; `crates/flare/src/remote_convo.rs`;
   `crates/flare/src/ui_tests/remote_convo.rs`; `Method::RemoteConvo` and its bridge relay. Grep for other callers
   first; keep anything another feature uses.
-- If Max agrees: remove the "Hide here only" row (`menus_ui.rs` `HIDE_HERE`, `hide_remote`) and its test.
+- "Hide here only" was removed in PR 1 (Max agreed 2026-11-19).
 - Docs: `docs/regression-rules.md` (1309; mark 297, 1193, 1211, 1212 "Retired by 1309"; amend 1192),
   `docs/surfaces/protocol.md`, `docs/features.md`.
 
 **Tests first.**
 - `a_remote_tab_never_shows_a_conversation_view` (the host's status says `sized: host`: the terminal stays).
-- If Hide here only goes: `a_remote_tabs_menu_has_close_and_no_hide_here_only`.
+- (`a_remote_tabs_menu_has_close_and_no_hide_here_only` is in PR 1.)
 - Keep green: every remaining remote test, the e2e `remoteUi`.
 
 ---

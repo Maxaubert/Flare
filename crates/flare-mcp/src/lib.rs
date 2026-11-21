@@ -134,8 +134,9 @@ pub enum ChannelError {
 pub trait Channel {
     fn call(&mut self, method: Method, params: Value) -> Result<Value, ChannelError>;
 
-    /// Starts listening for the mods' tools to change; `notify` is called for each change. Asked once the
-    /// first `tools/list` has been answered. The default listens to nothing.
+    /// Starts listening for the mods' tools to change; `notify` is called for each change. Asked after every
+    /// `tools/list`: the channel starts at most one watcher, and decides when it is worth one. The default
+    /// listens to nothing.
     fn watch_mod_tools(&mut self, _notify: Notify) {}
 
     /// The flag that says "the call in flight was cancelled". Given once, before the first call. A channel that
@@ -1181,7 +1182,6 @@ fn serve(
     std::thread::Builder::new()
         .name("flare-mcp-stdin".into())
         .spawn(move || read_stdin(input, to_loop, reader_flights, grace, loop_done))?;
-    let mut watching = false;
     for item in from_stdin {
         let reply = match item {
             Line::Failed(e) => return Err(e),
@@ -1196,11 +1196,11 @@ fn serve(
                     continue;
                 }
                 let reply = handle_message(&msg, channel);
-                if !watching
-                    && msg.get("method").and_then(Value::as_str) == Some("tools/list")
+                // Asked at every tools/list: the channel starts its watcher once, and only once this Flare has
+                // answered a mods.tools. A first list whose mods.tools failed must not rule it out (rule 1334).
+                if msg.get("method").and_then(Value::as_str) == Some("tools/list")
                     && let Some(n) = &notify
                 {
-                    watching = true;
                     channel.watch_mod_tools(Arc::clone(n));
                 }
                 // A cancelled request gets no response.
@@ -2748,41 +2748,92 @@ app", "loaded": true}))),
         assert!(v.get("id").is_none());
     }
 
+    /// A channel that acts as [`FlareChannel`] does: its watcher starts once, and only after a `mods.tools` was
+    /// answered. The first `fail_first` mods.tools calls fail (Flare busy, a broken pipe).
+    #[derive(Default)]
+    struct Watching {
+        fail_first: usize,
+        mods_calls: usize,
+        hub_seen: bool,
+        asked: usize,
+        started: usize,
+    }
+
+    impl Channel for Watching {
+        fn call(&mut self, m: Method, _p: Value) -> Result<Value, ChannelError> {
+            if m == Method::ModsTools {
+                self.mods_calls += 1;
+                if self.mods_calls <= self.fail_first {
+                    return Err(ChannelError::Failed("busy".into()));
+                }
+                self.hub_seen = true;
+            }
+            Ok(json!({}))
+        }
+        fn watch_mod_tools(&mut self, _n: Notify) {
+            self.asked += 1;
+            if self.hub_seen && self.started == 0 {
+                self.started = 1;
+            }
+        }
+    }
+
+    const TWO_LISTS: [&str; 3] = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
+    ];
+
     #[test]
     fn the_watch_starts_once_after_the_first_tools_list() {
-        #[derive(Default)]
-        struct Watching {
-            watched: usize,
-        }
-        impl Channel for Watching {
-            fn call(&mut self, _m: Method, _p: Value) -> Result<Value, ChannelError> {
-                Ok(json!({}))
-            }
-            fn watch_mod_tools(&mut self, _n: Notify) {
-                self.watched += 1;
-            }
-        }
-        let input = [
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
-        ]
-        .join("\n");
+        let input = TWO_LISTS.join("\n");
         let mut ch = Watching::default();
-        let mut out = Vec::new();
         let n: Notify = Arc::new(|| {});
         run_notifying(
             std::io::Cursor::new(input.clone()),
-            &mut out,
+            &mut Vec::new(),
             &mut ch,
             Some(n),
         )
         .unwrap();
-        assert_eq!(ch.watched, 1);
+        assert_eq!(ch.started, 1);
         // Without a notifier (`run`) nothing is watched.
         let mut ch = Watching::default();
         run(std::io::Cursor::new(input), &mut Vec::new(), &mut ch).unwrap();
-        assert_eq!(ch.watched, 0);
+        assert_eq!(ch.asked, 0);
+        assert_eq!(ch.started, 0);
+    }
+
+    /// Rule 1334: the first tools/list's mods.tools failed, so the channel could not start its watcher then. A later
+    /// tools/list that is answered starts it.
+    #[test]
+    fn the_watch_starts_after_a_failed_first_tools_list() {
+        let mut ch = Watching {
+            fail_first: 1,
+            ..Default::default()
+        };
+        let n: Notify = Arc::new(|| {});
+        run_notifying(
+            std::io::Cursor::new(TWO_LISTS.join("\n")),
+            &mut Vec::new(),
+            &mut ch,
+            Some(n),
+        )
+        .unwrap();
+        assert_eq!(ch.mods_calls, 2);
+        assert_eq!(
+            ch.started, 1,
+            "the second, answered list starts the watcher"
+        );
+    }
+
+    /// Rule 1334: FlareChannel itself starts no watcher before a mods.tools was answered, so serve may ask at every
+    /// tools/list.
+    #[test]
+    fn flare_channel_waits_for_a_mods_hub_before_it_watches() {
+        let mut ch = FlareChannel::new(Some("t".into()), Some("p".into())).with_server_pid(Some(1));
+        ch.watch_mod_tools(Arc::new(|| {}));
+        assert!(!ch.watching);
     }
 
     // ---- cancels (a stdin thread, and a call the client gave up on) ----
