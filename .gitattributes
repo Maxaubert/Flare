@@ -8,4 +8,6 @@ docs/theme-sample.txt -text
 *.sh text eol=lf
 
 assets/mermaid/mermaid.min.js -text
+# The Android agent helper (built by tools/android-agent/build.py; its hash is checked byte for byte).
+*.jar binary
 assets/three/viewer.js -text

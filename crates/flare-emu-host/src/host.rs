@@ -88,6 +88,8 @@ struct Device {
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// The `frames` line's ring number.
     ring: u32,
+    /// The agent helper (PR A3, rule 1369): the UI tree and set-text. None without an emulator's adb serial.
+    agent: Option<Arc<crate::agent::Helper>>,
 }
 
 impl Device {
@@ -170,8 +172,8 @@ pub fn hello(sdk: &Found, accel: Option<&flare_device::emu::accel::Accel>) -> He
         facts.insert("accel".to_string(), a.kind().to_string());
         facts.insert("accel_usable".to_string(), a.usable().to_string());
     }
-    // The agent helper comes with Android plan PR A3.
-    facts.insert("agent_jar".to_string(), "none".to_string());
+    // The agent helper's jar (PR A3): its short hash, or `missing` when none with the expected hash is here.
+    facts.insert("agent_jar".to_string(), crate::agent::jar_fact());
     Hello {
         protocol: PROTOCOL,
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -437,13 +439,37 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
                 });
             }
         },
-        Request::UiTree { target, .. } => {
-            host.err(
-                id,
-                Fail::Unavailable,
-                format!("{target}: the UI tree comes with the agent helper (Android plan PR A3)"),
-            );
-        }
+        Request::UiTree { target, .. } => match host.device(&target) {
+            None => host.err(id, Fail::Unavailable, format!("{target} is not attached")),
+            Some(d) => match d.agent.clone() {
+                None => host.err(
+                    id,
+                    Fail::Unavailable,
+                    format!("{target}: no adb serial, so no UI tree"),
+                ),
+                Some(a) => {
+                    let h = Arc::clone(host);
+                    let (scale, screen) = (d.scale, screen_dp(&d));
+                    host.rt.spawn(async move {
+                        let started = Instant::now();
+                        let r = tokio::task::spawn_blocking(move || a.tree(scale, screen))
+                            .await
+                            .unwrap_or_else(|e| Err((Fail::Unavailable, e.to_string())));
+                        match r {
+                            Ok(v) => {
+                                h.log.line(&format!(
+                                    "{target}: tree ({}) in {} ms",
+                                    v["path"].as_str().unwrap_or("?"),
+                                    started.elapsed().as_millis()
+                                ));
+                                h.ok(id, v);
+                            }
+                            Err((f, m)) => h.err(id, f, m),
+                        }
+                    });
+                }
+            },
+        },
         Request::Launch {
             target,
             bundle_id,
@@ -980,6 +1006,11 @@ async fn attach(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         Fail::Unavailable,
         format!("a screen that does not read: {portrait:?} at {dpi} dpi"),
     ))?;
+    let adb = ready_sdk(host)?.adb();
+    let agent = r
+        .serial()
+        .and_then(|s| crate::agent::Helper::new(adb, s, host.log.clone()))
+        .map(Arc::new);
     let d = Arc::new(Device {
         target: target.clone(),
         client: client.clone(),
@@ -994,6 +1025,7 @@ async fn attach(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         stream: Mutex::new(None),
         tasks: Mutex::new(Vec::new()),
         ring: host.rings.fetch_add(1, Ordering::Relaxed),
+        agent,
     });
     open_input(host, &d);
     lock(&host.devices).insert(target.clone(), Arc::clone(&d));
@@ -1020,7 +1052,17 @@ async fn attach(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         target: target.clone(),
         state: InputState::Live,
     });
+    // The agent helper starts now, off the control loop, so the first look is quick (PR A3).
+    if let Some(a) = d.agent.clone() {
+        host.rt.spawn_blocking(move || a.warm());
+    }
     Ok(())
+}
+
+/// The screen in dp as it is shown now (the current orientation), for the tree's root.
+fn screen_dp(d: &Device) -> Size {
+    let shown = lock(&d.orientation).size(d.portrait);
+    Size::new(shown.w / d.scale, shown.h / d.scale)
 }
 
 /// The held `streamInputEvent`: one stream for every touch and key, opened again if it drops.
@@ -1067,6 +1109,10 @@ fn detach_device(d: &Arc<Device>) {
     }
     *lock(&d.input) = None;
     lock(&d.tasks).clear();
+    // The helper and its forward end on a thread of their own (adb calls block).
+    if let Some(a) = d.agent.clone() {
+        std::thread::spawn(move || a.stop());
+    }
 }
 
 fn touch_event(touches: Vec<pb::Touch>) -> pb::InputEvent {
@@ -1206,9 +1252,20 @@ async fn press(d: &Device, b: Button) -> Result<(), Failed> {
     Ok(())
 }
 
-/// Types `text` (rule 1368): HID keys, or the device's own clipboard and Ctrl+V. Never the computer's clipboard.
+/// Types `text` (rule 1368): HID keys; text the keymap cannot type through the agent helper's set-text at the cursor
+/// (PR A3), else the device's own clipboard and Ctrl+V. Never the computer's clipboard.
 async fn type_text(d: &Device, text: &str) -> Result<(), Failed> {
-    for step in keys::text_steps(text) {
+    let steps = keys::text_steps(text);
+    if let (Some(keys::TextStep::DeviceClipboard(t)), Some(a)) = (steps.first(), d.agent.clone()) {
+        let t = t.clone();
+        let typed = tokio::task::spawn_blocking(move || a.insert_text(&t))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        if typed.is_ok() {
+            return Ok(());
+        }
+    }
+    for step in steps {
         match step {
             keys::TextStep::Keys(ks) => {
                 for k in ks {
@@ -1482,7 +1539,11 @@ mod tests {
         assert_eq!(h.facts["sdk"], "ready");
         assert_eq!(h.facts["emulator_version"], "37.2.13");
         assert_eq!(h.facts["accel"], "whpx");
-        assert_eq!(h.facts["agent_jar"], "none");
+        // The jar's short hash (a test build finds the repo's jar).
+        assert_eq!(
+            h.facts["agent_jar"],
+            &flare_device::emu::agent::jar_sha256()[..12]
+        );
         assert!(h.input_path.is_none());
         let line = to_line(&HostLine::Hello(h));
         assert!(!line.contains("token"), "{line}");

@@ -52,6 +52,8 @@ path = "src/bin/flare_sim_host.rs"
 
 [dev-dependencies]
 tempfile.workspace = true
+# The agent helper jar's hashes (emu/agent.rs, rule 1369): the test that the checked-in jar is from its sources.
+sha2.workspace = true
 
 [lints]
 workspace = true

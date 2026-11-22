@@ -10,6 +10,11 @@
 //!   machine has (SDK, emulator version, hypervisor). JSON out; exit 0 when Flare's own parts pass.
 //! - `--bench <avd> <seconds> [--boot] [--width <px>] [--rotate] [--snapshots <n>]`: the frame path against a real
 //!   emulator, by hand; JSON out.
+//! - `--agent <serial> [--text <t>]`: the agent helper against a running emulator, by hand (PR A3): start, tree times,
+//!   set-text, the dump for comparison; JSON out.
+//!
+//! The UI tree and set-text come from the agent helper `flare-agent.jar` (PR A3, rule 1369, `agent.rs`), pushed into
+//! the emulator and reached through `adb forward`; `uiautomator dump` is the slow fallback.
 //!
 //! Android setup (PR A2b, rule 1361) runs in serve mode, as `setup` requests: Google's package lists, the download
 //! after the licence click, the checksums, Flare's own device (`setup.rs`), and on Windows the hypervisor (`hyperv.rs`).
@@ -18,6 +23,7 @@
 //! with no console window on Windows.
 
 mod adb;
+mod agent;
 mod bench;
 mod grpc;
 mod host;
@@ -57,6 +63,18 @@ fn run_main() -> i32 {
         let (out, ok) = selftest::run();
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         return if ok { 0 } else { 1 };
+    }
+    if let Some(serial) = value("--agent") {
+        return match agent::check(&serial, value("--text").as_deref()) {
+            Ok(r) => {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+                0
+            }
+            Err(e) => {
+                eprintln!("flare-emu-host: agent: {e}");
+                1
+            }
+        };
     }
     if let Some(i) = args.iter().position(|a| a == "--bench") {
         let (Some(avd), Some(seconds)) = (

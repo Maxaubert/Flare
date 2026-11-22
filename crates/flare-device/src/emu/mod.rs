@@ -12,8 +12,11 @@
 //! - [`keys`]: the panel's buttons and text as the emulator's key events (rule 1368).
 //! - [`setup`]: Google's package lists read back, what Flare's own SDK folder needs, the licences (PR A2b, rule 1361).
 //! - [`flare_avd`]: Flare's own device, "Flare Pixel", written by hand (PR A2b).
+//! - [`agent`]: the agent helper `flare-agent.jar` (PR A3, rule 1369): its hash, its lines, its tree in the tree model,
+//!   and the `uiautomator dump` fallback.
 
 pub mod accel;
+pub mod agent;
 pub mod avds;
 pub mod boot;
 pub mod discovery;

@@ -30,6 +30,8 @@ flare-proc = { path = "../flare-proc" }
 ureq.workspace = true
 sha1_smol.workspace = true
 zip.workspace = true
+# The agent helper jar's SHA-256, checked before it is pushed (Android plan PR A3, rule 1369).
+sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
@@ -43,7 +45,6 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile.workspace = true
-sha2.workspace = true
 
 [lints]
 workspace = true

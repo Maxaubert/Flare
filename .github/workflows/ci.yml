@@ -57,7 +57,8 @@ jobs:
       - name: Tests
         run: cargo nextest run --workspace --no-tests=pass --no-fail-fast
       # The Android device panel's emu host (Android plan PR A2): its generated protos, the boot command line (rule
-      # 1362) and the hidden token; what the runner has (SDK, emulator version, hypervisor) is reported, never a failure.
+      # 1362), the hidden token and the agent helper's jar with its expected hash (PR A3, rule 1369; the jar matching its
+      # sources is a test); what the runner has (SDK, emulator version, hypervisor) is reported, never a failure.
       - name: Emu host self-test
         shell: bash
         run: |
@@ -132,7 +133,8 @@ jobs:
           if grep -q '"skipped": "' <<<"$out"; then echo "::notice::flare-sim-host --self-test skipped: $(grep '"skipped"' <<<"$out")"; fi
           exit "$rc"
       # The Android device panel's emu host (Android plan PR A2): its generated protos, the boot command line (rule
-      # 1362) and the hidden token; what the runner has (SDK, emulator version, hypervisor) is reported, never a failure.
+      # 1362), the hidden token and the agent helper's jar with its expected hash (PR A3, rule 1369; the jar matching its
+      # sources is a test); what the runner has (SDK, emulator version, hypervisor) is reported, never a failure.
       - name: Emu host self-test
         shell: bash
         run: |

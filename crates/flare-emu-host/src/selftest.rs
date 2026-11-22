@@ -1,6 +1,7 @@
 //! `flare-emu-host --self-test` (CI on both OSes, and the release check): Flare's own parts work, and what this
-//! machine has is reported. JSON out; exit 0 when Flare's parts pass. A missing or old SDK, a hypervisor that is off,
-//! or no agent helper (PR A3) are reported, never a failure: the runner may have none of them.
+//! machine has is reported. JSON out; exit 0 when Flare's parts pass. A missing or old SDK or a hypervisor that is off
+//! are reported, never a failure: the runner may have none of them. The agent helper's jar (PR A3, rule 1369) must be
+//! found with the hash this build expects.
 
 use prost::Message;
 use serde_json::{Value, json};
@@ -44,8 +45,26 @@ pub fn own_checks() -> Vec<Value> {
         .map(|t| format!("{t:?} {t}"))
         .unwrap_or_default();
     let hidden = !t.is_empty() && !t.contains("c2VsZi10ZXN0");
+    // Rule 1369: the jar this build pushes is here, with the expected hash.
+    let jar = crate::agent::jar();
     vec![
         check("protos", protos, format!("proto-sha256 {}", proto_sha256())),
+        check(
+            "agent_jar",
+            jar.is_some(),
+            match jar {
+                Some(p) => format!(
+                    "{} sha256 {}",
+                    p.display(),
+                    flare_device::emu::agent::jar_sha256()
+                ),
+                None => format!(
+                    "no flare-agent.jar with sha256 {} in {:?}",
+                    flare_device::emu::agent::jar_sha256(),
+                    crate::agent::candidates()
+                ),
+            },
+        ),
         check(
             "boot_command",
             cmd.is_ok(),
@@ -67,7 +86,7 @@ pub fn run() -> (Value, bool) {
         "version": env!("CARGO_PKG_VERSION"),
         "checks": checks,
         "floor": sdk::floor(),
-        "agent_jar": "none (Android plan PR A3)",
+        "agent_jar": crate::agent::jar_fact(),
     });
     match &found {
         Found::Ready(s) | Found::TooOld(s) => {
