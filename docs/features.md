@@ -3141,8 +3141,9 @@ Issue #248, spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, pla
 `docs/superpowers/plans/2026-11-19-device-panel.md` (PR 4b). The first visible change: on a Mac with Apple silicon and
 Xcode, a tab can show a live iPhone simulator beside it and the person can use it. The agent's tools come in PR 5.
 
-- **Opening it.** The tab menu (right-click a tab) has **Device panel** for a local shell tab once Flare found an Xcode
-  (`xcode-select -p` inside an app, else the newest `Xcode*.app`, read on a worker at startup). It opens on the device
+- **Opening it.** No menu opens it (Max, 2026-11-22): the person asks the agent ("open the simulator in the side panel
+  so i can test our app") and its `device_boot` opens it, for a local shell tab once Flare found an Xcode
+  (`xcode-select -p` inside an app, else the newest `Xcode*.app`, read on a worker at startup). It can show the device
   list; one click shows a device and boots it, headless (no Simulator.app, no prompt; rule 1323). A restored panel
   shows its device with Boot and boots nothing.
 - **The picture, zero copy.** The sim host is started by the first device panel and stops two minutes after the last
