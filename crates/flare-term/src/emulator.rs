@@ -596,6 +596,26 @@ impl Emulator {
         self.row_text_with(line, false)
     }
 
+    /// The char index in `row_text(line)` of cell column `col`: a wide character's spacer cell adds no char and a
+    /// combining mark adds one, as `row_text` writes them. A column past the line's last cell counts one per cell,
+    /// so a caller padding the trimmed text out to the index lands on the cursor (rule 1352).
+    pub fn row_char_index(&self, line: i32, col: usize) -> usize {
+        let grid = self.term.grid();
+        let cols = self.term.columns();
+        let mut index = col.saturating_sub(cols);
+        for c in 0..col.min(cols) {
+            let cell = &grid[Point::new(Line(line), Column(c))];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            index += 1 + cell.zerowidth().map_or(0, <[char]>::len);
+        }
+        index
+    }
+
     /// `row_text`, with `ghosts` true blanking the cells that are not typed ink: dim (SGR 2), reverse
     /// video (a cursor block drawn over a character) and bright-black grey, which is how an agent paints
     /// a placeholder or a suggested prompt in an empty box.
@@ -2321,6 +2341,38 @@ mod tests {
         let mut e = Emulator::new(80, 24);
         e.feed("a\u{4e2d}b".as_bytes());
         assert_eq!(e.row_text(0), "a\u{4e2d}b");
+    }
+
+    /// Rule 1352: the cursor's cell column maps to its char in `row_text`, wide spacers skipped, so the accessibility
+    /// caret sits on the char the cursor is on and not past it.
+    #[test]
+    fn a_cell_column_maps_to_its_char_in_row_text() {
+        let mut e = Emulator::new(80, 24);
+        e.feed("\u{65e5}\u{672c}\u{8a9e}abc".as_bytes());
+        // Cells: three wide chars take columns 0-5, then 'a' at 6, 'b' at 7, 'c' at 8.
+        assert_eq!(e.row_char_index(0, 0), 0);
+        assert_eq!(e.row_char_index(0, 2), 1);
+        assert_eq!(e.row_char_index(0, 6), 3, "the cursor on 'a' is char 3");
+        assert_eq!(
+            e.row_char_index(0, 9),
+            6,
+            "the cursor right after the text is at its end"
+        );
+        assert_eq!(
+            e.row_char_index(0, 11),
+            8,
+            "past the end, one per blank cell"
+        );
+        // A combining mark is one more char in the text, not one more cell.
+        let mut e = Emulator::new(80, 24);
+        e.feed("e\u{301}x".as_bytes());
+        assert_eq!(e.row_text(0), "e\u{301}x");
+        assert_eq!(e.row_char_index(0, 1), 2);
+        assert_eq!(
+            e.row_char_index(0, 200),
+            201,
+            "every cell and the mark, then one per column past the grid"
+        );
     }
 
     /// Rule 1213: a styled row sets each run's style from the default and resets at its end, keeps a coloured blank

@@ -738,8 +738,18 @@ impl Host {
         }
     }
 
-    /// The helper's start, on its own thread: checks, spawns suspended, joins its job, runs, and waits for its end.
+    /// The helper's run, on its own thread: each start, and each restart after an end, in a loop. A restart never
+    /// calls back into a start, so the stack stays flat and the ended child's handles close first (rule 1327).
     fn launch(&self, id: &str, seq: u64) {
+        let mut seq = seq;
+        while let Some(next) = self.launch_once(id, seq) {
+            seq = next;
+        }
+    }
+
+    /// One start: checks, spawns suspended, joins its job, runs, and waits for its end. The start number of the
+    /// restart that follows, when the policy allows one.
+    fn launch_once(&self, id: &str, seq: u64) -> Option<u64> {
         let Some(spec) = self
             .lock()
             .get(id)
@@ -747,7 +757,7 @@ impl Host {
             .map(|r| r.spec.clone())
         else {
             self.nothing_spawned(id, seq);
-            return;
+            return None;
         };
         match self.spawn(&spec) {
             Ok((child, job)) => {
@@ -768,7 +778,7 @@ impl Host {
                             let unreaped = flare_proc::guard::wait_ended_unreaped(child.id());
                             let _ = job.finish(unreaped, || child.wait()); // sync-ok: the helper's own thread
                         }
-                        return;
+                        return None;
                     }
                 }
                 drop(g);
@@ -777,7 +787,7 @@ impl Host {
                     id: id.to_string(),
                     pid,
                 });
-                self.wait_for_end(id, seq, child, job);
+                self.wait_for_end(id, seq, child, job)
             }
             Err(why) => {
                 log::warn!("plugin {id}: its helper did not start: {why}");
@@ -790,6 +800,7 @@ impl Host {
                         why: format!("Its program did not start: {why}."),
                     });
                 }
+                None
             }
         }
     }
@@ -885,8 +896,9 @@ impl Host {
         Ok((child, job))
     }
 
-    /// Waits for the helper to end (its own thread), then starts it again or stops it, by the policy.
-    fn wait_for_end(&self, id: &str, seq: u64, mut child: Child, job: Arc<Job>) {
+    /// Waits for the helper to end (its own thread), then stops it or answers the start number of its restart, by
+    /// the policy. The child is dropped here, so its handles are closed before any restart (rule 1327).
+    fn wait_for_end(&self, id: &str, seq: u64, mut child: Child, job: Arc<Job>) -> Option<u64> {
         // macOS: its end is seen before it is reaped, so a stop that races it never signals a recycled pid; the guard,
         // then Flare's own pass, end what is left of the tree (a crash ends it all, as a job's last handle does).
         #[cfg(target_os = "macos")]
@@ -897,10 +909,11 @@ impl Host {
         #[cfg(not(target_os = "macos"))]
         let status = child.wait(); // sync-ok: the helper's own thread
         drop(job);
+        drop(child);
         let code = status.ok().and_then(|s| s.code());
         let mut g = self.lock();
         let Some(run) = g.get_mut(id).filter(|r| r.seq == seq) else {
-            return; // stopped: not a crash
+            return None; // stopped: not a crash
         };
         log::warn!("plugin {id}: its helper ended by itself (code {code:?})");
         if run.restarts.ended(Instant::now()) {
@@ -909,7 +922,7 @@ impl Host {
             run.job = None;
             drop(g);
             (self.shared.notify)(Note::Restarted { id: id.to_string() });
-            self.launch(id, next);
+            Some(next)
         } else {
             g.remove(id);
             drop(g);
@@ -918,6 +931,7 @@ impl Host {
                 id: id.to_string(),
                 why: STOPPED_HELPER.to_string(),
             });
+            None
         }
     }
 }
@@ -1122,6 +1136,43 @@ mod tests {
             })
         );
         assert!(!host.is_running("demo"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_restart_runs_on_the_same_stack_depth_and_does_not_recurse() {
+        // Rule 1327: each restart once called launch from inside wait_for_end, so the stack (and the ended child's
+        // handles) grew with every restart until the thread's stack overflowed.
+        let dir = folder_with_cmd();
+        let logs = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = Host::with_policy(
+            logs.path().to_path_buf(),
+            "p".into(),
+            move |n| {
+                let probe = 0u8;
+                let depth = std::hint::black_box(&probe) as *const u8 as usize;
+                let _ = tx.send((n, depth, std::thread::current().id()));
+            },
+            6,
+            RESTART_WINDOW,
+            LOG_MAX,
+        );
+        host.start(spec(dir.path(), &["/d", "/c", "exit 3"]));
+        let mut starts = Vec::new();
+        loop {
+            let (n, depth, thread) = rx.recv_timeout(Duration::from_secs(15)).expect("a note");
+            match n {
+                Note::Started { .. } => starts.push((depth, thread)),
+                Note::Stopped { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(starts.len(), 7, "{starts:?}");
+        assert!(
+            starts.iter().all(|s| *s == starts[0]),
+            "every start runs on one thread at one depth: {starts:?}"
+        );
     }
 
     #[cfg(windows)]

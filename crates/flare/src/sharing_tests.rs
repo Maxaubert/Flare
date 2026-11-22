@@ -224,6 +224,32 @@ fn a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone() {
     assert_eq!(SSHD_MARK, "# Flare Computer sharing: keys only");
 }
 
+/// Rule 1343: a server Flare starts has its own firewall rule set to Private and on. The rule's old state (on or off,
+/// which profiles) is kept before that, and a failed later step puts it back, so the switch going back off leaves the
+/// rule as Flare found it.
+#[test]
+fn a_failed_setup_puts_the_sshd_firewall_rule_back() {
+    let s = windows_on_script(Path::new(r"C:\F.exe"));
+    let at = |want: &str| s.find(want).unwrap_or_else(|| panic!("{want}\n{s}"));
+    let catch = at("} catch {");
+    assert!(at("$sshdOn = $null") < at("try {"));
+    assert!(at("$sshdWhere = $null") < at("try {"));
+    let keep = at(
+        "if ($null -ne $sshdRule) { $sshdOn = $sshdRule.Enabled; $sshdWhere = $sshdRule.Profile }",
+    );
+    assert!(
+        keep < at(
+            "Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Profile Private -Enabled True"
+        )
+    );
+    let back = at(
+        "if ($null -ne $sshdOn -and $null -ne $sshdWhere) { Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' \
+         -Profile $sshdWhere -Enabled $sshdOn -ErrorAction SilentlyContinue }",
+    );
+    assert!(catch < back);
+    assert_eq!(s.matches("$sshdOn = $sshdRule.Enabled").count(), 1);
+}
+
 /// Rule 1253: before the script writes into `%ProgramData%\ssh` (copies the default config in, keeps a backup, writes
 /// Flare's lines) and before sshd starts, the folder and `sshd_config` must be no link, owned by SYSTEM or
 /// Administrators, and changeable by no other account. A wrong one fails the `config` step, which puts the server back.

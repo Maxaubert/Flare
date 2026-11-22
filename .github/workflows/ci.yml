@@ -21,6 +21,9 @@ concurrency:
   group: ci-${{ github.ref }}-${{ inputs.e2e_only }}-${{ inputs.e2e_filter }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -29,15 +32,17 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.e2e_only }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # rustup 1.28+ no longer installs on `rustup show`; this reads rust-toolchain.toml.
       - name: Toolchain
         run: rustup toolchain install
       # Saved even when a later step fails, so a red run still warms the next one.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-nextest,cargo-deny
       - name: No em-dashes
@@ -60,15 +65,17 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.e2e_only }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # rustup 1.28+ no longer installs on `rustup show`; this reads rust-toolchain.toml.
       - name: Toolchain
         run: rustup toolchain install
       # Saved even when a later step fails, so a red run still warms the next one.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-nextest,cargo-deny
       # The CEF engine (crates/flare-cef, port phase 5, rule 1020): cef-dll-sys builds CEF's C++ wrapper with CMake and
@@ -78,7 +85,7 @@ jobs:
         run: |
           brew install ninja cmake || true
           echo "CEF_PATH=$HOME/Library/Caches/flare-cef" >> "$GITHUB_ENV"
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/Library/Caches/flare-cef
           key: cef-macos-arm64-156.0.14
@@ -115,7 +122,7 @@ jobs:
           exit "$rc"
       # The Mac's speech engine (port phase 7, rule 1084): whisper.cpp built with Metal from its pinned commit and
       # tree, then one real pass with the pinned tiny model and the Parakeet host loading the built libraries.
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: vendor/macos
           key: whisper-macos-arm64-927cfce34f31707e17f2bff35c349632fb9e2c3a-v1
@@ -148,10 +155,12 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: e2e-release
           cache-on-failure: true
@@ -160,7 +169,7 @@ jobs:
         run: |
           brew install ninja cmake || true
           echo "CEF_PATH=$HOME/Library/Caches/flare-cef" >> "$GITHUB_ENV"
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/Library/Caches/flare-cef
           key: cef-macos-arm64-156.0.14
@@ -210,7 +219,7 @@ jobs:
             find "$w" -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' -o -name '*.txt' \) -size -5M \
               -exec cp {} "e2e-out/worlds/$n/" \; 2>/dev/null || true
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: e2e-macos

@@ -1,5 +1,7 @@
 # Import remote sessions: tabs started on another machine show up here
 
+**Superseded by 2026-11-19** (`docs/superpowers/specs/2026-11-19-remote-session-on-opener-design.md`): no imports; a session shows only on the machine that opened it.
+
 Status: draft for Max's approval (2026-11-18). Max's answers of 2026-11-18 are applied. Plan: `docs/superpowers/plans/2026-11-18-import-remote-sessions.md`.
 Research: `Documents\Claude\research\flare\2026-11-18-views-research.md` (read-only check of origin/main 91bf9650).
 The "views" idea in that brief is dropped. This spec replaces it.

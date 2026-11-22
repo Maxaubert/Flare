@@ -221,6 +221,9 @@ impl Grant {
                 // decision, remote sessions PR 5). The tab it opens takes no typing from it: `remote.*`, `shell.input`
                 // and `tabs.input` stay closed to it (rule 299).
                 N::Open => true,
+                // Installing the staged build once every agent is idle, as the person's click on "Build ready" does
+                // (rule 1326): the agent may ask for it. It never cuts off a session: the install waits for idle.
+                N::Install => true,
                 // The plugin surfaces and a plugin's store are a plugin's; reading a session is not the agent's, and
                 // typing into a shell is never the agent's (rules 2 and 188).
                 // How agent icons move is a plugin's choice (`agent-looks`), never the agent's own. Filling a login
@@ -641,8 +644,9 @@ mod tests {
                         continue;
                     }
                     Namespace::Ui => "ui",
-                    // The agent and the app open a remote session; no permission name stands for it.
-                    Namespace::Open => {
+                    // The agent and the app open a remote session, and install the staged build (rule 1326); no
+                    // permission name stands for either.
+                    Namespace::Open | Namespace::Install => {
                         assert_eq!(
                             g.may_call(m),
                             matches!(g, Grant::Agent { .. } | Grant::Ui),
@@ -690,9 +694,11 @@ mod tests {
                 let g = mod_with(&[p]);
                 let want = match ns {
                     Namespace::Hello | Namespace::Tabs | Namespace::Storage => true,
-                    Namespace::AgentTools | Namespace::Ui | Namespace::Remote | Namespace::Open => {
-                        false
-                    }
+                    Namespace::AgentTools
+                    | Namespace::Ui
+                    | Namespace::Remote
+                    | Namespace::Open
+                    | Namespace::Install => false,
                     _ => ns.permission() == Some(p),
                 };
                 assert_eq!(g.may_enter(ns), want, "{ns:?} with {}", p.name());
@@ -749,6 +755,7 @@ mod tests {
             Namespace::AgentTools,
             Namespace::Remote,
             Namespace::Open,
+            Namespace::Install,
         ] {
             assert!(!all.may_enter(ns), "{ns:?}");
         }
@@ -996,6 +1003,25 @@ mod tests {
             assert!(!g.may_call(Method::OpenRemoteSession), "{}", g.kind());
         }
         assert!(Grant::Ui.may_call(Method::OpenRemoteSession));
+    }
+
+    /// Rule 1326: the agent may install the staged build (armed, it waits for every agent to be idle), as the person's
+    /// click on "Build ready" does. No mod or plugin, whatever it holds, no remote link and no bridge may.
+    #[test]
+    fn only_the_agent_and_the_app_install_the_staged_build() {
+        for g in [Grant::agent(), Grant::Agent { eval: true }, Grant::Ui] {
+            assert!(g.check(Method::InstallStaged).is_ok(), "{}", g.kind());
+        }
+        for g in [
+            mod_with(&Permission::ALL),
+            v1_mod_with(&Permission::ALL),
+            Grant::Remote,
+            Grant::Bridge,
+        ] {
+            let e = g.check(Method::InstallStaged).unwrap_err();
+            assert_eq!(e.code, code::FORBIDDEN, "{}", g.kind());
+            assert!(e.message.contains("install.staged"), "{}", e.message);
+        }
     }
 
     /// Rule 1282 (amends S3): the folder browser's `remote.ls` is the viewer's own interface, over its link to the

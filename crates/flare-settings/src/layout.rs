@@ -516,11 +516,14 @@ pub fn rail_layout(frame_w: f64, scale: f64, items: usize) -> RailLayout {
     }
 }
 
-/// The About item's top: pinned to the bottom of a rail `frame_h` high, 12 px above the edge.
+/// The About item's top: pinned to the bottom of a rail `frame_h` high, 12 px above the edge. In a frame too short
+/// for that it never rises above its own slot in the column (the last box, one gap under the item before it), so it
+/// never covers that item; the rail scrolls instead (rule 1345).
 pub fn about_y(rail: &RailLayout, frame_h: f64) -> f64 {
     let m = Metrics::reference();
     let css = frame_h - m.rail_pad_bottom - m.item_h;
-    SnapGrid { scale: rail.scale }.edge(css)
+    let pinned = SnapGrid { scale: rail.scale }.edge(css);
+    rail.items.last().map_or(pinned, |slot| pinned.max(slot.0))
 }
 
 /// The scroll offset that centres the row `row_id` in a pane `pane_h` high; `None` when no row has that id.
@@ -747,6 +750,31 @@ mod tests {
         assert_eq!(narrow.width, 56.0);
         assert_eq!(narrow.inner_x, 8.0);
         assert_eq!(narrow.inner_w, 39.0);
+    }
+
+    /// Rule 1345: in a short frame About stays in its own slot under the item before it, never over it.
+    #[test]
+    fn about_never_covers_the_item_above_it_in_a_short_frame() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
+            for frame_w in [700.0, 1000.0] {
+                let rail = rail_layout(frame_w, scale, 8);
+                let before = rail.items[6];
+                for frame_h in [300.0, 364.0, 400.0, 420.0] {
+                    let y = about_y(&rail, frame_h);
+                    assert!(
+                        y >= before.0 + before.1,
+                        "scale {scale} w {frame_w} h {frame_h}: About at {y} covers the item ending at {}",
+                        before.0 + before.1
+                    );
+                }
+                // A tall frame keeps About pinned 12 px above the foot, as before.
+                let tall = about_y(&rail, 800.0);
+                assert!(
+                    (tall + 36.0 - (800.0 - 12.0)).abs() <= 1.0 / scale,
+                    "scale {scale}: {tall}"
+                );
+            }
+        }
     }
 
     #[test]

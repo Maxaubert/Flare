@@ -453,10 +453,10 @@ fn the_add_row_opens_the_dialog_and_a_failed_check_is_one_red_line_in_it() {
         assert!(f.look().typing && !f.look().can_add);
         let sections = f.b().get_sections();
         f.b()
-            .invoke_row_text("machines-add:address".into(), "192.168.0.9".into());
+            .invoke_row_text("machines-add:address".into(), "192.0.2.9".into());
         f.b()
             .invoke_row_text("machines-add:user".into(), "max".into());
-        assert_eq!(f.look().address.as_str(), "192.168.0.9");
+        assert_eq!(f.look().address.as_str(), "192.0.2.9");
         assert_eq!(f.look().user.as_str(), "max");
         assert!(f.look().can_add);
         assert!(
@@ -1208,7 +1208,7 @@ fn the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request() {
     use crate::sharing::Platform;
     use crate::sharing::fake::FakeOs;
     let hub = Arc::new(Hub::default());
-    let net = Arc::new(FakeNet::new(&hub, "192.168.0.139"));
+    let net = Arc::new(FakeNet::new(&hub, "192.0.2.139"));
     let dir = tempfile::tempdir().unwrap();
     let prefs = PrefStore::memory();
     flare_settings::machine_prefs::set_sharing_on(&prefs, true);
@@ -1223,13 +1223,13 @@ fn the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request() {
     f.ctl.borrow_mut().hide();
     assert!(!f.b().get_pair_code_open());
     // A viewer connects and says hello.
-    let viewer = FakeNet::new(&hub, "192.168.0.120");
+    let viewer = FakeNet::new(&hub, "192.0.2.120");
     let to = Nearby {
         id: format!("Max's PC.{SERVICE}"),
         name: "Max's PC".into(),
         os: Some(Os::Pc),
         version: "0.4.2".into(),
-        addrs: vec!["192.168.0.139".parse().unwrap()],
+        addrs: vec!["192.0.2.139".parse().unwrap()],
         port,
     };
     let (mut s, _) = viewer.connect(&to).unwrap();
@@ -1255,20 +1255,20 @@ fn the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request() {
     assert!(wire::recv(&mut *s).is_err(), "the request ended");
 }
 
-/// The Machine drop-down's choices as the menu draws them: the nearby Mac, then the SSH hosts `evo-x2` (found a PC),
+/// The Machine drop-down's choices as the menu draws them: the nearby Mac, then the SSH hosts `home-pc` (found a PC),
 /// `pi` (found Linux) and `nas` (not found), then "Type an address" (rule 1278).
 fn host_rows() -> Vec<crate::SetOption> {
     use flare_settings::page::machines::{MachineOs, NearbyChoice, SshHost};
     let nearby = [NearbyChoice {
         id: "mini".into(),
-        name: "Maxs-Mac-Mini".into(),
+        name: "Office-Mac-Mini".into(),
         os: Some(MachineOs::Mac),
-        addrs: vec!["192.168.0.120".into()],
+        addrs: vec!["192.0.2.120".into()],
     }];
     let hosts = [
         SshHost {
             os: Some(MachineOs::Pc),
-            ..SshHost::plain("evo-x2")
+            ..SshHost::plain("home-pc")
         },
         SshHost {
             os: Some(MachineOs::Linux),

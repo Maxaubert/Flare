@@ -51,6 +51,16 @@ pub trait MediaPort: Send {
 /// Builds the port ON the worker thread (COM is initialised there). `None` is a failed start.
 pub type PortFactory = Box<dyn Fn() -> Option<Box<dyn MediaPort>> + Send + Sync>;
 
+/// A factory whose ports all share one store of what they paused. A token's ids are kept by the port that paused
+/// them, and a worker can be replaced (dropped as wedged, crashed, disposed) or a one-shot port can undo a late
+/// answer: with one shared store, any later port still finds those sessions and resumes them (rule 1351).
+fn sharing<T: Default + Send + 'static>(
+    make: impl Fn(Arc<Mutex<T>>) -> Option<Box<dyn MediaPort>> + Send + Sync + 'static,
+) -> PortFactory {
+    let shared = Arc::new(Mutex::new(T::default()));
+    Box::new(move || make(Arc::clone(&shared)))
+}
+
 enum Req {
     Pause(Sender<Vec<String>>),
     Resume(Vec<String>),
@@ -85,7 +95,12 @@ pub struct MediaPause {
 }
 
 fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
-    inner.lock().unwrap_or_else(|e| e.into_inner())
+    lock_any(inner)
+}
+
+/// A lock that a panicked holder does not poison: a port that died mid-call leaves the store usable.
+fn lock_any<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Drops empty and repeated ids: an answer is a set of whole ids.
@@ -102,7 +117,7 @@ fn clean(ids: Vec<String>) -> Vec<String> {
 impl MediaPause {
     /// The real thing, through Windows' media session manager.
     pub fn new() -> Self {
-        Self::with_factory(Box::new(real_port), REQUEST_TIMEOUT)
+        Self::with_factory(sharing(real_port), REQUEST_TIMEOUT)
     }
 
     /// With a port factory and a request timeout (tests).
@@ -398,6 +413,12 @@ struct PausedSet<S> {
 /// Most sessions held at once; the oldest go first (a token nobody resumed).
 const HELD_MAX: usize = 64;
 
+impl<S> Default for PausedSet<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<S> PausedSet<S> {
     fn new() -> Self {
         Self {
@@ -435,7 +456,8 @@ impl<S> PausedSet<S> {
 #[cfg(windows)]
 struct RealPort {
     manager: Option<Manager>,
-    paused: PausedSet<Session>,
+    /// Shared by every port of this `MediaPause` (`sharing`), so a later worker resumes what an earlier one paused.
+    paused: Arc<Mutex<PausedSet<Session>>>,
 }
 
 #[cfg(windows)]
@@ -486,7 +508,7 @@ impl MediaPort for RealPort {
                 .unwrap_or(false);
             if paused {
                 if let Some(aumid) = session_id(&s) {
-                    found.push(self.paused.add(&aumid, s));
+                    found.push(lock_any(&self.paused).add(&aumid, s));
                 }
             }
         }
@@ -494,7 +516,9 @@ impl MediaPort for RealPort {
     }
 
     fn resume(&mut self, ids: &[String]) {
-        for s in self.paused.take(ids) {
+        // The lock is let go before any await: another worker may be using the store too.
+        let sessions = lock_any(&self.paused).take(ids);
+        for s in sessions {
             if is_status(&s, Status::Paused) {
                 if let Ok(op) = s.TryPlayAsync() {
                     let _ = bounded!(op);
@@ -505,13 +529,13 @@ impl MediaPort for RealPort {
 }
 
 #[cfg(windows)]
-fn real_port() -> Option<Box<dyn MediaPort>> {
+fn real_port(paused: Arc<Mutex<PausedSet<Session>>>) -> Option<Box<dyn MediaPort>> {
     // SAFETY: CoInitializeEx takes no pointers we own; this thread is the worker and is made MTA.
     // A repeat call on a thread already initialised is harmless (S_FALSE) and the result is ignored.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     Some(Box::new(RealPort {
         manager: None,
-        paused: PausedSet::new(),
+        paused,
     }))
 }
 
@@ -522,7 +546,7 @@ fn real_port() -> Option<Box<dyn MediaPort>> {
 /// to do; scripting each player asks for Automation and covers only the players named. Nothing is ever paused and
 /// Settings shows the switch off with `unavailable`'s words.
 #[cfg(not(windows))]
-fn real_port() -> Option<Box<dyn MediaPort>> {
+fn real_port(_paused: Arc<Mutex<PausedSet<()>>>) -> Option<Box<dyn MediaPort>> {
     None
 }
 
@@ -576,6 +600,9 @@ mod tests {
         mode: Mode,
         crashed: Arc<AtomicBool>,
         gate: Arc<AtomicBool>,
+        /// What this port paused, like `RealPort`'s `PausedSet`: resume plays only the ids held here, so a port
+        /// that does not share the store with the one that paused resumes nothing (rule 1351).
+        held: Arc<Mutex<Vec<String>>>,
     }
 
     impl MediaPort for Fake {
@@ -602,12 +629,19 @@ mod tests {
                 }
             }
             w.log.push(format!("pause {}", ids.join("|")));
+            lock_any(&self.held).extend(ids.iter().cloned());
             ids
         }
         fn resume(&mut self, ids: &[String]) {
+            let mine: Vec<String> = {
+                let mut held = lock_any(&self.held);
+                let mine = held.iter().filter(|h| ids.contains(h)).cloned().collect();
+                held.retain(|h| !ids.contains(h));
+                mine
+            };
             let mut w = self.world.lock().unwrap();
             for (id, st) in &mut w.sessions {
-                if ids.contains(id) && *st == St::Paused {
+                if mine.contains(id) && *st == St::Paused {
                     *st = St::Playing;
                 }
             }
@@ -634,14 +668,16 @@ mod tests {
         let crashed = Arc::new(AtomicBool::new(false));
         let gate = Arc::new(AtomicBool::new(false));
         let (w, n, c, g) = (world.clone(), workers.clone(), crashed, gate.clone());
+        // Built the way `MediaPause::new` builds the real one: every port shares one store of what was paused.
         let media = MediaPause::with_factory(
-            Box::new(move || {
+            sharing(move |held| {
                 n.fetch_add(1, Ordering::SeqCst);
                 Some(Box::new(Fake {
                     world: w.clone(),
                     mode,
                     crashed: c.clone(),
                     gate: g.clone(),
+                    held,
                 }) as Box<dyn MediaPort>)
             }),
             Duration::from_millis(timeout_ms),
@@ -913,6 +949,7 @@ mod tests {
         r.media.dispose();
     }
 
+    /// Rule 1351: the token from the disposed worker is resumed by the fresh one, which shares its store.
     #[test]
     fn can_be_used_again_after_dispose_the_next_pause_starts_a_fresh_worker() {
         let r = rig(&[("spotify", St::Playing)], Mode::Normal, 3000);
@@ -939,6 +976,7 @@ mod tests {
         assert!(lock(&r.media.inner).worker.is_none());
     }
 
+    /// Rule 1351: the late answer is undone by a one-shot port, not the worker that paused, and still plays again.
     #[test]
     fn a_late_answer_after_the_worker_was_dropped_leaves_no_new_worker() {
         let r = rig(&[("spotify", St::Playing)], Mode::Delay(500), 100);

@@ -322,6 +322,11 @@ export component AppWindow inherits Window {
     in property <string> overlay-text;
     out property <int> grid-phys-width: round(grid-box.width / 1phx);
     out property <int> grid-phys-height: round(grid-box.height / 1phx);
+    // The grid's box in device pixels, fractions kept: the pulse watch logs it per frame (rule 1324).
+    out property <float> grid-box-x-phx: grid-box.absolute-position.x / 1phx;
+    out property <float> grid-box-y-phx: grid-box.absolute-position.y / 1phx;
+    out property <float> grid-box-w-phx: grid-box.width / 1phx;
+    out property <float> grid-box-h-phx: grid-box.height / 1phx;
     out property <float> scale: 1px / 1phx;
     // The hairline the chrome draws, in device pixels (`Px.hair()`: the strip's bottom line, the
     // tab separators and the sidebar's edge all use it). The DPI probe reads it.
@@ -848,6 +853,11 @@ export component AppWindow inherits Window {
     out property <length> rfolder-open-y: rfolder.open-y;
     out property <length> rfolder-open-w: rfolder.open-w;
     out property <length> rfolder-open-h: rfolder.open-h;
+    // Where its list is and how far it is scrolled, for the tests' pointer (rule 1299).
+    out property <length> rfolder-list-x: rfolder.list-x;
+    out property <length> rfolder-list-y: rfolder.list-y;
+    out property <length> rfolder-list-w: rfolder.list-w;
+    out property <length> rfolder-scrolled: rfolder.scrolled;
     // A secret ask with `verify` (rule 1274): 0 the field, 1 checking, 2 right (a green check), 3 ended by the plugin;
     // the checking line, and a result's heading and line.
     in property <int> pask-stage;
