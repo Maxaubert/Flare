@@ -44,7 +44,7 @@ emu host is the same; only the last step (frames into the GPU) differs.
 | Emulator GPU | gfxstream on the host GPU (`-gpu host`) | gfxstream on the host GPU (`-gpu host`) |
 | Frames to Flare | gRPC `streamScreenshot`, MMAP into Flare's frame region | same |
 | Flare's renderer | wgpu 30 on DX12 | wgpu 30 on Metal |
-| Region to GPU | spike S3 picks: D3D12 heap opened on the file mapping (no CPU copy) or `write_texture` (one CPU copy) | spike S3 picks: `newBufferWithBytesNoCopy` (no CPU copy) or `write_texture` |
+| Region to GPU (Step 0 S3) | D3D12 heap on the mapped view + compute copy, no CPU copy | `newBufferWithBytesNoCopy` + compute copy, no CPU copy |
 | Cold boot (spike, first boot) | 139 s | 23 s |
 | Touch to photon, probe app drawing every frame (Step 0 S2, p50) | 51 ms | 45 ms |
 
@@ -155,12 +155,16 @@ Facts, with the spike or report that holds them:
    if the rows are bottom-up (spike S1 says), then submits. wgpu's `Queue` is safe to use from another thread. The
    render notifier then shows the newest finished slot in `BeforeRendering`, as for iOS (`DeviceFrames`). This keeps
    the copy well inside the 16 ms before the emulator overwrites the region (finding 3).
-5. **The copy itself** is the one spike S3 picks per OS, best first:
-   - Windows: open the file mapping as a D3D12 heap (`ID3D12Device3::OpenExistingHeapFromFileMapping`), place a
-     buffer on it, `copy_buffer_to_texture` on the GPU. No CPU copy. Fallback: `Queue::write_texture` from the mapped
-     pointer (one CPU copy into wgpu's staging memory, about 10 MB per frame).
-   - macOS: `newBufferWithBytesNoCopy` on the mapping (unified memory), wrapped as a wgpu buffer, GPU copy into the
-     ring. No CPU copy. Fallback: `write_texture`.
+5. **The copy itself** (chosen by Step 0 S3, 2026-11-22; no CPU copy on either OS):
+   - Windows: open the mapped view as a D3D12 heap (`ID3D12Device3::OpenExistingHeapFromAddress`; the
+     `FromFileMapping` form refuses a file-backed mapping), place a buffer on it (`buffer_from_raw` +
+     `create_buffer_from_hal`), and copy it into the ring texture with a small compute pass (1080-pixel rows are
+     4320 bytes, which breaks the 256-byte row rule of `copy_buffer_to_texture`). 0.07 ms of CPU and 0.7 ms on the
+     GPU per frame (S3, RTX 5090).
+   - macOS: `newBufferWithBytesNoCopy` on the mapping (unified memory), wrapped the same way, the same compute copy.
+     0.02 ms of CPU and 0.3 ms on the GPU per frame (S3, M6).
+   - Fallback on both: `Queue::write_texture` from the mapped pointer (one CPU copy, 0.4 ms on the PC and 0.7 ms on
+     the Mac per frame), logged once, if the import fails on a machine.
    Both feed the same ring and the same `Image::try_from(texture)` path the iOS panel uses.
 6. **The stream runs only while the panel is seen.** When the panel closes, its tab goes behind, or the window is
    minimised or occluded, Flare cancels `streamScreenshot` (the emulator then reads nothing back). It starts again at
