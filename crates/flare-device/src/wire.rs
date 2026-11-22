@@ -7,7 +7,9 @@
 //!
 //! Frames go over the mach channel the rendezvous sets up (PR 2), as fixed little-endian [`Record`]s: a frame is
 //! ready in a slot (sim host to Flare), a slot is done (Flare to sim host), the screen changed (sim host to Flare).
-//! `device` in a record is the small number the sim host gave the device in its `frames` event.
+//! `device` in a record is the small number the sim host gave the ring in its `frames` event: a fresh one per ring
+//! (attach, or a new screen size), so a slot-done record always names its ring while an old ring waits for its last
+//! slots. The ring's surfaces come over the mach channel with the same number (`macos::rendezvous`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -126,7 +128,7 @@ pub enum HostLine {
         code: String,
         message: String,
     },
-    /// A new ring for a device (attach, or a new screen size): `device` numbers its records.
+    /// A new ring for a device (attach, or a new screen size): `device` numbers its records (fresh per ring).
     Frames {
         target: Target,
         device: u32,

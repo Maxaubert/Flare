@@ -169,7 +169,7 @@ pub struct SourceError {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceEvent {
     /// A new ring of frames (attach or a new screen size): the ring's id and the screen. The sim host hands the
-    /// ring's surfaces over the mach channel (PR 2).
+    /// ring's surfaces over the mach channel; `SimSource::ring(ring)` gives them (the id is the records' `device`).
     Frames {
         target: Target,
         ring: u32,

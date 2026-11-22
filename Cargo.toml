@@ -100,6 +100,10 @@ cef-dll-sys = { version = "=156.2.0", default-features = false, features = ["san
 # The window server's list (the screen rule's evidence in the CEF tests): the version objc2-app-kit already pulls in.
 objc2-core-graphics = "=0.3.2"
 objc2-core-foundation = "=0.3.2"
+# The device panel's sim host (issue #248, PR 2): the frame ring's IOSurfaces and the Metal pass that fills them. The
+# versions wgpu-hal already pulls in (Cargo.lock), so the build adds no copy of either.
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std"] }
+objc2-io-surface = "=0.3.2"
 velopack = "=1.2.161"
 embed-resource = "=3.0.11"
 ureq = "=3.4.2"

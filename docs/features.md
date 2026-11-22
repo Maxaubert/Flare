@@ -3100,3 +3100,25 @@ started it remotely." Spec: `docs/superpowers/specs/2026-11-19-remote-session-on
   line, "This session was ended on <machine>.", and its link ends. Held by `remote_link::tests` (the find tests),
   `remote_flows::remote_find_answers_only_for_a_hidden_sessions_open_id`, the `open_id` tests of
   `flare_tabs::restore::remote_tests` and the e2e `remoteOpen` (the host's Flare quits and starts again).
+
+## Device panel, PR 2: the sim host (not yet shown), 2026-11-19
+
+Issue #248, spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan
+`docs/superpowers/plans/2026-11-19-device-panel.md` (PR 2). Nothing starts it yet and nothing in the app changes;
+PR 6 puts it in the bundle and PR 4b shows its frames.
+
+- **`flare-sim-host`** (`crates/flare-device/src/bin/flare_sim_host.rs`, macOS; a stub that exits 2 on Windows). The
+  only process that loads CoreSimulator and SimulatorKit (rule 1310). It says `hello` (its version, Xcode's,
+  CoreSimulator's and SimulatorKit's, the input path) and serves the device list, boot, shutdown, launch and install
+  through `simctl`, and the live frames: a ring of three RGBA IOSurfaces per attached device, filled by one GPU pass
+  per frame (Display P3 to sRGB, opaque), at most 60 a second, handed to Flare over a mach channel whose every message
+  is checked for the sender's pid (rule 1311). Input, the UI tree and snapshots come in PR 3. It logs to
+  `<profile>/logs/sim-host.log` (1 MB x 3), with a line a minute per device: frames, sent, dropped, capped.
+- **`--self-test`** loads the frameworks and checks every class, protocol and selector it uses (JSON; skipped with
+  the reason when there is no Xcode).
+- **`--bench <udid|new> <seconds> [--heavy]`** runs the frame path against the probe app (`tools/device-probe/`, built
+  by `build.sh` with `xcrun swiftc`) with a consumer that frees each slot 17 ms late, and prints distinct and skipped
+  frames, the interval p50 and p99, GPU time, "no free slot" drops and its CPU. `new` makes a device and deletes it.
+- **Flare's side** (`flare_device::client::SimSource`, not yet used by the app): starts the sim host guarded with
+  `DEVELOPER_DIR` set to the Xcode `flare_device::xcode` picks, reads its rings and frame records, frees slots, restarts
+  it at most three times in five minutes, then shows still pictures at most three a second (rule 1312).

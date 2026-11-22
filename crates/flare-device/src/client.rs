@@ -1,0 +1,1506 @@
+//! Flare's side of the sim host: `SimSource` (macOS), a [`DeviceSource`] that starts `flare-sim-host` guarded (it dies
+//! with Flare, rule 1312), talks to it in JSON lines over its stdin and stdout, reads its rings and frame records off
+//! the mach channel, sends slot-done records back, restarts it at most [`MAX_RESTARTS`] times in [`RESTART_WINDOW`],
+//! and after that (or when it says it is broken) shows still pictures: a `simctl io screenshot` loop at most
+//! [`STILL_FPS`] a second, with input and the UI tree answering `unavailable` with the reason.
+//!
+//! Nothing here blocks the caller (rule 34): every method writes to a channel or starts a worker, and every answer
+//! comes back as a [`SourceEvent`].
+//!
+//! The pure parts work everywhere: the restart policy ([`Restarts`]), the newest-frame mailbox ([`Mailbox`]), the
+//! hello check ([`check_hello`]) and the still pictures' decoding ([`decode_png`]).
+
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+use crate::geom::Size;
+use crate::versions::{self, Support};
+use crate::wire::{FrameRecord, Hello, PROTOCOL};
+
+/// The sim host is started again at most this many times in [`RESTART_WINDOW`]; the next end is for good (still
+/// mode for the session). The pattern of `flare-mods`' helpers.
+pub const MAX_RESTARTS: usize = 3;
+pub const RESTART_WINDOW: Duration = Duration::from_secs(5 * 60);
+/// Still pictures: at most this many a second.
+pub const STILL_FPS: u32 = 3;
+/// The shortest time between two still pictures.
+pub const STILL_SPACING: Duration = Duration::from_millis(1000 / STILL_FPS as u64 + 1);
+/// The still line's reason when the sim host kept stopping.
+pub const KEPT_STOPPING: &str = "the sim host stopped four times in five minutes";
+
+/// When the sim host ended by itself, within the window: whether it may start again.
+#[derive(Clone, Debug)]
+pub struct Restarts {
+    max: usize,
+    window: Duration,
+    times: Vec<Instant>,
+}
+
+impl Default for Restarts {
+    fn default() -> Self {
+        Self::new(MAX_RESTARTS, RESTART_WINDOW)
+    }
+}
+
+impl Restarts {
+    pub fn new(max: usize, window: Duration) -> Self {
+        Self {
+            max,
+            window,
+            times: Vec::new(),
+        }
+    }
+
+    /// It ended at `now`: true when it may be started again (that restart is counted), false when it ended too often.
+    pub fn ended(&mut self, now: Instant) -> bool {
+        let window = self.window;
+        self.times
+            .retain(|t| now.saturating_duration_since(*t) < window);
+        if self.times.len() >= self.max {
+            return false;
+        }
+        self.times.push(now);
+        true
+    }
+}
+
+/// The newest frame record per ring (`device` number), as the reader thread keeps them for the UI thread. A newer
+/// record replaces one the UI has not taken yet: the replaced slot is free again at once (Flare skipped it). The UI
+/// is woken once per record it has not taken (the `WakeGate` pattern): one pending wake per device at most.
+#[derive(Debug, Default)]
+pub struct Mailbox {
+    newest: HashMap<u32, FrameRecord>,
+    woken: HashSet<u32>,
+}
+
+impl Mailbox {
+    /// A record came: the record it replaced (to be freed now), and whether to wake the UI.
+    pub fn put(&mut self, r: FrameRecord) -> (Option<FrameRecord>, bool) {
+        let replaced = self.newest.insert(r.device, r);
+        let wake = self.woken.insert(r.device);
+        (replaced, wake)
+    }
+
+    /// The newest record of `device`, taken (the UI draws it). The next record wakes the UI again.
+    pub fn take(&mut self, device: u32) -> Option<FrameRecord> {
+        self.woken.remove(&device);
+        self.newest.remove(&device)
+    }
+
+    /// Whether a record of `device` waits (a wake that could not be sent yet: the ring's target was not known).
+    pub fn waiting(&self, device: u32) -> bool {
+        self.newest.contains_key(&device)
+    }
+
+    /// The ring is gone: its waiting record, to be freed.
+    pub fn forget(&mut self, device: u32) -> Option<FrameRecord> {
+        self.woken.remove(&device);
+        self.newest.remove(&device)
+    }
+}
+
+/// Whether Flare takes this sim host: the protocol must match (both ship in one bundle, so a mismatch is a broken
+/// install), and an Xcode under the floor goes straight to still pictures. Err is the still line's reason.
+pub fn check_hello(h: &Hello) -> Result<Support, String> {
+    if h.protocol != PROTOCOL {
+        return Err(format!(
+            "the sim host speaks protocol {}, Flare {PROTOCOL} (reinstall Flare)",
+            h.protocol
+        ));
+    }
+    match versions::support(&h.xcode_version, &h.coresim_version) {
+        Support::TooOld => Err(versions::TOO_OLD.trim_end_matches('.').to_string()),
+        s => Ok(s),
+    }
+}
+
+/// A still picture (`simctl io screenshot`, a PNG) as RGBA, with its size. None for anything that is not a PNG.
+pub fn decode_png(png_bytes: &[u8]) -> Option<(Size, Vec<u8>)> {
+    let mut d = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    d.set_transformations(png::Transformations::normalize_to_color8());
+    let mut r = d.read_info().ok()?;
+    let mut buf = vec![0; r.output_buffer_size()?];
+    let info = r.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    let (w, h) = (info.width as usize, info.height as usize);
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
+        png::ColorType::Indexed => return None,
+    };
+    (rgba.len() == w * h * 4).then(|| (Size::new(w as f64, h as f64), rgba))
+}
+
+#[cfg(target_os = "macos")]
+pub use mac::{Shoot, SimConfig, SimSource};
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::collections::HashMap;
+    use std::io::{BufRead, BufReader, Write};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::time::{Duration, Instant};
+
+    use objc2_core_foundation::CFRetained;
+    use objc2_io_surface::IOSurfaceRef;
+    use serde_json::Value;
+
+    use super::{KEPT_STOPPING, Mailbox, Restarts, STILL_SPACING, check_hello, decode_png};
+    use crate::job::Fail;
+    use crate::macos::rendezvous::{Incoming, Peer, RecvError, Server, service_name};
+    use crate::macos::simctl::Simctl;
+    use crate::source::{
+        Answer, Button, DeviceInfo, DeviceSource, Key, ReqId, SourceError, SourceEvent, Touch,
+    };
+    use crate::target::Target;
+    use crate::wire::{
+        Control, FrameRecord, Hello, HostLine, Record, Request, SlotDone, from_line, to_line,
+    };
+
+    /// A stand-in for `simctl io screenshot` (tests): a PNG of the target's screen.
+    pub type Shoot = Arc<dyn Fn(&Target) -> Result<Vec<u8>, String> + Send + Sync>;
+
+    /// How Flare starts its sim host.
+    #[derive(Clone)]
+    pub struct SimConfig {
+        /// `Contents/MacOS/flare-sim-host` (next to the exe in a dev build).
+        pub exe: PathBuf,
+        /// The chosen Xcode's `Contents/Developer` (`DEVELOPER_DIR` for the sim host and every `simctl` call).
+        pub developer_dir: PathBuf,
+        /// `<profile>/logs/sim-host.log`.
+        pub log: PathBuf,
+        /// Arguments before the sim host's own (tests: the test binary runs one test as the fake sim host).
+        pub pre_args: Vec<String>,
+        /// More environment for the sim host (tests).
+        pub env: Vec<(String, String)>,
+        /// The pause before a restart.
+        pub restart_delay: Duration,
+        pub max_restarts: usize,
+        /// Tests: the still pictures' source instead of `simctl`.
+        pub shoot: Option<Shoot>,
+    }
+
+    impl SimConfig {
+        pub fn new(exe: PathBuf, developer_dir: PathBuf, log: PathBuf) -> SimConfig {
+            SimConfig {
+                exe,
+                developer_dir,
+                log,
+                pre_args: Vec::new(),
+                env: Vec::new(),
+                restart_delay: Duration::from_millis(500),
+                max_restarts: super::MAX_RESTARTS,
+                shoot: None,
+            }
+        }
+    }
+
+    /// What an answer is read as.
+    #[derive(Clone, Copy, Debug)]
+    enum Kind {
+        List,
+        Done,
+    }
+
+    /// One attached target: paused or not.
+    #[derive(Clone, Debug)]
+    struct Att {
+        target: Target,
+        paused: bool,
+    }
+
+    #[derive(Default)]
+    struct State {
+        hello: Option<Hello>,
+        /// Still mode for the session, and why.
+        broken: Option<String>,
+        pending: HashMap<ReqId, Kind>,
+        /// Lines waiting for a sim host (between restarts).
+        queued: Vec<String>,
+        attached: Vec<Att>,
+        starts: u32,
+        stills: HashMap<Target, Arc<AtomicBool>>,
+        last_still: HashMap<Target, Vec<u8>>,
+    }
+
+    struct Shared {
+        cfg: SimConfig,
+        tx: Mutex<Sender<SourceEvent>>,
+        state: Mutex<State>,
+        writer: Mutex<Option<Sender<String>>>,
+        guard: Mutex<Option<flare_proc::guard::Guard>>,
+        server: Option<Server>,
+        expect_pid: AtomicI32,
+        peer: Mutex<Option<Peer>>,
+        mailbox: Mutex<Mailbox>,
+        /// Ring number (`device`) to its target, and each target's current ring.
+        devices: Mutex<HashMap<u32, Target>>,
+        current: Mutex<HashMap<Target, u32>>,
+        rings: Mutex<HashMap<u32, Vec<CFRetained<IOSurfaceRef>>>>,
+        /// Slot-done records the sim host's port did not take at once.
+        retry: Mutex<Vec<SlotDone>>,
+        stop: AtomicBool,
+        simctl: Simctl,
+        internal_id: AtomicU64,
+    }
+
+    // SAFETY: the IOSurfaces are refcounted kernel objects usable from any thread; everything else is behind locks or
+    // atomic.
+    unsafe impl Send for Shared {}
+    // SAFETY: as above.
+    unsafe impl Sync for Shared {}
+
+    fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The sim host gets stdin, stdout and stderr only. Any other descriptor Flare holds without
+    /// close-on-exec (one a library opened, one a parent left open, a pipe another thread made
+    /// between `pipe` and `fcntl`) is marked close-on-exec in the child just before its exec.
+    fn no_inherited_descriptors(cmd: &mut Command) {
+        use std::os::unix::process::CommandExt;
+        // Read before the fork: the highest descriptor number this process may hold.
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes into the struct it is given.
+        let top = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } == 0 {
+            libc::c_int::try_from(lim.rlim_cur).unwrap_or(libc::c_int::MAX)
+        } else {
+            4096
+        }
+        .min(1 << 16);
+        // SAFETY: the closure runs between fork and exec and calls only fcntl, which is
+        // async-signal-safe; it allocates nothing.
+        unsafe {
+            cmd.pre_exec(move || {
+                for fd in 3..top {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                        libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+
+    impl Shared {
+        fn event(&self, e: SourceEvent) {
+            let _ = lock(&self.tx).send(e);
+        }
+
+        fn answer(&self, id: ReqId, result: Result<Answer, SourceError>) {
+            self.event(SourceEvent::Answer { id, result });
+        }
+
+        fn fail(&self, id: ReqId, fail: Fail, message: impl Into<String>) {
+            self.answer(
+                id,
+                Err(SourceError {
+                    fail,
+                    message: message.into(),
+                }),
+            );
+        }
+
+        fn broken(&self) -> Option<String> {
+            lock(&self.state).broken.clone()
+        }
+
+        /// Writes a control line to the running sim host, or keeps it for the next one.
+        fn send(&self, req: Request, id: ReqId, kind: Option<Kind>) {
+            let line = to_line(&Control { id, req });
+            let mut st = lock(&self.state);
+            if let Some(k) = kind {
+                st.pending.insert(id, k);
+            }
+            match lock(&self.writer).as_ref() {
+                Some(w) if w.send(line.clone()).is_ok() => {}
+                _ => st.queued.push(line),
+            }
+        }
+
+        fn internal(&self) -> ReqId {
+            u64::MAX / 2 + self.internal_id.fetch_add(1, Ordering::Relaxed)
+        }
+
+        fn free(&self, f: &FrameRecord) {
+            let d = SlotDone {
+                device: f.device,
+                slot: f.slot,
+            };
+            self.slot_done(d);
+        }
+
+        fn slot_done(&self, d: SlotDone) {
+            let sent = lock(&self.peer)
+                .as_ref()
+                .is_some_and(|p| p.send(&Record::SlotDone(d)));
+            if !sent {
+                lock(&self.retry).push(d);
+            }
+        }
+
+        /// Still mode for the session: say why once, and start the pictures of every attached target.
+        fn go_still(self: &Arc<Self>, why: String) {
+            let targets = {
+                let mut st = lock(&self.state);
+                if st.broken.is_some() {
+                    return;
+                }
+                st.broken = Some(why.clone());
+                for (id, _) in st.pending.drain() {
+                    self.fail(
+                        id,
+                        Fail::Unavailable,
+                        format!("Live view unavailable: {why}."),
+                    );
+                }
+                st.queued.clear();
+                st.attached
+                    .iter()
+                    .filter(|a| !a.paused)
+                    .map(|a| a.target.clone())
+                    .collect::<Vec<_>>()
+            };
+            log::warn!("device: still pictures for the session: {why}");
+            self.event(SourceEvent::Broken(why));
+            if let Some(mut g) = lock(&self.guard).take() {
+                g.release();
+            }
+            *lock(&self.writer) = None;
+            for t in targets {
+                self.start_still(&t);
+            }
+        }
+
+        /// A still-picture loop for `target`, at most `STILL_FPS` a second, until it is detached or paused.
+        fn start_still(self: &Arc<Self>, target: &Target) {
+            let flag = Arc::new(AtomicBool::new(false));
+            if let Some(old) = lock(&self.state)
+                .stills
+                .insert(target.clone(), Arc::clone(&flag))
+            {
+                old.store(true, Ordering::Relaxed);
+            }
+            let me = Arc::clone(self);
+            let target = target.clone();
+            std::thread::spawn(move || {
+                let mut seq = 0u64;
+                while !flag.load(Ordering::Relaxed) && !me.stop.load(Ordering::Relaxed) {
+                    let started = Instant::now();
+                    let shot = match &me.cfg.shoot {
+                        Some(s) => s(&target),
+                        None => me.simctl.screenshot(&target).map_err(|e| e.message),
+                    };
+                    match shot.as_deref().map(|p| (p, decode_png(p))) {
+                        Ok((png, Some((size_px, rgba)))) => {
+                            seq += 1;
+                            lock(&me.state)
+                                .last_still
+                                .insert(target.clone(), png.to_vec());
+                            me.event(SourceEvent::Picture {
+                                target: target.clone(),
+                                seq,
+                                size_px,
+                                rgba,
+                            });
+                        }
+                        Ok((_, None)) => log::warn!("device: {target}: a still that is not a PNG"),
+                        Err(e) => log::warn!("device: {target}: no still: {e}"),
+                    }
+                    let left = STILL_SPACING.saturating_sub(started.elapsed());
+                    std::thread::sleep(left); // sync-ok: the still worker's own pacing
+                }
+            });
+        }
+
+        fn stop_still(&self, target: &Target) {
+            if let Some(f) = lock(&self.state).stills.remove(target) {
+                f.store(true, Ordering::Relaxed);
+            }
+        }
+
+        /// One line from the sim host.
+        fn on_line(self: &Arc<Self>, line: &str) {
+            let Some(l) = from_line::<HostLine>(line) else {
+                if !line.trim().is_empty() {
+                    log::debug!(
+                        "device: sim host said {:?}",
+                        line.chars().take(200).collect::<String>()
+                    );
+                }
+                return;
+            };
+            match l {
+                HostLine::Hello(h) => match check_hello(&h) {
+                    Ok(support) => {
+                        log::info!(
+                            "device: sim host {} (Xcode {}, CoreSimulator {}, SimulatorKit {}, {:?}, {support:?})",
+                            h.version,
+                            h.xcode_version,
+                            h.coresim_version,
+                            h.simkit_version,
+                            h.input_path
+                        );
+                        lock(&self.state).hello = Some(h);
+                    }
+                    Err(why) => {
+                        lock(&self.state).hello = Some(h);
+                        self.go_still(why);
+                    }
+                },
+                HostLine::Ok { id, result } => {
+                    let kind = lock(&self.state).pending.remove(&id);
+                    let answer = match kind {
+                        Some(Kind::List) => {
+                            let list: Vec<DeviceInfo> = serde_json::from_value(
+                                result.get("devices").cloned().unwrap_or(Value::Null),
+                            )
+                            .unwrap_or_default();
+                            Answer::Devices(list)
+                        }
+                        Some(Kind::Done) => Answer::Done,
+                        None => return,
+                    };
+                    self.answer(id, Ok(answer));
+                }
+                HostLine::Err { id, code, message } => {
+                    if lock(&self.state).pending.remove(&id).is_some() {
+                        let fail = Fail::from_code(&code).unwrap_or(Fail::Unavailable);
+                        self.fail(id, fail, message);
+                    }
+                }
+                HostLine::Frames {
+                    target,
+                    device,
+                    ring: _,
+                    screen,
+                } => {
+                    lock(&self.devices).insert(device, target.clone());
+                    let old = lock(&self.current).insert(target.clone(), device);
+                    if let Some(old) = old.filter(|o| *o != device) {
+                        lock(&self.rings).remove(&old);
+                        if let Some(f) = lock(&self.mailbox).forget(old) {
+                            self.free(&f);
+                        }
+                    }
+                    self.event(SourceEvent::Frames {
+                        target: target.clone(),
+                        ring: device,
+                        screen,
+                    });
+                    // A record that came before this line wakes the UI now.
+                    let waiting = lock(&self.mailbox).newest_of(device);
+                    if let Some(f) = waiting {
+                        self.event(frame_event(&target, &f));
+                    }
+                }
+                HostLine::Orientation {
+                    target,
+                    orientation,
+                } => {
+                    self.event(SourceEvent::Orientation {
+                        target,
+                        orientation,
+                    });
+                }
+                HostLine::State { target, state } => {
+                    self.event(SourceEvent::State { target, state })
+                }
+                HostLine::Broken { why } => self.go_still(why),
+            }
+        }
+
+        /// The mach channel: rings, frame records, changed counts.
+        fn on_mach(&self, m: Incoming) {
+            match m {
+                Incoming::Hello { reply, protocol } => {
+                    if protocol == crate::wire::PROTOCOL {
+                        *lock(&self.peer) = Some(reply);
+                    }
+                }
+                Incoming::Ring {
+                    device, surfaces, ..
+                } => {
+                    lock(&self.rings).insert(device, surfaces);
+                }
+                Incoming::Record(Record::Frame(f)) => {
+                    let (replaced, wake) = lock(&self.mailbox).put(f);
+                    if let Some(old) = replaced {
+                        self.free(&old);
+                    }
+                    let target = lock(&self.devices).get(&f.device).cloned();
+                    if wake && let Some(t) = target {
+                        self.event(frame_event(&t, &f));
+                    }
+                }
+                Incoming::Record(Record::Changed(c)) => {
+                    if let Some(t) = lock(&self.devices).get(&c.device).cloned() {
+                        self.event(SourceEvent::Changed {
+                            target: t,
+                            count: c.count,
+                        });
+                    }
+                }
+                Incoming::Record(Record::SlotDone(_)) => {}
+            }
+        }
+    }
+
+    impl Mailbox {
+        /// The newest record of `device`, left in place.
+        fn newest_of(&self, device: u32) -> Option<FrameRecord> {
+            self.newest.get(&device).copied()
+        }
+    }
+
+    fn frame_event(target: &Target, f: &FrameRecord) -> SourceEvent {
+        SourceEvent::Frame {
+            target: target.clone(),
+            slot: u8::try_from(f.slot).unwrap_or(u8::MAX),
+            seq: f.seq,
+            t_us: f.t_us,
+        }
+    }
+
+    /// Starts the sim host once: the child, its guard, its writer.
+    fn spawn(sh: &Arc<Shared>) -> std::io::Result<Child> {
+        let cfg = &sh.cfg;
+        let mut cmd = Command::new(&cfg.exe); // sync-ok: builds the command; spawned on the supervisor thread
+        cmd.args(&cfg.pre_args);
+        if let Some(s) = &sh.server {
+            cmd.args(["--rendezvous", s.name()]);
+        }
+        cmd.arg("--log")
+            .arg(&cfg.log)
+            .env("DEVELOPER_DIR", &cfg.developer_dir)
+            .envs(cfg.env.iter().map(|(k, v)| (k, v)))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let pending = flare_proc::guard::guard_command(&mut cmd)?;
+        no_inherited_descriptors(&mut cmd);
+        let mut child = cmd.spawn()?; // sync-ok: the supervisor thread
+        *lock(&sh.guard) = Some(pending.started());
+        sh.expect_pid
+            .store(i32::try_from(child.id()).unwrap_or(0), Ordering::Relaxed);
+        let (wtx, wrx) = channel::<String>();
+        if let Some(mut stdin) = child.stdin.take() {
+            std::thread::spawn(move || {
+                for line in wrx {
+                    if writeln!(stdin, "{line}")
+                        .and_then(|()| stdin.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+        if let Some(err) = child.stderr.take() {
+            std::thread::spawn(move || {
+                for l in BufReader::new(err).lines().map_while(Result::ok) {
+                    log::info!("sim host: {l}");
+                }
+            });
+        }
+        let queued = {
+            let mut st = lock(&sh.state);
+            st.starts += 1;
+            std::mem::take(&mut st.queued)
+        };
+        for l in queued {
+            let _ = wtx.send(l);
+        }
+        *lock(&sh.writer) = Some(wtx);
+        Ok(child)
+    }
+
+    /// The supervisor: runs the sim host, reads its lines, restarts it, gives up to still mode.
+    fn supervise(sh: Arc<Shared>) {
+        let mut restarts = Restarts::new(sh.cfg.max_restarts, super::RESTART_WINDOW);
+        let mut first = true;
+        loop {
+            if sh.stop.load(Ordering::Relaxed) || sh.broken().is_some() {
+                return;
+            }
+            let mut child = match spawn(&sh) {
+                Ok(c) => c,
+                Err(e) => {
+                    sh.go_still(format!("the sim host could not start: {e}"));
+                    return;
+                }
+            };
+            if !first {
+                // Every open panel again: attach, and pause what was paused.
+                let attached = lock(&sh.state).attached.clone();
+                for a in attached {
+                    sh.send(
+                        Request::Attach {
+                            target: a.target.clone(),
+                        },
+                        sh.internal(),
+                        None,
+                    );
+                    if a.paused {
+                        sh.send(Request::Pause { target: a.target }, sh.internal(), None);
+                    }
+                }
+            }
+            first = false;
+            if let Some(out) = child.stdout.take() {
+                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    sh.on_line(&line);
+                }
+            }
+            let status = child.wait(); // sync-ok: its stdout closed, so it ended (or ends now)
+            *lock(&sh.writer) = None;
+            sh.expect_pid.store(0, Ordering::Relaxed);
+            *lock(&sh.peer) = None;
+            if let Some(mut g) = lock(&sh.guard).take() {
+                g.release();
+            }
+            // What it held is gone with it.
+            lock(&sh.devices).clear();
+            lock(&sh.current).clear();
+            lock(&sh.rings).clear();
+            *lock(&sh.mailbox) = Mailbox::default();
+            lock(&sh.retry).clear();
+            let pending: Vec<ReqId> = lock(&sh.state).pending.drain().map(|(id, _)| id).collect();
+            if sh.stop.load(Ordering::Relaxed) || sh.broken().is_some() {
+                for id in pending {
+                    sh.fail(id, Fail::Unavailable, "the sim host ended");
+                }
+                return;
+            }
+            for id in pending {
+                sh.fail(id, Fail::Retry, "the sim host restarted");
+            }
+            log::warn!("device: the sim host ended ({status:?})");
+            if !restarts.ended(Instant::now()) {
+                sh.go_still(KEPT_STOPPING.to_string());
+                return;
+            }
+            std::thread::sleep(sh.cfg.restart_delay); // sync-ok: the supervisor's pause before a restart
+        }
+    }
+
+    /// The mach reader: one thread for the whole source.
+    fn read_mach(sh: Arc<Shared>) {
+        let Some(server) = sh.server.as_ref() else {
+            return;
+        };
+        while !sh.stop.load(Ordering::Relaxed) {
+            let pid = sh.expect_pid.load(Ordering::Relaxed);
+            if pid <= 0 {
+                std::thread::sleep(Duration::from_millis(50)); // sync-ok: the reader waits for a sim host
+                continue;
+            }
+            match server.recv(pid, Duration::from_millis(250)) {
+                Ok(m) => sh.on_mach(m),
+                Err(RecvError::TimedOut) => {}
+                Err(RecvError::Refused { pid, why }) => {
+                    log::warn!("device: refused {why} from pid {pid}")
+                }
+                Err(RecvError::Mach(kr)) => {
+                    log::warn!("device: the mach channel failed: kern_return {kr:#x}");
+                    std::thread::sleep(Duration::from_millis(250)); // sync-ok: the reader's back-off
+                }
+            }
+            let retry = std::mem::take(&mut *lock(&sh.retry));
+            for d in retry {
+                sh.slot_done(d);
+            }
+        }
+    }
+
+    /// The device source behind the real simulator.
+    pub struct SimSource {
+        sh: Arc<Shared>,
+        rx: Receiver<SourceEvent>,
+        next_id: ReqId,
+    }
+
+    static CHANNELS: AtomicU32 = AtomicU32::new(1);
+
+    impl SimSource {
+        /// Starts the sim host (on its own threads; returns at once). A mach channel that cannot be set up is still
+        /// mode from the start (decision 3b: no in-process frame path).
+        pub fn start(cfg: SimConfig) -> SimSource {
+            let (tx, rx) = channel();
+            let server = Server::check_in(&service_name(CHANNELS.fetch_add(1, Ordering::Relaxed)));
+            let no_channel = server
+                .as_ref()
+                .err()
+                .map(|e| format!("the ring handover failed: {e}"));
+            let sh = Arc::new(Shared {
+                simctl: Simctl::new(&cfg.developer_dir),
+                cfg,
+                tx: Mutex::new(tx),
+                state: Mutex::new(State::default()),
+                writer: Mutex::new(None),
+                guard: Mutex::new(None),
+                server: server.ok(),
+                expect_pid: AtomicI32::new(0),
+                peer: Mutex::new(None),
+                mailbox: Mutex::new(Mailbox::default()),
+                devices: Mutex::new(HashMap::new()),
+                current: Mutex::new(HashMap::new()),
+                rings: Mutex::new(HashMap::new()),
+                retry: Mutex::new(Vec::new()),
+                stop: AtomicBool::new(false),
+                internal_id: AtomicU64::new(0),
+            });
+            if let Some(why) = no_channel {
+                sh.go_still(why);
+            } else {
+                let s = Arc::clone(&sh);
+                std::thread::spawn(move || supervise(s));
+                let s = Arc::clone(&sh);
+                std::thread::spawn(move || read_mach(s));
+            }
+            SimSource { sh, rx, next_id: 1 }
+        }
+
+        fn id(&mut self) -> ReqId {
+            let id = self.next_id;
+            self.next_id += 1;
+            id
+        }
+
+        /// The sim host's facts (None until its hello).
+        pub fn hello(&self) -> Option<Hello> {
+            lock(&self.sh.state).hello.clone()
+        }
+
+        /// Still mode, and why (the still line).
+        pub fn broken(&self) -> Option<String> {
+            self.sh.broken()
+        }
+
+        /// How many times the sim host was started.
+        pub fn starts(&self) -> u32 {
+            lock(&self.sh.state).starts
+        }
+
+        /// The newest frame of `target`'s current ring, taken: its ring number and record. The slot is Flare's until
+        /// [`SimSource::slot_done`].
+        pub fn take_frame(&self, target: &Target) -> Option<(u32, FrameRecord)> {
+            let device = *lock(&self.sh.current).get(target)?;
+            lock(&self.sh.mailbox).take(device).map(|f| (device, f))
+        }
+
+        /// The surfaces of ring `device` (slot order), to be wrapped as textures (PR 4b).
+        pub fn ring(&self, device: u32) -> Option<Vec<CFRetained<IOSurfaceRef>>> {
+            lock(&self.sh.rings).get(&device).cloned()
+        }
+
+        /// The GPU work that sampled `slot` of ring `device` is done (or Flare skipped it): the slot is free again.
+        /// Never blocks: a full port is tried again by the reader.
+        pub fn slot_done(&self, device: u32, slot: u32) {
+            self.sh.slot_done(SlotDone { device, slot });
+        }
+
+        fn still_or<F: FnOnce(&Simctl) -> Result<Answer, String> + Send + 'static>(
+            &mut self,
+            req: Request,
+            kind: Kind,
+            work: F,
+        ) -> ReqId {
+            let id = self.id();
+            if self.sh.broken().is_some() {
+                let sh = Arc::clone(&self.sh);
+                std::thread::spawn(move || {
+                    let r = work(&sh.simctl).map_err(|m| SourceError {
+                        fail: Fail::Unavailable,
+                        message: m,
+                    });
+                    sh.answer(id, r);
+                });
+            } else {
+                self.sh.send(req, id, Some(kind));
+            }
+            id
+        }
+
+        fn unavailable(&mut self, id: ReqId) -> ReqId {
+            let why = self.sh.broken().unwrap_or_default();
+            self.sh.fail(
+                id,
+                Fail::Unavailable,
+                format!("Live view unavailable: {why}."),
+            );
+            id
+        }
+    }
+
+    impl Drop for SimSource {
+        fn drop(&mut self) {
+            self.sh.stop.store(true, Ordering::Relaxed);
+            let id = self.sh.internal();
+            self.sh.send(Request::Quit, id, None);
+            *lock(&self.sh.writer) = None;
+            if let Some(mut g) = lock(&self.sh.guard).take() {
+                g.release();
+            }
+            for (_, f) in lock(&self.sh.state).stills.drain() {
+                f.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    impl DeviceSource for SimSource {
+        fn list(&mut self) -> ReqId {
+            self.still_or(Request::List, Kind::List, |s| {
+                s.list().map(Answer::Devices).map_err(|e| e.message)
+            })
+        }
+
+        fn boot(&mut self, target: &Target) -> ReqId {
+            let t = target.clone();
+            self.still_or(
+                Request::Boot {
+                    target: target.clone(),
+                },
+                Kind::Done,
+                move |s| s.boot(&t).map(|()| Answer::Done).map_err(|e| e.message),
+            )
+        }
+
+        fn shutdown(&mut self, target: &Target) -> ReqId {
+            let t = target.clone();
+            self.still_or(
+                Request::Shutdown {
+                    target: target.clone(),
+                },
+                Kind::Done,
+                move |s| s.shutdown(&t).map(|()| Answer::Done).map_err(|e| e.message),
+            )
+        }
+
+        fn attach(&mut self, target: &Target) -> ReqId {
+            let id = self.id();
+            {
+                let mut st = lock(&self.sh.state);
+                if !st.attached.iter().any(|a| &a.target == target) {
+                    st.attached.push(Att {
+                        target: target.clone(),
+                        paused: false,
+                    });
+                }
+            }
+            if self.sh.broken().is_some() {
+                self.sh.start_still(target);
+                self.sh.answer(id, Ok(Answer::Done));
+            } else {
+                self.sh.send(
+                    Request::Attach {
+                        target: target.clone(),
+                    },
+                    id,
+                    Some(Kind::Done),
+                );
+            }
+            id
+        }
+
+        fn detach(&mut self, target: &Target) {
+            lock(&self.sh.state)
+                .attached
+                .retain(|a| &a.target != target);
+            self.sh.stop_still(target);
+            if self.sh.broken().is_none() {
+                let id = self.sh.internal();
+                self.sh.send(
+                    Request::Detach {
+                        target: target.clone(),
+                    },
+                    id,
+                    None,
+                );
+            }
+        }
+
+        fn pause(&mut self, target: &Target, paused: bool) {
+            for a in lock(&self.sh.state)
+                .attached
+                .iter_mut()
+                .filter(|a| &a.target == target)
+            {
+                a.paused = paused;
+            }
+            if self.sh.broken().is_some() {
+                if paused {
+                    self.sh.stop_still(target);
+                } else {
+                    self.sh.start_still(target);
+                }
+                return;
+            }
+            let id = self.sh.internal();
+            let req = if paused {
+                Request::Pause {
+                    target: target.clone(),
+                }
+            } else {
+                Request::Resume {
+                    target: target.clone(),
+                }
+            };
+            self.sh.send(req, id, None);
+        }
+
+        fn touch(&mut self, target: &Target, touch: Touch) {
+            if self.sh.broken().is_none() {
+                let id = self.sh.internal();
+                self.sh.send(
+                    Request::Touch {
+                        target: target.clone(),
+                        touch,
+                    },
+                    id,
+                    None,
+                );
+            }
+        }
+
+        fn key(&mut self, target: &Target, key: Key) {
+            if self.sh.broken().is_none() {
+                let id = self.sh.internal();
+                self.sh.send(
+                    Request::Key {
+                        target: target.clone(),
+                        key,
+                    },
+                    id,
+                    None,
+                );
+            }
+        }
+
+        fn button(&mut self, target: &Target, button: Button) {
+            if self.sh.broken().is_none() {
+                let id = self.sh.internal();
+                self.sh.send(
+                    Request::Button {
+                        target: target.clone(),
+                        button,
+                    },
+                    id,
+                    None,
+                );
+            }
+        }
+
+        fn text(&mut self, target: &Target, text: &str) -> ReqId {
+            let id = self.id();
+            if self.sh.broken().is_some() {
+                return self.unavailable(id);
+            }
+            self.sh.send(
+                Request::Text {
+                    target: target.clone(),
+                    text: text.to_string(),
+                },
+                id,
+                Some(Kind::Done),
+            );
+            id
+        }
+
+        fn snapshot(&mut self, target: &Target) -> ReqId {
+            let id = self.id();
+            if self.sh.broken().is_some() {
+                // The latest still (the agent's `device_look` in still mode).
+                let png = lock(&self.sh.state).last_still.get(target).cloned();
+                match png {
+                    Some(p) => self.sh.answer(id, Ok(Answer::Png(p))),
+                    None => {
+                        self.unavailable(id);
+                    }
+                }
+                return id;
+            }
+            self.sh.send(
+                Request::Snapshot {
+                    target: target.clone(),
+                },
+                id,
+                Some(Kind::Done),
+            );
+            id
+        }
+
+        fn ui_tree(&mut self, target: &Target) -> ReqId {
+            let id = self.id();
+            if self.sh.broken().is_some() {
+                return self.unavailable(id);
+            }
+            self.sh.send(
+                Request::UiTree {
+                    target: target.clone(),
+                    at: None,
+                },
+                id,
+                Some(Kind::Done),
+            );
+            id
+        }
+
+        fn launch(&mut self, target: &Target, bundle_id: &str) -> ReqId {
+            let (t, b) = (target.clone(), bundle_id.to_string());
+            self.still_or(
+                Request::Launch {
+                    target: target.clone(),
+                    bundle_id: bundle_id.to_string(),
+                    args: Vec::new(),
+                },
+                Kind::Done,
+                move |s| {
+                    s.launch(&t, &b, &[])
+                        .map(|()| Answer::Done)
+                        .map_err(|e| e.message)
+                },
+            )
+        }
+
+        fn install(&mut self, target: &Target, app: &Path) -> ReqId {
+            let (t, a) = (target.clone(), app.to_path_buf());
+            self.still_or(
+                Request::Install {
+                    target: target.clone(),
+                    path: app.to_string_lossy().to_string(),
+                },
+                Kind::Done,
+                move |s| {
+                    s.install(&t, &a)
+                        .map(|()| Answer::Done)
+                        .map_err(|e| e.message)
+                },
+            )
+        }
+
+        fn events(&self) -> &Receiver<SourceEvent> {
+            &self.rx
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::FrameRecord;
+
+    fn rec(device: u32, slot: u32, seq: u64) -> FrameRecord {
+        FrameRecord {
+            device,
+            slot,
+            seq,
+            t_us: seq * 16_667,
+        }
+    }
+
+    #[test]
+    fn frame_records_keep_only_the_newest_per_device() {
+        let mut m = Mailbox::default();
+        assert_eq!(
+            m.put(rec(1, 0, 1)),
+            (None, true),
+            "the first record wakes the UI"
+        );
+        assert_eq!(
+            m.put(rec(1, 1, 2)),
+            (Some(rec(1, 0, 1)), false),
+            "a newer one replaces it (its slot is freed at once) and does not wake again"
+        );
+        assert_eq!(m.put(rec(2, 0, 9)), (None, true), "each device has its own");
+        assert_eq!(m.put(rec(1, 2, 3)), (Some(rec(1, 1, 2)), false));
+        assert_eq!(m.take(1), Some(rec(1, 2, 3)), "the UI gets only the newest");
+        assert_eq!(m.take(1), None);
+        assert_eq!(
+            m.put(rec(1, 0, 4)),
+            (None, true),
+            "taken: the next record wakes again"
+        );
+        assert!(m.waiting(2));
+        assert_eq!(
+            m.forget(2),
+            Some(rec(2, 0, 9)),
+            "a ring gone gives its slot back"
+        );
+        assert!(!m.waiting(2));
+        // The restart policy: three restarts in five minutes, the fourth end is for good; an old end ages out.
+        let mut r = Restarts::default();
+        let t0 = Instant::now();
+        assert!(r.ended(t0));
+        assert!(r.ended(t0 + Duration::from_secs(1)));
+        assert!(r.ended(t0 + Duration::from_secs(2)));
+        assert!(!r.ended(t0 + Duration::from_secs(3)));
+        let mut r = Restarts::default();
+        for i in 0..3 {
+            assert!(r.ended(t0 + Duration::from_secs(i)));
+        }
+        assert!(
+            r.ended(t0 + RESTART_WINDOW + Duration::from_secs(1)),
+            "the first end aged out"
+        );
+        assert!(STILL_SPACING >= Duration::from_millis(1000 / u64::from(STILL_FPS)));
+    }
+
+    fn hello(protocol: u32, xcode: &str) -> Hello {
+        Hello {
+            protocol,
+            version: "0.1.0".into(),
+            coresim_version: "1174.21".into(),
+            simkit_version: "1005.14".into(),
+            xcode_version: xcode.into(),
+            xcode_path: "/Applications/Xcode.app/Contents/Developer".into(),
+            input_path: crate::versions::InputPath::Dtuhid,
+            ax: false,
+        }
+    }
+
+    /// A 2x1 PNG (one colour per pixel), as `simctl io screenshot` would give.
+    pub(crate) fn tiny_png() -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut out, 2, 1);
+            e.set_color(png::ColorType::Rgb);
+            e.set_depth(png::BitDepth::Eight);
+            let mut w = e.write_header().unwrap();
+            w.write_image_data(&[255, 0, 0, 0, 0, 255]).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn a_protocol_mismatch_in_hello_is_refused() {
+        assert_eq!(check_hello(&hello(PROTOCOL, "27.2")), Ok(Support::Tested));
+        assert_eq!(check_hello(&hello(PROTOCOL, "27.9")), Ok(Support::Untested));
+        let e = check_hello(&hello(PROTOCOL + 1, "27.2")).unwrap_err();
+        assert!(e.contains("protocol 2") && e.contains("reinstall"), "{e}");
+        assert_eq!(
+            check_hello(&hello(PROTOCOL, "16.4")),
+            Err("This Xcode is too old for the live view".to_string())
+        );
+        // And a still picture decodes to RGBA.
+        let (size, rgba) = decode_png(&tiny_png()).unwrap();
+        assert_eq!(size, Size::new(2.0, 1.0));
+        assert_eq!(rgba, [255, 0, 0, 255, 0, 0, 255, 255]);
+        assert_eq!(decode_png(b"\x89PNG\r\n\x1a\nflare-fake-device"), None);
+        #[cfg(target_os = "macos")]
+        a_mismatched_sim_host_is_not_restarted();
+    }
+
+    #[cfg(target_os = "macos")]
+    use crate::source::{Answer, DeviceSource, SourceEvent};
+    #[cfg(target_os = "macos")]
+    use crate::target::Target;
+    #[cfg(target_os = "macos")]
+    use std::io::{BufRead, Write};
+    #[cfg(target_os = "macos")]
+    use std::path::Path;
+    #[cfg(target_os = "macos")]
+    use std::sync::Arc;
+
+    #[cfg(target_os = "macos")]
+    /// Not a test on its own: a guard started by these tests runs as this test.
+    #[test]
+    fn guard_entry() {
+        flare_proc::guard::run_if_guard();
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Not a test on its own: run by the tests below as a fake `flare-sim-host` (`FLARE_FAKE_SIM_HOST` says how
+    /// it behaves).
+    #[test]
+    fn fake_sim_host() {
+        let Ok(mode) = std::env::var("FLARE_FAKE_SIM_HOST") else {
+            return;
+        };
+        let dir = std::env::var("FLARE_FAKE_SIM_DIR").unwrap_or_default();
+        let args: Vec<String> = std::env::args().collect();
+        let rendezvous = args
+            .iter()
+            .position(|a| a == "--rendezvous")
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+            .unwrap_or_default();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(Path::new(&dir).join("starts"))
+        {
+            let _ = writeln!(f, "{}", std::process::id());
+        }
+        let mut h = hello(PROTOCOL, "27.2");
+        match mode.as_str() {
+            "mismatch" => h.protocol = 99,
+            "fds" => {
+                // Every descriptor open in this process (stdin, stdout and stderr only, or the guard leaked one).
+                let open: Vec<String> = (0..1024)
+                    // SAFETY: F_GETFD on any number only asks; -1 means not open.
+                    .filter(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } != -1)
+                    .map(|fd: i32| fd.to_string())
+                    .collect();
+                h.version = format!("fds={}", open.join(","));
+                h.xcode_path = std::env::var("DEVELOPER_DIR").unwrap_or_default();
+                h.simkit_version = rendezvous;
+            }
+            _ => {}
+        }
+        let mut out = std::io::stdout();
+        let _ = writeln!(
+            out,
+            "{}",
+            crate::wire::to_line(&crate::wire::HostLine::Hello(h))
+        );
+        let _ = out.flush();
+        if mode == "crash" {
+            std::process::exit(1);
+        }
+        // Wait for Flare to go (quit, or the pipe closes).
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            if line.contains("\"op\":\"quit\"") {
+                break;
+            }
+        }
+        std::process::exit(0);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn source(mode: &str, dir: &Path, shoot: Option<Shoot>) -> SimSource {
+        flare_proc::guard::use_test_entry("client::tests::guard_entry").unwrap();
+        let mut cfg = SimConfig::new(
+            std::env::current_exe().unwrap(),
+            dir.join("Xcode.app/Contents/Developer"),
+            dir.join("logs/sim-host.log"),
+        );
+        cfg.pre_args = [
+            "client::tests::fake_sim_host",
+            "--exact",
+            "--nocapture",
+            "--",
+        ]
+        .map(String::from)
+        .to_vec();
+        cfg.env = vec![
+            ("FLARE_FAKE_SIM_HOST".into(), mode.into()),
+            (
+                "FLARE_FAKE_SIM_DIR".into(),
+                dir.to_string_lossy().to_string(),
+            ),
+        ];
+        cfg.restart_delay = Duration::from_millis(50);
+        cfg.shoot = shoot;
+        SimSource::start(cfg)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn starts(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("starts")).map_or(0, |t| t.lines().count())
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Events until `want` matches one, within `limit`; every event seen.
+    fn until(
+        s: &SimSource,
+        limit: Duration,
+        want: impl Fn(&SourceEvent) -> bool,
+    ) -> Vec<SourceEvent> {
+        let end = Instant::now() + limit;
+        let mut seen = Vec::new();
+        while let Some(left) = end.checked_duration_since(Instant::now()) {
+            match s.events().recv_timeout(left) {
+                Ok(e) => {
+                    let hit = want(&e);
+                    seen.push(e);
+                    if hit {
+                        return seen;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        panic!("no matching event in {limit:?}; saw {seen:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn target() -> Target {
+        Target::sim("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0").unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sim_host_is_restarted_three_times_then_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = source("crash", dir.path(), None);
+        let seen = until(&s, Duration::from_secs(60), |e| {
+            matches!(e, SourceEvent::Broken(_))
+        });
+        let Some(SourceEvent::Broken(why)) = seen.last() else {
+            unreachable!()
+        };
+        assert_eq!(why, KEPT_STOPPING);
+        assert_eq!(
+            starts(dir.path()),
+            1 + MAX_RESTARTS,
+            "started once, then three restarts"
+        );
+        assert_eq!(s.starts() as usize, 1 + MAX_RESTARTS);
+        assert_eq!(s.broken().as_deref(), Some(KEPT_STOPPING));
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            starts(dir.path()),
+            1 + MAX_RESTARTS,
+            "no start after it is broken"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_broken_sim_host_falls_back_to_still_pictures_at_three_fps_at_most() {
+        let dir = tempfile::tempdir().unwrap();
+        let shots = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = Arc::clone(&shots);
+        let shoot: Shoot = Arc::new(move |_t: &Target| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(tiny_png())
+        });
+        let mut s = source("crash", dir.path(), Some(shoot));
+        let t = target();
+        let attach = s.attach(&t);
+        let seen = until(&s, Duration::from_secs(60), |e| {
+            matches!(e, SourceEvent::Broken(_))
+        });
+        let mut answered_attach = seen
+            .iter()
+            .any(|e| matches!(e, SourceEvent::Answer { id, .. } if *id == attach));
+        // The pictures come, no faster than three a second.
+        let started = Instant::now();
+        let mut times = Vec::new();
+        while started.elapsed() < Duration::from_millis(2100) {
+            match s.events().recv_timeout(Duration::from_millis(100)) {
+                Ok(SourceEvent::Picture {
+                    target,
+                    size_px,
+                    rgba,
+                    ..
+                }) => {
+                    assert_eq!(target, t);
+                    assert_eq!(size_px, Size::new(2.0, 1.0));
+                    assert_eq!(rgba.len(), 8);
+                    times.push(Instant::now());
+                }
+                Ok(SourceEvent::Answer { id, .. }) if id == attach => answered_attach = true,
+                _ => {}
+            }
+        }
+        assert!(
+            answered_attach,
+            "the attach was answered (retry, then still)"
+        );
+        assert!(
+            (4..=7).contains(&times.len()),
+            "{} pictures in 2.1 s",
+            times.len()
+        );
+        for w in times.windows(2) {
+            assert!(
+                w[1] - w[0] >= Duration::from_millis(300),
+                "{:?}",
+                w[1] - w[0]
+            );
+        }
+        // Input and the UI tree answer unavailable with the reason; a look gets the latest still.
+        let tree = s.ui_tree(&t);
+        let look = s.snapshot(&t);
+        let mut got = HashMap::new();
+        while got.len() < 2 {
+            if let Ok(SourceEvent::Answer { id, result }) =
+                s.events().recv_timeout(Duration::from_secs(5))
+            {
+                got.insert(id, result);
+            }
+        }
+        let e = got[&tree].clone().unwrap_err();
+        assert_eq!(e.fail, crate::job::Fail::Unavailable);
+        assert!(e.message.contains(KEPT_STOPPING), "{}", e.message);
+        assert_eq!(got[&look], Ok(Answer::Png(tiny_png())));
+        // Detached: the pictures stop.
+        s.detach(&t);
+        let n = shots.load(std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(shots.load(std::sync::atomic::Ordering::Relaxed) <= n + 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn a_mismatched_sim_host_is_not_restarted() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = source("mismatch", dir.path(), None);
+        let seen = until(&s, Duration::from_secs(30), |e| {
+            matches!(e, SourceEvent::Broken(_))
+        });
+        let Some(SourceEvent::Broken(why)) = seen.last() else {
+            unreachable!()
+        };
+        assert!(why.contains("protocol 99"), "{why}");
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(starts(dir.path()), 1, "a broken install is not restarted");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sim_host_gets_developer_dir_and_no_extra_descriptors() {
+        let dir = tempfile::tempdir().unwrap();
+        // A descriptor without close-on-exec, as a library or the parent may leave one (CI did).
+        // SAFETY: open on a static C string; the descriptor is closed at the end.
+        let stray = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+        assert!(stray > 2);
+        let s = source("fds", dir.path(), None);
+        let end = Instant::now() + Duration::from_secs(30);
+        let hello = loop {
+            if let Some(h) = s.hello() {
+                break h;
+            }
+            assert!(Instant::now() < end, "no hello");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(hello.version, "fds=0,1,2", "stdin, stdout and stderr only");
+        assert_eq!(
+            Path::new(&hello.xcode_path),
+            dir.path().join("Xcode.app/Contents/Developer")
+        );
+        assert!(
+            hello.simkit_version.starts_with(&format!(
+                "{}{}.",
+                crate::macos::rendezvous::SERVICE_PREFIX,
+                std::process::id()
+            )),
+            "the rendezvous name, with Flare's pid: {}",
+            hello.simkit_version
+        );
+        assert_eq!(s.broken(), None);
+        // SAFETY: the descriptor opened above, closed once.
+        unsafe { libc::close(stray) };
+    }
+}
