@@ -30,6 +30,7 @@
 pub mod cap;
 pub mod client;
 pub mod emu;
+pub mod emu_client;
 pub mod fake;
 pub mod geom;
 pub mod indicator;

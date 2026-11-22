@@ -26,6 +26,8 @@ pub struct Args {
     pub width: u32,
     pub rotate: bool,
     pub snapshots: u32,
+    /// Where the booted emulator's own output goes (nowhere without it).
+    pub emulator_log: Option<std::path::PathBuf>,
 }
 
 fn pct(v: &mut [f64], p: f64) -> f64 {
@@ -46,9 +48,18 @@ pub fn run(a: &Args) -> Result<Value, String> {
     rt.block_on(bench(a))
 }
 
-async fn wait_running(dir: &std::path::Path, avd: &str, limit: Duration) -> Option<discovery::Running> {
+async fn wait_running(
+    dir: &std::path::Path,
+    avd: &str,
+    limit: Duration,
+    child: &mut std::process::Child,
+) -> Option<discovery::Running> {
     let started = Instant::now();
     while started.elapsed() < limit {
+        if let Ok(Some(s)) = child.try_wait() {
+            eprintln!("flare-emu-host: bench: the emulator ended: {s}");
+            return None;
+        }
         if let Some(r) = discovery::of_avd(&discovery::read_all(dir), avd).cloned()
             && matches!(r.access(), Access::Token { .. })
         {
@@ -80,21 +91,39 @@ async fn bench(a: &Args) -> Result<Value, String> {
                 .flat_map(|r| [r.console_port, r.adb_port])
                 .flatten()
                 .collect();
-            let console = boot::console_port(&taken, boot::port_busy).ok_or("no free console port")?;
+            let console =
+                boot::console_port(&taken, boot::port_busy).ok_or("no free console port")?;
             let grpc_port = boot::free_port().ok_or("no free port")?;
             let line = boot::args(&a.avd, grpc_port, console);
-            let mut c = boot::command(&sdk.emulator(), &sdk.root, &avd.home, &line, None, true)?;
+            let log = || {
+                a.emulator_log
+                    .as_ref()
+                    .and_then(|p| std::fs::File::create(p).ok())
+            };
+            let mut c = boot::command(&sdk.emulator(), &sdk.root, &avd.home, &line, log(), true)?;
             let child = match c.spawn() {
                 Ok(ch) => ch,
-                Err(_) => boot::command(&sdk.emulator(), &sdk.root, &avd.home, &line, None, false)?
-                    .spawn()
-                    .map_err(|e| format!("the emulator did not start: {e}"))?,
+                Err(_) => {
+                    boot::command(&sdk.emulator(), &sdk.root, &avd.home, &line, log(), false)?
+                        .spawn()
+                        .map_err(|e| format!("the emulator did not start: {e}"))?
+                }
+            };
+            out["boot_command"] = json!(line.join(" "));
+            let mut child = child;
+            let r = wait_running(
+                &dir,
+                &a.avd,
+                Duration::from_secs(boot::BOOT_WAIT_S),
+                &mut child,
+            )
+            .await;
+            let Some(r) = r else {
+                let _ = child.kill();
+                return Err("no discovery file with a token".into());
             };
             booted_here = Some(child);
-            out["boot_command"] = json!(line.join(" "));
-            wait_running(&dir, &a.avd, Duration::from_secs(boot::BOOT_WAIT_S))
-                .await
-                .ok_or("no discovery file with a token")?
+            r
         }
         None => return Err(format!("{} is not running (add --boot)", a.avd)),
     };
@@ -104,7 +133,11 @@ async fn bench(a: &Args) -> Result<Value, String> {
     let client = grpc::connect(port, &token).await?;
     // Booted.
     loop {
-        let s = client.clone().get_status(()).await.map_err(|e| e.message().to_string())?;
+        let s = client
+            .clone()
+            .get_status(())
+            .await
+            .map_err(|e| e.message().to_string())?;
         if s.into_inner().booted {
             break;
         }
@@ -215,7 +248,9 @@ async fn frames(a: &Args, client: &Client, dir: &std::path::Path) -> Result<Valu
                 .clone()
                 .set_physical_model(pb::PhysicalModelValue {
                     target: pb::physical_model_value::PhysicalType::Rotation as i32,
-                    value: Some(pb::ParameterValue { data: vec![x, y, z] }),
+                    value: Some(pb::ParameterValue {
+                        data: vec![x, y, z],
+                    }),
                     ..Default::default()
                 })
                 .await
@@ -226,7 +261,9 @@ async fn frames(a: &Args, client: &Client, dir: &std::path::Path) -> Result<Valu
             && turn_seen.is_none()
             && rot != 0
         {
-            turn_seen = Some(json!({ "rotation": rot, "w": f.width, "h": f.height, "ms": t.elapsed().as_millis() }));
+            turn_seen = Some(
+                json!({ "rotation": rot, "w": f.width, "h": f.height, "ms": t.elapsed().as_millis() }),
+            );
         }
     }
     if turned_at.is_some() {
@@ -234,7 +271,9 @@ async fn frames(a: &Args, client: &Client, dir: &std::path::Path) -> Result<Valu
             .clone()
             .set_physical_model(pb::PhysicalModelValue {
                 target: pb::physical_model_value::PhysicalType::Rotation as i32,
-                value: Some(pb::ParameterValue { data: vec![0.0, 0.0, 0.0] }),
+                value: Some(pb::ParameterValue {
+                    data: vec![0.0, 0.0, 0.0],
+                }),
                 ..Default::default()
             })
             .await;

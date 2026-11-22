@@ -250,7 +250,7 @@ pub fn text_steps(text: &str) -> Vec<TextStep> {
 pub use mac::{OnEvent, Shoot, SimConfig, SimFrames, SimSource};
 
 #[cfg(target_os = "macos")]
-mod mac {
+pub(crate) mod mac {
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
     use std::path::{Path, PathBuf};
@@ -385,7 +385,7 @@ mod mac {
     /// The sim host gets stdin, stdout and stderr only. Any other descriptor Flare holds without
     /// close-on-exec (one a library opened, one a parent left open, a pipe another thread made
     /// between `pipe` and `fcntl`) is marked close-on-exec in the child just before its exec.
-    fn no_inherited_descriptors(cmd: &mut Command) {
+    pub(crate) fn no_inherited_descriptors(cmd: &mut Command) {
         use std::os::unix::process::CommandExt;
         // Read before the fork: the highest descriptor number this process may hold.
         let mut lim = libc::rlimit {

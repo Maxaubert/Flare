@@ -40,11 +40,17 @@ pub fn own_checks() -> Vec<Value> {
     // Rule 1362: the boot command line, and the token never printed.
     let line = boot::args("Flare_Pixel", 8554, 5554);
     let cmd = boot::check(&line);
-    let t = Token::new("c2VsZi10ZXN0").map(|t| format!("{t:?} {t}")).unwrap_or_default();
+    let t = Token::new("c2VsZi10ZXN0")
+        .map(|t| format!("{t:?} {t}"))
+        .unwrap_or_default();
     let hidden = !t.is_empty() && !t.contains("c2VsZi10ZXN0");
     vec![
         check("protos", protos, format!("proto-sha256 {}", proto_sha256())),
-        check("boot_command", cmd.is_ok(), cmd.err().unwrap_or_else(|| line.join(" "))),
+        check(
+            "boot_command",
+            cmd.is_ok(),
+            cmd.err().unwrap_or_else(|| line.join(" ")),
+        ),
         check("token_hidden", hidden, "a token never prints"),
     ]
 }
@@ -72,7 +78,9 @@ pub fn run() -> (Value, bool) {
                 "at_floor": matches!(found, Found::Ready(_)),
             });
             match crate::host::accel_check(s) {
-                Ok(a) => out["accel"] = json!({ "usable": a.usable(), "kind": a.kind(), "line": a.line }),
+                Ok(a) => {
+                    out["accel"] = json!({ "usable": a.usable(), "kind": a.kind(), "line": a.line })
+                }
                 Err(e) => out["accel"] = json!({ "error": e }),
             }
         }
@@ -105,14 +113,22 @@ mod tests {
     fn the_generated_code_is_from_the_vendored_proto() {
         use sha2::{Digest, Sha256};
         let proto = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proto/emulator_controller.proto"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("proto/emulator_controller.proto"),
         )
         .unwrap();
         let hash: String = Sha256::digest(proto.replace('\r', "").as_bytes())
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        assert_eq!(hash, proto_sha256(), "run cargo run --manifest-path tools/emu-proto-gen/Cargo.toml");
-        assert!(proto.contains("Licensed under the Apache License, Version 2.0"), "the licence header stays");
+        assert_eq!(
+            hash,
+            proto_sha256(),
+            "run cargo run --manifest-path tools/emu-proto-gen/Cargo.toml"
+        );
+        assert!(
+            proto.contains("Licensed under the Apache License, Version 2.0"),
+            "the licence header stays"
+        );
     }
 }

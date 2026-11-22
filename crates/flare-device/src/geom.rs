@@ -160,9 +160,9 @@ pub fn px_to_dp(x: f64, y: f64, scale: f64) -> (f64, f64) {
 }
 
 impl Orientation {
-    /// The orientation of a number of quarter turns, 0 to 3 (the order of the emulator's `SkinRotation`: PORTRAIT,
-    /// LANDSCAPE, REVERSE_PORTRAIT, REVERSE_LANDSCAPE). None for anything else. Which way LANDSCAPE turns is checked
-    /// against a real frame in the emu host (Android plan PR A2).
+    /// The orientation of a number of clockwise quarter turns, 0 to 3 ([`Orientation::ALL`]'s order). None for anything
+    /// else. Not the emulator's `SkinRotation`: its LANDSCAPE turns the other way (checked on a real frame in Android
+    /// plan PR A2), so the emu host reads it with `emu::keys::orientation_of`.
     pub fn from_quarter_turns(n: u32) -> Option<Orientation> {
         Orientation::ALL.get(n as usize).copied()
     }

@@ -22,9 +22,13 @@ use flare_device::emu::sdk::{self, Found, Sdk};
 use flare_device::emu::{Places, avds, boot, keys};
 use flare_device::geom::{Orientation, Size};
 use flare_device::job::Fail;
-use flare_device::source::{Button, DeviceInfo, DeviceState, InputState, Key, Phase, Screen, Touch};
+use flare_device::source::{
+    Button, DeviceInfo, DeviceState, InputState, Key, Phase, Screen, Touch,
+};
 use flare_device::target::Target;
-use flare_device::wire::{Control, Hello, HostKind, HostLine, PROTOCOL, Request, from_line, png_result, to_line};
+use flare_device::wire::{
+    Control, Hello, HostKind, HostLine, PROTOCOL, Request, from_line, png_result, to_line,
+};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -87,7 +91,9 @@ struct Device {
 
 impl Device {
     fn send(&self, e: pb::InputEvent) -> bool {
-        lock(&self.input).as_ref().is_some_and(|i| i.send(e).is_ok())
+        lock(&self.input)
+            .as_ref()
+            .is_some_and(|i| i.send(e).is_ok())
     }
 }
 
@@ -179,7 +185,8 @@ pub fn accel_check(sdk: &Sdk) -> Result<flare_device::emu::accel::Accel, String>
     let mut c = crate::run::command(&sdk.emulator());
     c.arg("-accel-check");
     let r = crate::run::run(c, Duration::from_secs(20))?;
-    flare_device::emu::accel::parse(&r.stdout).ok_or_else(|| "the accel check said nothing readable".to_string())
+    flare_device::emu::accel::parse(&r.stdout)
+        .ok_or_else(|| "the accel check said nothing readable".to_string())
 }
 
 /// Serves Flare until stdin closes or `quit`. Returns the exit code.
@@ -256,7 +263,11 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
     match c.req {
         Request::Hello { protocol } => {
             if protocol != PROTOCOL {
-                host.err(id, Fail::Unavailable, format!("protocol {protocol}, this emu host speaks {PROTOCOL}"));
+                host.err(
+                    id,
+                    Fail::Unavailable,
+                    format!("protocol {protocol}, this emu host speaks {PROTOCOL}"),
+                );
                 return false;
             }
             host.ok(id, Value::Null);
@@ -313,9 +324,14 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
         Request::Region { target, url, bytes } => match host.device(&target) {
             None => host.err(id, Fail::Unavailable, format!("{target} is not attached")),
             Some(d) => {
-                let need = flare_device::emu::region::bytes_for(d.portrait.w as u32, d.portrait.h as u32);
+                let need =
+                    flare_device::emu::region::bytes_for(d.portrait.w as u32, d.portrait.h as u32);
                 if bytes < need {
-                    host.err(id, Fail::Unavailable, format!("the region holds {bytes} bytes, the screen needs {need}"));
+                    host.err(
+                        id,
+                        Fail::Unavailable,
+                        format!("the region holds {bytes} bytes, the screen needs {need}"),
+                    );
                 } else {
                     *lock(&d.region) = Some((url, bytes));
                     restart_stream(host, &d);
@@ -331,7 +347,9 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
             }
             host.ok(id, Value::Null);
         }
-        Request::Pause { target } | Request::Resume { target } if host.device(&target).is_none() => {
+        Request::Pause { target } | Request::Resume { target }
+            if host.device(&target).is_none() =>
+        {
             host.err(id, Fail::Unavailable, format!("{target} is not attached"));
         }
         Request::Pause { target } => {
@@ -408,9 +426,17 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
             }
         },
         Request::UiTree { target, .. } => {
-            host.err(id, Fail::Unavailable, format!("{target}: the UI tree comes with the agent helper (Android plan PR A3)"));
+            host.err(
+                id,
+                Fail::Unavailable,
+                format!("{target}: the UI tree comes with the agent helper (Android plan PR A3)"),
+            );
         }
-        Request::Launch { target, bundle_id, args } => {
+        Request::Launch {
+            target,
+            bundle_id,
+            args,
+        } => {
             let h = Arc::clone(host);
             host.rt.spawn(async move {
                 let hh = Arc::clone(&h);
@@ -459,7 +485,10 @@ fn ready_sdk(host: &Host) -> Result<&Sdk, Failed> {
                 sdk::floor()
             ),
         )),
-        Found::Missing => Err((Fail::Unavailable, "no Android emulator on this computer".to_string())),
+        Found::Missing => Err((
+            Fail::Unavailable,
+            "no Android emulator on this computer".to_string(),
+        )),
     }
 }
 
@@ -531,7 +560,9 @@ async fn boot_wait(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         match reach(host, target).await {
             Ok((_, c)) => break c,
             Err((_, m)) if m == discovery::NO_ACCESS => return Err((Fail::Unavailable, m)),
-            Err(_) if started.elapsed() < limit => tokio::time::sleep(Duration::from_millis(500)).await,
+            Err(_) if started.elapsed() < limit => {
+                tokio::time::sleep(Duration::from_millis(500)).await
+            }
             Err(_) => return Err((Fail::Busy, "Still starting...".to_string())),
         }
     };
@@ -550,7 +581,10 @@ async fn boot_wait(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    host.log.line(&format!("{target}: booted in {} s", started.elapsed().as_secs()));
+    host.log.line(&format!(
+        "{target}: booted in {} s",
+        started.elapsed().as_secs()
+    ));
     keep_alive(host, target, client);
     host.out.line(&HostLine::State {
         target: target.clone(),
@@ -572,7 +606,8 @@ fn keep_alive(host: &Arc<Host>, target: &Target, client: Client) {
                 Ok(_) => fails = 0,
                 Err(e) => {
                     fails += 1;
-                    h.log.line(&format!("{t}: getStatus failed ({fails}): {}", e.code()));
+                    h.log
+                        .line(&format!("{t}: getStatus failed ({fails}): {}", e.code()));
                     if fails >= STATUS_FAILS {
                         gone(&h, &t);
                         return;
@@ -606,7 +641,8 @@ fn gone(host: &Arc<Host>, target: &Target) {
 /// `booted.json`); the emu host does what it is asked.
 async fn shutdown(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
     let (r, c) = reach(host, target).await?;
-    host.log.line(&format!("{target}: shut down (pid {})", r.pid));
+    host.log
+        .line(&format!("{target}: shut down (pid {})", r.pid));
     host.out.line(&HostLine::State {
         target: target.clone(),
         state: DeviceState::ShuttingDown,
@@ -616,10 +652,36 @@ async fn shutdown(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
             state: pb::vm_run_state::RunState::Shutdown as i32,
         })
         .await
-        .map_err(|e| (Fail::Unavailable, format!("the emulator refused to shut down: {}", e.message())))?;
+        .map_err(|e| {
+            (
+                Fail::Unavailable,
+                format!("the emulator refused to shut down: {}", e.message()),
+            )
+        })?;
+    // It saves its Quick Boot state and ends within about 20 s; its discovery file goes last.
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(SHUTDOWN_WAIT_S) {
+        let h = Arc::clone(host);
+        let still = tokio::task::spawn_blocking(move || h.running())
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|x| x.pid == r.pid);
+        if !still {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    host.log.line(&format!(
+        "{target}: shut down in {} s",
+        started.elapsed().as_secs()
+    ));
     gone(host, target);
     Ok(())
 }
+
+/// How long a shutdown waits for the emulator to end.
+const SHUTDOWN_WAIT_S: u64 = 60;
 
 /// The screen of an AVD: its `config.ini`, else what the emulator says.
 async fn screen_of(running: &Running, client: &Client) -> Result<(Size, f64), Failed> {
@@ -640,14 +702,22 @@ async fn screen_of(running: &Running, client: &Client) -> Result<(Size, f64), Fa
         .clone()
         .get_display_configurations(())
         .await
-        .map_err(|e| (Fail::Unavailable, format!("no screen size: {}", e.message())))?
+        .map_err(|e| {
+            (
+                Fail::Unavailable,
+                format!("no screen size: {}", e.message()),
+            )
+        })?
         .into_inner();
     let main = d
         .displays
         .iter()
         .find(|x| x.display == 0)
         .ok_or((Fail::Unavailable, "no main display".to_string()))?;
-    let (w, h) = (f64::from(main.width.min(main.height)), f64::from(main.width.max(main.height)));
+    let (w, h) = (
+        f64::from(main.width.min(main.height)),
+        f64::from(main.width.max(main.height)),
+    );
     Ok((Size::new(w, h), f64::from(main.dpi)))
 }
 
@@ -656,8 +726,10 @@ async fn attach(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
     ready_sdk(host)?;
     let (r, client) = reach(host, target).await?;
     let (portrait, dpi) = screen_of(&r, &client).await?;
-    let screen = Screen::from_dpi(portrait, dpi, Orientation::Rot0)
-        .ok_or((Fail::Unavailable, format!("a screen that does not read: {portrait:?} at {dpi} dpi")))?;
+    let screen = Screen::from_dpi(portrait, dpi, Orientation::Rot0).ok_or((
+        Fail::Unavailable,
+        format!("a screen that does not read: {portrait:?} at {dpi} dpi"),
+    ))?;
     let d = Arc::new(Device {
         target: target.clone(),
         client: client.clone(),
@@ -682,7 +754,11 @@ async fn attach(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         r.version.as_deref().unwrap_or("?"),
         portrait.w,
         portrait.h,
-        if host.restarted { ", after a restart" } else { "" }
+        if host.restarted {
+            ", after a restart"
+        } else {
+            ""
+        }
     ));
     host.out.line(&HostLine::Frames {
         target: target.clone(),
@@ -710,7 +786,8 @@ fn open_input(host: &Arc<Host>, d: &Arc<Device>) {
             h.log.line(&format!(
                 "{}: the input stream ended ({}), opened again",
                 dd.target,
-                r.err().map_or_else(|| "closed".to_string(), |e| e.code().to_string())
+                r.err()
+                    .map_or_else(|| "closed".to_string(), |e| e.code().to_string())
             ));
             h.out.line(&HostLine::Input {
                 target: dd.target.clone(),
@@ -744,7 +821,10 @@ fn detach_device(d: &Arc<Device>) {
 
 fn touch_event(touches: Vec<pb::Touch>) -> pb::InputEvent {
     pb::InputEvent {
-        r#type: Some(pb::input_event::Type::TouchEvent(pb::TouchEvent { touches, display: 0 })),
+        r#type: Some(pb::input_event::Type::TouchEvent(pb::TouchEvent {
+            touches,
+            display: 0,
+        })),
     }
 }
 
@@ -814,7 +894,11 @@ fn key_event(k: Key) -> pb::InputEvent {
     pb::InputEvent {
         r#type: Some(pb::input_event::Type::KeyEvent(pb::KeyboardEvent {
             code_type: KeyCodeType::Usb as i32,
-            event_type: if k.down { KeyEventType::Keydown } else { KeyEventType::Keyup } as i32,
+            event_type: if k.down {
+                KeyEventType::Keydown
+            } else {
+                KeyEventType::Keyup
+            } as i32,
             key_code: keys::usb_code(k.usage),
             ..Default::default()
         })),
@@ -824,7 +908,10 @@ fn key_event(k: Key) -> pb::InputEvent {
 async fn press(d: &Device, b: Button) -> Result<(), Failed> {
     use pb::keyboard_event::{KeyCodeType, KeyEventType};
     let Some(p) = keys::press(b) else {
-        return Err((Fail::Unavailable, format!("an Android device has no {} button", b.name())));
+        return Err((
+            Fail::Unavailable,
+            format!("an Android device has no {} button", b.name()),
+        ));
     };
     let key = |k: pb::KeyboardEvent| pb::InputEvent {
         r#type: Some(pb::input_event::Type::KeyEvent(k)),
@@ -852,11 +939,18 @@ async fn press(d: &Device, b: Button) -> Result<(), Failed> {
                 .clone()
                 .set_physical_model(pb::PhysicalModelValue {
                     target: pb::physical_model_value::PhysicalType::Rotation as i32,
-                    value: Some(pb::ParameterValue { data: vec![x, y, z] }),
+                    value: Some(pb::ParameterValue {
+                        data: vec![x, y, z],
+                    }),
                     ..Default::default()
                 })
                 .await
-                .map_err(|e| (Fail::Unavailable, format!("the emulator did not turn: {}", e.message())))?;
+                .map_err(|e| {
+                    (
+                        Fail::Unavailable,
+                        format!("the emulator did not turn: {}", e.message()),
+                    )
+                })?;
         }
     }
     Ok(())
@@ -876,7 +970,12 @@ async fn type_text(d: &Device, text: &str) -> Result<(), Failed> {
                     .clone()
                     .set_clipboard(pb::ClipData { text: t })
                     .await
-                    .map_err(|e| (Fail::Unavailable, format!("the device's clipboard: {}", e.message())))?;
+                    .map_err(|e| {
+                        (
+                            Fail::Unavailable,
+                            format!("the device's clipboard: {}", e.message()),
+                        )
+                    })?;
             }
         }
     }
@@ -918,7 +1017,9 @@ fn restart_stream(host: &Arc<Host>, d: &Arc<Device>) {
     };
     let h = Arc::clone(host);
     let dd = Arc::clone(d);
-    let task = host.rt.spawn(async move { stream(h, dd, url, bytes).await });
+    let task = host
+        .rt
+        .spawn(async move { stream(h, dd, url, bytes).await });
     *lock(&d.stream) = Some(task);
 }
 
@@ -956,7 +1057,12 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
     let mut s = match d.client.clone().stream_screenshot(fmt).await {
         Ok(r) => r.into_inner(),
         Err(e) => {
-            host.log.line(&format!("{}: the frame stream was refused: {} {}", d.target, e.code(), e.message()));
+            host.log.line(&format!(
+                "{}: the frame stream was refused: {} {}",
+                d.target,
+                e.code(),
+                e.message()
+            ));
             return;
         }
     };
@@ -977,7 +1083,9 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
         });
     };
     loop {
-        let due = cap.due_us().map(|us| host.epoch + Duration::from_micros(us));
+        let due = cap
+            .due_us()
+            .map(|us| host.epoch + Duration::from_micros(us));
         let msg = tokio::select! {
             m = s.message() => m,
             () = async {
@@ -995,11 +1103,17 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
         let img = match msg {
             Ok(Some(i)) => i,
             Ok(None) => {
-                host.log.line(&format!("{}: the frame stream ended", d.target));
+                host.log
+                    .line(&format!("{}: the frame stream ended", d.target));
                 break;
             }
             Err(e) => {
-                host.log.line(&format!("{}: the frame stream failed: {} {}", d.target, e.code(), e.message()));
+                host.log.line(&format!(
+                    "{}: the frame stream failed: {} {}",
+                    d.target,
+                    e.code(),
+                    e.message()
+                ));
                 break;
             }
         };
@@ -1018,11 +1132,7 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
             stats.too_big.fetch_add(1, Ordering::Relaxed);
             continue;
         }
-        let rotation = f
-            .rotation
-            .and_then(|r| u32::try_from(r.rotation).ok())
-            .and_then(Orientation::from_quarter_turns)
-            .unwrap_or_default();
+        let rotation = keys::orientation_of(f.rotation.map_or(0, |r| r.rotation));
         let turned = {
             let mut o = lock(&d.orientation);
             let changed = *o != rotation;
@@ -1064,6 +1174,27 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
 mod tests {
     use super::*;
 
+    /// Rule 1368: nothing in the emu host reaches the computer's clipboard; its only clipboard is the device's own
+    /// (gRPC `setClipboard`). The needles are split so this file does not match.
+    #[test]
+    fn the_emu_host_never_touches_the_computers_clipboard() {
+        let needles = [
+            concat!("NS", "Pasteboard"),
+            concat!("pb", "copy"),
+            concat!("Open", "Clipboard"),
+            concat!("SetClipboard", "Data"),
+            concat!("arb", "oard"),
+            concat!("clip", ".exe"),
+        ];
+        for (name, text) in crate::run::tests::sources() {
+            for n in needles {
+                assert!(!text.contains(n), "{name} uses {n}");
+            }
+        }
+        let typed = keys::text_steps("bl\u{e5}b\u{e6}r");
+        assert!(matches!(&typed[0], keys::TextStep::DeviceClipboard(_)));
+    }
+
     /// Rule 1362: the hello says the host's kind and facts, and no token.
     #[test]
     fn the_hello_names_the_emu_host_and_its_facts() {
@@ -1072,7 +1203,9 @@ mod tests {
             flare_own: false,
             emulator_version: "37.2.13".into(),
         };
-        let a = flare_device::emu::accel::parse("accel:\n0\nWHPX(10.0.26300) is installed and usable.\naccel\n");
+        let a = flare_device::emu::accel::parse(
+            "accel:\n0\nWHPX(10.0.26300) is installed and usable.\naccel\n",
+        );
         let h = hello(&Found::Ready(s), a.as_ref());
         assert_eq!(h.host, HostKind::Emu);
         assert_eq!(h.protocol, PROTOCOL);
@@ -1088,13 +1221,19 @@ mod tests {
 
     #[test]
     fn keys_and_touches_become_the_emulators_events() {
-        let k = key_event(Key { usage: 0x04, down: true });
+        let k = key_event(Key {
+            usage: 0x04,
+            down: true,
+        });
         let Some(pb::input_event::Type::KeyEvent(e)) = k.r#type else {
             panic!()
         };
         assert_eq!(e.key_code, 0x07_0004);
         assert_eq!(e.code_type, pb::keyboard_event::KeyCodeType::Usb as i32);
-        assert_eq!(e.event_type, pb::keyboard_event::KeyEventType::Keydown as i32);
+        assert_eq!(
+            e.event_type,
+            pb::keyboard_event::KeyEventType::Keydown as i32
+        );
         let t = touch_event(vec![pb::Touch {
             x: 1,
             y: 2,

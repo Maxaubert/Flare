@@ -44,7 +44,11 @@ impl Accel {
 
 /// The check's output, or None when it is not shaped as above.
 pub fn parse(out: &str) -> Option<Accel> {
-    let lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let start = lines.iter().position(|l| *l == "accel:")?;
     let status = lines.get(start + 1)?.parse::<i32>().ok()?;
     let line = lines

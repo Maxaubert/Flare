@@ -45,6 +45,19 @@ pub fn args(avd: &str, grpc_port: u16, console_port: u16) -> Vec<String> {
     .collect()
 }
 
+/// The same command line for a cold boot (`-no-snapshot-load`): the second try when an emulator ended at once. Seen on
+/// 37.2.13 (2026-11-22): a Quick Boot state saved by the idle timeout's own shutdown made the next boot shut down again
+/// about a second after it loaded, when no gRPC call came first.
+pub fn cold(mut args: Vec<String>) -> Vec<String> {
+    if !args.iter().any(|a| a == "-no-snapshot-load") {
+        args.push("-no-snapshot-load".to_string());
+    }
+    args
+}
+
+/// An emulator that ends this soon after its start did not boot (the second try is a cold boot).
+pub const ENDED_AT_ONCE_S: u64 = 30;
+
 /// Rule 1362, checked on every command line Flare would start: the token, no window, the host GPU and the idle
 /// timeout are there, and nothing opens another way in. Err names what is wrong.
 pub fn check(args: &[String]) -> Result<(), String> {
@@ -104,7 +117,7 @@ pub fn command(
     sdk_root: &std::path::Path,
     avd_home: &std::path::Path,
     a: &[String],
-    log: Option<std::fs::File>,
+    log: Option<std::fs::File>, // sync-ok: a type, not a call
     breakaway: bool,
 ) -> Result<std::process::Command, String> {
     use std::process::Stdio;
@@ -167,15 +180,27 @@ mod tests {
     fn the_command_is_checked_and_detached() {
         let a = args("Flare_Pixel", 8554, 5554);
         let p = std::path::Path::new;
-        let c = command(p("/sdk/emulator/emulator"), p("/sdk"), p("/avds"), &a, None, true).unwrap();
-        let got: Vec<String> = c.get_args().map(|x| x.to_string_lossy().to_string()).collect();
+        let c = command(
+            p("/sdk/emulator/emulator"),
+            p("/sdk"),
+            p("/avds"),
+            &a,
+            None,
+            true,
+        )
+        .unwrap();
+        let got: Vec<String> = c
+            .get_args()
+            .map(|x| x.to_string_lossy().to_string())
+            .collect();
         assert_eq!(got, a);
         let env: Vec<(String, String)> = c
             .get_envs()
             .map(|(k, v)| {
                 (
                     k.to_string_lossy().to_string(),
-                    v.map(|v| v.to_string_lossy().to_string()).unwrap_or_default(),
+                    v.map(|v| v.to_string_lossy().to_string())
+                        .unwrap_or_default(),
                 )
             })
             .collect();
@@ -183,7 +208,10 @@ mod tests {
         assert!(env.contains(&("ANDROID_SDK_ROOT".into(), "/sdk".into())));
         let mut bad = a.clone();
         bad.retain(|x| x != "-grpc-use-token");
-        assert!(command(p("/e"), p("/s"), p("/a"), &bad, None, true).is_err(), "rule 1362");
+        assert!(
+            command(p("/e"), p("/s"), p("/a"), &bad, None, true).is_err(),
+            "rule 1362"
+        );
         let port = free_port().unwrap();
         assert!(port > 0);
         let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -200,9 +228,18 @@ mod tests {
              -idle-grpc-timeout 300 -port 5554"
         );
         assert_eq!(check(&a), Ok(()));
-        let without = |drop: &str| -> Vec<String> { a.iter().filter(|x| *x != drop).cloned().collect() };
-        assert!(check(&without("-grpc-use-token")).unwrap_err().contains("open"));
-        assert!(check(&without("-no-window")).unwrap_err().contains("window"));
+        let without =
+            |drop: &str| -> Vec<String> { a.iter().filter(|x| *x != drop).cloned().collect() };
+        assert!(
+            check(&without("-grpc-use-token"))
+                .unwrap_err()
+                .contains("open")
+        );
+        assert!(
+            check(&without("-no-window"))
+                .unwrap_err()
+                .contains("window")
+        );
         let mut b = a.clone();
         b[6] = "swiftshader_indirect".into();
         assert!(check(&b).is_err());
@@ -213,14 +250,21 @@ mod tests {
         b.push("-grpc-allowlist".into());
         assert!(check(&b).is_err());
         assert!(check(&args("-x", 1, 5554)).is_err(), "a flag is no AVD");
-        assert!(a.iter().all(|x| !x.contains("token=")), "no token on the command line");
+        assert!(
+            a.iter().all(|x| !x.contains("token=")),
+            "no token on the command line"
+        );
     }
 
     #[test]
     fn the_console_port_is_the_lowest_free_even_one() {
         assert_eq!(console_port(&[], |_| false), Some(5554));
         assert_eq!(console_port(&[5554, 5555], |_| false), Some(5556));
-        assert_eq!(console_port(&[5555], |_| false), Some(5556), "an odd one blocks its pair");
+        assert_eq!(
+            console_port(&[5555], |_| false),
+            Some(5556),
+            "an odd one blocks its pair"
+        );
         assert_eq!(console_port(&[], |p| p == 5555 || p == 5556), Some(5558));
         assert_eq!(console_port(&[], |_| true), None);
         assert_eq!((CONSOLE_LAST - CONSOLE_FIRST) / 2 + 1, 65);

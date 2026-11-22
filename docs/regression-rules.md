@@ -5833,6 +5833,63 @@ shown yet, and `Starter` takes a `SourceSetup` (`Xcode` or `AndroidSdk`). Held b
 `the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`) and
 `android_setup_states_say_the_specs_lines` (`device_ctl.rs`). Source: Max, 2026-11-22.
 
+1361. **Flare never ships, mirrors or changes the emulator or a system image, and never writes into the person's own
+SDK. No Java, no `sdkmanager`, no `avdmanager`. Floors: emulator 37.2.13 on Windows, 37.3.10 on macOS.** Spec
+2026-11-22, "Setup" (Max: "we don't rely on things we install manually"). Android plan PR A2 holds the reading side:
+`emu::sdk` looks in the person's SDK first (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, then `%LOCALAPPDATA%\Android\Sdk` or
+`~/Library/Android/sdk`) and uses it only when its emulator (`emulator/source.properties`, `Pkg.Revision`) is at the
+floor, then Flare's own folder (`%LOCALAPPDATA%\Flare\android-sdk`, `~/Library/Application Support/Flare/android-sdk`);
+it only reads. `emu::avds` lists AVDs straight from the person's and Flare's AVD folders (`<name>.ini`, `config.ini`).
+PR A2b adds the download from Google after the licence click, the checksums and Flare's own AVD. Held by
+`the_persons_sdk_comes_first_when_it_is_new_enough`, `the_floors_are_per_os_and_compare_part_by_part` (`sdk.rs`) and
+`the_folders_list_every_avd_once` (`avds.rs`). Source: Max, 2026-11-22.
+
+1362. **Flare starts emulators only with `-grpc-use-token` (never a plain `-grpc`), `-no-window`, `-gpu host` and
+`-idle-grpc-timeout 300`; the token is never logged or shown to the agent.** Spec 2026-11-22, builder's calls 11 and 13,
+finding 7 (a plain `-grpc` port is open to every local program). `emu::boot::args` makes the one command line and
+`boot::check` refuses any other before a start (`boot::command` runs it). The emu host reads `grpc.token` from the
+discovery file into `emu::discovery::Token`, whose `Debug` and `Display` print `hidden`, and sends it only as the
+`authorization` header, marked sensitive (`grpc::auth`); it is never in a hello fact, an error, an answer or the log. An
+emulator whose discovery file has a port and no token (plain `-grpc`) or none is not driven: "This emulator was started
+without access for other apps. Start it from Flare." The discovery file's `avd.id` is the AVD's name (`avd.name` is its
+display name; checked on 37.2.13). Held by `the_boot_command_always_uses_a_token_and_no_window`,
+`the_command_is_checked_and_detached` (`boot.rs`), `a_discovery_file_gives_the_port_the_serial_and_a_hidden_token`,
+`an_emulator_without_a_token_has_no_access` (`discovery.rs`), `the_token_goes_only_into_a_sensitive_header`
+(`flare-emu-host/src/grpc.rs`), `the_hello_names_the_emu_host_and_its_facts` (`host.rs`) and the emu host's
+`--self-test`. Source: Max, 2026-11-22 (spec approved).
+
+1363. **Frames come through `streamScreenshot` with MMAP into a region Flare owns: a user-only file in a `flare` folder
+inside the emulator's discovery folder, deleted on detach and at start. Frame records travel on the emu host's stdout.**
+Spec 2026-11-22, builder's calls 2 and 3; Step 0 S7 (emulator 37.3.10 on macOS refuses a region anywhere else but
+`/tmp`). `emu::region` names the folder (`<discovery>/flare/<pid>-<n>.rgba`), makes the file 0600 in a 0700 folder on
+macOS, sizes it for every rotation (`max(w, h)^2 * 4`), and gives the `file:///` URL in the form the spikes used.
+`EmuSource` makes the region when the emu host says a device's screen (its `frames` line) and hands it over
+(`Request::Region`); the emu host streams into it while the device is not paused and writes one `region` line per frame
+through the 60 fps cap (`cap::FrameCap`). Rows are top-down (S1). Flare maps and copies the region in A4. Held by
+`a_region_is_made_user_only_and_deleted_on_detach_and_at_start`, `a_region_has_a_file_url_and_room_for_every_rotation`
+(`region.rs`) and `an_attached_device_gets_a_region_from_flare_and_frames_back` (`emu_client.rs`). Source: Max,
+2026-11-22.
+
+1365. **The stream runs only while the panel is seen; input, the tree, `snapshot` and the agent keep working while it
+is paused.** Spec 2026-11-22, builder's call 6. In the emu host, `pause` cancels `streamScreenshot` (the emulator then
+reads nothing back) and `resume` opens it again; the held input stream, `getScreenshot` for a snapshot and the minute's
+`getStatus` go on. Checked on a real emulator in A2: no `region` line while paused, frames again at once on resume.
+PR A4 sends the pause from the panel's visibility. Held by `an_attached_device_gets_a_region_from_flare_and_frames_back`
+(`emu_client.rs`). Source: Max, 2026-11-22.
+
+1366. **An emulator Flare booted is shut down at quit (setting, detached, quit never waits) and stops by itself 5
+minutes after Flare dies; an emulator Flare did not boot is never shut down.** Spec 2026-11-22, builder's call 12, open
+decision 5. Flare starts the emulator itself (`emu_client::launch_emulator`, on a worker), detached from Flare and
+outside the emu host: its own session on macOS, its own process group outside any job on Windows. The emu host is
+guarded (`flare_proc::guard` on macOS, the kill-on-close job `flare_proc::job` on Windows, rule 1053), and a guard ends
+every process its program started, so an emulator the emu host started would be killed with Flare instead of shutting
+down cleanly. The emulator runs with `-idle-grpc-timeout 300`; the emu host calls `getStatus` every minute, paused or
+not, for every emulator it booted or attached, so the timeout fires only once Flare is gone. `EmuSource` keeps which
+emulators it booted (`booted_by_flare`); a shutdown is `setVmState(SHUTDOWN)` and waits for the emulator to end. PR A4
+adds the quit side. Held by `a_boot_starts_the_emulator_in_flare_then_waits_in_the_emu_host` (`emu_client.rs`),
+`a_guarded_helper_ends_with_its_guard` (`flare-proc/src/job.rs`) and the boot command tests of rule 1362. Source: Max,
+2026-11-22.
+
 1367. **Agent coordinates for Android are dp (pixels / (dpi / 160)); only the emu host converts dp to pixels.
 `device_look`'s PNG is at dp size.** Spec 2026-11-22, builder's call 7. The dp is Android's match for the iOS point:
 `Screen.size_pt` is in the agent's unit and `Screen.scale` is pixels per unit (`Screen::from_dpi`: 1080 x 2400 at 420
@@ -5840,6 +5897,23 @@ dpi is 411.4 x 914.3 dp, scale 2.625). The panel's letterbox, the swipe path, th
 stay in dp, as they stay in points for iOS; `geom::dp_to_px` and `px_to_dp` are for the emu host alone. Android plan
 PR A1 holds the model; PR A5 the tool side. Held by `dp_map_to_pixels_in_every_orientation` (`geom.rs`) and
 `an_android_screen_is_in_dp` (`source.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations").
+
+1368. **Typing never touches the computer's clipboard: HID keys, then the agent helper's set-text, then the device's
+own clipboard and paste.** Spec 2026-11-22, builder's call 8. `emu::keys::text_steps` types keymap text as USB HID keys
+(`KeyboardEvent` with `codeType: Usb`, the usage on page 7, `0x07_0004` for A) and anything else through gRPC
+`setClipboard`, which is the device's own clipboard, then Ctrl+V. The agent helper's set-text (PR A3) comes first once
+it is there. Held by `text_without_keys_goes_through_the_devices_clipboard` (`keys.rs`),
+`input_text_and_snapshots_go_to_the_emu_host` (`emu_client.rs`) and
+`non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs` (`client.rs`, which reads every source file of
+flare-device). Source: Max, 2026-11-22.
+
+1370. **No emulator window, taskbar button or Dock icon ever appears.** Spec 2026-11-22, anti-goals. The emulator runs
+with `-no-window` (the headless engine, spike A5), and on Windows every program Flare's Android side starts (the emu
+host, the emulator, adb, `emulator -accel-check`) starts with `CREATE_NO_WINDOW` (`flare_emu_host::run::command`,
+`emu::boot::command`). Checked by hand in A2: the count of visible windows was the same before and after a headless
+boot. The real e2e scenario (A4, A5) checks the visible windows before and after. Held by
+`the_boot_command_always_uses_a_token_and_no_window` (`boot.rs`) and `every_program_starts_without_a_window`
+(`flare-emu-host/src/run.rs`). Source: Max, 2026-11-22.
 
 1371. **Each source lists its own buttons; a press of another source's button is refused with `unavailable`.** Spec
 2026-11-22, builder's call 9. `Button` gains `Back`, `Recents` and `Power`. `SourceKind::buttons()` lists each

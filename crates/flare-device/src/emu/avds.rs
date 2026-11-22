@@ -14,7 +14,11 @@ pub fn persons_home(p: &Places) -> Option<PathBuf> {
     if let Some(h) = &p.android_avd_home {
         return Some(h.clone());
     }
-    if let Some(h) = p.android_user_home.as_ref().or(p.android_emulator_home.as_ref()) {
+    if let Some(h) = p
+        .android_user_home
+        .as_ref()
+        .or(p.android_emulator_home.as_ref())
+    {
         return Some(h.join("avd"));
     }
     Some(p.home.as_ref()?.join(".android").join("avd"))
@@ -88,7 +92,11 @@ pub fn pointed_dir(home: &Path, ini: &str) -> Option<PathBuf> {
 /// An AVD from its `config.ini`.
 pub fn parse_config(name: &str, home: &Path, dir: &Path, config: &str, flare_own: bool) -> Avd {
     let m = super::parse_ini(config);
-    let num = |k: &str| m.get(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0);
+    let num = |k: &str| {
+        m.get(k)
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| *v > 0.0)
+    };
     let size_px = match (num("hw.lcd.width"), num("hw.lcd.height")) {
         (Some(w), Some(h)) => Some(Size::new(w, h)),
         _ => None,
@@ -105,14 +113,18 @@ pub fn parse_config(name: &str, home: &Path, dir: &Path, config: &str, flare_own
         display_name,
         size_px,
         dpi: num("hw.lcd.density"),
-        api: m.get("target").or(m.get("image.sysdir.1")).cloned().map(|t| {
-            // `image.sysdir.1=system-images\android-37.0\google_apis\x86_64\` names the API too.
-            t.replace('\\', "/")
-                .split('/')
-                .find(|p| p.starts_with("android-"))
-                .unwrap_or(&t)
-                .to_string()
-        }),
+        api: m
+            .get("target")
+            .or(m.get("image.sysdir.1"))
+            .cloned()
+            .map(|t| {
+                // `image.sysdir.1=system-images\android-37.0\google_apis\x86_64\` names the API too.
+                t.replace('\\', "/")
+                    .split('/')
+                    .find(|p| p.starts_with("android-"))
+                    .unwrap_or(&t)
+                    .to_string()
+            }),
         abi: m.get("abi.type").cloned(),
         flare_own,
     }
@@ -164,7 +176,13 @@ image.sysdir.1=system-images\\android-37.0\\google_apis\\x86_64\\
 
     #[test]
     fn a_config_gives_the_screen_the_density_and_the_os() {
-        let a = parse_config("Flare_Pixel", Path::new("/h/avd"), Path::new("/h/avd/Flare_Pixel.avd"), CONFIG, true);
+        let a = parse_config(
+            "Flare_Pixel",
+            Path::new("/h/avd"),
+            Path::new("/h/avd/Flare_Pixel.avd"),
+            CONFIG,
+            true,
+        );
         assert_eq!(a.display_name, "Flare Pixel");
         assert_eq!(a.size_px, Some(Size::new(1080.0, 2400.0)));
         assert_eq!(a.dpi, Some(420.0));
@@ -173,11 +191,23 @@ image.sysdir.1=system-images\\android-37.0\\google_apis\\x86_64\\
         assert_eq!(a.abi.as_deref(), Some("x86_64"));
         assert_eq!(a.target(), Target::emu("Flare_Pixel"));
         // A bare config: the name with spaces, no screen.
-        let b = parse_config("Pixel_8_API_36", Path::new("/h"), Path::new("/h/x"), "target=android-36\n", false);
+        let b = parse_config(
+            "Pixel_8_API_36",
+            Path::new("/h"),
+            Path::new("/h/x"),
+            "target=android-36\n",
+            false,
+        );
         assert_eq!(b.display_name, "Pixel 8 API 36");
         assert_eq!((b.size_px, b.dpi), (None, None));
         assert_eq!(b.os(), "Android 36");
-        let c = parse_config("X", Path::new("/h"), Path::new("/h/x"), "hw.lcd.width=-1\nhw.lcd.height=9\n", false);
+        let c = parse_config(
+            "X",
+            Path::new("/h"),
+            Path::new("/h/x"),
+            "hw.lcd.width=-1\nhw.lcd.height=9\n",
+            false,
+        );
         assert_eq!((c.size_px, c.os().as_str()), (None, "Android"));
     }
 
@@ -215,15 +245,26 @@ image.sysdir.1=system-images\\android-37.0\\google_apis\\x86_64\\
             };
             std::fs::write(home.join(format!("{name}.ini")), ini).unwrap();
         };
-        put(mine.path(), "Pixel_8", "hw.lcd.width=1080\nhw.lcd.height=2400\nhw.lcd.density=420\n", true);
+        put(
+            mine.path(),
+            "Pixel_8",
+            "hw.lcd.width=1080\nhw.lcd.height=2400\nhw.lcd.density=420\n",
+            true,
+        );
         put(mine.path(), "Same", "avd.ini.displayname=Mine\n", false);
         put(flares.path(), "Flare_Pixel", CONFIG, true);
         put(flares.path(), "Same", "avd.ini.displayname=Flare's\n", true);
         // A name the emulator would read as a flag is not listed.
         std::fs::write(mine.path().join("-bad.ini"), "path=/x\n").unwrap();
-        let l = list(&[(mine.path().to_path_buf(), false), (flares.path().to_path_buf(), true)]);
+        let l = list(&[
+            (mine.path().to_path_buf(), false),
+            (flares.path().to_path_buf(), true),
+        ]);
         let names: Vec<_> = l.iter().map(|a| (a.name.as_str(), a.flare_own)).collect();
-        assert_eq!(names, [("Flare_Pixel", true), ("Pixel_8", false), ("Same", false)]);
+        assert_eq!(
+            names,
+            [("Flare_Pixel", true), ("Pixel_8", false), ("Same", false)]
+        );
         assert_eq!(l[2].display_name, "Mine", "the person's copy wins");
         assert_eq!(l[1].dpi, Some(420.0));
         assert_eq!(l[0].home, flares.path());

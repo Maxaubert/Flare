@@ -57,8 +57,18 @@ pub fn run(mut cmd: Command, limit: Duration) -> Result<Ran, String> {
             String::from_utf8_lossy(&s).to_string()
         })
     };
-    let out = read(child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>));
-    let err = read(child.stderr.take().map(|o| Box::new(o) as Box<dyn Read + Send>));
+    let out = read(
+        child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn Read + Send>),
+    );
+    let err = read(
+        child
+            .stderr
+            .take()
+            .map(|o| Box::new(o) as Box<dyn Read + Send>),
+    );
     let started = Instant::now();
     let code = loop {
         match child.try_wait() {
@@ -80,8 +90,39 @@ pub fn run(mut cmd: Command, limit: Duration) -> Result<Ran, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The emu host's source files, its generated code left out.
+    pub(crate) fn sources() -> Vec<(String, String)> {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(&src).unwrap().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "rs") {
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                out.push((name, std::fs::read_to_string(&p).unwrap()));
+            }
+        }
+        assert!(out.len() > 5, "the sources were read");
+        out
+    }
+
+    /// Rule 1370: every program the emu host runs is made here, with no console window.
+    #[test]
+    fn every_program_starts_without_a_window() {
+        let needle = concat!("Command", "::new(");
+        for (name, text) in sources() {
+            let n = text.matches(needle).count();
+            if name == "run.rs" {
+                assert_eq!(n, 1, "one maker, `command`");
+            } else {
+                assert_eq!(n, 0, "{name} makes a program without `run::command`");
+            }
+        }
+        #[cfg(windows)]
+        assert_eq!(flare_proc::job::NO_WINDOW, 0x0800_0000);
+    }
 
     #[test]
     fn a_program_is_run_with_its_output_and_a_time_limit() {
@@ -101,6 +142,12 @@ mod tests {
         let e = run(c, Duration::from_millis(300)).unwrap_err();
         assert!(e.contains("took over"), "{e}");
         assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(run(command(Path::new("/no/such/program")), Duration::from_secs(1)).is_err());
+        assert!(
+            run(
+                command(Path::new("/no/such/program")),
+                Duration::from_secs(1)
+            )
+            .is_err()
+        );
     }
 }

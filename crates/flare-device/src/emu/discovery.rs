@@ -100,7 +100,11 @@ pub fn pid_of(file_name: &str) -> Option<u32> {
 /// A discovery file's contents.
 pub fn parse(pid: u32, text: &str) -> Running {
     let m = super::parse_ini(text);
-    let port = |k: &str| m.get(k).and_then(|v| v.parse::<u16>().ok()).filter(|p| *p > 0);
+    let port = |k: &str| {
+        m.get(k)
+            .and_then(|v| v.parse::<u16>().ok())
+            .filter(|p| *p > 0)
+    };
     let text = |k: &str| m.get(k).filter(|v| !v.is_empty()).cloned();
     Running {
         pid,
@@ -108,7 +112,8 @@ pub fn parse(pid: u32, text: &str) -> Running {
         token: m.get("grpc.token").and_then(|t| Token::new(t)),
         console_port: port("port.serial"),
         adb_port: port("port.adb"),
-        avd: text("avd.name"),
+        // `avd.id` is the AVD's name (what `-avd` takes); `avd.name` is its display name (spike, 37.2.13).
+        avd: text("avd.id").or_else(|| text("avd.name")),
         avd_dir: text("avd.dir").map(PathBuf::from),
         version: text("emulator.version"),
     }
@@ -141,39 +146,52 @@ pub fn of_avd<'a>(list: &'a [Running], avd: &str) -> Option<&'a Running> {
 mod tests {
     use super::*;
 
-    /// The keys a 37.2.13 emulator wrote with `-grpc-use-token` (spike S5; the token and paths replaced).
+    /// What emulator 37.2.13 wrote on Windows with `-grpc-use-token` (2026-11-22, PR A2's by-hand run; the token and
+    /// the user's paths replaced). `avd.id` is the AVD's name; `avd.name` is its display name.
     pub(crate) const FIXTURE: &str = "\
-port.serial=5554
-port.adb=5555
-avd.name=flare-spike
-avd.dir=C:\\Users\\a\\.android\\avd\\flare-spike.avd
-avd.id=flare-spike
-cmdline=\"C:\\Users\\a\\AppData\\Local\\Android\\Sdk\\emulator\\qemu\\windows-x86_64\\qemu-system-x86_64.exe\" -avd flare-spike -no-window
-grpc.port=8554
-grpc.token=c2VjcmV0LXRva2VuLWZvci10ZXN0cw==
-grpc.allowlist=C:\\Users\\a\\.emulator_console_auth_token
-emulator.version=37.2.13
+launcher.dir=C:\\Users\\a\\AppData\\Local\\Android\\Sdk\\emulator
 emulator.build=16740729
+port.serial=5554
+emulator.version=37.2.13.0
+avd.id=flare-a2-test
+port.adb=5555
+avd.name=Flare A2 Test
+avd.dir=C:\\Users\\a\\avd\\flare-a2-test.avd
+cmdline=\"C:\\\\Users\\\\a\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\emulator\\\\qemu\\\\windows-x86_64\\\\qemu-system-x86_64-headless.exe\" \"-avd\" \"flare-a2-test\" \"-no-window\" \"-grpc-use-token\"
+grpc.token=c2VjcmV0LXRva2VuLWZvci10ZXN0cw==
+grpc.port=8601
+grpc.allowlist=C:\\Users\\a\\AppData\\Local\\Android\\Sdk\\emulator\\lib\\emulator_access.json
 ";
 
     #[test]
     fn a_discovery_file_gives_the_port_the_serial_and_a_hidden_token() {
         assert_eq!(pid_of("pid_4242.ini"), Some(4242));
         assert_eq!(pid_of("pid_4242_info.ini"), Some(4242));
-        for bad in ["pid_.ini", "pid_x.ini", "pid_1.txt", "4242.ini", "pid_1_2.ini", "pid_99999999999.ini"] {
+        for bad in [
+            "pid_.ini",
+            "pid_x.ini",
+            "pid_1.txt",
+            "4242.ini",
+            "pid_1_2.ini",
+            "pid_99999999999.ini",
+        ] {
             assert_eq!(pid_of(bad), None, "{bad}");
         }
         let r = parse(4242, FIXTURE);
-        assert_eq!(r.grpc_port, Some(8554));
+        assert_eq!(r.grpc_port, Some(8601));
         assert_eq!(r.console_port, Some(5554));
         assert_eq!(r.adb_port, Some(5555));
-        assert_eq!(r.avd.as_deref(), Some("flare-spike"));
-        assert_eq!(r.version.as_deref(), Some("37.2.13"));
+        assert_eq!(
+            r.avd.as_deref(),
+            Some("flare-a2-test"),
+            "the id, not the display name"
+        );
+        assert_eq!(r.version.as_deref(), Some("37.2.13.0"));
         assert_eq!(r.serial().as_deref(), Some("emulator-5554"));
         let Access::Token { port, token } = r.access() else {
             panic!("{:?}", r.access())
         };
-        assert_eq!(port, 8554);
+        assert_eq!(port, 8601);
         assert_eq!(token.bearer(), "Bearer c2VjcmV0LXRva2VuLWZvci10ZXN0cw==");
         // Rule 1362: the token never shows in a debug print or a display.
         let shown = format!("{r:?} {token} {token:?} {:?}", r.access());
@@ -189,7 +207,10 @@ emulator.build=16740729
         let blank = parse(1, "grpc.port=8554\ngrpc.token= \navd.name=A\n");
         assert_eq!(blank.access(), Access::OpenPort, "an empty token is none");
         assert_eq!(parse(1, "avd.name=A\n").access(), Access::None);
-        assert_eq!(parse(1, "grpc.port=0\ngrpc.token=t\n").access(), Access::None);
+        assert_eq!(
+            parse(1, "grpc.port=0\ngrpc.token=t\n").access(),
+            Access::None
+        );
         assert!(NO_ACCESS.starts_with("This emulator was started without access"));
     }
 
@@ -202,7 +223,17 @@ emulator.build=16740729
         std::fs::create_dir(d.path().join("flare")).unwrap();
         let all = read_all(d.path());
         assert_eq!(all.iter().map(|r| r.pid).collect::<Vec<_>>(), [10, 20]);
-        assert_eq!(of_avd(&all, "flare-spike").map(|r| r.pid), Some(20));
+        assert_eq!(of_avd(&all, "flare-a2-test").map(|r| r.pid), Some(20));
+        assert_eq!(
+            of_avd(&all, "Flare A2 Test"),
+            None,
+            "never by the display name"
+        );
+        assert_eq!(
+            parse(1, "avd.name=Old\n").avd.as_deref(),
+            Some("Old"),
+            "no id: the name"
+        );
         assert_eq!(of_avd(&all, "C"), None);
         assert!(read_all(&d.path().join("missing")).is_empty());
     }

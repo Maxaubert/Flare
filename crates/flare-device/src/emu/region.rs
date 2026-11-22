@@ -139,11 +139,15 @@ mod tests {
     #[test]
     fn a_region_has_a_file_url_and_room_for_every_rotation() {
         assert_eq!(
-            url(Path::new("C:\\Users\\a\\AppData\\Local\\Temp\\avd\\running\\flare\\12-1.rgba")),
+            url(Path::new(
+                "C:\\Users\\a\\AppData\\Local\\Temp\\avd\\running\\flare\\12-1.rgba"
+            )),
             "file:///C:/Users/a/AppData/Local/Temp/avd/running/flare/12-1.rgba"
         );
         assert_eq!(
-            url(Path::new("/Users/a/Library/Caches/TemporaryItems/avd/running/flare/12-1.rgba")),
+            url(Path::new(
+                "/Users/a/Library/Caches/TemporaryItems/avd/running/flare/12-1.rgba"
+            )),
             "file:////Users/a/Library/Caches/TemporaryItems/avd/running/flare/12-1.rgba"
         );
         assert_eq!(bytes_for(1080, 2400), 2400 * 2400 * 4);

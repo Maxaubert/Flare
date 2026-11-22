@@ -69,7 +69,10 @@ fn run_main() -> i32 {
             boot: flag("--boot"),
             width: value("--width").and_then(|v| v.parse().ok()).unwrap_or(0),
             rotate: flag("--rotate"),
-            snapshots: value("--snapshots").and_then(|v| v.parse().ok()).unwrap_or(5),
+            snapshots: value("--snapshots")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            emulator_log: value("--emulator-log").map(std::path::PathBuf::from),
         };
         return match bench::run(&a) {
             Ok(r) => {

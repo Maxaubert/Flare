@@ -63,7 +63,11 @@ impl Places {
     /// Support/Flare` on macOS). Flare's own SDK and AVDs go in it, never in the person's (rule 1361).
     pub fn flare_dir(&self) -> Option<PathBuf> {
         if cfg!(target_os = "macos") {
-            Some(self.home.as_ref()?.join("Library/Application Support/Flare"))
+            Some(
+                self.home
+                    .as_ref()?
+                    .join("Library/Application Support/Flare"),
+            )
         } else {
             Some(self.local_app_data.as_ref()?.join("Flare"))
         }

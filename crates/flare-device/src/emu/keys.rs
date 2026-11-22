@@ -59,14 +59,27 @@ pub fn turned(o: Orientation, delta: i32) -> Orientation {
     Orientation::ALL[(i + delta).rem_euclid(4) as usize]
 }
 
-/// The virtual device's rotation for `setPhysicalModel(ROTATION)`: degrees about x, y and z. A quarter turn of the
-/// screen is the device turned about z (`[0, 0, 90]` turns it to landscape, the emulator's own rotate step).
+/// The orientation of a frame's `SkinRotation` (`Image.format.rotation`). Checked on a real emulator (37.2.13, API
+/// 37, 2026-11-22): LANDSCAPE (1) is the guest's `ROTATION_90`, whose picture has the portrait screen's top edge on
+/// the left, so it is the portrait picture turned a quarter anticlockwise, [`Orientation::Rot270`];
+/// REVERSE_LANDSCAPE (3) is [`Orientation::Rot90`]. Anything else reads as portrait.
+pub fn orientation_of(skin_rotation: i32) -> Orientation {
+    match skin_rotation {
+        1 => Orientation::Rot270,
+        2 => Orientation::Rot180,
+        3 => Orientation::Rot90,
+        _ => Orientation::Rot0,
+    }
+}
+
+/// The virtual device's rotation for `setPhysicalModel(ROTATION)` (degrees about x, y and z) that gives orientation
+/// `o`: `[0, 0, 90]` gave LANDSCAPE on the real emulator, so [`Orientation::Rot270`].
 pub fn rotation_degrees(o: Orientation) -> [f32; 3] {
     match o {
         Orientation::Rot0 => [0.0, 0.0, 0.0],
-        Orientation::Rot90 => [0.0, 0.0, 90.0],
+        Orientation::Rot270 => [0.0, 0.0, 90.0],
         Orientation::Rot180 => [0.0, 0.0, 180.0],
-        Orientation::Rot270 => [0.0, 0.0, -90.0],
+        Orientation::Rot90 => [0.0, 0.0, -90.0],
     }
 }
 
@@ -104,13 +117,19 @@ pub fn text_steps(text: &str) -> Vec<TextStep> {
     }
 }
 
-/// A point in dp, in the current orientation, as the emulator's touch pixels: dp times `scale` (pixels per dp,
-/// rule 1367), clamped to the screen as shown (`portrait_px` turned by `o`), rounded.
+/// A point in dp, in the current orientation, as the emulator's touch pixels. The emulator takes touches on the
+/// portrait screen whatever the rotation (checked on a real emulator: a landscape touch sent as shown landed off the
+/// screen in `getevent`), so the point is turned back to portrait first (the same turn as the simulator's digitizer,
+/// [`crate::geom::to_portrait_ratio`]), then scaled to pixels (rule 1367: only the emu host converts), clamped and
+/// rounded.
 pub fn touch_px(x: f64, y: f64, scale: f64, portrait_px: Size, o: Orientation) -> (i32, i32) {
-    let shown = o.size(portrait_px);
-    let (px, py) = crate::geom::dp_to_px(x, y, scale);
+    let portrait_dp = Size::new(portrait_px.w / scale, portrait_px.h / scale);
+    let (rx, ry) = crate::geom::to_portrait_ratio(x, y, portrait_dp, o);
     let clamp = |v: f64, max: f64| v.clamp(0.0, (max - 1.0).max(0.0)).round() as i32;
-    (clamp(px, shown.w), clamp(py, shown.h))
+    (
+        clamp(rx * portrait_px.w, portrait_px.w),
+        clamp(ry * portrait_px.h, portrait_px.h),
+    )
 }
 
 #[cfg(test)]
@@ -142,7 +161,24 @@ mod tests {
             assert_eq!(turned(turned(o, 1), -1), o);
         }
         assert_eq!(rotation_degrees(Orientation::Rot0), [0.0, 0.0, 0.0]);
-        assert_eq!(rotation_degrees(Orientation::Rot90)[2], 90.0);
+        // The real emulator: [0, 0, 90] gives LANDSCAPE, which is Rot270.
+        assert_eq!(rotation_degrees(Orientation::Rot270)[2], 90.0);
+        assert_eq!(orientation_of(1), Orientation::Rot270);
+        assert_eq!(orientation_of(3), Orientation::Rot90);
+        assert_eq!(
+            (orientation_of(0), orientation_of(2), orientation_of(9)),
+            (Orientation::Rot0, Orientation::Rot180, Orientation::Rot0)
+        );
+        for o in Orientation::ALL {
+            let z = rotation_degrees(o)[2];
+            let skin = match z as i32 {
+                0 => 0,
+                90 => 1,
+                180 => 2,
+                _ => 3,
+            };
+            assert_eq!(orientation_of(skin), o, "the turn and the frame agree");
+        }
     }
 
     /// Rule 1368: text without keys goes through the device's clipboard and Ctrl+V, never the computer's.
@@ -158,10 +194,22 @@ mod tests {
             vec![
                 TextStep::DeviceClipboard("bl\u{e5}b\u{e6}r".into()),
                 TextStep::Keys(vec![
-                    Key { usage: LEFT_CTRL, down: true },
-                    Key { usage: usage::V, down: true },
-                    Key { usage: usage::V, down: false },
-                    Key { usage: LEFT_CTRL, down: false },
+                    Key {
+                        usage: LEFT_CTRL,
+                        down: true
+                    },
+                    Key {
+                        usage: usage::V,
+                        down: true
+                    },
+                    Key {
+                        usage: usage::V,
+                        down: false
+                    },
+                    Key {
+                        usage: LEFT_CTRL,
+                        down: false
+                    },
                 ])
             ]
         );
@@ -171,10 +219,29 @@ mod tests {
     fn a_dp_point_is_a_touch_pixel_on_the_screen_as_shown() {
         let p = Size::new(1080.0, 2400.0);
         assert_eq!(touch_px(0.0, 0.0, 2.625, p, Orientation::Rot0), (0, 0));
-        assert_eq!(touch_px(205.7, 457.1, 2.625, p, Orientation::Rot0), (540, 1200));
-        assert_eq!(touch_px(500.0, 2000.0, 2.625, p, Orientation::Rot0), (1079, 2399), "clamped");
-        // Landscape: the screen as shown is 2400 wide.
-        assert_eq!(touch_px(800.0, 10.0, 2.625, p, Orientation::Rot90), (2100, 26));
-        assert_eq!(touch_px(-5.0, 10.0, 2.625, p, Orientation::Rot90), (0, 26));
+        assert_eq!(
+            touch_px(205.7, 457.1, 2.625, p, Orientation::Rot0),
+            (540, 1200)
+        );
+        assert_eq!(
+            touch_px(500.0, 2000.0, 2.625, p, Orientation::Rot0),
+            (1079, 2399),
+            "clamped"
+        );
+        // LANDSCAPE (Rot270): the portrait top is on the left, so a point shown at (x, y) is (w - y, x) on the
+        // portrait screen. Shown dp (800, 100) is shown px (2100, 262.5), portrait px (817.5, 2100).
+        assert_eq!(
+            touch_px(800.0, 100.0, 2.625, p, Orientation::Rot270),
+            (818, 2100)
+        );
+        // REVERSE_LANDSCAPE (Rot90): (y, h - x).
+        assert_eq!(
+            touch_px(800.0, 100.0, 2.625, p, Orientation::Rot90),
+            (263, 300)
+        );
+        assert_eq!(
+            touch_px(-5.0, 10.0, 2.625, p, Orientation::Rot270),
+            (1054, 0)
+        );
     }
 }
