@@ -5918,8 +5918,12 @@ reads nothing back) and `resume` opens it again; the held input stream, `getScre
 `getStatus` go on. Checked on a real emulator in A2: no `region` line while paused, frames again at once on resume.
 PR A4 sends the pause from the panel's visibility: `DeviceCtl` pauses every attached device but the front panel's, and
 all of them while the window is minimised or occluded, for both kinds through the same `Multi` source
-(`device_sources.rs`), which routes each request by its target's kind. Held by
-`an_attached_device_gets_a_region_from_flare_and_frames_back` (`emu_client.rs`) and `both_sources_answer_as_one`
+(`device_sources.rs`), which routes each request by its target's kind. After an emu host restart `EmuSource` sends a
+paused device's pause again with its frames line (once the new host has it, before the region), so a hidden panel never
+streams; a pause sent with the attach was refused as "not attached". A stream that ends by itself while not paused is
+opened again (1 to 16 s, five tries with no frame). Held by `an_attached_device_gets_a_region_from_flare_and_frames_back`
+and `a_paused_device_stays_paused_after_the_emu_host_restarts` (`emu_client.rs`),
+`a_frame_stream_that_ends_is_opened_again_a_few_times` (`host.rs`) and `both_sources_answer_as_one`
 (`device_sources.rs`). Source: Max, 2026-11-22.
 
 1366. **An emulator Flare booted is shut down at quit (setting, detached, quit never waits) and stops by itself 5
@@ -5996,7 +6000,11 @@ host, the emulator, adb, `emulator -accel-check`) starts with `CREATE_NO_WINDOW`
 `emu::boot::command`). Checked by hand in A2: the count of visible windows was the same before and after a headless
 boot. The real e2e scenario (A5) checks the visible windows before and after. A4: Flare's own detached programs at
 quit (`device_ctl::spawn_detached`, the `simctl` and `flare-emu-host --shutdown` commands) also start with
-`CREATE_NO_WINDOW` on Windows. Held by `the_boot_command_always_uses_a_token_and_no_window` (`boot.rs`) and
+`CREATE_NO_WINDOW` on Windows. No Windows Firewall dialog either: adb's mDNS binds UDP 5353 on every network, and
+Windows asks about that the first time an `adb.exe` from a new folder (Flare's own SDK) does it (seen in A2b's real
+setup). So the emulator's command and every program the emu host runs get `ADB_MDNS=0` (`emu::boot::ADB_MDNS`); with
+it the adb server binds only its localhost port (its socket list, platform-tools 37.0.1, 2026-11-22). Held by
+`the_boot_command_always_uses_a_token_and_no_window` and `the_command_is_checked_and_detached` (`boot.rs`) and
 `every_program_starts_without_a_window` (`flare-emu-host/src/run.rs`). Source: Max, 2026-11-22.
 
 1371. **Each source lists its own buttons; a press of another source's button is refused with `unavailable`.** Spec
