@@ -118,6 +118,10 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("flare/src/host_os.rs", "Remote sessions"),
     // Android plan PR A2: the emu host's gRPC client connects to the emulator's port on localhost only, with its token.
     ("flare-emu-host/src/grpc.rs", "Android devices"),
+    // Android plan PR A2b (rule 1361): Android setup reads Google's package lists and, after the person accepts
+    // Google's licence in Flare, downloads the emulator, platform-tools and one system image from dl.google.com only.
+    ("flare-emu-host/src/setup.rs", "Android devices"),
+    ("flare-device/src/emu/setup.rs", "Android devices"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

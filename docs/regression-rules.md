@@ -5840,9 +5840,30 @@ SDK. No Java, no `sdkmanager`, no `avdmanager`. Floors: emulator 37.2.13 on Wind
 `~/Library/Android/sdk`) and uses it only when its emulator (`emulator/source.properties`, `Pkg.Revision`) is at the
 floor, then Flare's own folder (`%LOCALAPPDATA%\Flare\android-sdk`, `~/Library/Application Support/Flare/android-sdk`);
 it only reads. `emu::avds` lists AVDs straight from the person's and Flare's AVD folders (`<name>.ini`, `config.ini`).
-PR A2b adds the download from Google after the licence click, the checksums and Flare's own AVD. Held by
-`the_persons_sdk_comes_first_when_it_is_new_enough`, `the_floors_are_per_os_and_compare_part_by_part` (`sdk.rs`) and
-`the_folders_list_every_avd_once` (`avds.rs`). Source: Max, 2026-11-22.
+PR A2b adds setup (the emu host's `setup` requests, `emu::setup`, `flare-emu-host/src/setup.rs`): Google's lists
+(`repository2-3.xml`, `sys-img/google_apis/sys-img2-3.xml`) over HTTPS, read with roxmltree's default options (a DOCTYPE
+is refused, so no entity is expanded), at most 8 MB each; the newest **stable** emulator (at the floor, else no setup)
+and platform-tools, and the newest stable plain `google_apis` image for this CPU that the emulator can run; an archive
+is only ever a bare file name joined to the list's own folder on `https://dl.google.com/android/repository/`. Nothing
+is downloaded before `start`, which carries the SHA-1 of each licence the person accepted (every licence the packages
+use is shown: the arm64 images use `android-sdk-arm-dbt-license`); a licence that changed is refused. Each archive is
+streamed to a temporary folder inside Flare's SDK folder, its size and SHA-1 checked before any unzip; the unzip takes
+only enclosed names under one top folder (links only inside the package); then `package.xml` and the rename into place.
+A cancel or a failure removes the temporary folder, and a start (or the emu host's start) sweeps any left by a killed
+host. `licenses/<id>` gets the SHA-1 of the licence text as the SDK normalises it (`setup::licence_text`, the SDK's
+`TrimStringAdapter`; the raw text's hash is not the SDK's). Free space is checked first (three times the download and
+1 GiB). Flare's own device `Flare_Pixel` is written by hand (`emu::flare_avd`) and never written again; its first boot
+runs `pm bg-dexopt-job` once with a `preparing` event. An update never runs while a device runs. Windows Hypervisor
+Platform is turned on only by the `turn_on_hypervisor` step, `dism` elevated with Windows' own prompt. Held by
+`the_persons_sdk_comes_first_when_it_is_new_enough`, `the_floors_are_per_os_and_compare_part_by_part` (`sdk.rs`),
+`the_folders_list_every_avd_once` (`avds.rs`), `the_lists_give_the_stable_emulator_tools_and_image_for_each_computer`,
+`a_plan_lists_each_licence_its_packages_use_once`, `a_plan_fetches_only_what_flares_folder_lacks`,
+`an_archive_url_stays_in_googles_folder`, `a_list_with_a_doctype_is_refused`, `a_package_xml_reads_back`
+(`emu/setup.rs`), `flares_own_device_is_written_once_and_reads_back`, `only_a_new_flare_device_is_prepared`
+(`flare_avd.rs`), `the_licence_hash_is_the_one_the_sdk_writes`, `a_setup_installs_the_packages_the_licence_and_the_device`,
+`a_bad_checksum_unpacks_nothing`, `a_cancel_mid_download_leaves_nothing`, `no_download_before_the_licence_and_the_space`,
+`an_unsafe_zip_is_refused` (`flare-emu-host/src/setup.rs`), `android_setup_lines_round_trip` (`wire.rs`) and the opt-in
+`a_real_setup_from_google`. Source: Max, 2026-11-22.
 
 1362. **Flare starts emulators only with `-grpc-use-token` (never a plain `-grpc`), `-no-window`, `-gpu host` and
 `-idle-grpc-timeout 300`; the token is never logged or shown to the agent.** Spec 2026-11-22, builder's calls 11 and 13,

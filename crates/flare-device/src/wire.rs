@@ -797,7 +797,8 @@ mod tests {
         for bad in [
             r#"{"id":1,"op":"setup","step":{"do":"download_anything"}}"#,
             r#"{"id":1,"op":"setup","step":{"do":"start"}}"#,
-            r#"{"id":1,"op":"setup","step":{"do":"plan","url":"https://evil.example/"}}"#,
+            r#"{"id":1,"op":"setup","step":{"do":"start","accepted":["a"],"url":"https://evil.example/"}}"#,
+            r#"{"id":1,"op":"setup"}"#,
         ] {
             assert_eq!(from_line::<Control>(bad), None, "{bad}");
         }
