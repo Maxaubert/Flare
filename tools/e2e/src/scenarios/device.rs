@@ -434,8 +434,8 @@ fn mcp_run(ctx: &mut Ctx, app: &mut App, exe: &std::path::Path) -> Result<(), St
         .unwrap_or_default();
     let builtin = names.iter().filter(|n| !n.starts_with("mod_")).count();
     ctx.ok(
-        builtin == 36 && names.contains(&"device_look") && names.contains(&"device_tap"),
-        format!("tools/list has 36 built-in tools with the device ones ({builtin})"),
+        builtin == 37 && names.contains(&"device_look") && names.contains(&"device_tap"),
+        format!("tools/list has 37 built-in tools with the device ones ({builtin})"),
     );
     let r = s.tool(3, "device_boot", json!({}))?;
     ctx.ok(!is_error(&r), format!("device_boot ({})", text_of(&r)));

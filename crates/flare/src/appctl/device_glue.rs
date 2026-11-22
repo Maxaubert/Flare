@@ -335,6 +335,8 @@ impl AppCtl {
     pub fn device_user_input(&mut self) {
         if let Some(tab) = self.device.shown().map(str::to_string) {
             self.device.person_input(&tab);
+            // As the person's real input does: what the takeover hid is drawn now, not at some later tick.
+            self.device_after_input();
         }
     }
 
