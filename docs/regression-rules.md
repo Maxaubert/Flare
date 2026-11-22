@@ -5855,7 +5855,10 @@ is only ever a bare file name joined to the list's own folder on `https://dl.goo
 is downloaded before `start`, which carries the SHA-1 of each licence the person accepted (every licence the packages
 use is shown: the arm64 images use `android-sdk-arm-dbt-license`); a licence that changed is refused. Each archive is
 streamed to a temporary folder inside Flare's SDK folder, its size and SHA-1 checked before any unzip; the unzip takes
-only enclosed names under one top folder (links only inside the package); then `package.xml` and the rename into place.
+only enclosed names under one top folder; then `package.xml` and the rename into place. PR A7 hardens the unzip: no link
+exists while files are written (folders and files first, links last), a link's target must be relative with no `..`,
+no colon and no backslash, and before each write the parent folder, canonicalized, must still be inside the output
+folder; links are made on unix only.
 A cancel or a failure removes the temporary folder, and a start (or the emu host's start) sweeps any left by a killed
 host. `licenses/<id>` gets the SHA-1 of the licence text as the SDK normalises it (`setup::licence_text`, the SDK's
 `TrimStringAdapter`; the raw text's hash is not the SDK's). Free space is checked first (three times the download and
@@ -5869,8 +5872,15 @@ Platform is turned on only by the `turn_on_hypervisor` step, `dism` elevated wit
 (`emu/setup.rs`), `flares_own_device_is_written_once_and_reads_back`, `only_a_new_flare_device_is_prepared`
 (`flare_avd.rs`), `the_licence_hash_is_the_one_the_sdk_writes`, `a_setup_installs_the_packages_the_licence_and_the_device`,
 `a_bad_checksum_unpacks_nothing`, `a_cancel_mid_download_leaves_nothing`, `no_download_before_the_licence_and_the_space`,
-`an_unsafe_zip_is_refused` (`flare-emu-host/src/setup.rs`), `android_setup_lines_round_trip` (`wire.rs`) and the opt-in
-`a_real_setup_from_google`. Source: Max, 2026-11-22.
+`an_unsafe_zip_is_refused`, `a_hostile_zip_writes_nothing_outside_its_folder`,
+`a_write_through_a_planted_link_is_refused` (unix) (`flare-emu-host/src/setup.rs`), `android_setup_lines_round_trip` (`wire.rs`) and the opt-in
+`a_real_setup_from_google`. Source: Max, 2026-11-22. PR A7 (Max: no mockup, reuse the existing UI): Android is offered
+on a Mac on Apple silicon before it is set up, and the device chooser there lists the devices and one more row in the
+same style, "Android: set up (about 2.5 GB from Google)", which runs the same setup states as on Windows (the plan,
+Google's licence with [Cancel], the download); once set up, the chooser has [Update Android emulator] (the same plan;
+nothing happens when the emulator is current). Which rows show is `device_ctl::chooser_rows`, a pure function. Held by
+`the_chooser_offers_android_setup_on_a_mac_and_an_update_once_set_up`, `a_mac_sets_android_up_from_the_chooser_row`
+(`device_ctl.rs`) and `a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence` (ui_tests).
 
 1362. **Flare starts emulators only with `-grpc-use-token` (never a plain `-grpc`), `-no-window`, `-gpu host` and
 `-idle-grpc-timeout 300`; the token is never logged or shown to the agent.** Spec 2026-11-22, builder's calls 11 and 13,
@@ -5879,7 +5889,8 @@ finding 7 (a plain `-grpc` port is open to every local program). `emu::boot::arg
 discovery file into `emu::discovery::Token`, whose `Debug` and `Display` print `hidden`, and sends it only as the
 `authorization` header, marked sensitive (`grpc::auth`); it is never in a hello fact, an error, an answer or the log. An
 emulator whose discovery file has a port and no token (plain `-grpc`) or none is not driven: "This emulator was started
-without access for other apps. Start it from Flare." The discovery file's `avd.id` is the AVD's name (`avd.name` is its
+without access for other apps. Start it from Flare." (PR A7: the panel's state 6, `Setup::NoAccess`, one line and no
+button, `an_emulator_started_without_access_shows_its_line`). The discovery file's `avd.id` is the AVD's name (`avd.name` is its
 display name; checked on 37.2.13). Held by `the_boot_command_always_uses_a_token_and_no_window`,
 `the_command_is_checked_and_detached` (`boot.rs`), `a_discovery_file_gives_the_port_the_serial_and_a_hidden_token`,
 `an_emulator_without_a_token_has_no_access` (`discovery.rs`), `the_token_goes_only_into_a_sensitive_header`
@@ -5920,7 +5931,17 @@ Android frames come turned, so Slint does not turn them again. `device.state` re
 `a_full_size_frame_and_a_turned_one_copy_into_the_ring`, `a_refused_import_uploads_the_region_instead`,
 `a_shown_slot_is_freed_only_after_the_gpu_is_done`, `the_newest_copy_shows_when_a_new_stream_starts_its_seq_again` and
 `without_a_gpu_the_region_is_copied_by_the_cpu` (`device_region.rs`, headless on both OSes' own GPU API) and
-`an_android_frame_record_counts_as_a_change` (`device_ctl.rs`). Source: Max, 2026-11-22.
+`an_android_frame_record_counts_as_a_change` (`device_ctl.rs`). Source: Max, 2026-11-22. PR A7 adds the spec's
+fallbacks in the emu host (`host.rs`): when MMAP is refused, or gives no usable frame for 2 s while the display is on
+(no frame, or a region the emulator never wrote: every alpha sample is 0), the pixels come in the gRPC messages and
+the emu host writes them into the same region, at most 30 a second, with the slow mark and its reason
+(`FrameMode::Slow`); when that fails too, a `getScreenshot` at most 3 times a second, written the same way, with the
+still badge and its reason (`FrameMode::Still`). A 0x0 frame means the display is off: the last picture stays,
+dimmed (`FrameMode::Asleep`, `panel-device-dim`). Each fallback is logged with the emulator's version; a resume tries
+MMAP first again. The mode travels as a `mode` line. Held also by `a_failed_stream_falls_back_in_the_specs_order`,
+`frames_are_written_into_the_region_and_a_blank_region_is_seen` (`host.rs`),
+`an_android_frame_modes_show_as_slow_still_and_dim` (`device_ctl.rs`) and `an_android_panel_shows_slow_still_and_asleep`
+(ui_tests).
 
 1365. **The stream runs only while the panel is seen; input, the tree, `snapshot` and the agent keep working while it
 is paused.** Spec 2026-11-22, builder's call 6. In the emu host, `pause` cancels `streamScreenshot` (the emulator then
@@ -5934,7 +5955,10 @@ streams; a pause sent with the attach was refused as "not attached". A stream th
 opened again (1 to 16 s, five tries with no frame). Held by `an_attached_device_gets_a_region_from_flare_and_frames_back`
 and `a_paused_device_stays_paused_after_the_emu_host_restarts` (`emu_client.rs`),
 `a_frame_stream_that_ends_is_opened_again_a_few_times` (`host.rs`) and `both_sources_answer_as_one`
-(`device_sources.rs`). Source: Max, 2026-11-22.
+(`device_sources.rs`). Source: Max, 2026-11-22. PR A7: while a device is paused the agent helper's window events stand
+in for frames: the emu host sends a `changed` line for each new count while paused, and Flare adds one to the
+device's own count (never the helper's number, which starts again with each helper), so the agent's input calls
+answer `changed: true` while paused too. Held by `an_android_frame_record_counts_as_a_change` (`device_ctl.rs`).
 
 1366. **An emulator Flare booted is shut down at quit (setting, detached, quit never waits) and stops by itself 5
 minutes after Flare dies; an emulator Flare did not boot is never shut down.** Spec 2026-11-22, builder's call 12, open
@@ -5957,7 +5981,14 @@ out and the person started the same AVD again. Held by `a_boot_starts_the_emulat
 (`emu_client.rs`), `a_guarded_helper_ends_with_its_guard` (`flare-proc/src/job.rs`), the boot command tests of rule
 1362, `an_android_device_boots_and_shuts_down_at_quit`, `an_emulator_that_already_ran_is_never_flares_to_shut_down`
 and `booted_json_holds_both_kinds` (`device_ctl.rs`), and `only_the_emulator_flare_booted_is_shut_down`
-(`flare-emu-host/src/quit.rs`). Source: Max, 2026-11-22.
+(`flare-emu-host/src/quit.rs`). Source: Max, 2026-11-22. PR A7: an emulator Flare booted never idles out while Flare
+runs. The hosts do not stop two minutes after the last device panel while `booted.json` holds an `emu/` entry (the
+emu host's keep-alives hold the emulator, attached or not), and each Flare-booted emulator the list shows running is
+sent `keep` (`Request::Keep`: the emu host reaches it and keeps it alive), one from an earlier run of Flare too, and
+again after an emu host restart. A `keep` for one that no longer runs ends in a `shutdown` state, so its entry goes
+and the hosts stop two minutes later as before. Held by `the_emu_host_stays_while_an_emulator_flare_booted_runs`
+(`device_ctl.rs`) and `a_boot_of_an_emulator_that_already_runs_is_never_flares` (`emu_client.rs`, which also checks a
+boot of an AVD whose emulator already runs launches nothing and is never Flare's).
 
 1367. **Agent coordinates for Android are dp (pixels / (dpi / 160)); only the emu host converts dp to pixels.
 `device_look`'s PNG is at dp size.** Spec 2026-11-22, builder's call 7. The dp is Android's match for the iOS point:
@@ -5997,18 +6028,23 @@ source is `tools/android-agent/src` (Java, `UiAutomation` over the shell's `UiAu
 The emu host takes only a jar with the expected hash (`agent::jar`, beside the emu host, in `Resources`, or the repo's
 in a debug build; the self-test fails without it) and makes a helper only for an `emulator-<port>` serial from the
 emulator's own discovery file (`emu::agent::serial_ok`). The helper listens on the abstract socket `flare-agent` and
-refuses any peer that is not the shell user or root (adb's forward), so an app inside the device cannot use it. A
-running helper of this build is reused (a second Flare); another build's is told to quit, then killed by name, since a
-running helper blocks a new one. It ends 15 s after its last client leaves. A failed call starts it again once; a
+refuses any peer that is not the shell user or root (adb's forward), so an app inside the device cannot use it. Any
+app in the device could bind that socket name first, so the emu host starts the helper with a random 128-bit nonce
+on its command line (`getrandom`) and the helper's hello echoes it; only a helper that echoes the nonce this emu host
+process started it with is reused (PR A7). Anything else on the socket (an app, another Flare's helper, an old build)
+is told to quit and the helpers are killed by name, since a running helper blocks a new one; so two Flares on one
+emulator replace each other's helper. It ends 15 s after its last client leaves. A failed call starts it again once; a
 second failure switches that attach to `uiautomator dump` (about 2 s), and the tree's answer says `path: "dump"`
 (`device_state` shows "slow tree" in PR A4). The dump needs the helper gone first: it fails quietly while a helper holds
-the UI automation connection (checked by hand). PR A6 ships the jar where the emu host looks: beside
+the UI automation connection (checked by hand). A tree with no element left after the filter (the first read right
+after a boot or a launch) is read again every 150 ms for up to 1 s, then answered as it is (PR A7). PR A6 ships the jar where the emu host looks: beside
 `flare-emu-host.exe` in `current\` (`pack.ps1`, `stage-install.ps1`) and in `Flare.app/Contents/Resources`
 (`release::build`); the release runs the shipped emu host's self-test on both OSes, since a release build has no repo
 copy to fall back on. Held by `the_checked_in_jar_is_built_from_its_sources`,
 `the_helper_goes_only_to_an_emulator`, `the_helpers_constants_match_its_source`,
 `a_real_settings_screen_reads_the_same_both_ways` (`emu/agent.rs`), `a_helper_is_made_only_for_an_emulator`,
-`a_helper_that_cannot_start_falls_back_and_answers` and `the_jar_is_found_with_its_hash`
+`a_helper_that_cannot_start_falls_back_and_answers`, `the_jar_is_found_with_its_hash`,
+`only_a_helper_that_echoes_this_hosts_nonce_is_reused`, `an_empty_tree_is_read_again_for_up_to_a_second`
 (`flare-emu-host/src/agent.rs`), `the_package_ships_the_emu_host_and_the_agent_jar_beside_the_app`
 (`crates/flare/tests/release_files.rs`), `the_bundle_lists_the_emu_host_as_a_tool_and_carries_the_agent_jar`
 (`flare-cef/src/macos/release.rs`) and `the_emu_host_self_test_runs_from_the_signed_bundle`

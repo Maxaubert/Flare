@@ -3197,7 +3197,8 @@ Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/su
 (PR A4). The first visible change.
 
 - **Where**: Windows (x64) offers the device panel in the tab menu, with Android only. A Mac on Apple silicon lists its
-  Android devices beside the iPhones once an Android SDK is found (Flare's own or the person's).
+  Android devices beside the iPhones once an Android SDK is found (Flare's own or the person's). From A7 it
+  offers Android before it is set up, with a setup row in the chooser.
 - **Setup** (Windows): "Android devices need Google's Android emulator" [Set up]; Google's licence text in a box with
   [Accept and set up] and [Cancel]; the download with its MB and [Cancel]; "Android needs Windows Hypervisor Platform"
   [Turn on], then "Restart Windows to finish."; "Preparing <name>..." on a new device's first start.
@@ -3271,3 +3272,31 @@ Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/su
   `sign::tests::the_emu_host_is_signed_as_a_tool_with_no_entitlements` and
   `mac_release_files::the_emu_host_self_test_runs_from_the_signed_bundle`.
 
+## Device panel: Android, PR A7: follow-ups, 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`.
+Follow-ups to A1 to A6 (PR #339).
+
+- **Android setup on a Mac.** A Mac on Apple silicon offers Android before it is set up. Its device chooser lists the
+  devices and one more row in the same style, "Android: set up (about 2.5 GB from Google)". The row leads to the same
+  states as on Windows: Google's licence with [Accept and set up] and [Cancel], then the download. Once Android is set
+  up, the chooser has an [Update Android emulator] row on both OSes (the same plan; nothing happens when it is current).
+  No mockup: Max chose to reuse the existing row.
+- **An emulator started without access.** One started outside Flare without a gRPC token shows "This emulator was
+  started without access for other apps. Start it from Flare." and no button (spec state 6).
+- **Frame fallbacks** (spec "Frames"). When the emulator refuses its shared memory, or gives no frame for 2 s while the
+  display is on, the frames come in the gRPC messages (at most 30 a second, with the slow mark and its reason). When
+  that fails too, a still picture three times a second, with the still badge and its reason. While the display is off
+  (a 0x0 frame) the last picture stays, dimmed.
+- **Kept alive while Flare runs.** An emulator Flare booted no longer idles out two minutes after its last panel
+  closes: the emu host stays and keeps it alive while Flare runs. Only a Flare that is gone lets it stop by itself 5
+  minutes later (rule 1366).
+- **The agent.** Input calls answer `changed: true` while the panel is hidden too (the agent helper's window changes
+  count). A UI-tree read right after a boot or a launch waits up to 1 s while the tree is empty.
+- **Security.** The setup's unzip makes no link while it writes files, refuses a link out of the package and checks
+  each folder it writes into. The agent helper is used only when its hello echoes the random nonce the emu host started
+  it with, so an app in the emulator that took the helper's socket name first is never trusted (rule 1369). Two Flares
+  on one emulator now replace each other's helper.
+- **Tests.** `devicePanelAndroid` (e2e, Windows and Mac), the ui_tests
+  `an_android_panel_takes_touches_in_dp_and_keys`, `an_android_panel_shows_slow_still_and_asleep` and
+  `a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence`, and the unit tests named in rules 1361 to 1369.
