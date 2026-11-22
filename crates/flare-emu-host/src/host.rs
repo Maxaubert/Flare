@@ -410,7 +410,7 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
                 let h = Arc::clone(host);
                 host.rt.spawn(async move {
                     let started = Instant::now();
-                    match snapshot(&d).await {
+                    match snapshot(&h, &d).await {
                         Ok(png) => {
                             h.log.line(&format!(
                                 "{}: snapshot {} KB in {} ms",
@@ -982,28 +982,48 @@ async fn type_text(d: &Device, text: &str) -> Result<(), Failed> {
     Ok(())
 }
 
-/// A PNG at dp size of the screen as it is now (rule 1367): the emulator scales it.
-async fn snapshot(d: &Device) -> Result<Vec<u8>, Failed> {
-    let shown = lock(&d.orientation).size(d.portrait);
-    let img = d
-        .client
-        .clone()
-        .get_screenshot(pb::ImageFormat {
-            format: pb::image_format::ImgFormat::Png as i32,
-            width: (shown.w / d.scale).round() as u32,
-            height: (shown.h / d.scale).round() as u32,
-            display: 0,
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| (Fail::Unavailable, format!("no screenshot: {}", e.message())))?
-        .into_inner();
-    if !img.image.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Err((Fail::Unavailable, "the emulator sent no PNG".to_string()));
+/// A PNG at dp size of the screen as it is now (rule 1367): the emulator scales it. The reply says the screen's
+/// rotation; while the stream is paused that is the only news of a turn, so a new one is kept (and said, so the panel's
+/// touch map follows) and the picture is asked for again at the turned size.
+async fn snapshot(host: &Host, d: &Device) -> Result<Vec<u8>, Failed> {
+    for _ in 0..2 {
+        let o = *lock(&d.orientation);
+        let shown = o.size(d.portrait);
+        let img = d
+            .client
+            .clone()
+            .get_screenshot(pb::ImageFormat {
+                format: pb::image_format::ImgFormat::Png as i32,
+                width: (shown.w / d.scale).round() as u32,
+                height: (shown.h / d.scale).round() as u32,
+                display: 0,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| (Fail::Unavailable, format!("no screenshot: {}", e.message())))?
+            .into_inner();
+        if !img.image.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err((Fail::Unavailable, "the emulator sent no PNG".to_string()));
+        }
+        let now = keys::orientation_of(
+            img.format
+                .and_then(|f| f.rotation)
+                .map_or(0, |r| r.rotation),
+        );
+        if now == o {
+            return Ok(img.image);
+        }
+        *lock(&d.orientation) = now;
+        host.out.line(&HostLine::Orientation {
+            target: d.target.clone(),
+            orientation: now,
+        });
     }
-    Ok(img.image)
+    Err((
+        Fail::Retry,
+        "the device turned while it was looked at".to_string(),
+    ))
 }
-
 /// (Re)starts the frame stream when the device has a region and is not paused (rule 1365).
 fn restart_stream(host: &Arc<Host>, d: &Arc<Device>) {
     if let Some(s) = lock(&d.stream).take() {
