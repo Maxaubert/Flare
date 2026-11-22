@@ -82,7 +82,9 @@ enum Slot {
     Free,
     /// The frame thread records and submits its copy.
     Writing,
-    /// Submitted: the frame of this seq (the queue runs the copy before any later render samples it).
+    /// Submitted: the frame copied as number N on this frame thread (the queue runs the copy before any later render
+    /// samples it). Not the emulator's `seq`: that starts again with each new stream (a resume, an emu host restart),
+    /// so a frame left from before would look newer than the frames after it.
     Ready(u64),
     /// On show.
     Shown,
@@ -632,17 +634,18 @@ impl Worker {
         let us = u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX);
         {
             let mut s = lock(&self.shared);
+            s.copied += 1;
+            let n = s.copied;
             if let Some(r) = s.rings.get_mut(&f.target).filter(|r| r.id == ring_id) {
                 // An older frame nobody took is replaced by this one.
                 for sl in &mut r.slots {
-                    if matches!(sl, Slot::Ready(q) if *q < f.seq) {
+                    if matches!(sl, Slot::Ready(q) if *q < n) {
                         *sl = Slot::Free;
                     }
                 }
-                r.slots[slot] = Slot::Ready(f.seq);
+                r.slots[slot] = Slot::Ready(n);
             }
             s.route = route;
-            s.copied += 1;
             if s.copy_us.len() >= 600 {
                 s.copy_us.remove(0);
             }
@@ -1336,6 +1339,31 @@ mod tests {
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("the queue drains");
         assert_eq!(f.held(), 0);
+    }
+
+    /// A new stream starts the emulator's `seq` again (a resume, an emu host restart): the newest copy shows, never a
+    /// frame left from before whose `seq` is higher.
+    #[test]
+    fn the_newest_copy_shows_when_a_new_stream_starts_its_seq_again() {
+        let Ok((device, queue, _)) = flare_render::gpu::headless_device() else {
+            eprintln!("skipping: no wgpu adapter");
+            return;
+        };
+        let r = TestRegion::new(64, 32);
+        let kept = Rc::new(RefCell::new(Vec::new()));
+        let mut f = frames_keeping(&kept);
+        f.attach_gpu(&device, &queue);
+        let sink = f.sink();
+        // A frame nobody took (the panel was hidden), then the new stream's first frame.
+        r.write(64, 32, 1);
+        sink(r.frame(500));
+        f.sync();
+        r.write(64, 32, 2);
+        sink(r.frame(1));
+        f.sync();
+        f.show(Some(target()));
+        assert!(f.frame_image(0).is_some());
+        check(&device, &queue, kept.borrow().last().unwrap(), 2);
     }
 
     /// With no wgpu device (the software renderer), the CPU path copies the region into a picture at most 30 a

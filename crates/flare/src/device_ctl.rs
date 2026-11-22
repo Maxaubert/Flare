@@ -172,6 +172,20 @@ impl Booted {
             .collect()
     }
 
+    /// The emulators' arguments for `flare-emu-host --shutdown` (rule 1366): `<avd>@<booted ms>`, or the bare AVD name
+    /// when the time is not known. The emu host shuts an emulator down only when it started before Flare's boot ended,
+    /// so an entry left from an emulator that idled out never ends one the person started later (Android Studio's).
+    pub fn emu_shutdown_args(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .filter_map(|(n, at)| match target::parse(n)? {
+                Target::Emu { avd } if *at > 0 => Some(format!("{avd}@{at}")),
+                Target::Emu { avd } => Some(avd),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
     /// The file, read leniently: a missing or broken file is an empty list (rule 41).
     pub fn load(path: &Path) -> Booted {
@@ -1608,17 +1622,28 @@ impl DeviceCtl {
                                 ));
                                 self.fail(&t, e.message);
                             }
-                            Ok(_) => {
+                            Ok(a) => {
                                 // Flare booted it: shut down at quit (rule 1319), also after a crash; only such a
-                                // device may the agent shut down (rule 1322). The file is the real source's.
-                                if self.booted.record(&t.name(), unix_ms()) && self.real.is_some() {
-                                    self.save_booted();
+                                // device may the agent shut down (rule 1322). The file is the real source's. An
+                                // emulator that already ran (Android Studio's) is waited for but never Flare's
+                                // (rule 1366). An emulator's entry takes this boot's time: quit checks it against
+                                // the running emulator's start, so a stale entry never ends another one.
+                                let flares = !flare_device::emu_client::is_started_elsewhere(&a);
+                                if flares {
+                                    let name = t.name();
+                                    if t.source() == SourceKind::Emu {
+                                        self.booted.forget(&name);
+                                    }
+                                    if self.booted.record(&name, unix_ms()) && self.real.is_some() {
+                                        self.save_booted();
+                                    }
                                 }
                                 self.agent_event(&AgentEvent::Booted(t.clone(), Ok(())));
-                                if let Some(x) = self
-                                    .devices
-                                    .as_mut()
-                                    .and_then(|l| l.iter_mut().find(|d| d.target == t))
+                                if flares
+                                    && let Some(x) = self
+                                        .devices
+                                        .as_mut()
+                                        .and_then(|l| l.iter_mut().find(|d| d.target == t))
                                 {
                                     x.booted_by_flare = true;
                                 }
@@ -1659,11 +1684,16 @@ impl DeviceCtl {
             }
             // A frame in an Android device's region (rule 1364): the frame thread already copied it into the ring and
             // woke the window; here the panel only learns that the device has a picture.
+            // The emulator sends a frame only when its screen changed, so each record is also the device's "changed"
+            // count (the sim host counts its own): the agent's input calls answer `changed: true` from it.
             SourceEvent::Region { target, .. } => {
                 if let Some(d) = self.devs.get_mut(&target)
                     && d.attached
                 {
                     d.ring_frame = true;
+                    d.changed += 1;
+                    let count = d.changed;
+                    self.agent_event(&AgentEvent::Changed(target, count));
                 }
             }
             SourceEvent::Setup(e) => self.on_setup_event(e),
@@ -2651,7 +2681,7 @@ impl DeviceCtl {
                 "device: shutting down {} Android emulator(s) Flare booted",
                 avds.len()
             );
-            emu_spawn(&avds);
+            emu_spawn(&self.booted.emu_shutdown_args());
             handed.extend(avds);
         }
         if handed.is_empty() {
@@ -3278,11 +3308,71 @@ mod tests {
         d.drain();
         assert_eq!(d.state_of(&t), Some(DeviceState::Booted));
         assert!(d.booted.has("emu/Flare_Pixel"), "{:?}", d.booted);
-        // Quit: one detached shutdown by AVD name, and the list is emptied.
+        // Quit: one detached shutdown by AVD name with its boot time, and the list is emptied.
+        let at = d.booted.devices[0].1;
+        assert!(at > 0);
         let handed = d.quit(true);
         assert_eq!(handed, ["Flare_Pixel"]);
-        assert_eq!(*quits.borrow(), [vec!["Flare_Pixel".to_string()]]);
+        assert_eq!(*quits.borrow(), [vec![format!("Flare_Pixel@{at}")]]);
         assert!(d.booted.devices.is_empty());
+    }
+
+    /// The emulator sends a frame only when its screen changed: each frame record of an attached device counts as a
+    /// change, so the agent's input calls can answer `changed: true` on Android as on iOS.
+    #[test]
+    fn an_android_frame_record_counts_as_a_change() {
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), Some(FakeSource::android()));
+        let t = Target::emu("Flare_Pixel").unwrap();
+        let region = |seq| SourceEvent::Region {
+            target: t.clone(),
+            seq,
+            t_us: 0,
+            size_px: Size::new(1080.0, 2400.0),
+            rotation: Orientation::Rot0,
+        };
+        // Not attached: no change counted.
+        d.on_event(Some(SourceKind::Emu), region(1));
+        assert_eq!(d.devs.get(&t).map_or(0, |x| x.changed), 0);
+        d.devs.entry(t.clone()).or_default().attached = true;
+        d.on_event(Some(SourceKind::Emu), region(2));
+        d.on_event(Some(SourceKind::Emu), region(3));
+        assert_eq!(d.devs[&t].changed, 2);
+        assert!(d.devs[&t].ring_frame);
+    }
+
+    /// Rule 1366: a boot of an emulator that already ran (Android Studio's, or a list that was out of date) waits
+    /// for it but never makes it Flare's, so quit leaves it running. A boot Flare made takes a fresh time, also over
+    /// an entry left from an emulator that idled out.
+    #[test]
+    fn an_emulator_that_already_ran_is_never_flares_to_shut_down() {
+        let (mut d, quits) = android_ctl(AndroidSdk::Ready { avds: 1 });
+        d.ensure_source();
+        d.list();
+        let t = Target::emu("Flare_Pixel").unwrap();
+        show_tab(&mut d, "t1", "emu/Flare_Pixel");
+        d.pending.insert(999, Pending::Boot(t.clone()));
+        d.on_event(
+            Some(SourceKind::Emu),
+            SourceEvent::Answer {
+                id: 999,
+                result: Ok(flare_device::emu_client::started_elsewhere()),
+            },
+        );
+        assert!(!d.booted.has("emu/Flare_Pixel"), "{:?}", d.booted);
+        assert!(d.info_of(&t).is_some_and(|x| !x.booted_by_flare));
+        // A stale entry, then a boot Flare made: one entry, with the new time.
+        d.booted.record("emu/Flare_Pixel", 5);
+        d.boot(&t);
+        d.drain();
+        assert_eq!(d.state_of(&t), Some(DeviceState::Booted));
+        assert_eq!(d.booted.devices.len(), 1);
+        assert!(d.booted.devices[0].1 > 5, "{:?}", d.booted);
+        assert_eq!(
+            d.booted.emu_shutdown_args(),
+            [format!("Flare_Pixel@{}", d.booted.devices[0].1)]
+        );
+        d.quit(true);
+        assert_eq!(quits.borrow().len(), 1);
     }
 
     /// The spec's "Input": an Android panel has the iOS panel's buttons (Lock sends Power) and its own menu buttons

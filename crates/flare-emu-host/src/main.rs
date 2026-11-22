@@ -66,12 +66,9 @@ fn run_main() -> i32 {
         return if ok { 0 } else { 1 };
     }
     if let Some(i) = args.iter().position(|a| a == "--shutdown") {
-        // Flare's quit (rule 1366): only AVD names, each checked as a target is.
-        let avds: Vec<String> = args[i + 1..]
-            .iter()
-            .filter(|a| flare_device::target::Target::emu(a).is_some())
-            .cloned()
-            .collect();
+        // Flare's quit (rule 1366): only AVD names, each checked as a target is, with when Flare booted it.
+        let avds: Vec<(String, Option<u64>)> =
+            args[i + 1..].iter().filter_map(|a| quit::arg(a)).collect();
         quit::run(&avds);
         return 0;
     }

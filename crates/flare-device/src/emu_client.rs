@@ -141,6 +141,20 @@ enum Kind {
     Tree,
     /// Setup's answers, as they come.
     Value,
+    /// A boot of an emulator that already ran (started outside Flare, or by another Flare): it answers
+    /// [`started_elsewhere`], so Flare never counts it as one it booted (rule 1366).
+    BootElsewhere,
+}
+
+/// The answer to a boot when the emulator already ran before Flare's boot: Flare did not boot it, so it never shuts it
+/// down (rule 1366). Any other boot answers [`Answer::Done`].
+pub fn started_elsewhere() -> Answer {
+    Answer::Value(serde_json::json!({ "started_elsewhere": true }))
+}
+
+/// Whether a boot's answer says the emulator already ran ([`started_elsewhere`]).
+pub fn is_started_elsewhere(a: &Answer) -> bool {
+    matches!(a, Answer::Value(v) if v["started_elsewhere"] == true)
 }
 
 #[derive(Clone, Debug)]
@@ -345,6 +359,7 @@ impl Shared {
                     }
                     Some(Kind::Done) => Answer::Done,
                     Some(Kind::Value) => Answer::Value(result),
+                    Some(Kind::BootElsewhere) => started_elsewhere(),
                     Some(Kind::Png) => match crate::wire::png_of(&result) {
                         Some(p) => Answer::Png(p),
                         None => {
@@ -821,7 +836,7 @@ impl DeviceSource for EmuSource {
                 .discovery_dir()
                 .map(|d| discovery::read_all(&d))
                 .unwrap_or_default();
-            if discovery::of_avd(&running, t.id()).is_none() {
+            let kind = if discovery::of_avd(&running, t.id()).is_none() {
                 lock(&sh.state).shutdown_asked.remove(&t);
                 let started = match &sh.cfg.launcher {
                     Some(l) => l(&t),
@@ -833,8 +848,15 @@ impl DeviceSource for EmuSource {
                     return;
                 }
                 lock(&sh.state).booted.insert(t.clone());
-            }
-            sh.send(Request::Boot { target: t }, id, Some(Kind::Done));
+                Kind::Done
+            } else if lock(&sh.state).booted.contains(&t) {
+                // Flare started it earlier this session; the boot only waits for it.
+                Kind::Done
+            } else {
+                // It ran already (Android Studio, or a list that was out of date): waited for, never Flare's.
+                Kind::BootElsewhere
+            };
+            sh.send(Request::Boot { target: t }, id, Some(kind));
         });
         id
     }
