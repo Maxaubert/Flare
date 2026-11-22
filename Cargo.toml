@@ -18,6 +18,7 @@ members = [
     "crates/flare-help",
     "crates/flare-surfaces",
     "crates/flare-device",
+    "crates/flare-emu-host",
     "crates/flare-web",
     "crates/flare-cef",
     "crates/flare-ctl",

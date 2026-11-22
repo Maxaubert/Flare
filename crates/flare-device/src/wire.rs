@@ -100,6 +100,14 @@ pub enum Request {
     },
     /// Unregister every callback, close every connection, exit.
     Quit,
+    /// The emu host only (rule 1363): Flare made the frame region for an attached device, `bytes` long, at `url` (a
+    /// `file:///` URL in the `flare` folder of the emulator's discovery folder). The emu host streams frames into it
+    /// while the device is not paused. Sent after the device's `frames` line, and again for a bigger screen.
+    Region {
+        target: Target,
+        url: String,
+        bytes: u64,
+    },
 }
 
 /// Which helper process speaks: the sim host (iOS) or the emu host (Android). Both use this protocol (rule 1360).
@@ -646,6 +654,20 @@ mod tests {
             r#"{"kind":"region","target":"emu/Flare_Pixel","seq":901,"t_us":15016000,"w":2400,"h":1080,"rotation":"rot90"}"#
         );
         assert_eq!(from_line::<HostLine>(&line), Some(region));
+        // Flare hands the emu host its frame region.
+        let c = Control {
+            id: 4,
+            req: Request::Region {
+                target: t.clone(),
+                url: "file:///C:/Users/a/AppData/Local/Temp/avd/running/flare/12-1.rgba".into(),
+                bytes: 23_040_000,
+            },
+        };
+        assert_eq!(
+            to_line(&c),
+            r#"{"id":4,"op":"region","target":"emu/Flare_Pixel","url":"file:///C:/Users/a/AppData/Local/Temp/avd/running/flare/12-1.rgba","bytes":23040000}"#
+        );
+        assert_eq!(from_line::<Control>(&to_line(&c)), Some(c));
         // Requests name an emulator like a simulator.
         let c = Control {
             id: 3,

@@ -727,6 +727,12 @@ mod mac {
                     .map_err(|e| (Fail::Unavailable, e.message))
             }),
             Request::Attach { target } => attach(host, id, target),
+            // The emu host's frame region (rule 1363); the sim host's frames go over its mach channel.
+            Request::Region { target, .. } => host.err(
+                id,
+                Fail::Unavailable,
+                format!("{target}: the sim host takes no frame region"),
+            ),
             Request::Detach { target } => {
                 let a = host
                     .attached
