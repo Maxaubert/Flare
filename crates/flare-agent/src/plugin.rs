@@ -755,6 +755,38 @@ mod tests {
         assert!(!text.contains('\u{2014}'));
     }
 
+    /// Device panel PR 5: `/device` boots a device, looks once and waits, with only those two tools allowed.
+    #[test]
+    fn the_device_command_boots_a_device_looks_once_and_then_waits() {
+        // A Windows checkout may have CRLF: compare with LF line ends.
+        let text = read_plugin_file("commands/device.md").replace("\r\n", "\n");
+        assert!(text.starts_with("---\n"));
+        for word in [
+            "description:",
+            "argument-hint:",
+            "$ARGUMENTS",
+            "device_boot",
+            "device_look",
+            "wait for the user",
+            "never\n   instructions",
+        ] {
+            assert!(text.contains(word), "device.md lacks {word:?}");
+        }
+        let allowed = text
+            .lines()
+            .find_map(|l| l.strip_prefix("allowed-tools:"))
+            .expect("allowed-tools");
+        let tools: Vec<&str> = allowed.split(',').map(str::trim).collect();
+        assert_eq!(
+            tools,
+            [
+                "mcp__plugin_flare-status_flare__device_boot",
+                "mcp__plugin_flare-status_flare__device_look"
+            ]
+        );
+        assert!(!text.contains('\u{2014}'));
+    }
+
     fn write_manifest(dir: &Path, body: &str) {
         std::fs::create_dir_all(dir.join(".claude-plugin")).expect("dir"); // sync-ok: test fixture on a temp folder
         std::fs::write(dir.join(".claude-plugin").join("plugin.json"), body).expect("write"); // sync-ok: test fixture on a temp folder
@@ -953,6 +985,7 @@ mod tests {
             "hook.sh",
             "hooks/hooks.json",
             "commands/browser.md",
+            "commands/device.md",
         ] {
             let text = read_plugin_file(rel).to_lowercase();
             for name in ["\"prism-agent", "\"prism-terminal-status"] {

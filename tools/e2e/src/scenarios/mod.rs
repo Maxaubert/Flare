@@ -593,6 +593,18 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 120,
     },
     Scenario {
+        name: "deviceAgent",
+        group: "panel",
+        run: device::device_agent,
+        limit_secs: 180,
+    },
+    Scenario {
+        name: "mcpDevice",
+        group: "panel",
+        run: device::mcp_device,
+        limit_secs: 180,
+    },
+    Scenario {
         name: "panelSplitter",
         group: "panel",
         run: panel_split::panel_splitter,

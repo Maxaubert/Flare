@@ -632,6 +632,13 @@ export struct DeviceRow {
     booted: bool,
 }
 
+// One point of the agent's swipe trail over the device picture (rule 1321): device points and its opacity.
+export struct DeviceTrailPoint {
+    x: float,
+    y: float,
+    a: float,
+}
+
 // A row of the device panel's More menu (Shake, Volume, Choose device, Shut down).
 component DeviceMenuRow inherits Rectangle {
     in property <string> text;
@@ -779,6 +786,24 @@ export component PanelSlot inherits Rectangle {
     in property <string> device-foot;
     // The header's device buttons (a device the tab drives is on show).
     in property <bool> device-controls;
+    // The agent's touch indicators over the picture (rule 1321, device panel PR 5), pushed by the controller on its
+    // tick (nothing here moves on its own): the finger dot in device points with its opacity, its ripples (each one's
+    // progress 0 to 1), a long press's filled dot, the agent's name beside it, the swipe trail, the keyboard badge
+    // and the edge glow's opacity (0 for none). Drawn by Slint over the picture, so never in `device_look`.
+    in property <bool> device-dot;
+    in property <float> device-dot-x;
+    in property <float> device-dot-y;
+    in property <float> device-dot-alpha;
+    in property <bool> device-dot-held;
+    in property <[float]> device-ripples;
+    in property <string> device-tag;
+    in property <[DeviceTrailPoint]> device-trail;
+    in property <string> device-badge;
+    in property <float> device-glow;
+    // Where the dot's middle and the badge are drawn in the window (the tests and the e2e read them).
+    out property <length> device-dot-wx: device-box.absolute-position.x + (device-box.width - root.device-pic-w) / 2 + root.device-dot-x * root.device-fit * 1px;
+    out property <length> device-dot-wy: device-box.absolute-position.y + (device-box.height - root.device-pic-h) / 2 + root.device-dot-y * root.device-fit * 1px;
+    out property <bool> device-badge-shown: root.open && root.kind == 5 && root.device-state == 0 && root.device-badge != "";
     // kind: 0 down, 1 up, 2 move, 3 leave; button: 0 left, 1 middle, 2 right, 3 other; mods: 1 shift, 2 ctrl,
     // 4 alt, 8 cmd. Points are in the device box (`device-box`), the controller letterboxes them.
     callback device-pointer(int, length, length, int, int);
@@ -1263,6 +1288,90 @@ export component PanelSlot inherits Rectangle {
                         transform-rotation: root.device-turn * 1deg;
                         source: root.device-frame;
                         image-fit: fill;
+                    }
+                    // The agent's indicators (rule 1321): the trail, the ripples, the finger dot and its name, then
+                    // the edge glow. Device points times the fit are window lengths inside the picture.
+                    for p in root.device-trail: Rectangle {
+                        x: (p.x * root.device-fit - 3) * 1px;
+                        y: (p.y * root.device-fit - 3) * 1px;
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.agent-touch.with-alpha(0.6 * p.a);
+                    }
+                    for r in root.device-dot ? root.device-ripples : []: Rectangle {
+                        property <float> d: (44 + 44 * r) * root.device-fit;
+                        x: (root.device-dot-x * root.device-fit - self.d / 2) * 1px;
+                        y: (root.device-dot-y * root.device-fit - self.d / 2) * 1px;
+                        width: self.d * 1px;
+                        height: self.d * 1px;
+                        border-radius: self.d / 2 * 1px;
+                        border-width: max(1px, 2 * root.device-fit * 1px);
+                        border-color: Theme.agent-touch.with-alpha(0.8 * (1 - r) * root.device-dot-alpha);
+                    }
+                    if root.device-dot: Rectangle {
+                        property <float> d: 44 * root.device-fit;
+                        x: (root.device-dot-x * root.device-fit - self.d / 2) * 1px;
+                        y: (root.device-dot-y * root.device-fit - self.d / 2) * 1px;
+                        width: self.d * 1px;
+                        height: self.d * 1px;
+                        border-radius: self.d / 2 * 1px;
+                        background: Theme.agent-touch.with-alpha((root.device-dot-held ? 0.7 : 0.35) * root.device-dot-alpha);
+                        border-width: max(1px, 2 * root.device-fit * 1px);
+                        border-color: Theme.agent-touch.with-alpha(0.8 * root.device-dot-alpha);
+                    }
+                    if root.device-dot && root.device-tag != "": Rectangle {
+                        x: (root.device-dot-x * root.device-fit + 22 * root.device-fit + 4) * 1px;
+                        y: (root.device-dot-y * root.device-fit - 9) * 1px;
+                        width: tag-text.preferred-width + 12px;
+                        height: 18px;
+                        border-radius: 9px;
+                        background: Theme.agent-touch.with-alpha(0.9 * root.device-dot-alpha);
+                        tag-text := Text {
+                            x: 6px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            text: root.device-tag;
+                            font-family: Theme.font-ui;
+                            font-size: 11px;
+                            color: white.with-alpha(root.device-dot-alpha);
+                        }
+                    }
+                    if root.device-glow > 0: Rectangle {
+                        border-radius: parent.border-radius;
+                        border-width: 3px;
+                        border-color: Theme.agent-touch.with-alpha(0.9 * root.device-glow);
+                    }
+                    if root.device-glow > 0: Rectangle {
+                        x: 3px;
+                        y: 3px;
+                        width: parent.width - 6px;
+                        height: parent.height - 6px;
+                        border-radius: max(0px, parent.border-radius - 3px);
+                        border-width: 6px;
+                        border-color: Theme.agent-touch.with-alpha(0.3 * root.device-glow);
+                    }
+                }
+                // The keyboard badge: a pill under the finger dot, or at the bottom centre with no dot.
+                if root.device-state == 0 && root.device-badge != "": Rectangle {
+                    property <length> pic-x: (parent.width - root.device-pic-w) / 2;
+                    property <length> pic-y: (parent.height - root.device-pic-h) / 2;
+                    width: badge-text.preferred-width + 20px;
+                    height: 24px;
+                    x: root.device-dot ? max(0px, min(parent.width - self.width, self.pic-x + root.device-dot-x * root.device-fit * 1px - self.width / 2)) : (parent.width - self.width) / 2;
+                    y: root.device-dot ? min(parent.height - self.height, self.pic-y + (root.device-dot-y + 30) * root.device-fit * 1px) : self.pic-y + root.device-pic-h - self.height - 24px;
+                    border-radius: 12px;
+                    background: Theme.agent-touch;
+                    accessible-role: text;
+                    accessible-label: root.device-badge;
+                    badge-text := Text {
+                        x: 10px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: root.device-badge;
+                        font-family: Theme.font-ui;
+                        font-size: 12px;
+                        color: white;
                     }
                 }
                 device-keys := FocusScope {

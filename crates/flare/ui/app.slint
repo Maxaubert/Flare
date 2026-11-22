@@ -31,7 +31,7 @@ import { SetNotice } from "settings/notice.slint";
 import { PluginSheet } from "settings/plugin_sheet.slint";
 import { HotkeySheet } from "settings/hotkey_sheet.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
-import { PanelSlot, DeviceRow } from "panel.slint";
+import { PanelSlot, DeviceRow, DeviceTrailPoint } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
 import { RemoteConvoLine, RemoteConvoView } from "remote_convo.slint";
 import { PreviewChip } from "devchip.slint";
@@ -55,7 +55,7 @@ export { DialogPreview } from "dialog.slint";
 export { RemoteFolderPreview } from "remote_folder.slint";
 export { TabRow, StripGeom, Place, MenuRow, OverflowRow, PluginRow, PluginButton, RemoteFolderRow, RemoteCrumb } from "types.slint";
 export { ConvoFileRow, ConvoDiffRow, ConvoInk } from "convo.slint";
-export { DeviceRow } from "panel.slint";
+export { DeviceRow, DeviceTrailPoint } from "panel.slint";
 export { RemoteConvoLine } from "remote_convo.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
@@ -580,6 +580,20 @@ export component AppWindow inherits Window {
     in property <string> panel-device-slow;
     in property <string> panel-device-foot;
     in property <bool> panel-device-controls;
+    // The agent's touch indicators (rule 1321, device panel PR 5). See `PanelSlot`.
+    in property <bool> panel-device-dot;
+    in property <float> panel-device-dot-x;
+    in property <float> panel-device-dot-y;
+    in property <float> panel-device-dot-alpha;
+    in property <bool> panel-device-dot-held;
+    in property <[float]> panel-device-ripples;
+    in property <string> panel-device-tag;
+    in property <[DeviceTrailPoint]> panel-device-trail;
+    in property <string> panel-device-badge;
+    in property <float> panel-device-glow;
+    out property <length> panel-device-dot-wx: panel-slot.device-dot-wx;
+    out property <length> panel-device-dot-wy: panel-slot.device-dot-wy;
+    out property <bool> panel-device-badge-shown: panel-slot.device-badge-shown;
     callback panel-device-pointer(int, length, length, int, int);
     callback panel-device-wheel(length, length, length, length, int);
     callback panel-device-key(bool, string, int, bool);
@@ -1504,6 +1518,16 @@ export component AppWindow inherits Window {
                         device-slow: root.panel-device-slow;
                         device-foot: root.panel-device-foot;
                         device-controls: root.panel-device-controls;
+                        device-dot: root.panel-device-dot;
+                        device-dot-x: root.panel-device-dot-x;
+                        device-dot-y: root.panel-device-dot-y;
+                        device-dot-alpha: root.panel-device-dot-alpha;
+                        device-dot-held: root.panel-device-dot-held;
+                        device-ripples: root.panel-device-ripples;
+                        device-tag: root.panel-device-tag;
+                        device-trail: root.panel-device-trail;
+                        device-badge: root.panel-device-badge;
+                        device-glow: root.panel-device-glow;
                         device-pointer(k, x, y, b, m) => { root.panel-device-pointer(k, x, y, b, m); }
                         device-wheel(x, y, dx, dy, m) => { root.panel-device-wheel(x, y, dx, dy, m); }
                         device-key(d, t, m, r) => { root.panel-device-key(d, t, m, r); }

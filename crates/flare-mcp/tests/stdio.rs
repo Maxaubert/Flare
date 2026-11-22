@@ -244,6 +244,14 @@ impl Dispatcher for ModServer {
     fn resolve_tab_token(&self, token: &str) -> Option<String> {
         (token == "secret-7").then(|| "tab-7".to_string())
     }
+    /// A Flare with no device panel (Windows, an Intel Mac, no Xcode): `hello` lists no `device.*`, so the mod
+    /// tool stays at index 24.
+    fn capabilities(&self) -> Vec<Method> {
+        Method::ALL
+            .into_iter()
+            .filter(|m| m.namespace() != flare_ctl::Namespace::Device)
+            .collect()
+    }
     fn call(&self, _ctx: &CallContext, m: Method, p: Value) -> Result<Value, CtlError> {
         self.calls.lock().unwrap().push((m, p.clone()));
         match m {

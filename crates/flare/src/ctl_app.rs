@@ -38,6 +38,9 @@ use serde_json::{Value, json};
 
 use crate::appctl::{Post, UiMsg};
 
+#[path = "ctl_device.rs"]
+mod device;
+
 /// The most text `view.text` takes, and so the most a panel shows of it (the same 4 MB a file gets).
 pub const TEXT_MAX: usize = preview::TEXT_CAP;
 /// How long a call waits for the UI thread before it answers `timeout`. Under the channel's own 15 s,
@@ -150,6 +153,14 @@ pub enum CtlOp {
         tab: String,
         op: AgentOp,
         /// Raised when the call's client has gone: the job ends at the next turn of the agent timer.
+        cancel: CancelFlag,
+    },
+    /// `device.*` (device panel PR 5): the agent uses the device panel of its own tab (rule 1322). Answered by the
+    /// device controller when the call is done, or when the person takes over (`interrupted`).
+    DeviceAgent {
+        tab: String,
+        op: crate::device_ctl::AgentReq,
+        /// Raised when the call's client has gone: a running input call ends at the next tick.
         cancel: CancelFlag,
     },
     /// `browser.point` (rule 254): the agent's arrow over the tab's web page, or none (`clear`). Not a job: answered`n    /// once the arrow is measured, by the browser's message.
@@ -453,6 +464,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::BrowserNavigate { .. } => "CtlOp::BrowserNavigate",
             CtlOp::BrowserAgent { .. } => "CtlOp::BrowserAgent",
             CtlOp::BrowserPoint { .. } => "CtlOp::BrowserPoint",
+            CtlOp::DeviceAgent { .. } => "CtlOp::DeviceAgent",
             CtlOp::ShowMod { .. } => "CtlOp::ShowMod",
             CtlOp::ModTool { .. } => "CtlOp::ModTool",
             CtlOp::BadgeSet { .. } => "CtlOp::BadgeSet",
@@ -584,6 +596,9 @@ pub struct AppDispatcher {
     /// Remote sessions (PR 5): the machines `open.remote` may name (the profile's `machines.json`). Without it
     /// `open.remote` is neither listed nor answered.
     machines: Option<Arc<dyn crate::machines::MachinesPort>>,
+    /// Device panel PR 5: the agent's `device.*` tools work in this run (kept by the window: the panel is offered with
+    /// an Xcode, and the window shows). False lists none and answers each `unavailable`.
+    device: Arc<AtomicBool>,
     /// The staged build of an installed copy (rule 1326): `install.staged` reads it. Without it (a build run from a
     /// build folder) `install.staged` is not listed and answers `refused`.
     staged: Option<crate::appctl::staged_glue::StagedProbe>,
@@ -625,6 +640,7 @@ impl AppDispatcher {
             clock: Instant::now,
             remote: None,
             machines: None,
+            device: Arc::new(AtomicBool::new(false)),
             staged: None,
             staged_mac: cfg!(target_os = "macos"),
         }
@@ -3133,6 +3149,15 @@ impl Dispatcher for AppDispatcher {
                 Method::ViewModel,
             ]);
         }
+        // The device panel's tools (device panel PR 5) only where they work: macOS on Apple silicon with Xcode, in a
+        // Flare that shows a window, or the fake source under `--e2e`.
+        if self.device.load(Ordering::SeqCst) {
+            all.extend(
+                Method::ALL
+                    .into_iter()
+                    .filter(|m| m.namespace() == flare_ctl::Namespace::Device),
+            );
+        }
         // Opening a remote session (PR 5) only where this run has its machines.
         if self.machines.is_some() {
             all.push(Method::OpenRemoteSession);
@@ -3319,6 +3344,11 @@ impl AppDispatcher {
                         }
                         self.open_mod_panel(ctx, id, &params)
                     }
+                    // The device panel is the agent's through `device.boot` only (spec "Protocol changes").
+                    Some("device") => Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        "panel.open does not open the device panel; device_boot (device.boot) boots a device and shows it in this tab's panel",
+                    )),
                     Some(_) => Err(CtlError::new(
                         code::BAD_PARAMS,
                         "panel.open takes kind web, changes or mod:<id>; use view.image, view.file or view.text",
@@ -3436,6 +3466,18 @@ impl AppDispatcher {
             | Method::RemoteFind => self.remote_call(ctx, method, &params),
             Method::OpenRemoteSession => self.open_remote(ctx, &params),
             Method::InstallStaged => self.install_staged(&params),
+            Method::DeviceList
+            | Method::DeviceBoot
+            | Method::DeviceShutdown
+            | Method::DeviceLook
+            | Method::DeviceUi
+            | Method::DeviceTap
+            | Method::DeviceSwipe
+            | Method::DeviceType
+            | Method::DevicePress
+            | Method::DeviceLaunch
+            | Method::DeviceInstall
+            | Method::DeviceState => self.device_call(ctx, method, &params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?
@@ -3537,6 +3579,11 @@ impl CtlServer {
             stopping,
             dispatcher,
         })
+    }
+
+    /// The device gate the window keeps (device panel PR 5): whether `hello` lists the `device.*` tools.
+    pub fn device_gate(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.dispatcher.device)
     }
 
     /// The dispatcher the pipe's calls run on, for the window's own in-process calls (a mod's page talks to
@@ -7212,5 +7259,385 @@ mod tests {
             (none["entries"].clone(), none["reset"].clone()),
             (json!([]), json!(true))
         );
+    }
+
+    // ---- device panel PR 5: the agent's `device.*` ---------------------------------------------------------------
+
+    const SIM: &str = "sim/00000000-0000-4000-8000-000000000001";
+
+    /// A rig whose window answers every device call with the tab it was posted for.
+    fn device_tab_rig() -> Rig {
+        let r = rig(
+            |op| match op {
+                CtlOp::DeviceAgent { tab, op, .. } => {
+                    Ok(json!({"tab": tab, "op": format!("{op:?}")}))
+                }
+                CtlOp::TabCwd { .. } => Ok(json!({"cwd": "/nowhere"})),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        Rig {
+            d: r.d.with_device(true),
+            ops: r.ops,
+        }
+    }
+
+    /// The window as a real device controller over the fake, on the test's thread: each posted device call is handed
+    /// to it there, as the UI thread would.
+    struct DeviceWindow {
+        d: Arc<AppDispatcher>,
+        rx: mpsc::Receiver<CtlRequest>,
+        dev: crate::device_ctl::DeviceCtl,
+        panels: crate::panel_ctl::PanelCtl,
+    }
+
+    impl DeviceWindow {
+        fn new(fake: flare_device::fake::FakeSource) -> Self {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let post: Post = Arc::new(move |m: UiMsg| {
+                if let UiMsg::Ctl(CtlRequestBox(req)) = m {
+                    let _ = tx.lock().unwrap().send(req);
+                }
+            });
+            let ui_post: Post = Arc::new(|_| {});
+            let mut panels = crate::panel_ctl::PanelCtl::new(Arc::clone(&ui_post));
+            panels.set_device_offered(true);
+            let d = AppDispatcher::new(
+                post,
+                Arc::new(|t| (t == "secret").then(|| "tab-1".to_string())),
+                real_resolve(),
+                "/home".into(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .with_device(true);
+            Self {
+                d: Arc::new(d),
+                rx,
+                dev: crate::device_ctl::DeviceCtl::new(ui_post, std::rc::Rc::new(|| 0), Some(fake)),
+                panels,
+            }
+        }
+
+        fn sync(&mut self) {
+            let effects = self
+                .dev
+                .update(&self.panels, Some("tab-1"), false, HashMap::new());
+            for e in effects {
+                match e {
+                    crate::device_ctl::Effect::SetTarget { tab, target } => {
+                        if !self.panels.set_device_target(&tab, &target) {
+                            self.panels.show(&tab, PanelKind::Device, &target);
+                        }
+                    }
+                    crate::device_ctl::Effect::Close(tab) => {
+                        self.panels.close(&tab);
+                    }
+                    _ => {}
+                }
+            }
+            let _ = self
+                .dev
+                .update(&self.panels, Some("tab-1"), false, HashMap::new());
+        }
+
+        /// One agent call from the tab, run through the dispatcher and the controller.
+        fn call(&mut self, m: Method, p: Value) -> Result<Value, CtlError> {
+            let d = Arc::clone(&self.d);
+            let h = std::thread::spawn(move || d.call(&agent_in_tab(), m, p));
+            if let Ok(req) = self.rx.recv_timeout(Duration::from_secs(5)) {
+                match req.op {
+                    CtlOp::DeviceAgent { tab, op, cancel } => {
+                        self.dev.start_agent(crate::device_ctl::AgentCall {
+                            tab,
+                            req: op,
+                            reply: req.reply,
+                            cancel,
+                            label: "Claude".into(),
+                        });
+                        self.sync();
+                    }
+                    CtlOp::TabCwd { .. } => {
+                        let _ = req.reply.send(Ok(json!({"cwd": "/nowhere"})));
+                    }
+                    _ => {
+                        let _ = req
+                            .reply
+                            .send(Err(CtlError::new(code::INTERNAL, "unexpected op")));
+                    }
+                }
+            }
+            h.join().unwrap()
+        }
+    }
+
+    #[test]
+    fn device_calls_act_on_the_callers_own_tab_only() {
+        let r = device_tab_rig();
+        for (m, p) in [
+            (Method::DeviceLook, json!({})),
+            (Method::DeviceTap, json!({"x": 10, "y": 20})),
+            (Method::DeviceState, json!({})),
+            (Method::DeviceBoot, json!({})),
+        ] {
+            let v = r.d.call(&agent_in_tab(), m, p).unwrap();
+            assert_eq!(v["tab"], "tab-1", "{}", m.name());
+        }
+        // No tab named in the params can widen it: an unknown key is refused before the window hears of it.
+        let n = r.ops.lock().unwrap().len();
+        let e =
+            r.d.call(
+                &agent_in_tab(),
+                Method::DeviceTap,
+                json!({"x": 1, "y": 1, "tab": "tab-2"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::BAD_PARAMS);
+        // A connection with no tab has no panel to act on.
+        let e =
+            r.d.call(&ctx(None, Grant::agent()), Method::DeviceLook, json!({}))
+                .unwrap_err();
+        assert_eq!(e.code, code::NO_TAB);
+        assert_eq!(r.ops.lock().unwrap().len(), n, "nothing more was posted");
+        // Bad params are named before the window is asked.
+        for (m, p) in [
+            (Method::DeviceTap, json!({})),
+            (Method::DeviceTap, json!({"ref": "d1", "x": 1, "y": 2})),
+            (Method::DeviceTap, json!({"ref": "e12"})),
+            (Method::DeviceSwipe, json!({"from": {"x": 1, "y": 2}})),
+            (Method::DeviceSwipe, json!({"direction": "sideways"})),
+            (Method::DeviceType, json!({})),
+            (Method::DevicePress, json!({"button": "power"})),
+            (
+                Method::DevicePress,
+                json!({"button": "home", "key": "return"}),
+            ),
+            (Method::DeviceLaunch, json!({"app": "rm -rf"})),
+            (Method::DeviceBoot, json!({"target": "nope", "name": "x"})),
+            (Method::DeviceInstall, json!({})),
+        ] {
+            let e = r.d.call(&agent_in_tab(), m, p.clone()).unwrap_err();
+            assert_eq!(e.code, code::BAD_PARAMS, "{} {p}", m.name());
+        }
+        assert_eq!(r.ops.lock().unwrap().len(), n);
+    }
+
+    #[test]
+    fn device_shutdown_is_forbidden_for_a_device_flare_did_not_boot() {
+        use flare_device::source::DeviceState;
+        let fake = flare_device::fake::FakeSource::new(vec![
+            flare_device::fake::iphone(
+                "00000000-0000-4000-8000-000000000001",
+                "iPhone 18 Pro",
+                DeviceState::Booted,
+            )
+            .unwrap(),
+            flare_device::fake::iphone(
+                "00000000-0000-4000-8000-000000000002",
+                "iPhone 18",
+                DeviceState::Shutdown,
+            )
+            .unwrap(),
+        ]);
+        let mut w = DeviceWindow::new(fake);
+        // The person's own simulator (booted before Flare): the agent sees it, and may not shut it down.
+        let v = w
+            .call(Method::DeviceBoot, json!({"target": SIM}))
+            .expect("shows the booted device");
+        assert_eq!(v["already"], true);
+        let e = w.call(Method::DeviceShutdown, json!({})).unwrap_err();
+        assert_eq!(e.code, "forbidden", "{}", e.message);
+        assert!(e.message.contains("did not boot"), "{}", e.message);
+        assert!(
+            w.dev.fake().unwrap().inputs().is_empty(),
+            "nothing was sent"
+        );
+        // A device the agent booted through Flare is Flare's to shut down; the panel closes with it.
+        let v = w
+            .call(Method::DeviceBoot, json!({"name": "iPhone 18"}))
+            .expect("boots");
+        assert_eq!(v["booted"], true);
+        let v = w
+            .call(Method::DeviceShutdown, json!({}))
+            .expect("shuts down");
+        assert_eq!(v["shut_down"], "sim/00000000-0000-4000-8000-000000000002");
+        assert!(w.panels.device_panels().iter().all(|(_, _, open)| !open));
+    }
+
+    /// A simulator `.app` with its Info.plist.
+    fn sim_app(dir: &std::path::Path, name: &str, platform: &str) -> std::path::PathBuf {
+        let app = dir.join(name);
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            app.join("Info.plist"),
+            format!("<plist><key>CFBundleSupportedPlatforms</key><array><string>{platform}</string></array></plist>"),
+        )
+        .unwrap();
+        app
+    }
+
+    #[test]
+    fn device_install_outside_the_tab_folder_or_derived_data_is_forbidden() {
+        let root = tempfile::tempdir().unwrap();
+        let tab = root.path().join("project");
+        let home = root.path().join("home");
+        let derived = device::derived_data(&home);
+        let elsewhere = root.path().join("elsewhere");
+        for d in [&tab, &derived, &elsewhere] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let own = sim_app(&tab.join("build"), "Demo.app", "iPhoneSimulator");
+        let built = sim_app(
+            &derived.join("Demo-abc/Build/Products/Debug-iphonesimulator"),
+            "Demo.app",
+            "iPhoneSimulator",
+        );
+        let outside = sim_app(&elsewhere, "Other.app", "iPhoneSimulator");
+        let device_build = sim_app(&tab, "Phone.app", "iPhoneOS");
+        assert!(device::install_ok(&own, &tab, &derived).is_ok());
+        assert!(
+            device::install_ok(std::path::Path::new("build/Demo.app"), &tab, &derived).is_ok(),
+            "relative to the tab's folder"
+        );
+        assert!(
+            device::install_ok(&built, &tab, &derived).is_ok(),
+            "DerivedData"
+        );
+        let e = device::install_ok(&outside, &tab, &derived).unwrap_err();
+        assert_eq!(e.code, "forbidden");
+        let e =
+            device::install_ok(&tab.join("../elsewhere/Other.app"), &tab, &derived).unwrap_err();
+        assert_eq!(e.code, "forbidden", "a .. out of the folder");
+        let e = device::install_ok(&device_build, &tab, &derived).unwrap_err();
+        assert_eq!(
+            e.code,
+            code::BAD_PARAMS,
+            "a device build is no simulator build"
+        );
+        let e = device::install_ok(&tab.join("missing.app"), &tab, &derived).unwrap_err();
+        assert_eq!(e.code, code::NOT_FOUND);
+        // Through the channel: the tab's folder comes from the window, the check runs before the install is posted.
+        let tab_s = tab.to_string_lossy().into_owned();
+        let r = rig(
+            move |op| match op {
+                CtlOp::TabCwd { .. } => Ok(json!({"cwd": tab_s.clone()})),
+                CtlOp::DeviceAgent { op, .. } => Ok(json!({"op": format!("{op:?}")})),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let mut d = r.d.with_device(true);
+        d.home = home.to_string_lossy().into_owned();
+        let e = d
+            .call(
+                &agent_in_tab(),
+                Method::DeviceInstall,
+                json!({"path": outside}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, "forbidden");
+        let v = d
+            .call(
+                &agent_in_tab(),
+                Method::DeviceInstall,
+                json!({"path": built}),
+            )
+            .unwrap();
+        assert!(v["op"].as_str().unwrap().contains("Install"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_install_follows_symlinks_before_the_folder_check() {
+        let root = tempfile::tempdir().unwrap();
+        let tab = root.path().join("project");
+        let derived = device::derived_data(&root.path().join("home"));
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(&tab).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let outside = sim_app(&elsewhere, "Other.app", "iPhoneSimulator");
+        // A link inside the tab's folder to an app outside it: refused, the link is followed first.
+        let link = tab.join("Link.app");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let e = device::install_ok(&link, &tab, &derived).unwrap_err();
+        assert_eq!(e.code, "forbidden", "{}", e.message);
+        // A link to a folder that leads outside, used as a path's middle, too.
+        std::os::unix::fs::symlink(&elsewhere, tab.join("out")).unwrap();
+        let e = device::install_ok(&tab.join("out/Other.app"), &tab, &derived).unwrap_err();
+        assert_eq!(e.code, "forbidden");
+        // A tab folder that is itself a link still holds its own apps (the root is resolved too).
+        let real_tab = root.path().join("real-project");
+        std::fs::create_dir_all(&real_tab).unwrap();
+        let own = sim_app(&real_tab, "Own.app", "iPhoneSimulator");
+        let tab_link = root.path().join("tab-link");
+        std::os::unix::fs::symlink(&real_tab, &tab_link).unwrap();
+        let got = device::install_ok(&tab_link.join("Own.app"), &tab_link, &derived).unwrap();
+        assert_eq!(
+            got,
+            std::fs::canonicalize(own).unwrap(),
+            "the resolved path is what installs"
+        );
+    }
+
+    #[test]
+    fn panel_open_refuses_kind_device_and_names_device_boot() {
+        let r = device_tab_rig();
+        for g in [agent_in_tab(), ctx(Some("tab-1"), Grant::Ui)] {
+            let e =
+                r.d.call(&g, Method::PanelOpen, json!({"kind": "device"}))
+                    .unwrap_err();
+            assert_eq!(e.code, code::BAD_PARAMS);
+            assert!(e.message.contains("device_boot"), "{}", e.message);
+        }
+        assert!(r.ops.lock().unwrap().is_empty(), "nothing was posted");
+    }
+
+    #[test]
+    fn capabilities_list_device_only_on_a_mac_with_xcode() {
+        let device = |caps: &[Method]| {
+            caps.iter()
+                .filter(|m| m.namespace() == flare_ctl::Namespace::Device)
+                .count()
+        };
+        // Where the device panel does not work (Windows, an Intel Mac, no Xcode, a hidden host): none, and each call
+        // answers `unavailable` with nothing posted.
+        let r = rig(ok_all, false, FILES);
+        assert_eq!(device(&r.d.capabilities()), 0);
+        let e =
+            r.d.call(&agent_in_tab(), Method::DeviceLook, json!({}))
+                .unwrap_err();
+        assert_eq!(e.code, code::UNAVAILABLE);
+        assert!(e.message.contains("Xcode"), "{}", e.message);
+        assert!(r.ops.lock().unwrap().is_empty());
+        // The window says it works (Apple silicon, an Xcode, a window that shows): all twelve, `device.look` with them.
+        let caps = r.d.with_device(true).capabilities();
+        assert_eq!(device(&caps), 12);
+        assert!(caps.contains(&Method::DeviceLook));
+    }
+
+    #[test]
+    fn a_remote_or_hidden_session_gets_unavailable_and_nothing_boots() {
+        let (d, ops, host) = remote_rig();
+        let d = d.with_device(true);
+        let _tail = a_followed_tab(&host, "tab-1", 7);
+        for (m, p) in [
+            (Method::DeviceBoot, json!({})),
+            (Method::DeviceTap, json!({"x": 1, "y": 2})),
+            (Method::DeviceList, json!({})),
+        ] {
+            let e = d.call(&agent_in_tab(), m, p).unwrap_err();
+            assert_eq!(e.code, code::UNAVAILABLE, "{}", m.name());
+            assert_eq!(e.message, crate::device_ctl::REMOTE_WORDS);
+        }
+        assert!(
+            ops.lock().unwrap().is_empty(),
+            "nothing was posted, so nothing boots"
+        );
+        // The remote link and the bridge never reach `device.*` at all (rule 1322).
+        assert!(!Grant::Remote.may_call(Method::DeviceBoot));
+        assert!(!Grant::Bridge.may_call(Method::DeviceBoot));
     }
 }

@@ -3161,3 +3161,31 @@ Xcode, a tab can show a live iPhone simulator beside it and the person can use i
 - **Tests.** `cargo nextest run -p flare -E 'test(device)'`; the opt-in e2e `deviceReal` boots a simulator it makes
   on the GitHub macOS runner (`gh workflow run ci --ref <branch> -f e2e_only=true -f e2e_filter='deviceReal'`).
 
+## Device panel (issue #248), PR 5: the agent drives it, 2026-11-20
+
+Issue #248, spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan
+`docs/superpowers/plans/2026-11-19-device-panel.md` (PR 5). Claude in a tab can boot, look at and use an iPhone
+simulator in that tab's device panel, while the person watches and can take over at any moment.
+
+- **Twelve tools.** `device_list`, `device_boot`, `device_shutdown`, `device_look`, `device_ui`, `device_tap`,
+  `device_swipe`, `device_type`, `device_press`, `device_launch`, `device_install` and `device_state`, one to one with
+  the new `device.*` methods (`docs/surfaces/protocol.md`). `flare-mcp` lists them only where they work: a Mac with
+  Apple silicon and Xcode, in a Flare that shows a window. So the agent sees **36 tools on a Mac with Xcode, 24
+  elsewhere** (Windows, an Intel Mac, no Xcode, no Flare). A change (Xcode found later) is announced with
+  `notifications/tools/list_changed`.
+- **Looking.** `device_look` answers a screenshot at point size and the screen's elements (the accessibility tree,
+  filtered, at most 300) with refs `d1, d2, ...`, in device points; the text comes first and the device's words sit
+  between `BEGIN DEVICE CONTENT` and `END DEVICE CONTENT` (rule 1315).
+- **Acting.** A tap, a swipe, typing and a button or key go to the device as a finger would: the agent's finger dot
+  glides to the point first (the agent cursor's timing), ripples on the tap, leaves a trail on a swipe, and a "Typing..."
+  badge shows while it types, with the orange glow round the picture; none of it is ever in the screenshot (rule 1321).
+  Each call answers once the screen changed, or after 300 ms.
+- **Takeover.** The person's press, key or scroll in the panel ends the agent's call at once with `interrupted` and
+  hides the dot; the agent is told to look again (rule 1320).
+- **Limits.** The tools act on the caller's own tab's panel only, shut down only a simulator Flare booted, install only
+  an `.app` from the tab's folder or Xcode's DerivedData (symlinks resolved first), and never run in a remote session
+  (rule 1322, 1323). Plugins have no device access.
+- **`/device`.** The Claude plugin gains a `/device [name]` command: boots the device, looks once, waits.
+- **Tests.** `cargo nextest run -p flare -E 'test(device)'`, `cargo nextest run -p flare-mcp`, `cargo nextest run -p
+  flare-ctl`; the e2e `deviceAgent` and `mcpDevice` run on the fake source.
+

@@ -224,7 +224,7 @@ backgroundWork, agentKeys, cogToggle, accentAsk, titleBar, settingsPage, restore
 powerlineGlyphs, markerLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
 reviewKeys, dropAndMenu, helpPanel, options, diagLog, settingsLook, settingsSearch, settingsKeys, themeEditorLive,
 themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, seeThrough, themeCards, edges, accent,
-exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, ctlChannel,
+exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, deviceAgent, mcpDevice, ctlChannel,
 mcpRoundTrip, convoPanels, questionToast.
 
 Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
@@ -512,6 +512,17 @@ PR 4b adds `menu` (the tab menu's Device panel entry shows), `path` (`none`, `gp
 the screen), `ring_frames` (ring frames the notifier drew), `ring_showing`, `slots_held` (ring slots Flare holds now),
 `refused` (why the GPU import was refused), `hello` (the sim host's facts), `booted_by_flare` (the udids in
 `booted.json`) and `turn` (the picture's turn in degrees).
+
+`deviceAgent` and `mcpDevice` (device panel PR 5, same file, same fake, Windows and Mac): `deviceAgent` speaks the
+channel with the `flare-ctl` client as the front tab's agent: `hello` lists the twelve `device.*` methods, `device.list`
+names the fake, `device.boot` shows it live in the tab's own panel, `device.look` gives a PNG and the tree with refs, a
+tap by ref lands at the element's middle in device points (a stale ref is `not_found`), typing and `home` reach the
+fake, a long press is ended `interrupted` by `DeviceUserInput` (the takeover, rule 1320) with the dot gone, `panel.open`
+kind device is refused naming `device_boot`, and `device.shutdown` closes the panel (the agent booted it). `mcpDevice`
+runs the built `flare-mcp` over stdio: the instructions name the device tools, `tools/list` has 36 built-in tools, the
+look answers text then a PNG with the device content between its markers, a tap by ref, `device_state`. The probe
+`device.state` gains `agent`: the running `jobs` (`{tab, op}`), the tab the `indicators` belong to, and what the window
+draws of them (`dot` `{x, y, alpha, ripples}`, `glow`, `badge`, `trail`).
 
 `tools/e2e/src/scenarios/device_real.rs`: `deviceReal` (device panel PR 4b), **opt-in** (`scenarios::OPT_IN`: only a
 filter word that is its whole name runs it), on a Mac with Apple silicon, Xcode and an iOS runtime (the GitHub macOS
