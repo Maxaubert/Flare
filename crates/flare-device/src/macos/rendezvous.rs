@@ -47,6 +47,7 @@ const MACH_MSG_TYPE_MAKE_SEND: u8 = 20;
 const MACH_MSG_TYPE_MAKE_SEND_U32: u32 = 20;
 const MACH_MSGH_BITS_COMPLEX: u32 = 0x8000_0000;
 const MACH_MSG_PORT_DESCRIPTOR: u8 = 0;
+const MACH_PORT_RIGHT_SEND: u32 = 0;
 const MACH_PORT_RIGHT_RECEIVE: u32 = 1;
 const MACH_PORT_LIMITS_INFO: i32 = 1;
 
@@ -94,6 +95,26 @@ const DESC_LEN: usize = std::mem::size_of::<PortDesc>();
 #[repr(C, align(8))]
 struct RcvBuf([u8; 1024]);
 
+/// Sends a complete mach message built by hand (`buf` starts with its header, `len` bytes go), with a send
+/// timeout: the kern_return. Used for the Purple orientation event (orient.rs).
+pub(crate) fn send_raw(buf: &mut [u8], len: u32, timeout_ms: u32) -> i32 {
+    if buf.len() < (len as usize).max(std::mem::size_of::<Header>()) {
+        return -1;
+    }
+    // SAFETY: the buffer holds the whole message, header first (checked above); send only, with a timeout.
+    unsafe {
+        mach_msg(
+            buf.as_mut_ptr().cast::<Header>(),
+            MACH_SEND_MSG | MACH_SEND_TIMEOUT,
+            len,
+            0,
+            0,
+            timeout_ms,
+            0,
+        )
+    }
+}
+
 unsafe extern "C" {
     static bootstrap_port: Port;
     static mach_task_self_: Port;
@@ -111,6 +132,7 @@ unsafe extern "C" {
     fn mach_msg_destroy(msg: *mut Header);
     fn mach_port_allocate(task: Port, right: u32, name: *mut Port) -> i32;
     fn mach_port_deallocate(task: Port, name: Port) -> i32;
+    fn mach_port_get_refs(task: Port, name: Port, right: u32, refs: *mut u32) -> i32;
     fn mach_port_mod_refs(task: Port, name: Port, right: u32, delta: i32) -> i32;
     fn mach_port_set_attributes(
         task: Port,
@@ -158,6 +180,27 @@ fn drop_receive(p: Port) {
 fn drop_send(p: Port) {
     // SAFETY: a send right this process holds.
     unsafe { mach_port_deallocate(task(), p) };
+}
+
+/// Drops one reference of a send right this process holds (a port from `-[SimDevice lookup:error:]`).
+pub(crate) fn release_send(p: Port) {
+    drop_send(p);
+}
+
+/// The user references this process holds on `p`'s send right (0 when it holds none).
+pub(crate) fn send_refs(p: Port) -> u32 {
+    let mut refs = 0u32;
+    // SAFETY: a query of our own task's name space; a name we do not hold gives an error and 0.
+    let kr = unsafe { mach_port_get_refs(task(), p, MACH_PORT_RIGHT_SEND, &mut refs) };
+    if kr == 0 { refs } else { 0 }
+}
+
+/// Drops `n` references of a send right this process holds.
+pub(crate) fn drop_send_refs(p: Port, n: u32) {
+    if n > 0 {
+        // SAFETY: references this process holds and gained itself (the caller counted them).
+        unsafe { mach_port_mod_refs(task(), p, MACH_PORT_RIGHT_SEND, -(n as i32)) };
+    }
 }
 
 /// Flare's pid from a service name (`com.flare.terminal.simhost.<pid>.<n>`).

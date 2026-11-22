@@ -8,12 +8,16 @@
 //! comes back as a [`SourceEvent`].
 //!
 //! The pure parts work everywhere: the restart policy ([`Restarts`]), the newest-frame mailbox ([`Mailbox`]), the
-//! hello check ([`check_hello`]) and the still pictures' decoding ([`decode_png`]).
+//! hello check ([`check_hello`]), the still pictures' decoding ([`decode_png`]), and two the sim host runs: input
+//! that waits for the device's input connection ([`InputQueue`], up to [`INPUT_WAIT`]) and how text is typed
+//! ([`text_steps`]: keys, or the simulator's own pasteboard and Cmd-V, never the Mac's, rule 1314).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::geom::Size;
+use crate::keymap::{self, Typing, usage};
+use crate::source::Key;
 use crate::versions::{self, Support};
 use crate::wire::{FrameRecord, Hello, PROTOCOL};
 
@@ -143,6 +147,105 @@ pub fn decode_png(png_bytes: &[u8]) -> Option<(Size, Vec<u8>)> {
     (rgba.len() == w * h * 4).then(|| (Size::new(w as f64, h as f64), rgba))
 }
 
+/// How long input waits for the device's input connection before it is dropped with a log line (spike S1: the
+/// simulator's input service answered up to 11.6 s after a cold boot; the agent's own wait is the same 20 s).
+pub const INPUT_WAIT: Duration = Duration::from_secs(20);
+
+/// Input (touches, keys, buttons, text) waiting, in order, for the device's input connection. Each item waits at
+/// most [`INPUT_WAIT`] from when it came; then it is dropped, so a finger never lands long after the person or the
+/// agent moved on.
+#[derive(Debug)]
+pub struct InputQueue<T> {
+    waiting: VecDeque<(Instant, T)>,
+    wait: Duration,
+}
+
+impl<T> Default for InputQueue<T> {
+    fn default() -> Self {
+        InputQueue::new(INPUT_WAIT)
+    }
+}
+
+impl<T> InputQueue<T> {
+    pub fn new(wait: Duration) -> Self {
+        InputQueue {
+            waiting: VecDeque::new(),
+            wait,
+        }
+    }
+
+    pub fn push(&mut self, item: T, now: Instant) {
+        self.waiting.push_back((now, item));
+    }
+
+    /// The items that waited longer than the limit, oldest first: they are gone.
+    pub fn expire(&mut self, now: Instant) -> Vec<T> {
+        let mut out = Vec::new();
+        while let Some((t, _)) = self.waiting.front() {
+            if now.saturating_duration_since(*t) <= self.wait {
+                break;
+            }
+            if let Some((_, item)) = self.waiting.pop_front() {
+                out.push(item);
+            }
+        }
+        out
+    }
+
+    /// The connection is live: what still may go, in order, and what waited too long.
+    pub fn release(&mut self, now: Instant) -> (Vec<T>, Vec<T>) {
+        let dropped = self.expire(now);
+        (self.waiting.drain(..).map(|(_, i)| i).collect(), dropped)
+    }
+
+    /// When the oldest item runs out of time.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.waiting.front().map(|(t, _)| *t + self.wait)
+    }
+
+    pub fn len(&self) -> usize {
+        self.waiting.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.waiting.is_empty()
+    }
+}
+
+/// One step of typing a text in the simulator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextStep {
+    /// HID keyboard events, in order.
+    Keys(Vec<Key>),
+    /// Write the simulator's own pasteboard (`simctl pbcopy <udid>`); the Mac's clipboard is never touched.
+    Pasteboard(String),
+}
+
+/// Cmd-V: paste the simulator's pasteboard.
+pub fn paste_keys() -> Vec<Key> {
+    let k = |usage, down| Key { usage, down };
+    vec![
+        k(usage::LEFT_GUI, true),
+        k(usage::V, true),
+        k(usage::V, false),
+        k(usage::LEFT_GUI, false),
+    ]
+}
+
+/// How `text` is typed (rule 1314): every character as HID keys with the US keymap, or, when one has no key, the
+/// whole text through the simulator's pasteboard and Cmd-V (so its order is kept). Empty text types nothing.
+pub fn text_steps(text: &str) -> Vec<TextStep> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    match keymap::typing(text) {
+        Typing::Keys(keys) => vec![TextStep::Keys(
+            keys.into_iter().flat_map(keymap::events).collect(),
+        )],
+        Typing::Paste(t) => vec![TextStep::Pasteboard(t), TextStep::Keys(paste_keys())],
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub use mac::{Shoot, SimConfig, SimSource};
 
@@ -216,6 +319,8 @@ mod mac {
     enum Kind {
         List,
         Done,
+        Png,
+        Tree,
     }
 
     /// One attached target: paused or not.
@@ -479,6 +584,20 @@ mod mac {
                             Answer::Devices(list)
                         }
                         Some(Kind::Done) => Answer::Done,
+                        Some(Kind::Png) => match crate::wire::png_of(&result) {
+                            Some(p) => Answer::Png(p),
+                            None => {
+                                self.fail(id, Fail::Unavailable, "the sim host sent no PNG");
+                                return;
+                            }
+                        },
+                        Some(Kind::Tree) => match crate::wire::tree_of(&result) {
+                            Some(t) => Answer::Tree(t),
+                            None => {
+                                self.fail(id, Fail::Unavailable, "the sim host sent no UI tree");
+                                return;
+                            }
+                        },
                         None => return,
                     };
                     self.answer(id, Ok(answer));
@@ -525,6 +644,9 @@ mod mac {
                 }
                 HostLine::State { target, state } => {
                     self.event(SourceEvent::State { target, state })
+                }
+                HostLine::Input { target, state } => {
+                    self.event(SourceEvent::Input { target, state })
                 }
                 HostLine::Broken { why } => self.go_still(why),
             }
@@ -589,6 +711,10 @@ mod mac {
         cmd.args(&cfg.pre_args);
         if let Some(s) = &sh.server {
             cmd.args(["--rendezvous", s.name()]);
+        }
+        // A sim host started again after one ended ends any finger the old one left down.
+        if lock(&sh.state).starts > 0 {
+            cmd.arg("--restarted");
         }
         cmd.arg("--log")
             .arg(&cfg.log)
@@ -1045,7 +1171,7 @@ mod mac {
                     target: target.clone(),
                 },
                 id,
-                Some(Kind::Done),
+                Some(Kind::Png),
             );
             id
         }
@@ -1061,7 +1187,7 @@ mod mac {
                     at: None,
                 },
                 id,
-                Some(Kind::Done),
+                Some(Kind::Tree),
             );
             id
         }
@@ -1164,6 +1290,138 @@ mod tests {
             "the first end aged out"
         );
         assert!(STILL_SPACING >= Duration::from_millis(1000 / u64::from(STILL_FPS)));
+    }
+
+    #[test]
+    fn touches_wait_up_to_twenty_seconds_for_the_connection_then_drop() {
+        assert_eq!(INPUT_WAIT, Duration::from_secs(20));
+        let s = Duration::from_secs;
+        let t0 = Instant::now();
+        let mut q = InputQueue::default();
+        q.push("start", t0);
+        q.push("end", t0 + s(1));
+        assert!(
+            q.expire(t0 + s(19)).is_empty(),
+            "nothing is dropped before 20 s"
+        );
+        assert_eq!(q.len(), 2);
+        // The connection is live at 19.5 s: both go, in order.
+        let (go, dropped) = q.release(t0 + Duration::from_millis(19_500));
+        assert_eq!(go, ["start", "end"]);
+        assert!(dropped.is_empty());
+        assert!(q.is_empty());
+        // A touch that waited past 20 s is dropped; a later one waits on.
+        q.push("a", t0);
+        q.push("b", t0 + s(5));
+        assert_eq!(q.next_deadline(), Some(t0 + s(20)));
+        assert_eq!(q.expire(t0 + Duration::from_millis(20_500)), ["a"]);
+        assert_eq!(q.next_deadline(), Some(t0 + s(25)));
+        // Still no connection at 26 s: the rest is dropped too, nothing goes.
+        let (go, dropped) = q.release(t0 + s(26));
+        assert!(go.is_empty());
+        assert_eq!(dropped, ["b"]);
+    }
+
+    #[test]
+    fn non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs() {
+        use crate::keymap::usage;
+        // Keymap text is typed as keys, shift included; nothing is pasted.
+        let k = |usage, down| Key { usage, down };
+        assert_eq!(
+            text_steps("Hi"),
+            vec![TextStep::Keys(vec![
+                k(usage::LEFT_SHIFT, true),
+                k(0x0B, true),
+                k(0x0B, false),
+                k(usage::LEFT_SHIFT, false),
+                k(0x0C, true),
+                k(0x0C, false),
+            ])]
+        );
+        // Text with a character the keymap lacks goes whole through the simulator's pasteboard, then Cmd-V.
+        assert_eq!(
+            text_steps("caf\u{e9} ok"),
+            vec![
+                TextStep::Pasteboard("caf\u{e9} ok".into()),
+                TextStep::Keys(vec![
+                    k(usage::LEFT_GUI, true),
+                    k(usage::V, true),
+                    k(usage::V, false),
+                    k(usage::LEFT_GUI, false),
+                ]),
+            ]
+        );
+        assert!(text_steps("").is_empty());
+        // Nothing in this crate reaches the Mac's clipboard (the needles are split so this file does not match).
+        let needles = [
+            concat!("NS", "Pasteboard"),
+            concat!("/usr/bin/", "pbcopy"),
+            concat!("/usr/bin/", "pbpaste"),
+            concat!("Command::new(\"", "pb"),
+            concat!("general", "Pasteboard"),
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src.clone()];
+        let mut seen = 0;
+        while let Some(p) = files.pop() {
+            if p.is_dir() {
+                files.extend(std::fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                seen += 1;
+                let text = std::fs::read_to_string(&p).unwrap();
+                for n in needles {
+                    assert!(!text.contains(n), "{} uses {n}", p.display());
+                }
+            }
+        }
+        assert!(seen > 10, "the crate's sources were read");
+        #[cfg(target_os = "macos")]
+        {
+            // The pasteboard written is the simulator's: `xcrun simctl pbcopy <udid>`.
+            let t = target();
+            let c = crate::macos::simctl::Simctl::new(Path::new(
+                "/Applications/Xcode.app/Contents/Developer",
+            ))
+            .pbcopy_command(&t);
+            assert_eq!(c.get_program(), "/usr/bin/xcrun");
+            let args: Vec<_> = c
+                .get_args()
+                .map(|a| a.to_string_lossy().to_string())
+                .collect();
+            assert_eq!(args, ["simctl", "pbcopy", &t.udid().to_ascii_uppercase()]);
+            // And Flare hands such text to the sim host, which answers once it is pasted.
+            let dir = tempfile::tempdir().unwrap();
+            let mut s = source("record", dir.path(), None);
+            let id = s.text(&t, "caf\u{e9}");
+            let seen = until(
+                &s,
+                Duration::from_secs(30),
+                |e| matches!(e, SourceEvent::Answer { id: i, .. } if *i == id),
+            );
+            assert!(
+                matches!(
+                    seen.last(),
+                    Some(SourceEvent::Answer {
+                        result: Ok(Answer::Done),
+                        ..
+                    })
+                ),
+                "{seen:?}"
+            );
+            let lines = std::fs::read_to_string(dir.path().join("lines")).unwrap();
+            let line = lines
+                .lines()
+                .find(|l| l.contains("\"op\":\"text\""))
+                .unwrap();
+            let c: crate::wire::Control = crate::wire::from_line(line).unwrap();
+            assert_eq!(
+                c.req,
+                crate::wire::Request::Text {
+                    target: t,
+                    text: "caf\u{e9}".into()
+                }
+            );
+        }
     }
 
     fn hello(protocol: u32, xcode: &str) -> Hello {
@@ -1278,10 +1536,30 @@ mod tests {
         if mode == "crash" {
             std::process::exit(1);
         }
-        // Wait for Flare to go (quit, or the pipe closes).
+        // Wait for Flare to go (quit, or the pipe closes). "record" keeps every line and answers it.
         for line in std::io::stdin().lock().lines().map_while(Result::ok) {
             if line.contains("\"op\":\"quit\"") {
                 break;
+            }
+            if mode == "record" {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(Path::new(&dir).join("lines"))
+                {
+                    let _ = writeln!(f, "{line}");
+                }
+                if let Some(c) = crate::wire::from_line::<crate::wire::Control>(&line) {
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        crate::wire::to_line(&crate::wire::HostLine::Ok {
+                            id: c.id,
+                            result: serde_json::Value::Null
+                        })
+                    );
+                    let _ = out.flush();
+                }
             }
         }
         std::process::exit(0);

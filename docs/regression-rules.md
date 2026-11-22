@@ -5340,6 +5340,54 @@ in the panel) is PR 4b. Held by `the_sim_host_is_restarted_three_times_then_brok
 `the_sim_host_gets_developer_dir_and_no_extra_descriptors` (`client.rs`, a fake sim host run by the test binary).
 Source: Max, 2026-11-19.
 
+1313. **Input is DTUHID from CoreSimulator 1155.4 and legacy Indigo below it, never both in one boot; one connection per
+device, held for the session; points are device points in the current orientation and only the sim host turns them
+into portrait ratios.** Max, 2026-11-19 (issue #248, decision 2a after spike S1). Device panel PR 3: the sim host picks
+the path once per boot from the loaded CoreSimulator's version (`macos::indigo::PathLock`; a failing DTUHID never falls
+back to Indigo) and runs one input worker per attached device (`macos::input`), which does touches, keys, buttons, text
+and rotations strictly in order. DTUHID (`macos::dtuhid`, `macos::xpc`): `-[SimDevice lookup:error:]` for
+`com.apple.coredevice.feature.remote.hid.digitizer`, `xpc_endpoint_create_mach_port_4sim` and
+`xpc_connection_enable_sim2host_4sim` found with `dlsym`, then a liveness barrier (a key-up of usage 0 marked
+`isBarrier`, a reply within 4 s, five tries 4 s apart, then 200 ms) before the first event. Every event is sent, then
+its send barrier is waited for, never a reply. Every integer is a `uint64`; key and button `state` is 1 down, 2 up,
+never 0; buttons are Consumer page usages (home 0x40, lock 0x30, volume 0xE9 and 0xEA); a second finger rides as
+`pointTwo`. Until the connection answers the panel hears `input: connecting`, and input waits up to 20 s
+(`client::INPUT_WAIT`, spike S1 saw 11.6 s after a cold boot), then is dropped with a log line and text answers
+`retry`. An interruption forgets the contacts (the gesture is lost), sends `input: lost` and connects once again;
+failing that, `input: broken` with the reason. A sim host started again after a crash (`--restarted`) ends any finger
+the old one left down. Points arrive in device points of the current orientation and `geom::to_portrait_ratio` turns
+them into the portrait ratios the digitizer takes: the digitizer stays portrait (idb), confirmed 2026-11-19 by
+`--input-bench` taps in rot90 and rot270 (20 of 20 within 0.17 pt). Rotation: a Purple GSEvent 50 to
+`PurpleWorkspacePort` turns the device, CoreDevice `displayinfo` reads the interface's orientation
+(`macos::orient`), which goes in each ring's screen facts and as an `orientation` event when it changes. Held by
+`a_tap_is_start_then_end_with_portrait_ratios`, `integers_are_sent_as_uint64_and_state_zero_is_never_sent`,
+`buttons_use_consumer_page_usages` (`dtuhid.rs`), `no_liveness_reply_after_five_tries_is_broken_input` (`xpc.rs`),
+`indigo_is_never_used_after_dtuhid_in_one_boot` (`indigo.rs`),
+`touches_wait_up_to_twenty_seconds_for_the_connection_then_drop` (`client.rs`) and
+`rotation_turns_a_quarter_and_writes_the_purple_event` (`orient.rs`); the `--input-bench` numbers are in PR 3.
+Source: Max, 2026-11-19.
+
+1314. **Typing never touches the Mac's clipboard.** Max, 2026-11-16 (issue #248, builder's call 8). Device panel PR 3:
+text whose every character has a key in the US keymap goes as HID key usages (shift included); any other text goes
+whole through the simulator's own pasteboard (`xcrun simctl pbcopy <udid>`, `Simctl::pbcopy`) and Cmd-V
+(`client::text_steps`), in order with the keys around it (the input worker runs everything in order, so a paste is in
+the field before the Return after it). Nothing in `flare-device` names `NSPasteboard`, `/usr/bin/pbcopy` or
+`pbpaste`. Held by `non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs` (`client.rs`, a source scan
+and a fake sim host). Source: Max, 2026-11-16.
+
+1315. **UI-tree text is untrusted.** Max, 2026-11-19 (issue #248). Sim host half (device panel PR 3): the sim host
+reads the tree of the app in front with `AXPTranslator` (`macos::ax`) through a bridge-token delegate of its own: a
+token per attached device, whose block sends each translator request with
+`-[SimDevice sendAccessibilityRequestAsync:completionQueue:completionHandler:]` and waits at most 5 s. One request is
+in flight at a time (`ax::Serial`, at most 8 waiting, more answer `busy`), the walk is bounded (depth 50, 1500
+elements, 15 s) and answers `{role, label, value, frame, enabled, children}` in device points of the current
+orientation. The sim host sends one request right after attach to warm the tree (the first after a boot takes about
+3.3 s and can come back empty, so an empty answer is asked again up to three times, 700 ms apart). It never calls
+`AXIsProcessTrusted`, which asks TCC about Flare (spike S4). A missing framework or selector (`load::USED_AX`) leaves
+the sim host running with `ax: false` in its hello. Flare's half (cleaning, the page-content fence, the filter and the
+300 refs, `tree.rs`) is PR 5. Held by `one_request_is_in_flight_at_a_time` and, on a simulator made for the test
+(`FLARE_DEVICE_REAL=1`), `the_ui_tree_of_settings_has_its_labelled_rows` (`ax.rs`). Source: Max, 2026-11-19.
+
 1316. **A device panel is kind `device`, target `sim/<udid>`, kept in `panels.json`; a build without its viewer keeps it
 and never shows it.** Max, 2026-11-16 and 2026-11-19 (issue #248, decisions 5 and 12 of the spec). First half (device
 panel PR 1): `PanelKind::Device` is named `"device"`, native (Slint draws it, kind 5 once built) and **not built**

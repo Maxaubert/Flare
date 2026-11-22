@@ -97,13 +97,15 @@ pub fn run(cmd: &mut Command, input: Option<&[u8]>, limit: Duration) -> Result<V
     match status {
         Some(s) if s.success() => Ok(out),
         Some(s) => {
+            // Every line: simctl puts the reason ("Unable to boot device in current state: Booted") on the second.
             let text = String::from_utf8_lossy(&err);
             let line = text
                 .lines()
                 .map(str::trim)
-                .find(|l| !l.is_empty())
-                .unwrap_or("")
-                .to_string();
+                .filter(|l| !l.is_empty())
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" ");
             Err(RunError {
                 message: if line.is_empty() {
                     format!("exited with {s}")
@@ -171,12 +173,27 @@ impl Simctl {
         }
     }
 
-    /// A PNG of the screen at full size (still mode).
+    /// A PNG of the screen at full size (still mode). simctl writes it to a file (its `-` is a file named `-`, not
+    /// stdout, on Xcode 27): one of our own in the temp folder, read and removed.
     pub fn screenshot(&self, target: &Target) -> Result<Vec<u8>, RunError> {
-        self.call(
-            &["io", &udid(target), "screenshot", "--type=png", "-"],
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "flare-sim-shot-{}-{}.png",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let file = path.to_string_lossy().to_string();
+        let r = self.call(
+            &["io", &udid(target), "screenshot", "--type=png", &file],
             SHOT_LIMIT,
-        )
+        );
+        let png = std::fs::read(&path); // sync-ok: a worker, the file simctl just wrote
+        let _ = std::fs::remove_file(&path); // sync-ok: as above
+        r?;
+        png.map_err(|e| RunError {
+            message: format!("the screenshot did not arrive: {e}"),
+            timed_out: false,
+        })
     }
 
     pub fn launch(
@@ -197,11 +214,32 @@ impl Simctl {
             .map(|_| ())
     }
 
-    /// Writes the simulator's own pasteboard, never the Mac's (rule 1314).
+    /// Writes the simulator's own pasteboard, never the Mac's (rule 1314). BLOCKING (at most 10 s).
     pub fn pbcopy(&self, target: &Target, text: &str) -> Result<(), RunError> {
         run(
-            &mut self.cmd(&["pbcopy", &udid(target)]),
+            &mut self.pbcopy_command(target),
             Some(text.as_bytes()),
+            QUICK,
+        )
+        .map(|_| ())
+    }
+
+    /// The command [`Simctl::pbcopy`] runs: `xcrun simctl pbcopy <udid>`, the text on its stdin.
+    pub fn pbcopy_command(&self, target: &Target) -> Command {
+        self.cmd(&["pbcopy", &udid(target)])
+    }
+
+    /// Shakes the device: the Darwin notification Simulator.app's Shake posts, sent inside the simulator. BLOCKING
+    /// (at most 10 s).
+    pub fn shake(&self, target: &Target) -> Result<(), RunError> {
+        self.call(
+            &[
+                "spawn",
+                &udid(target),
+                "notifyutil",
+                "-p",
+                "com.apple.UIKit.SimulatorShake",
+            ],
             QUICK,
         )
         .map(|_| ())
@@ -334,6 +372,52 @@ fn os_name(runtime: &str) -> Option<String> {
     Some(format!("iOS {}", parts.join(".")))
 }
 
+/// A simulator made for one test (`FLARE_DEVICE_REAL=1` only), booted, shut down and deleted when dropped. Never one
+/// of the person's devices.
+#[cfg(test)]
+pub(crate) struct TestDevice {
+    pub simctl: Simctl,
+    pub target: Target,
+    pub developer_dir: PathBuf,
+}
+
+#[cfg(test)]
+impl TestDevice {
+    /// None (with the reason printed) unless `FLARE_DEVICE_REAL=1` and an Xcode is there.
+    pub fn boot(name: &str) -> Option<TestDevice> {
+        if std::env::var("FLARE_DEVICE_REAL").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set FLARE_DEVICE_REAL=1 to run against a simulator made for the test"
+            );
+            return None;
+        }
+        let Some(xcode) = crate::xcode::find() else {
+            eprintln!("skipped: no Xcode");
+            return None;
+        };
+        let developer_dir = xcode.developer_dir();
+        super::load::load(&developer_dir).expect("the frameworks load");
+        let simctl = Simctl::new(&developer_dir);
+        let ty = simctl.iphone_type().expect("an iPhone type");
+        let target = simctl.create(name, &ty).expect("simctl create");
+        let d = TestDevice {
+            simctl,
+            target,
+            developer_dir,
+        };
+        d.simctl.boot(&d.target).expect("boot");
+        Some(d)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDevice {
+    fn drop(&mut self) {
+        let _ = self.simctl.shutdown(&self.target);
+        let _ = self.simctl.delete(&self.target);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +494,17 @@ mod tests {
         .unwrap_err();
         assert_eq!(e.message, "An error was encountered");
         assert!(!e.timed_out);
+        // simctl gives the reason on its second line: it is kept, so "already booted" is recognised.
+        let e = run(
+            Command::new("/bin/sh").args([
+                "-c",
+                "printf 'An error was encountered (code=405):\\nUnable to boot device in current state: Booted\\n' >&2; exit 149",
+            ]),
+            None,
+            QUICK,
+        )
+        .unwrap_err();
+        assert!(e.message.contains("current state: Booted"), "{}", e.message);
         let out = run(&mut Command::new("/bin/cat"), Some(b"caf\xc3\xa9"), QUICK).unwrap();
         assert_eq!(out, "caf\u{e9}".as_bytes());
     }

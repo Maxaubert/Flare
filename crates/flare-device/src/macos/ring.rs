@@ -185,6 +185,22 @@ fragment float4 fs(V in [[stage_in]], texture2d<float, access::read> src [[textu
     float3 s = to_srgb(clamp(P3_TO_SRGB * to_linear(c), 0.0, 1.0));
     return float4(s, 1.0);
 }
+
+// The snapshot pass: each target pixel is the k x k block of framebuffer pixels under it, averaged in linear light
+// (the framebuffer at point size, spec "device_look").
+fragment float4 fs_box(V in [[stage_in]], texture2d<float, access::read> src [[texture(0)]],
+                       constant uint &k [[buffer(0)]]) {
+    uint2 base = uint2(in.pos.xy) * k;
+    uint2 last = uint2(src.get_width() - 1, src.get_height() - 1);
+    float3 acc = float3(0.0);
+    for (uint j = 0; j < k; j++) {
+        for (uint i = 0; i < k; i++) {
+            acc += to_linear(src.read(min(base + uint2(i, j), last)).rgb);
+        }
+    }
+    float3 s = to_srgb(clamp(P3_TO_SRGB * (acc / float(k * k)), 0.0, 1.0));
+    return float4(s, 1.0);
+}
 "#;
 
 /// Display P3 to sRGB for one colour (0..1, gamma-encoded both sides), as the pass does it: the tests' reference.
@@ -218,6 +234,8 @@ pub struct Gpu {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    /// The snapshot's box pass.
+    shrink: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
 }
 
 impl Gpu {
@@ -233,19 +251,27 @@ impl Gpu {
         let fs = lib
             .newFunctionWithName(&NSString::from_str("fs"))
             .ok_or("no fragment function")?;
-        let desc = MTLRenderPipelineDescriptor::new();
-        desc.setVertexFunction(Some(&vs));
-        desc.setFragmentFunction(Some(&fs));
-        // SAFETY: index 0 is inside the attachments array (it has eight).
-        unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) }
-            .setPixelFormat(MTLPixelFormat::RGBA8Unorm);
-        let pipeline = device
-            .newRenderPipelineStateWithDescriptor_error(&desc)
-            .map_err(|e| format!("the ring pass has no pipeline: {e}"))?;
+        let fs_box = lib
+            .newFunctionWithName(&NSString::from_str("fs_box"))
+            .ok_or("no snapshot function")?;
+        let make = |fs: &ProtocolObject<dyn objc2_metal::MTLFunction>| {
+            let desc = MTLRenderPipelineDescriptor::new();
+            desc.setVertexFunction(Some(&vs));
+            desc.setFragmentFunction(Some(fs));
+            // SAFETY: index 0 is inside the attachments array (it has eight).
+            unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) }
+                .setPixelFormat(MTLPixelFormat::RGBA8Unorm);
+            device
+                .newRenderPipelineStateWithDescriptor_error(&desc)
+                .map_err(|e| format!("the ring pass has no pipeline: {e}"))
+        };
+        let pipeline = make(&fs)?;
+        let shrink = make(&fs_box)?;
         Ok(Gpu {
             device,
             queue,
             pipeline,
+            shrink,
         })
     }
 
@@ -298,6 +324,23 @@ impl Gpu {
     /// Fills `dst` from the framebuffer `src` (BGRA, Display P3) and waits for the GPU: the GPU time in ms. BLOCKING
     /// (under 2 ms): the device's serial queue.
     pub fn fill(&self, src: &IOSurfaceRef, dst: &Texture) -> Result<f64, String> {
+        self.pass(src, dst, None)
+    }
+
+    /// Fills the RGBA surface `dst` with the framebuffer `src` made `k` times smaller (each pixel the average of a
+    /// `k` x `k` block, in linear light), converted to sRGB. BLOCKING (a few ms): the snapshot worker.
+    pub fn shrink(&self, src: &IOSurfaceRef, dst: &IOSurfaceRef, k: u32) -> Result<f64, String> {
+        let t = self
+            .wrap(
+                dst,
+                MTLPixelFormat::RGBA8Unorm,
+                MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget,
+            )
+            .ok_or("the snapshot surface did not wrap as a texture")?;
+        self.pass(src, &t, Some(k.max(1)))
+    }
+
+    fn pass(&self, src: &IOSurfaceRef, dst: &Texture, k: Option<u32>) -> Result<f64, String> {
         let src_tex = self
             .wrap(src, MTLPixelFormat::BGRA8Unorm, MTLTextureUsage::ShaderRead)
             .ok_or("the framebuffer did not wrap as a texture")?;
@@ -311,7 +354,20 @@ impl Gpu {
         let enc = cb
             .renderCommandEncoderWithDescriptor(&pass)
             .ok_or("no render encoder")?;
-        enc.setRenderPipelineState(&self.pipeline);
+        match k {
+            None => enc.setRenderPipelineState(&self.pipeline),
+            Some(k) => {
+                enc.setRenderPipelineState(&self.shrink);
+                // SAFETY: four bytes the shader reads as its `k` at buffer 0, copied by Metal at once.
+                unsafe {
+                    enc.setFragmentBytes_length_atIndex(
+                        NonNull::from(&k).cast(),
+                        std::mem::size_of::<u32>(),
+                        0,
+                    )
+                };
+            }
+        }
         // SAFETY: the texture is bound at the index the shader reads (0) and lives until the buffer completes.
         unsafe { enc.setFragmentTexture_atIndex(Some(&src_tex), 0) };
         // SAFETY: three vertices, no buffers: the full-screen triangle.
@@ -376,6 +432,32 @@ pub fn read_row(s: &IOSurfaceRef, y: usize) -> Option<Vec<u8>> {
             std::slice::from_raw_parts(base.as_ptr().add(y * s.bytes_per_row()), len).to_vec();
         s.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut());
         Some(row)
+    }
+}
+
+/// Reads the pixels at `points` (x, y) of a 4-byte surface, locked once read-only. None for a point outside it.
+pub fn read_pixels(s: &IOSurfaceRef, points: &[(usize, usize)]) -> Option<Vec<[u8; 4]>> {
+    let (w, h) = (s.width(), s.height());
+    if points.iter().any(|&(x, y)| x >= w || y >= h) {
+        return None;
+    }
+    // SAFETY: the surface is locked read-only for the reads; every point lies inside it (checked above), and bytes
+    // per row is at least width * 4 for a 4-byte format.
+    unsafe {
+        if s.lock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()) != 0 {
+            return None;
+        }
+        let base: NonNull<u8> = s.base_address().cast();
+        let bpr = s.bytes_per_row();
+        let out = points
+            .iter()
+            .map(|&(x, y)| {
+                let p = base.as_ptr().add(y * bpr + x * 4);
+                [*p, *p.add(1), *p.add(2), *p.add(3)]
+            })
+            .collect();
+        s.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut());
+        Some(out)
     }
 }
 

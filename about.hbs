@@ -275,7 +275,7 @@ and `objc2-exception-helper` 0.1.1 (the device panel's sim host, `flare-sim-host
 
 ## Ported code
 
-- The device panel's US keymap (`crates/flare-device/src/keymap.rs`) is ported from idb, `Tools/SimScope/SimScope/Keymap.swift` (https://github.com/facebook/idb), under the MIT licence:
+- The device panel's US keymap (`crates/flare-device/src/keymap.rs`) is ported from idb, `Tools/SimScope/SimScope/Keymap.swift` (https://github.com/facebook/idb), under the MIT licence below. So are its input messages (`crates/flare-device/src/macos/dtuhid.rs`, from `FBSimulatorControl/HID/DTUHIDModels.swift`, `SimulatorDigitizerHIDTransport.swift` and `SimulatorHIDButtonIdentity.swift`) and its legacy Indigo input (`crates/flare-device/src/macos/indigo.rs`, from `FBSimulatorControl/HID/SimulatorIndigoHID.swift`, `SimulatorIndigoHIDClient.swift` and `PrivateHeaders/SimulatorApp/Indigo.h`):
 
 ```text
 MIT License
