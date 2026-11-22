@@ -116,6 +116,8 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // to its HostName and Port, its SSH server's first line read, nothing sent), and only when that says nothing the
     // user's own ssh runs `uname -s` there with BatchMode (no password or host key is ever asked).
     ("flare/src/host_os.rs", "Remote sessions"),
+    // Android plan PR A2: the emu host's gRPC client connects to the emulator's port on localhost only, with its token.
+    ("flare-emu-host/src/grpc.rs", "Android devices"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.
