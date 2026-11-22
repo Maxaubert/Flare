@@ -224,7 +224,8 @@ backgroundWork, agentKeys, cogToggle, accentAsk, titleBar, settingsPage, restore
 powerlineGlyphs, markerLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
 reviewKeys, dropAndMenu, helpPanel, options, diagLog, settingsLook, settingsSearch, settingsKeys, themeEditorLive,
 themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, seeThrough, themeCards, edges, accent,
-exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, deviceAgent, mcpDevice, deviceAgentAndroid, mcpDeviceAndroid, ctlChannel,
+exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, devicePanelAndroid, deviceAgent, mcpDevice, deviceAgentAndroid, mcpDeviceAndroid,
+ctlChannel,
 mcpRoundTrip, convoPanels, questionToast.
 
 Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
@@ -523,6 +524,10 @@ runs the built `flare-mcp` over stdio: the instructions name the device tools, `
 look answers text then a PNG with the device content between its markers, a tap by ref, `device_state`. Both also press
 the device's own button (`lock`) and check that the other kind's (`back`) answers `unavailable` and sends nothing
 (rule 1371), and that the look is in the device's unit with its buttons listed.
+
+`devicePanelAndroid` (Android PR A7, same file, Windows and Mac): `devicePanel` on the Android fake: the panel boots
+`emu/Flare_Pixel`, a click lands at the middle of its 411 x 914 dp screen, and `device.state`'s `buttons` hold `back`
+and not `lock` (rule 1371).
 
 `deviceAgentAndroid` and `mcpDeviceAndroid` (Android plan PR A5, same file, Windows and Mac): the same two runs with
 `FLARE_E2E_DEVICE=android`, which makes the app's fake the Android one (`FakeSource::android()`: `emu/Flare_Pixel`,

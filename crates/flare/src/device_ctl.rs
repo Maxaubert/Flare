@@ -514,9 +514,8 @@ pub enum Setup {
     NoHypervisor,
     /// It was turned on: Windows must restart (state 4, after [Turn on]).
     RestartNeeded,
-    /// An emulator started outside Flare without a gRPC token: Flare cannot reach it (state 6).
-    #[allow(dead_code)]
-    // listed once the emu host reports such an emulator (Android plan PR A5)
+    /// An emulator started outside Flare without a gRPC token: Flare cannot reach it (state 6). Shown when its attach
+    /// or boot answers so (Android PR A7).
     NoAccess,
     /// A new Android device's first start: its apps are compiled once before Flare calls it ready (A2b).
     Preparing {
@@ -665,6 +664,37 @@ impl Setup {
             Setup::NoAccess => "no_access",
             Setup::Preparing { .. } => "preparing",
         }
+    }
+}
+
+/// A row of the device chooser after the devices (Android PR A7, the existing row style; no mockup, Max's call).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChooserRow {
+    /// A Mac with no Android emulator set up: Android's setup, the same states as on Windows.
+    SetUpAndroid,
+    /// Android's emulator is set up: look for a newer one (the same setup states; nothing when it is current).
+    UpdateAndroid,
+}
+
+impl ChooserRow {
+    pub fn label(self) -> &'static str {
+        match self {
+            ChooserRow::SetUpAndroid => "Android: set up (about 2.5 GB from Google)",
+            ChooserRow::UpdateAndroid => "Update Android emulator",
+        }
+    }
+}
+
+/// The chooser's rows after the devices: Android's setup on a Mac (`ios`) whose Android emulator is not set up yet,
+/// and its update once it is. On Windows the panel itself shows Android's setup states before any list.
+pub fn chooser_rows(ios: bool, android: bool, android_gate: Option<&Setup>) -> Vec<ChooserRow> {
+    if !android {
+        return Vec::new();
+    }
+    match android_gate {
+        Some(Setup::SdkMissing) if ios => vec![ChooserRow::SetUpAndroid],
+        None => vec![ChooserRow::UpdateAndroid],
+        _ => Vec::new(),
     }
 }
 
@@ -1110,13 +1140,18 @@ impl DeviceCtl {
         r.ios && menu_entry_offered(cfg!(target_os = "macos"), real_platform(), xcode)
     }
 
-    /// Android devices are offered: on Windows always (Flare can set the emulator up, spec "Setup"), on the Mac once an
-    /// Android SDK is found (setting one up from the panel is Windows only in this version).
+    /// Android devices are offered wherever they can run (Windows x64, a Mac on Apple silicon): Flare sets the emulator
+    /// up itself (spec "Setup"). On a Mac the setup is a row of the device chooser (Android PR A7).
     fn android_offered(&self) -> bool {
-        let Some(r) = &self.real else { return false };
-        r.android
-            && (cfg!(windows)
-                || matches!(r.sdk, Some(AndroidSdk::Ready { .. } | AndroidSdk::TooOld)))
+        self.real.as_ref().is_some_and(|r| r.android)
+    }
+
+    /// The chooser's rows after the devices (Android PR A7).
+    fn chooser_rows(&self) -> Vec<ChooserRow> {
+        let Some(r) = &self.real else {
+            return Vec::new();
+        };
+        chooser_rows(r.ios, self.android_offered(), self.android_gate().as_ref())
     }
 
     /// The tab menu's Device panel entry: the fake source (`--e2e`), or a real one this computer can run.
@@ -1886,6 +1921,10 @@ impl DeviceCtl {
             return Some(gate);
         }
         if let Some(why) = t.failed.as_ref().or(self.list_error.as_ref()) {
+            // An emulator started without access for other apps (spec state 6): its own line, no button.
+            if why == flare_device::emu::discovery::NO_ACCESS {
+                return Some(Setup::NoAccess);
+            }
             return Some(Setup::Failed { why: why.clone() });
         }
         let Some(devices) = &self.devices else {
@@ -1945,6 +1984,8 @@ impl DeviceCtl {
         match kind {
             Some(SourceKind::Sim) => ios(),
             Some(SourceKind::Emu) => self.android_gate(),
+            // Android setup started from the chooser's row on a Mac (PR A7): its states show until it ends.
+            None if real.ios && self.flow != Flow::Idle => self.android_gate(),
             // The list: one with both kinds on a Mac (iPhones first), Android only on Windows (spec "Setup", 5).
             None if real.ios => match ios() {
                 Some(Setup::Reading) => Some(Setup::Reading),
@@ -2170,6 +2211,12 @@ impl DeviceCtl {
                 .iter()
                 .flatten()
                 .map(|d| (d.name.clone(), d.os.clone(), d.state == DeviceState::Booted))
+                // Android's own rows after the devices, in the same style (PR A7).
+                .chain(
+                    self.chooser_rows()
+                        .into_iter()
+                        .map(|r| (r.label().to_string(), String::new(), false)),
+                )
                 .collect()
         } else {
             Vec::new()
@@ -2671,11 +2718,27 @@ impl DeviceCtl {
         }
     }
 
-    /// The person picked row `i` of the list: the panel shows that device, booted if it is not.
+    /// The person picked row `i` of the list: the panel shows that device, booted if it is not. A row after the
+    /// devices is one of Android's own (PR A7): it starts Android's setup, which plans first and shows Google's
+    /// licence before anything is downloaded (rule 1361).
     pub fn pick(&mut self, i: i32) -> Vec<Effect> {
         let Some(tab) = self.shown.clone() else {
             return Vec::new();
         };
+        let n = self.devices.as_ref().map_or(0, Vec::len);
+        if let Some(row) = usize::try_from(i)
+            .ok()
+            .and_then(|i| i.checked_sub(n))
+            .and_then(|k| self.chooser_rows().get(k).copied())
+        {
+            match row {
+                ChooserRow::SetUpAndroid | ChooserRow::UpdateAndroid => {
+                    self.setup_step(SetupStep::Plan, SetupReq::Plan, Flow::Planning);
+                }
+            }
+            self.drain();
+            return Vec::new();
+        }
         let Some(d) = usize::try_from(i)
             .ok()
             .and_then(|i| self.devices.as_ref()?.get(i))
@@ -4127,6 +4190,84 @@ mod tests {
         assert!(matches!(d.setup_of("t1"), Some(Setup::Failed { .. })));
         d.setup_clicked();
         assert_eq!(d.flow, Flow::Idle);
+    }
+
+    /// Android PR A7: the chooser's own rows, decided from the computer and Android's state alone (so this runs on
+    /// every OS). A Mac with no Android emulator set up gets one row that starts the setup; a set-up emulator gets
+    /// [Update Android emulator]; Windows shows the setup states before any list, so it gets no setup row.
+    #[test]
+    fn the_chooser_offers_android_setup_on_a_mac_and_an_update_once_set_up() {
+        assert_eq!(
+            chooser_rows(true, true, Some(&Setup::SdkMissing)),
+            [ChooserRow::SetUpAndroid]
+        );
+        assert_eq!(
+            ChooserRow::SetUpAndroid.label(),
+            "Android: set up (about 2.5 GB from Google)"
+        );
+        assert_eq!(chooser_rows(false, true, Some(&Setup::SdkMissing)), []);
+        assert_eq!(chooser_rows(true, true, None), [ChooserRow::UpdateAndroid]);
+        assert_eq!(chooser_rows(false, true, None), [ChooserRow::UpdateAndroid]);
+        assert_eq!(ChooserRow::UpdateAndroid.label(), "Update Android emulator");
+        assert_eq!(chooser_rows(true, false, None), [], "no Android here");
+        assert_eq!(
+            chooser_rows(true, true, Some(&Setup::Reading)),
+            [],
+            "setup runs"
+        );
+    }
+
+    /// Android PR A7, a Mac (iPhones and Android): with no Android emulator set up the chooser lists the devices and
+    /// one more row; picking it runs the same setup as on Windows (Google's licence first, then the download), and the
+    /// list comes back with [Update Android emulator].
+    #[test]
+    fn a_mac_sets_android_up_from_the_chooser_row() {
+        let (mut d, _) = android_ctl(AndroidSdk::Missing);
+        d.set_ios(true);
+        d.on_xcode(XcodeAnswer {
+            xcode: Some(found_xcode()),
+            android: Some(AndroidSdk::Missing),
+            booted: Booted::default(),
+        });
+        d.xcode = Xcode::Ready;
+        d.ensure_source();
+        d.list();
+        show_tab(&mut d, "t1", CHOOSE);
+        assert_eq!(d.setup_of("t1"), Some(Setup::Choose));
+        assert_eq!(d.chooser_rows(), [ChooserRow::SetUpAndroid]);
+        let n = d.devices.as_ref().map_or(0, Vec::len) as i32;
+        assert!(d.pick(n).is_empty(), "the row sets no target");
+        let Some(Setup::Licence { text, .. }) = d.setup_of("t1") else {
+            panic!("{:?}", d.setup_of("t1"))
+        };
+        assert_eq!(text, flare_device::fake::FAKE_LICENCE);
+        // [Cancel] goes back to the list with nothing downloaded.
+        d.cancel_clicked();
+        assert_eq!(d.setup_of("t1"), Some(Setup::Choose));
+        d.pick(n);
+        d.setup_clicked(); // Accept and set up
+        assert_eq!(d.flow, Flow::Idle);
+        assert_eq!(d.setup_of("t1"), Some(Setup::Choose));
+        assert_eq!(d.chooser_rows(), [ChooserRow::UpdateAndroid]);
+        // A row past the end does nothing.
+        assert!(d.pick(n + 5).is_empty());
+        assert_eq!(d.flow, Flow::Idle);
+    }
+
+    /// Spec state 6 (Android PR A7): an emulator started without access for other apps shows its own line and no
+    /// button, not a failure to try again.
+    #[test]
+    fn an_emulator_started_without_access_shows_its_line() {
+        let (mut d, _) = android_ctl(AndroidSdk::Ready { avds: 1 });
+        d.ensure_source();
+        d.list();
+        show_tab(&mut d, "t1", "emu/Flare_Pixel");
+        d.tabs.get_mut("t1").unwrap().failed =
+            Some(flare_device::emu::discovery::NO_ACCESS.to_string());
+        assert_eq!(d.setup_of("t1"), Some(Setup::NoAccess));
+        let v = Setup::NoAccess.view(false);
+        assert_eq!(v.line, flare_device::emu::discovery::NO_ACCESS);
+        assert_eq!(v.button, None);
     }
 
     /// The setup plan reads as the licence (all of them, with their hashes) or as a line about disk space.

@@ -563,6 +563,162 @@ fn the_android_licence_shows_its_text_and_two_buttons() {
     assert!(ink > 20, "the licence text is drawn ({ink})");
 }
 
+/// The person's input on an Android device (Android PR A7, with the Android fake): a click in the middle of the
+/// picture is a touch at the middle of its 411 x 914 dp screen, and a key reaches it as a key.
+#[test]
+fn an_android_panel_takes_touches_in_dp_and_keys() {
+    let mut r = Rig::new(FakeSource::android());
+    r.panels.show("t1", PanelKind::Device, "emu/Flare_Pixel");
+    r.front("t1");
+    r.dev.setup_clicked(); // Boot
+    r.front("t1");
+    assert!(r.h.comp.get_panel_device_controls(), "t1 drives it");
+    let n = r.dev.fake().unwrap().inputs().len();
+    let (_, _, bw, bh) = box_of(&r.h);
+    r.dev.page_pointer(&r.h.comp, 0, bw / 2.0, bh / 2.0, 0, 0);
+    r.dev.page_pointer(&r.h.comp, 1, bw / 2.0, bh / 2.0, 0, 0);
+    r.dev.page_key(true, "a", 0, false);
+    r.dev.page_key(false, "a", 0, false);
+    let got = &r.dev.fake().unwrap().inputs()[n..];
+    let touches: Vec<(f64, f64)> = got
+        .iter()
+        .filter_map(|i| match i {
+            Recorded::Touch(t, touch) if t.name() == "emu/Flare_Pixel" => Some((touch.x, touch.y)),
+            _ => None,
+        })
+        .collect();
+    assert!(touches.len() >= 2, "{got:?}");
+    assert!(
+        touches
+            .iter()
+            .all(|(x, y)| (x - 411.0 / 2.0).abs() <= 2.0 && (y - 914.0 / 2.0).abs() <= 2.0),
+        "{touches:?}"
+    );
+    assert!(
+        got.iter()
+            .any(|i| matches!(i, Recorded::Key(_, k) if k.down)),
+        "{got:?}"
+    );
+}
+
+/// The spec's fallbacks on an Android panel (Android PR A7): the slow mark with its reason, the still badge with its
+/// reason, and the last picture dimmed while the display is off.
+#[test]
+fn an_android_panel_shows_slow_still_and_asleep() {
+    use flare_device::source::{FrameMode, SourceEvent};
+    let mut r = Rig::new(FakeSource::android());
+    r.panels.show("t1", PanelKind::Device, "emu/Flare_Pixel");
+    r.front("t1");
+    r.dev.setup_clicked(); // Boot
+    r.front("t1");
+    let t = flare_device::target::Target::emu("Flare_Pixel").unwrap();
+    let mode = |r: &mut Rig, mode: FrameMode, why: &str| {
+        r.dev.fake().unwrap().emit(SourceEvent::Mode {
+            target: t.clone(),
+            mode,
+            why: why.into(),
+        });
+        r.front("t1");
+    };
+    assert!(!r.h.comp.get_panel_device_dim());
+    mode(&mut r, FrameMode::Slow, "the frame stream was refused");
+    let slow = r.h.comp.get_panel_device_slow().to_string();
+    assert!(
+        slow.contains("slow way") && slow.contains("refused"),
+        "{slow}"
+    );
+    assert_eq!(r.h.comp.get_panel_device_still().as_str(), "");
+    mode(&mut r, FrameMode::Still, "no frame for 2 s");
+    assert!(r.h.comp.get_panel_device_still_shown());
+    assert!(
+        r.h.comp
+            .get_panel_device_still()
+            .starts_with("Live view unavailable: no frame for 2 s."),
+        "{}",
+        r.h.comp.get_panel_device_still()
+    );
+    mode(&mut r, FrameMode::Asleep, "");
+    assert!(
+        r.h.comp.get_panel_device_dim(),
+        "the display is off: dimmed"
+    );
+    assert!(
+        r.h.comp.get_panel_device_has_frame(),
+        "the last picture stays"
+    );
+    mode(&mut r, FrameMode::Live, "");
+    assert!(!r.h.comp.get_panel_device_dim());
+    assert_eq!(r.h.comp.get_panel_device_still().as_str(), "");
+}
+
+/// Android PR A7 on a Mac (iPhones and Android, Android not set up): the chooser lists the devices and, in the same
+/// row style, "Android: set up (about 2.5 GB from Google)"; that row leads to Google's licence with its two buttons,
+/// as on Windows.
+#[test]
+fn a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence() {
+    use crate::device_ctl::{AndroidSdk, Booted, SourceSetup, Started, XcodeAnswer};
+    use slint::Model as _;
+    let post: crate::appctl::Post = Arc::new(|_| {});
+    let mut panels = PanelCtl::new(Arc::clone(&post));
+    panels.set_device_offered(true);
+    let mut dev = DeviceCtl::new(post, Rc::new(|| 0), None);
+    let mut fake = Some(FakeSource::android());
+    dev.install_real(
+        Box::new(move |s: &SourceSetup| match s {
+            SourceSetup::Android => Some(Started {
+                source: Box::new(fake.take()?),
+                #[cfg(target_os = "macos")]
+                ring: None,
+            }),
+            SourceSetup::Xcode(_) => None,
+        }),
+        None,
+        Rc::new(|_: &std::path::Path, _: &[String]| {}),
+    );
+    dev.set_ios(true);
+    dev.install_android(Rc::new(|_: &[String]| {}));
+    dev.on_xcode(XcodeAnswer {
+        xcode: Some(flare_device::xcode::Xcode {
+            app: "/Applications/Xcode.app".into(),
+            version: "27.2".into(),
+        }),
+        android: Some(AndroidSdk::Missing),
+        booted: Booted::default(),
+    });
+    dev.set_xcode(Xcode::Ready);
+    let mut r = Rig {
+        h: window(1.0),
+        panels,
+        dev,
+    };
+    r.panels
+        .show("t1", PanelKind::Device, crate::device_ctl::CHOOSE);
+    r.front("t1");
+    r.front("t1");
+    assert_eq!(r.h.comp.get_panel_device_state(), 2, "the list");
+    let rows = r.h.comp.get_panel_device_rows();
+    let names: Vec<String> = (0..rows.row_count())
+        .filter_map(|i| rows.row_data(i))
+        .map(|d| d.name.to_string())
+        .collect();
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("Android: set up (about 2.5 GB from Google)"),
+        "{names:?}"
+    );
+    r.dev.pick(names.len() as i32 - 1);
+    r.front("t1");
+    let c = &r.h.comp;
+    assert_eq!(c.get_panel_device_state(), 1);
+    assert!(
+        c.get_panel_device_line().starts_with("Google's licence"),
+        "{}",
+        c.get_panel_device_line()
+    );
+    assert_eq!(c.get_panel_device_button().as_str(), "Accept and set up");
+    assert!(c.get_panel_device_has_cancel());
+}
+
 /// An Android device's panel (rule 1371): the header keeps the iOS buttons, the menu says it is Android's (Back and
 /// Recents instead of Shake), and the picture's corners are an Android screen's.
 #[test]

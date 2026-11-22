@@ -20,6 +20,8 @@
 //! (`FLARE_E2E_DEVICE=android`, `emu/Flare_Pixel`, 411 x 914 dp), plus each kind's own buttons (rule 1371: Back
 //! works on Android, Shake answers `unavailable`; the reverse on the iPhone) and the look in dp (rule 1367).
 //!
+//! Android PR A7 adds `devicePanelAndroid`: `devicePanel` on the Android fake, with its own header buttons.
+//!
 //! Nothing here touches the user's windows or a simulator: the app is the built exe, offscreen, in its own world.
 
 use std::time::Duration;
@@ -65,17 +67,23 @@ fn touches(s: &Value) -> Vec<(String, f64, f64)> {
 }
 
 pub fn device_panel(ctx: &mut Ctx) -> Result<(), String> {
-    let alpha = ctx.ensure_world().alpha.clone();
-    let mut app = ctx.launch(Launch {
-        folders: vec![alpha],
-        ..Launch::default()
-    })?;
-    let r = run(ctx, &mut app);
+    device_panel_on(ctx, &IPHONE)
+}
+
+/// The same on the Android fake (Android PR A7): `emu/Flare_Pixel`, its screen in dp, and its own header buttons.
+pub fn device_panel_android(ctx: &mut Ctx) -> Result<(), String> {
+    device_panel_on(ctx, &ANDROID)
+}
+
+fn device_panel_on(ctx: &mut Ctx, kind: &Kind) -> Result<(), String> {
+    let mut app = launch_alpha(ctx, kind)?;
+    let r = run(ctx, &mut app, kind);
     app.close();
     r
 }
 
-fn run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
+fn run(ctx: &mut Ctx, app: &mut App, kind: &Kind) -> Result<(), String> {
+    let pt = kind.pt;
     app.session.call(&Request::Resize {
         w: 1200.0,
         h: 800.0,
@@ -89,7 +97,7 @@ fn run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 
     // ---- open: the fake iPhone is shut down; the panel offers Boot and boots nothing ----
     app.session.call(&Request::DeviceOpen {
-        target: Some(FAKE.into()),
+        target: Some(kind.target.into()),
     })?;
     let shut = ctx.until(
         "the panel to say the device is shut down",
@@ -135,10 +143,21 @@ fn run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         s["controls"] == true,
         "the header shows the device's buttons",
     );
+    // Each kind lists its own buttons (rule 1371): Back on Android, Lock on the iPhone, never the other's.
+    let buttons: Vec<&str> = s["buttons"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    ctx.ok(
+        buttons.contains(&kind.own) && !buttons.contains(&kind.other),
+        format!("the device's own buttons: {buttons:?}"),
+    );
     // The picture keeps the device's aspect inside the box (letterboxed).
     let (pw, ph) = (num(&s["picture"]["w"]), num(&s["picture"]["h"]));
     ctx.ok(
-        (pw / ph - PT.0 / PT.1).abs() < 0.01,
+        (pw / ph - pt.0 / pt.1).abs() < 0.01,
         format!("the picture is {pw} x {ph}, the device's aspect"),
     );
 
@@ -158,7 +177,7 @@ fn run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             && new[1].0 == "end"
             && new
                 .iter()
-                .all(|(_, x, y)| near(*x, PT.0 / 2.0) && near(*y, PT.1 / 2.0)),
+                .all(|(_, x, y)| near(*x, pt.0 / 2.0) && near(*y, pt.1 / 2.0)),
         format!("a click is a touch start and end at the middle: {new:?}"),
     );
 

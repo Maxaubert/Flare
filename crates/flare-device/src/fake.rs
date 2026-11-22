@@ -248,6 +248,11 @@ impl FakeSource {
         self.send(SourceEvent::Broken(why.to_string()));
     }
 
+    /// Sends `e` as if the host had (tests: an Android emulator's frame mode, a change seen while paused).
+    pub fn emit(&self, e: SourceEvent) {
+        self.send(e);
+    }
+
     /// The UI tree `ui_tree` answers.
     pub fn set_tree(&mut self, tree: UiNode) {
         self.tree = tree;
