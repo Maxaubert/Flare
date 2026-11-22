@@ -3243,8 +3243,11 @@ Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/su
   `device_press_names_each_sources_own_buttons`, and in `flare-mcp` `the_tools_take_both_kinds_of_device` and
   `an_android_device_is_listed_and_looked_at_in_dp`. The e2e `deviceAgentAndroid` and `mcpDeviceAndroid` run the agent
   scenarios on the Android fake (`FLARE_E2E_DEVICE=android`) on the Windows and Mac jobs. The opt-in
-  `device_agent::tests::a_real_emulator_answers_the_agent_tools` (`FLARE_DEVICE_REAL=1`, by hand) drives a real
-  headless emulator made for the run.
+  `device_ctl::tests::a_real_emulator_answers_the_agent_tools` (`FLARE_DEVICE_REAL=1`, `cargo build -p flare-emu-host`
+  first, by hand; `FLARE_DEVICE_APK` adds an install) drives a real headless emulator made for the run through the
+  controller and the real emu host. On the PC (2026-11-22, API 37): boot 48 s, first look 1.3 s (411.4 x 914.3 dp, a
+  411 x 913 PNG: the emulator keeps the aspect), Settings opened in 3.2 s, a tree read in 30 to 520 ms, a tap by ref,
+  Back, the probe `.apk` installed in 3.2 s, and the agent's shutdown in 2.4 s.
 
 ## Device panel: Android, PR A6: the emu host and the agent jar ship (not yet started), 2026-11-22
 

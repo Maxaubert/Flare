@@ -3466,6 +3466,231 @@ mod tests {
         assert_eq!(v["installed"], "app-debug.apk");
     }
 
+    /// Android plan PR A5's real check (`deviceRealAndroid`; opt-in, `FLARE_DEVICE_REAL=1`, `cargo build -p
+    /// flare-emu-host` first; by hand only, since GitHub's runners cannot run the emulator's hypervisor): an AVD written
+    /// for the test into its own folder (deleted after; the person's AVDs are never listed) boots headless with the
+    /// person's SDK (read only), and the agent's own calls go through the controller over the real emu host: list,
+    /// boot, a look in dp with a PNG of the same size, a launch of Settings, its tree, Back, Shake refused, an `.apk`
+    /// (`FLARE_DEVICE_APK`, optional) installed, the state, and the agent's shutdown. Quit's own command ends the
+    /// emulator whatever happens. `FLARE_DEVICE_IMAGE` names another image package.
+    #[test]
+    fn a_real_emulator_answers_the_agent_tools() {
+        use flare_device::emu::discovery;
+        use flare_device::emu::{Places, flare_avd};
+        use flare_device::emu_client::{EmuConfig, EmuSource};
+        use flare_device::job::{At, DeviceOp, Press};
+        use flare_device::source::Button;
+        use std::time::{Duration, Instant};
+        if std::env::var("FLARE_DEVICE_REAL").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set FLARE_DEVICE_REAL=1 to run against an emulator made for the test"
+            );
+            return;
+        }
+        let exe = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(|d| d.parent())
+            .map(|d| d.join(flare_win::names::EMU_HOST_EXE))
+            .unwrap();
+        assert!(exe.exists(), "build the emu host first: {}", exe.display());
+        let home = tempfile::tempdir().unwrap();
+        let abi = if cfg!(target_arch = "aarch64") {
+            "arm64-v8a"
+        } else {
+            "x86_64"
+        };
+        let image = std::env::var("FLARE_DEVICE_IMAGE")
+            .unwrap_or_else(|_| format!("system-images;android-37.0;google_apis;{abi}"));
+        let img = flare_avd::Image::from_path(&image).expect("an image package path");
+        flare_avd::write(home.path(), &img).expect("the AVD is written");
+        let mut places = Places::from_env();
+        places.android_avd_home = Some(home.path().to_path_buf());
+        let running_dir = places.discovery_dir().expect("a discovery folder");
+        let logs = tempfile::tempdir().unwrap();
+        /// Ends the emulator through quit's own command, whatever happens, and waits for it to go.
+        struct Down(PathBuf, PathBuf, PathBuf);
+        impl Drop for Down {
+            fn drop(&mut self) {
+                let started = Instant::now();
+                let _ = std::process::Command::new(&self.0)
+                    .args(["--shutdown", flare_avd::NAME])
+                    .env("ANDROID_AVD_HOME", &self.1)
+                    .status();
+                while started.elapsed() < Duration::from_secs(120)
+                    && discovery::of_avd(&discovery::read_all(&self.2), flare_avd::NAME).is_some()
+                {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                eprintln!(
+                    "--shutdown: gone after {:.1} s: {}",
+                    started.elapsed().as_secs_f64(),
+                    discovery::of_avd(&discovery::read_all(&self.2), flare_avd::NAME).is_none()
+                );
+            }
+        }
+        let _down = Down(exe.clone(), home.path().to_path_buf(), running_dir);
+        let mut cfg = EmuConfig::new(exe, logs.path().join("emu-host.log"), places);
+        cfg.logs_dir = Some(logs.path().to_path_buf());
+        cfg.env = vec![(
+            "ANDROID_AVD_HOME".into(),
+            home.path().to_string_lossy().to_string(),
+        )];
+        let mut cfg = Some(cfg);
+        let starter: Starter = Box::new(move |setup| match setup {
+            SourceSetup::Android => Some(Started {
+                source: Box::new(EmuSource::start(cfg.take()?)),
+                #[cfg(target_os = "macos")]
+                ring: None,
+            }),
+            SourceSetup::Xcode(_) => None,
+        });
+        let t0 = Instant::now();
+        let mut d = DeviceCtl::new(
+            post(),
+            Rc::new(move || t0.elapsed().as_millis() as u64),
+            None,
+        );
+        d.install_real(starter, None, recorder().1);
+        d.set_ios(false);
+        d.install_android(Rc::new(|_: &[String]| {}));
+        d.on_xcode(XcodeAnswer {
+            xcode: None,
+            android: Some(AndroidSdk::Ready { avds: 1 }),
+            booted: Booted::default(),
+        });
+        assert!(d.agent_offered());
+        // Waits in real time, the agent's tick run as its timer would.
+        let wait = |d: &mut DeviceCtl, rx: &AgentRx, secs: u64| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                if let Ok(a) = rx.try_recv() {
+                    return a;
+                }
+                d.agent_tick();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            panic!("no answer in {secs} s");
+        };
+        let call = |d: &mut DeviceCtl, req, secs| {
+            let started = Instant::now();
+            let rx = agent_call(d, req);
+            let r = wait(d, &rx, secs);
+            (r, started.elapsed().as_millis())
+        };
+        let target = format!("emu/{}", flare_avd::NAME);
+        let (list, _) = call(&mut d, AgentReq::List, 60);
+        let list = list.expect("the list");
+        assert!(
+            list["devices"]
+                .as_array()
+                .is_some_and(|l| l.iter().any(|x| x["target"] == target.as_str())),
+            "{list}"
+        );
+        let (boot, ms) = call(
+            &mut d,
+            AgentReq::Boot {
+                target: flare_device::target::parse(&target),
+                name: None,
+            },
+            600,
+        );
+        eprintln!("boot: {boot:?} in {:.0} s", ms as f64 / 1000.0);
+        assert_eq!(boot.expect("booted")["booted"], true);
+        show_tab(&mut d, "t1", &target);
+        let (look, ms) = call(&mut d, AgentReq::Look { tree: true }, 60);
+        let look = look.expect("a look");
+        let (w, h) = (
+            look["screen"]["w"].as_f64().unwrap(),
+            look["screen"]["h"].as_f64().unwrap(),
+        );
+        let png = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            look["image"]["data"].as_str().unwrap(),
+        )
+        .unwrap();
+        let px = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as f64;
+        eprintln!(
+            "first look in {ms} ms: {w} x {h} dp, PNG {} x {}, {} elements, buttons {}",
+            px(16),
+            px(20),
+            look["tree"].as_array().map_or(0, Vec::len),
+            look["buttons"]
+        );
+        assert!(
+            w > 200.0 && w < 600.0 && h > 400.0 && h < 1200.0,
+            "dp, not pixels"
+        );
+        // The emulator keeps the screen's aspect, so a side may be a pixel short (411 x 913 for 411.4 x 914.3 dp).
+        assert!(
+            (px(16) - w).abs() <= 1.5 && (px(20) - h).abs() <= 1.5,
+            "the PNG is at dp size"
+        );
+        assert_eq!(look["buttons"][1], "back");
+        let (r, ms) = call(
+            &mut d,
+            AgentReq::Launch {
+                app: "com.android.settings".into(),
+            },
+            60,
+        );
+        eprintln!("launch Settings: {r:?} in {ms} ms");
+        r.expect("Settings opens");
+        let mut tree = serde_json::Value::Null;
+        for _ in 0..10 {
+            let (ui, ms) = call(&mut d, AgentReq::Ui, 30);
+            tree = ui.expect("a tree");
+            eprintln!(
+                "tree in {ms} ms: {} elements",
+                tree["tree"].as_array().map_or(0, Vec::len)
+            );
+            if tree["tree"].as_array().is_some_and(|t| t.len() > 3) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let first = tree["tree"]
+            .as_array()
+            .and_then(|t| {
+                t.iter()
+                    .find(|e| e["label"].as_str().is_some_and(|l| !l.is_empty()))
+            })
+            .cloned()
+            .expect("Settings lists a labelled element");
+        eprintln!("Settings: {first}");
+        let (r, ms) = call(
+            &mut d,
+            AgentReq::Act(DeviceOp::Tap {
+                at: At::Ref(first["ref"].as_str().unwrap().to_string()),
+                hold_ms: None,
+            }),
+            30,
+        );
+        eprintln!("tap by ref: {r:?} in {ms} ms");
+        r.expect("a tap by ref");
+        let press = |b| AgentReq::Act(DeviceOp::Press(Press::Button(b)));
+        let (r, ms) = call(&mut d, press(Button::Back), 30);
+        eprintln!("back: {r:?} in {ms} ms");
+        r.expect("Back");
+        let (r, _) = call(&mut d, press(Button::Shake), 5);
+        assert_eq!(r.unwrap_err().code, "unavailable");
+        if let Ok(apk) = std::env::var("FLARE_DEVICE_APK") {
+            // As `ctl_device::install_ok` hands it on: resolved, written without `\\?\`.
+            let real = std::fs::canonicalize(apk).unwrap();
+            let path = PathBuf::from(real.to_string_lossy().trim_start_matches(r"\\?\"));
+            let (r, ms) = call(&mut d, AgentReq::Install { path }, 200);
+            eprintln!("install: {r:?} in {ms} ms");
+            r.expect("the .apk installs");
+        }
+        let (state, _) = call(&mut d, AgentReq::State, 5);
+        let state = state.unwrap();
+        eprintln!("state: {state}");
+        assert_eq!(state["booted_by_flare"], true);
+        let (r, ms) = call(&mut d, AgentReq::Shutdown, 120);
+        eprintln!("shutdown: {r:?} in {ms} ms");
+        r.expect("Flare booted it, so the agent shuts it down");
+    }
+
     /// An iPhone simulator's device is held to Xcode only: an Android setup state on the same Mac never blocks it, and
     /// an `.apk` is refused for it.
     #[test]
