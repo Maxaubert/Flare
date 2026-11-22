@@ -108,6 +108,48 @@ pub enum Request {
         url: String,
         bytes: u64,
     },
+    /// The emu host only: Android setup (Android plan PR A2b, rule 1361), one [`SetupStep`]. The sim host answers it
+    /// `unavailable`.
+    Setup {
+        step: SetupStep,
+    },
+}
+
+/// One step of Android setup (rule 1361). Nothing is downloaded before `start`, and Flare sends `start` only from the
+/// person's click on [Accept and set up], with the hashes of the licences it showed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "do", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SetupStep {
+    /// Read Google's package lists: what Flare's own SDK folder needs, its size, the licences to show, the free space.
+    /// Reads the network, writes nothing.
+    Plan,
+    /// Download, check and unpack what the plan says, then write the licences and Flare's own device. `accepted`: the
+    /// SHA-1 of each licence the person accepted, as the plan gave them; a licence that changed since is refused.
+    Start { accepted: Vec<String> },
+    /// Stop a running setup (nothing half-unpacked is left).
+    Cancel,
+    /// `emulator -accel-check` again (after setup, or after a restart).
+    Accel,
+    /// Windows only: turn on Windows Hypervisor Platform with the elevated `dism` command (Windows shows its own UAC
+    /// prompt). Sent only from the person's click on [Turn on].
+    TurnOnHypervisor,
+}
+
+/// Android setup's events (emu host, PR A2b), on a [`HostLine::Setup`] line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum SetupEvent {
+    /// The download: MB done of the whole setup's MB, and the package being fetched. At most a few a second.
+    Download {
+        package: String,
+        done_mb: u64,
+        total_mb: u64,
+    },
+    /// A package is being checked and unpacked.
+    Unpack { package: String },
+    /// A new device's first boot: the guest compiles its apps once (`pm bg-dexopt-job`) before it is called ready.
+    /// The panel shows "Preparing <name>...".
+    Preparing { target: Target },
 }
 
 /// Which helper process speaks: the sim host (iOS) or the emu host (Android). Both use this protocol (rule 1360).
@@ -201,6 +243,10 @@ pub enum HostLine {
     },
     Broken {
         why: String,
+    },
+    /// Android setup's progress, or a new device's first-boot compile (emu host, Android plan PR A2b).
+    Setup {
+        event: SetupEvent,
     },
 }
 
@@ -690,6 +736,70 @@ mod tests {
             r#"{"kind":"hello","protocol":1,"version":"x","host":"android"}"#,
         ] {
             assert_eq!(from_line::<HostLine>(bad), None, "{bad}");
+        }
+    }
+
+    /// Android setup's requests and events (PR A2b, rule 1361).
+    #[test]
+    fn android_setup_lines_round_trip() {
+        let t = crate::target::parse("emu/Flare_Pixel").unwrap();
+        for (step, want) in [
+            (
+                SetupStep::Plan,
+                r#"{"id":9,"op":"setup","step":{"do":"plan"}}"#,
+            ),
+            (
+                SetupStep::Start {
+                    accepted: vec!["24333f8a63b6825ea9c5514f83c2829b004d1fee".into()],
+                },
+                r#"{"id":9,"op":"setup","step":{"do":"start","accepted":["24333f8a63b6825ea9c5514f83c2829b004d1fee"]}}"#,
+            ),
+            (
+                SetupStep::Cancel,
+                r#"{"id":9,"op":"setup","step":{"do":"cancel"}}"#,
+            ),
+            (
+                SetupStep::Accel,
+                r#"{"id":9,"op":"setup","step":{"do":"accel"}}"#,
+            ),
+            (
+                SetupStep::TurnOnHypervisor,
+                r#"{"id":9,"op":"setup","step":{"do":"turn_on_hypervisor"}}"#,
+            ),
+        ] {
+            let c = Control {
+                id: 9,
+                req: Request::Setup { step },
+            };
+            assert_eq!(to_line(&c), want);
+            assert_eq!(from_line::<Control>(want), Some(c));
+        }
+        for e in [
+            SetupEvent::Download {
+                package: "emulator".into(),
+                done_mb: 120,
+                total_mb: 2538,
+            },
+            SetupEvent::Unpack {
+                package: "platform-tools".into(),
+            },
+            SetupEvent::Preparing { target: t.clone() },
+        ] {
+            let l = HostLine::Setup { event: e };
+            assert_eq!(from_line::<HostLine>(&to_line(&l)), Some(l));
+        }
+        assert_eq!(
+            to_line(&HostLine::Setup {
+                event: SetupEvent::Preparing { target: t }
+            }),
+            r#"{"kind":"setup","event":{"event":"preparing","target":"emu/Flare_Pixel"}}"#
+        );
+        for bad in [
+            r#"{"id":1,"op":"setup","step":{"do":"download_anything"}}"#,
+            r#"{"id":1,"op":"setup","step":{"do":"start"}}"#,
+            r#"{"id":1,"op":"setup","step":{"do":"plan","url":"https://evil.example/"}}"#,
+        ] {
+            assert_eq!(from_line::<Control>(bad), None, "{bad}");
         }
     }
 }

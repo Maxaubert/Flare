@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use flare_device::cap::FrameCap;
 use flare_device::emu::discovery::{self, Access, Running};
 use flare_device::emu::sdk::{self, Found, Sdk};
-use flare_device::emu::{Places, avds, boot, keys};
+use flare_device::emu::{Places, avds, boot, flare_avd, keys};
 use flare_device::geom::{Orientation, Size};
 use flare_device::job::Fail;
 use flare_device::source::{
@@ -27,7 +27,8 @@ use flare_device::source::{
 };
 use flare_device::target::Target;
 use flare_device::wire::{
-    Control, Hello, HostKind, HostLine, PROTOCOL, Request, from_line, png_result, to_line,
+    Control, Hello, HostKind, HostLine, PROTOCOL, Request, SetupEvent, SetupStep, from_line,
+    png_result, to_line,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -102,7 +103,12 @@ pub struct Host {
     out: Out,
     pub log: Log,
     places: Places,
-    sdk: Found,
+    /// The SDK the search found; found again after a setup (PR A2b).
+    sdk: Mutex<Found>,
+    /// The hypervisor check's answer (Windows), refreshed by the `accel` setup step.
+    accel: Mutex<Option<flare_device::emu::accel::Accel>>,
+    /// The running setup's cancel flag (one setup at a time).
+    setup: Mutex<Option<Arc<AtomicBool>>>,
     devices: Mutex<HashMap<Target, Arc<Device>>>,
     /// `getStatus` keep-alives of emulators this host booted or attached, by target (rule 1366).
     keep: Mutex<HashMap<Target, tokio::task::JoinHandle<()>>>,
@@ -212,6 +218,10 @@ pub fn serve(log: Log, restarted: bool) -> i32 {
         _ => None,
     };
     let out = Out::start();
+    // A setup the guard ended with Flare left its temporary folder: remove it (PR A2b).
+    if let Some(s) = places.flare_sdk() {
+        crate::setup::sweep(&s);
+    }
     let h = hello(&found, accel.as_ref());
     log.line(&format!(
         "emu host {} (protocol {PROTOCOL}): {:?}{}",
@@ -224,7 +234,9 @@ pub fn serve(log: Log, restarted: bool) -> i32 {
         out,
         log,
         places,
-        sdk: found,
+        sdk: Mutex::new(found),
+        accel: Mutex::new(accel),
+        setup: Mutex::new(None),
         devices: Mutex::new(HashMap::new()),
         keep: Mutex::new(HashMap::new()),
         rt: rt.handle().clone(),
@@ -452,6 +464,7 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
                 }
             });
         }
+        Request::Setup { step } => setup_step(host, id, step),
         Request::Install { target, path } => {
             let h = Arc::clone(host);
             host.rt.spawn(async move {
@@ -474,9 +487,9 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
 
 type Failed = (Fail, String);
 
-fn ready_sdk(host: &Host) -> Result<&Sdk, Failed> {
-    match &host.sdk {
-        Found::Ready(s) => Ok(s),
+fn ready_sdk(host: &Host) -> Result<Sdk, Failed> {
+    match &*lock(&host.sdk) {
+        Found::Ready(s) => Ok(s.clone()),
         Found::TooOld(s) => Err((
             Fail::Unavailable,
             format!(
@@ -527,6 +540,241 @@ fn list(host: &Host) -> Vec<DeviceInfo> {
         .collect()
 }
 
+/// One step of Android setup (PR A2b, rule 1361). Every step that reads the network or the disk runs on a blocking
+/// worker; the control loop only starts it.
+fn setup_step(host: &Arc<Host>, id: u64, step: SetupStep) {
+    use crate::setup::Stop;
+    let busy = lock(&host.setup).is_some();
+    match step {
+        SetupStep::Cancel => {
+            if let Some(c) = lock(&host.setup).as_ref() {
+                c.store(true, Ordering::Relaxed);
+                host.log.line("setup: cancel");
+            }
+            host.ok(id, Value::Null);
+        }
+        SetupStep::Plan | SetupStep::Start { .. } if busy => {
+            host.err(id, Fail::Busy, "Android setup is running");
+        }
+        SetupStep::Plan => {
+            let h = Arc::clone(host);
+            host.rt
+                .spawn_blocking(move || match plan_now(&h, &AtomicBool::new(false)) {
+                    Ok((plan, sdk_root, free)) => h.ok(id, plan_json(&plan, &sdk_root, free)),
+                    Err(e) => {
+                        h.log.line(&format!("setup: plan failed: {e:?}"));
+                        h.err(id, Fail::Unavailable, stop_line(e));
+                    }
+                });
+        }
+        SetupStep::Start { accepted } => {
+            let cancel = Arc::new(AtomicBool::new(false));
+            *lock(&host.setup) = Some(Arc::clone(&cancel));
+            let h = Arc::clone(host);
+            host.rt.spawn_blocking(move || {
+                let r = start(&h, &accepted, &cancel);
+                *lock(&h.setup) = None;
+                match r {
+                    Ok(done) => {
+                        // Flare's folder changed: find the SDK again, and check the hypervisor with it.
+                        let found = sdk::find(&h.places);
+                        let accel = match &found {
+                            Found::Ready(sd) if cfg!(windows) => accel_check(sd).ok(),
+                            _ => None,
+                        };
+                        let facts = hello(&found, accel.as_ref()).facts;
+                        *lock(&h.sdk) = found;
+                        *lock(&h.accel) = accel;
+                        h.log.line(&format!("setup: done: {done:?}; {facts:?}"));
+                        h.ok(
+                            id,
+                            json!({ "installed": done.installed, "device": done.avd, "facts": facts }),
+                        );
+                    }
+                    Err(Stop::Cancelled) => {
+                        h.log.line("setup: cancelled");
+                        h.err(id, Fail::Interrupted, "Android setup was cancelled");
+                    }
+                    Err(e) => {
+                        h.log.line(&format!("setup: failed: {e:?}"));
+                        h.err(id, Fail::Unavailable, stop_line(e));
+                    }
+                }
+            });
+        }
+        SetupStep::Accel => {
+            let h = Arc::clone(host);
+            host.rt.spawn_blocking(move || {
+                let r = ready_sdk(&h)
+                    .and_then(|sd| accel_check(&sd).map_err(|e| (Fail::Unavailable, e)));
+                match r {
+                    Ok(a) => {
+                        let v = json!({ "accel": a.kind(), "usable": a.usable(), "line": a.line });
+                        *lock(&h.accel) = Some(a);
+                        h.ok(id, v);
+                    }
+                    Err((f, m)) => h.err(id, f, m),
+                }
+            });
+        }
+        SetupStep::TurnOnHypervisor => {
+            // Only the person's click on [Turn on] sends this (Flare's side); Windows asks through its own prompt.
+            host.log
+                .line("setup: turning on Windows Hypervisor Platform (dism, elevated)");
+            let h = Arc::clone(host);
+            std::thread::spawn(move || match crate::hyperv::turn_on() {
+                Ok(restart) => {
+                    h.log
+                        .line(&format!("setup: hypervisor turned on, restart {restart}"));
+                    h.ok(id, json!({ "restart": restart }));
+                }
+                Err(e) => {
+                    h.log.line(&format!("setup: hypervisor: {e}"));
+                    h.err(id, Fail::Unavailable, e);
+                }
+            });
+        }
+    }
+}
+
+fn stop_line(e: crate::setup::Stop) -> String {
+    match e {
+        crate::setup::Stop::Cancelled => "Android setup was cancelled".to_string(),
+        crate::setup::Stop::Failed(m) => m,
+    }
+}
+
+/// BLOCKING (the network): what Flare's own folder needs now, its folder, and the free space there.
+fn plan_now(
+    host: &Host,
+    cancel: &AtomicBool,
+) -> Result<(flare_device::emu::setup::Plan, PathBuf, Option<u64>), crate::setup::Stop> {
+    use crate::setup as s;
+    let cpu = flare_device::emu::setup::HostCpu::this().ok_or_else(|| {
+        s::Stop::Failed("Android devices do not run on this computer".to_string())
+    })?;
+    let (sdk_root, avd_home) = s::folders(&host.places)?;
+    let (repo, images) = s::read_lists(&s::Https::new(), cpu, cancel)?;
+    let plan = flare_device::emu::setup::plan(
+        &repo,
+        &images,
+        cpu,
+        &s::have(&sdk_root, &avd_home),
+        sdk::floor(),
+    )?;
+    let free = s::free_bytes(&sdk_root);
+    Ok((plan, sdk_root, free))
+}
+
+/// The plan's answer: what is fetched, its size, the licences to show (with the hash Flare sends back on accept).
+fn plan_json(
+    plan: &flare_device::emu::setup::Plan,
+    sdk_root: &std::path::Path,
+    free: Option<u64>,
+) -> Value {
+    let mb = |b: u64| b / 1_000_000;
+    json!({
+        "needed": !plan.is_empty(),
+        "update": plan.update,
+        "newest_emulator": plan.newest_emulator,
+        "packages": plan.get.iter().map(|g| json!({
+            "path": g.remote.path,
+            "version": g.remote.version,
+            "mb": mb(g.archive.size),
+        })).collect::<Vec<_>>(),
+        "licences": plan.licences.iter().map(|(lid, text)| json!({
+            "id": lid,
+            "text": text,
+            "hash": crate::setup::licence_hash(text),
+        })).collect::<Vec<_>>(),
+        "download_mb": mb(plan.download_bytes()),
+        "disk_mb": mb(plan.disk_bytes()),
+        "free_mb": free.map(mb),
+        "enough_space": free.is_none_or(|f| f >= plan.free_bytes_needed()),
+        "sdk_path": sdk_root.to_string_lossy(),
+    })
+}
+
+/// BLOCKING: the setup itself, from a fresh plan (a licence that changed since the person read it is refused).
+fn start(
+    host: &Arc<Host>,
+    accepted: &[String],
+    cancel: &AtomicBool,
+) -> Result<crate::setup::Done, crate::setup::Stop> {
+    use crate::setup as s;
+    let (plan, sdk_root, free) = plan_now(host, cancel)?;
+    if plan.is_empty() {
+        return Ok(s::Done::default());
+    }
+    // Flare never updates while a device runs (spec "Setup", Updates).
+    let replaces = plan
+        .get
+        .iter()
+        .any(|g| sdk_root.join(g.remote.dest()).exists());
+    if replaces && (!lock(&host.devices).is_empty() || !host.running().is_empty()) {
+        return Err(s::Stop::Failed(
+            "Shut down the Android devices before the update.".to_string(),
+        ));
+    }
+    let (_, avd_home) = s::folders(&host.places)?;
+    host.log.line(&format!(
+        "setup: start: {:?}, {} MB",
+        plan.get.iter().map(|g| &g.remote.path).collect::<Vec<_>>(),
+        plan.download_bytes() / 1_000_000
+    ));
+    let out = host.out.clone();
+    s::install(
+        &s::Https::new(),
+        &plan,
+        &sdk_root,
+        &avd_home,
+        accepted,
+        free,
+        cancel,
+        &mut |event| out.line(&HostLine::Setup { event }),
+    )
+}
+
+/// After a first boot of Flare's own device: `pm bg-dexopt-job` once, with a "Preparing" event, then the mark.
+async fn prepare_first_boot(host: &Arc<Host>, target: &Target, serial: Option<String>) {
+    let h = Arc::clone(host);
+    let name = target.id().to_string();
+    let avd = tokio::task::spawn_blocking(move || {
+        avds::list(&avds::homes(&h.places))
+            .into_iter()
+            .find(|a| a.name == name)
+    })
+    .await
+    .ok()
+    .flatten();
+    let (Some(avd), Some(serial), Ok(sd)) = (avd, serial, ready_sdk(host)) else {
+        return;
+    };
+    if !flare_avd::needs_preparing(&avd) {
+        return;
+    }
+    host.out.line(&HostLine::Setup {
+        event: SetupEvent::Preparing {
+            target: target.clone(),
+        },
+    });
+    host.log.line(&format!("{target}: preparing (first boot)"));
+    let started = Instant::now();
+    let r = tokio::task::spawn_blocking(move || {
+        crate::adb::prepare(&sd.adb(), &serial)?;
+        std::fs::write(avd.dir.join(flare_avd::PREPARED), b"").map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    host.log.line(&format!(
+        "{target}: prepared in {} s{}",
+        started.elapsed().as_secs(),
+        r.err()
+            .map(|e| format!(" (failed: {e})"))
+            .unwrap_or_default()
+    ));
+}
+
 /// The running emulator of `target` that Flare may drive, with its client.
 async fn reach(host: &Arc<Host>, target: &Target) -> Result<(Running, Client), Failed> {
     let h = Arc::clone(host);
@@ -556,9 +804,9 @@ async fn boot_wait(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         state: DeviceState::Booting,
     });
     host.log.line(&format!("{target}: waiting for boot"));
-    let client = loop {
+    let (running, client) = loop {
         match reach(host, target).await {
-            Ok((_, c)) => break c,
+            Ok(rc) => break rc,
             Err((_, m)) if m == discovery::NO_ACCESS => return Err((Fail::Unavailable, m)),
             Err(_) if started.elapsed() < limit => {
                 tokio::time::sleep(Duration::from_millis(500)).await
@@ -586,6 +834,8 @@ async fn boot_wait(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         started.elapsed().as_secs()
     ));
     keep_alive(host, target, client);
+    // Flare's own new device compiles its apps once before it is called ready (PR A2b).
+    prepare_first_boot(host, target, running.serial()).await;
     host.out.line(&HostLine::State {
         target: target.clone(),
         state: DeviceState::Booted,

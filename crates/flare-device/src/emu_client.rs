@@ -388,6 +388,8 @@ impl Shared {
                 rotation,
             }),
             HostLine::Broken { why } => self.go_broken(why),
+            // Android setup's progress and a first boot's "Preparing" (PR A2b): shown by the panel from PR A4.
+            HostLine::Setup { event } => log::debug!("emu host setup: {event:?}"),
         }
     }
 }

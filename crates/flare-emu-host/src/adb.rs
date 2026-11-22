@@ -112,6 +112,22 @@ pub fn install(adb: &Path, serial: &str, apk: &Path) -> Result<(), Failed> {
     }
 }
 
+/// How long a new device's first-boot compile may take (a minute or two in Step 0 S7).
+const PREPARE_LIMIT: Duration = Duration::from_secs(600);
+
+/// BLOCKING, up to 10 minutes: `pm bg-dexopt-job` on `serial` (Android plan PR A2b), so a new device compiles its apps
+/// now, not in the background while the person uses it.
+pub fn prepare(adb: &Path, serial: &str) -> Result<(), String> {
+    let mut c = command(adb);
+    c.args(["-s", serial, "shell", "pm", "bg-dexopt-job"]);
+    let r = run(c, PREPARE_LIMIT)?;
+    if r.ok() && !r.stdout.contains("Failure") {
+        Ok(())
+    } else {
+        Err(first_line(&r.stdout, &r.stderr))
+    }
+}
+
 fn first_line(out: &str, err: &str) -> String {
     let pick = |s: &str| {
         s.lines()

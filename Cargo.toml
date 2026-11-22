@@ -125,6 +125,11 @@ webview2-com = "=0.39.1"
 # gives way to the advisory rule, as for zip below. Slint's i-slint-common shares this copy.
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
+# Android setup (Android plan PR A2b, rule 1361): Google's package lists are read with roxmltree, the copy usvg already
+# brings into flare.exe (Cargo.lock). Its default options refuse a DOCTYPE, so no entity is ever expanded. The SHA-1 of
+# each download (the lists give only SHA-1) and of the licence text: sha1_smol, already in the lockfile (download-cef).
+roxmltree = { version = "=0.21.1", default-features = false, features = ["std", "positions"] }
+sha1_smol = { version = "=1.0.1", default-features = false }
 # Machine pairing PR 3 (2026-11-14): the 6-digit code is a SPAKE2 password (RFC 9382; RustCrypto PAKEs, the crate Magic
 # Wormhole uses; 0.4.0 is from 2023-07), the confirmed key is split with HKDF and checked with HMAC (SHA-256, the sha2
 # above), and the channel after it is ChaCha20-Poly1305. All are the 2022-2023 releases on sha2 0.10, the generation

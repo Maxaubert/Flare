@@ -1998,6 +1998,7 @@ dependencies = [
  "objc2-io-surface",
  "objc2-metal 0.3.2",
  "png",
+ "roxmltree",
  "serde",
  "serde_json",
  "tempfile",
@@ -2086,13 +2087,16 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "sha1_smol",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-prost",
+ "ureq",
  "windows-sys 0.61.2",
+ "zip 9.0.5",
 ]
 
 [[package]]

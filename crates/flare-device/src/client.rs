@@ -674,6 +674,8 @@ pub(crate) mod mac {
                     rotation,
                 }),
                 HostLine::Broken { why } => self.go_still(why),
+                // Android setup's events come only from the emu host.
+                HostLine::Setup { .. } => {}
             }
         }
 

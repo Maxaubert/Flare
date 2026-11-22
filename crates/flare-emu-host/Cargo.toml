@@ -25,6 +25,11 @@ tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-t
 tokio-stream = { version = "=0.1.19", default-features = false }
 # The emu host's guard and its children's flags (rule 1053).
 flare-proc = { path = "../flare-proc" }
+# Android setup (Android plan PR A2b, rule 1361): the HTTPS download from dl.google.com (the ureq Flare already uses for
+# dictation and plugins), each file's SHA-1, and the unzip (the zip crate the GPU pack uses).
+ureq.workspace = true
+sha1_smol.workspace = true
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

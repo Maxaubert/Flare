@@ -23,6 +23,8 @@ serde_json.workspace = true
 base64.workspace = true
 # The still pictures (`simctl io screenshot`, a PNG) decoded to RGBA on the still worker (client.rs).
 png.workspace = true
+# Google's Android package lists (Android plan PR A2b, emu/setup.rs): a parser that refuses a DOCTYPE, so no entity.
+roxmltree.workspace = true
 
 # The sim host and Flare's side of it are macOS only; on Windows the crate holds the pure model and the fake source,
 # and the `flare-sim-host` bin is a stub.
