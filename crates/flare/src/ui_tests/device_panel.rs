@@ -242,6 +242,22 @@ fn each_setup_state_shows_one_line_and_at_most_one_button() {
         Setup::Failed {
             why: "the device is still booting".into(),
         },
+        // Android's (Android plan PR A4).
+        Setup::SdkMissing,
+        Setup::Licence {
+            text: "Terms and Conditions".into(),
+            download_mb: 2538,
+        },
+        Setup::Downloading {
+            done_mb: 120,
+            total_mb: 2538,
+        },
+        Setup::NoHypervisor,
+        Setup::RestartNeeded,
+        Setup::NoAccess,
+        Setup::Preparing {
+            name: "Flare Pixel".into(),
+        },
     ];
     let h = window(1.5);
     let setups = Rc::new(Cell::new(0));

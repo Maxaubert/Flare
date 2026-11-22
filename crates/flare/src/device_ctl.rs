@@ -807,6 +807,8 @@ pub struct DeviceCtl {
     flow: Flow,
     /// Android devices in their first start's compile ("Preparing").
     preparing: HashSet<Target>,
+    /// The emu host's facts from the newest setup's answer (newer than its `hello`).
+    emu_facts: HashMap<String, String>,
     press: Option<Press>,
     pushed: Pushed,
     ticking: bool,
@@ -947,6 +949,7 @@ impl DeviceCtl {
             broken: HashMap::new(),
             flow: Flow::Idle,
             preparing: HashSet::new(),
+            emu_facts: HashMap::new(),
             press: None,
             pushed: Pushed::default(),
             ticking: false,
@@ -1760,7 +1763,11 @@ impl DeviceCtl {
         };
         let target = target::parse(&t.target);
         if t.choosing || target.is_none() {
-            return Some(if devices.is_empty() {
+            // An empty list on a computer with only Android: setup makes its device (NoRuntime is iOS's line).
+            let android_only = self.real.as_ref().is_some_and(|r| r.android && !r.ios);
+            return Some(if devices.is_empty() && android_only {
+                Setup::SdkMissing
+            } else if devices.is_empty() {
                 Setup::NoRuntime
             } else {
                 Setup::Choose
@@ -1851,7 +1858,10 @@ impl DeviceCtl {
             Flow::Idle => {}
         }
         match real.sdk? {
-            AndroidSdk::Missing | AndroidSdk::TooOld => Some(Setup::SdkMissing),
+            // No device yet: setup writes "Flare Pixel".
+            AndroidSdk::Missing | AndroidSdk::TooOld | AndroidSdk::Ready { avds: 0 } => {
+                Some(Setup::SdkMissing)
+            }
             AndroidSdk::Ready { .. }
                 if cfg!(windows) && self.emu_fact("accel_usable") == Some("false".into()) =>
             {
@@ -1861,8 +1871,12 @@ impl DeviceCtl {
         }
     }
 
-    /// One of the emu host's facts (its `hello`), when it runs.
+    /// One of the emu host's facts: the newest setup's answer first (setup finds the SDK and checks the hypervisor
+    /// again), else its `hello`, when it runs.
     fn emu_fact(&self, key: &str) -> Option<String> {
+        if let Some(v) = self.emu_facts.get(key) {
+            return Some(v.clone());
+        }
         let Some(Src::Real(m)) = &self.src else {
             return None;
         };
@@ -2462,6 +2476,11 @@ impl DeviceCtl {
             }
             (SetupReq::Start, Ok(Answer::Value(v))) => {
                 let facts = &v["facts"];
+                for (k, f) in facts.as_object().into_iter().flatten() {
+                    if let Some(s) = f.as_str() {
+                        self.emu_facts.insert(k.clone(), s.to_string());
+                    }
+                }
                 log::info!("device: Android setup done: {v}");
                 let sdk = facts["sdk"]
                     .as_str()
@@ -3242,6 +3261,7 @@ mod tests {
     fn an_android_device_boots_and_shuts_down_at_quit() {
         let (mut d, quits) = android_ctl(AndroidSdk::Ready { avds: 1 });
         assert!(d.menu_offered());
+        assert!(!d.agent_offered(), "Android's agent tools come with A5");
         d.ensure_source();
         d.list();
         let t = Target::emu("Flare_Pixel").unwrap();

@@ -288,9 +288,10 @@ impl DeviceCtl {
     }
 
     /// The agent's device tools work here: the fake source (`--e2e`), or the real one where the Xcode pick found an
-    /// Xcode (macOS on Apple silicon). The window adds "and it shows" (`sync_device_gate`).
+    /// Xcode (macOS on Apple silicon). The window adds "and it shows" (`sync_device_gate`). Android's tools come with
+    /// Android plan PR A5, so a Windows PC, whose panel is offered for Android setup, lists none yet.
     pub fn agent_offered(&self) -> bool {
-        self.menu_offered()
+        self.fake().is_some() || self.ios_offered()
     }
 
     /// Where "animation effects on" is read (tests pass their own).
