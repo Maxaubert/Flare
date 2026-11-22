@@ -3601,9 +3601,8 @@ opens at `http://127.0.0.1:<free port><path>` (`tunnel_url`). One tunnel per tab
 stands and dropped (ssh killed off the UI thread) when the chip goes or the tab closes; a failure is one line in the
 panel. Under `--e2e` a loopback forwarder stands in and ssh never runs. (2) A remote tab's folder is kept with its
 machine id in `flare.recentRemoteRoots`, apart from this machine's list (a remote path is never opened here); a tab
-opened in the host's home records the first folder its shell reports. The + menu lists up to 3 after the local ones,
-with the machine's logo and name and no pin, only for machines still in `machines.json`; the row carries `\0remote:`,
-so no folder is read as one. (3) `remote.snapshot {styled: true}` sends each line's style runs as SGRs that reset and
+opened in the host's home records the first folder its shell reports. (Amended by rule 1357 on 2026-11-21: the + menu
+no longer lists them; before, it listed up to 3 after the local ones, each row carrying `\0remote:`.) (3) `remote.snapshot {styled: true}` sends each line's style runs as SGRs that reset and
 set the style; the viewer keeps only SGRs (and the cursor moves of rule 293) of an answer that says `styled`, so a
 title, a mark or a mode still never rides on a snapshot (rule 289). A styled snapshot is at most 8 MiB: the oldest
 history goes first, never the screen. An older host refuses the param; the viewer asks plain on the same link and stops
@@ -3614,14 +3613,14 @@ or `..`), `under`'s first name must be a folder this run made for the tab, and e
 host (`symlink_metadata`, no reparse point), so nothing lands outside the tab's upload folder; the host counts the caps
 too. Only the folder's quoted path is pasted. An older host refuses `folder`: nothing is copied, one line says to update
 it. Native: `remote_tunnel.rs`, `appctl/surfaces7.rs` (`remote_chip_clicked`, `on_remote_tunnel`,
-`drop_gone_tunnels`), `recent_roots::remember_remote_root`, `menus_ui::remote_folder_rows`,
+`drop_gone_tunnels`), `recent_roots::remember_remote_root`,
 `appctl/remote_glue.rs::remember_remote_home`, `emulator::row_styled`, `TermHandle::remote_snapshot_with`,
 `remote_pty::styled_snapshot`, `remote_link::{snapshot, put_files, put_folder, folders_fit}`,
 `remote_files::Uploads::{make_folder, put_in}`, `flare_ctl::remote::{under_parts, put_inner_name}`,
 `appctl/remote_files_glue.rs::read_dropped`, `ctl_app::remote_put`. Held by `remote_tunnel::tests`,
 `a_remote_tabs_preview_chip_opens_the_page_through_a_tunnel_to_its_host`,
-`remote_folders_are_kept_with_their_machine_newest_first`, `remote_folders_follow_the_local_ones_with_their_machines_logo`,
-`a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again`,
+`remote_folders_are_kept_with_their_machine_newest_first`, `no_remote_folder_row_is_listed_in_the_plus_menu`,
+`a_remote_tabs_folder_joins_the_remote_recents_but_not_the_plus_menu`,
 `a_styled_row_carries_its_colours_and_draws_the_same_cells_again`,
 `a_styled_snapshot_shows_the_hosts_colours_and_keeps_the_screen_under_its_cap`,
 `a_styled_snapshot_keeps_its_colours_and_nothing_else`,
@@ -4576,17 +4575,17 @@ e2e `brand` scenario (the box ends 16 px under Cancel). Source: Max, 2026-11-15,
 
 1269. **The folder menu leaves out the folders of open tabs.** Max, 2026-11-15: the New tab button's folder menu (and
 the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
-recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
-choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
+recent or starter folder that an open local shell tab is in is not listed. (Amended by rule 1357 on 2026-11-21: a pin
+with an open tab is left out too; it used to always stay.) Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
 case. A folder below or beside it is another folder. A hidden folder brings no "No recent folders" note. (Amended by
 rule 1298 on 2026-11-18: its spot now goes to the next older recent without a tab, then to a starter; it no longer
 stays empty.) A remote tab's folder is on
-another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
+another machine, so it hides nothing. The list is built each time the
 menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
 `menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
 `AppCtl::open_local_folders`. Held by `an_open_tabs_recent_folder_is_left_out_of_the_menu`,
-`a_pinned_folder_stays_while_its_tab_is_open`, `an_open_folder_matches_whatever_its_spelling`,
-`open_folders_never_hide_a_remote_folder_row`, `only_local_tabs_count_as_open_folders_for_the_menu`,
+`an_open_pinned_folder_is_left_out_and_comes_back_when_its_tab_closes`, `an_open_folder_matches_whatever_its_spelling`,
+`only_local_tabs_count_as_open_folders_for_the_menu`,
 `a_menu_picks_a_recent_folder_and_copies_a_path` and `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again`. Source: Max, 2026-11-15.
 
 ## The taskbar wears the app icon (2026-11-15)
@@ -4884,7 +4883,8 @@ and opens the browser at the host's home: the Dialog look, Back and Home with ti
 first, folders first, files dimmed and never picked, the picked folder's path in the footer, Cancel and an accent Open
 here. A click picks, a double-click goes in; Escape or a press outside cancels, Enter is Open here. Open here opens the
 remote tab in the picked folder (else the folder shown, else `~` as before), and it joins the remote recents (rule
-1213). The recents wear the folder glyph and "on <machine>": only a machine's own row wears its logo. Never the OS
+1213). The recents wore the folder glyph and "on <machine>" (rule 1357 took them off the + menu on 2026-11-21): only a
+machine's own row wears its logo. Never the OS
 dialog. Each listing is one `remote.ls` over a short link (`remote_folder::LinkLister`, the window's own connector) on a
 worker; the home is asked with no `path` (an older host answers too), and the host now also reads `~` alone as its
 home. Only the newest ask's answer is taken, and none after the dialog closed. The host's answer is never trusted: a
@@ -4947,9 +4947,9 @@ folders, and the seven newest each had an open tab. Rule 1269 took the newest fi
 tab, and a hidden folder's spot stayed empty, so all five spots were empty and only "Choose a folder…" and the
 machine's row were left (no remote recents were kept yet). Now the folders with an open local tab leave the history
 before the newest five are taken: the five newest recents without a tab are listed, and a starter fills a spot only
-when no older recent is left (never one with a tab). A pin still always stays. The "No recent folders" note still
-shows only when nothing at all is known (no pin, no history, no starter), never because folders are hidden. The
-remote recents and the machine rows are as rule 1282 left them. Native: `menus_ui::folder_rows`. Held by
+when no older recent is left (never one with a tab). A pin with a tab is left out too since rule 1357 (2026-11-21). The
+"No recent folders" note still shows only when nothing at all is known (no pin, no history, no starter), never because
+folders are hidden. The machine rows are as rule 1357 placed them, and remote recents are no longer listed. Native: `menus_ui::folder_rows`. Held by
 `older_recents_fill_the_spots_of_folders_that_have_a_tab` (Max's twelve recents with seven open, and the starter case)
 and the rule 1269 tests (`menus_ui.rs`). Source: Max, 2026-11-18.
 
@@ -5740,6 +5740,24 @@ fits is laid out and behaves exactly as before. The wheel reaches the last row. 
 `a_menu_taller_than_the_window_is_capped_and_scrolls_to_its_last_row`, `a_tall_dropdown_stays_in_the_window` and
 `a_flyout_taller_than_the_window_is_capped_and_scrolls` (`crates/flare/src/ui_tests/menus.rs`). Source: audit report
 `research/audit/2026-11-18-flare-full.md`, 2026-11-20.
+1357. **The + menu is this PC, then the machines, then a rule and this PC's recents without a tab.** Max, 2026-11-21,
+with a screenshot of the New tab folder menu: "move the remote option to be the second option 1 this pc 2 remote |
+recent folders, excluding ones that are open. only recents from this pc". His menu listed five pinned folders that all
+had an open tab, then remote folders, then the machine last. Now the menu is "Choose a folder…" (this PC), then right
+under it, in the same group with no rule, one row per linked machine (logo, name, "choose folder", rule 1282), then a
+rule and this PC's folders: pins, then the newest recents, then starters (rules 1269 and 1298). A folder with an open
+local tab is left out even when it is pinned (this amends rule 1269's "a pin always stays"); the pin itself is kept,
+so the row comes back, pinned, once the tab closes. Its spot goes to the next older recent without a tab, then to a
+starter. Remote tabs' folders (`flare.recentRemoteRoots`, rule 1213) are still kept but no longer listed in this menu,
+so the `\0remote:` row and its pick are gone. With no machine linked the menu is "Choose a folder…" then the recents,
+as before. With nothing known, "No recent folders" shows after the rule, under the machines. Ctrl+Shift+R's machine
+menu is unchanged. Native: `menus_ui::{plus_menu_rows, folder_rows, machine_rows}`, `AppCtl::menu_picked`. Held by
+`the_plus_menu_is_this_pc_then_the_machines_then_a_rule_then_the_recents`,
+`an_open_pinned_folder_is_left_out_and_comes_back_when_its_tab_closes`,
+`no_remote_folder_row_is_listed_in_the_plus_menu`,
+`each_linked_machine_is_one_row_under_choose_with_its_logo_and_name` (`menus_ui.rs`),
+`a_remote_tabs_folder_joins_the_remote_recents_but_not_the_plus_menu` (`ui_tests/term.rs`) and the e2e `remoteUi` (the
+machine's row is second). Source: Max, 2026-11-21.
 
 1323. **The device panel never opens Simulator.app, Device Hub or a permission prompt; simulators boot headless; Flare
 never boots a device on its own.** Max, 2026-11-16 and 2026-11-19 (issue #248; the plan's 1317, renumbered because open

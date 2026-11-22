@@ -2046,13 +2046,15 @@ Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked lo
 - **The strip's + is unchanged.** Same look, a click opens a tab, a right-click opens the same folder menu at the
   pointer (two small buttons side by side there would make New tab hard to hit).
 - **The folder menu.** "Choose a folder…" is always the first row: the folder picker (starting in the new-tab folder),
-  then a tab there, and the folder joins the recents (every spawn remembers its folder). Under a rule: the pins in pin
-  order, then the 5 newest unpinned recents. While fewer recents than that are known, Documents, Downloads, Desktop and
+  then a tab there, and the folder joins the recents (every spawn remembers its folder). Right under it, in the same
+  group, one row per linked machine (rule 1357, Max 2026-11-21: "1 this pc 2 remote | recent folders"). Under a rule:
+  this PC's pins in pin order, then the 5 newest unpinned recents. While fewer recents than that are known, Documents, Downloads, Desktop and
   the user folder fill the empty spots, in that order, each once, never one already pinned or in the history; they say
   where they are on the right (`~\Documents`, "user folder"), and a real recent pushes one out. Each folder row keeps its
-  pin. Nothing to list at all: a disabled "No recent folders" under the first row.
-- **Open folders are left out** (rule 1269, Max 2026-11-15). When the menu opens, an unpinned recent or starter folder
-  that an open local tab is in is not listed. A pin always stays. A hidden folder's spot goes to the next older recent
+  pin. Nothing to list at all: a disabled "No recent folders" under the rule.
+- **Open folders are left out** (rule 1269, Max 2026-11-15). When the menu opens, a recent, pinned or starter folder
+  that an open local tab is in is not listed (pins too since rule 1357, 2026-11-21; the pin is kept and the row comes
+  back when the tab closes). A hidden folder's spot goes to the next older recent
   without a tab, then to a starter (rule 1298, Max 2026-11-18), with no note. Remote tabs hide nothing here.
 - **The starter folders** are Windows' known folders (`SHGetKnownFolderPath`, so a Documents redirected to OneDrive is the
   one Explorer shows), checked for existence on a worker once at start (`flare_win::paths::starter_folders`, rule 34);
@@ -2740,9 +2742,9 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   protocol 0, here 1. Update it there."). Every machine is checked once a run when the page opens. Find a setting finds
   it ("ssh", "add a machine"). Rule 1194. Held by `ui_tests::settings_machines::*`, `machines_page::tests`,
   `ssh_config::tests`, `machines::tests` and the `flare-settings` page tests.
-- **The + menu.** One row per linked machine after the folders, its logo and its name; a pick opens a shell tab on
-  that machine in its home folder (`remote.open {folder: "~"}`), where Claude is started or resumed by hand. No
-  submenu. Held by `menus_ui::tests::each_linked_machine_is_one_row_after_the_folders_with_its_logo_and_name`,
+- **The + menu.** One row per linked machine right under "Choose a folder…" (rule 1357, 2026-11-21; before, after the
+  folders), its logo and its name; a pick opens the folder browser on that machine (rule 1282). No
+  submenu. Held by `menus_ui::tests::each_linked_machine_is_one_row_under_choose_with_its_logo_and_name`,
   `ui_tests::term::flow::a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo` and the e2e `remoteUi`.
 - **Tab logos.** A remote tab wears its machine's logo: in vertical tabs before the folder path on the card's second
   line (Clawd stays in the pane), in horizontal tabs at the right after the status ring and before the ×. Its tooltip
@@ -2842,13 +2844,12 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
   `a_tunnels_child_counts_as_running_only_until_it_ends` and
   `a_remote_tabs_dead_tunnel_is_dropped_and_the_next_click_opens_a_new_one`.
 - **Remote folders in the recent folders.** A remote tab's folder joins the recent folders with its machine (a tab
-  opened in the host's home folder: the first folder the host's shell names). The + menu lists up to 3 of them after
-  this machine's folders, each with its machine's logo before its name and the machine's name on its right, and no pin;
-  a pick opens a remote tab on that machine in that folder. A machine removed from Settings > Machines takes its folders
-  off the list. They are kept apart from this machine's list (`flare.recentRemoteRoots`). Held by
+  opened in the host's home folder: the first folder the host's shell names). They are kept apart from this machine's
+  list (`flare.recentRemoteRoots`). Since rule 1357 (Max, 2026-11-21: "only recents from this pc") the + menu no longer
+  lists them; a machine's own row opens the folder browser there. Held by
   `recent_roots::tests::remote_folders_are_kept_with_their_machine_newest_first`,
-  `menus_ui::tests::remote_folders_follow_the_local_ones_with_their_machines_logo` and
-  `ui_tests::term::flow::a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again`.
+  `menus_ui::tests::no_remote_folder_row_is_listed_in_the_plus_menu` and
+  `ui_tests::term::flow::a_remote_tabs_folder_joins_the_remote_recents_but_not_the_plus_menu`.
 - **Colours after a reconnect.** A remote tab that starts from the host's screen (a new tab, a restored one, one that
   fell out of the host's ring) now shows the host's colours, bold, italic, underline and inverse at once, not only on
   new output: the snapshot is asked styled. A title, a mark or a mode still never rides on it (rule 289). Against an
