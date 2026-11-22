@@ -1901,6 +1901,7 @@ dependencies = [
  "libc",
  "log",
  "mdns-sd",
+ "memmap2",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -1919,6 +1920,7 @@ dependencies = [
  "tempfile",
  "velopack",
  "wgpu",
+ "windows",
  "windows-sys 0.61.2",
  "zip 9.0.5",
 ]

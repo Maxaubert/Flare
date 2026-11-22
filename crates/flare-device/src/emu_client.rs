@@ -49,6 +49,24 @@ pub type OnEvent = Arc<dyn Fn() + Send + Sync>;
 /// Starts the emulator for a target (tests put a stand-in here). Runs on a worker.
 pub type Launcher = Arc<dyn Fn(&Target) -> Result<(), String> + Send + Sync>;
 
+/// One frame the emulator wrote into a device's region (rule 1364): the record's facts and the region file. Handed to
+/// Flare's frame thread straight from the emu host's reader, so the copy never waits for the UI thread.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionFrame {
+    pub target: Target,
+    pub seq: u64,
+    pub t_us: u64,
+    /// The frame's size in pixels, already turned (a landscape frame is wider than high).
+    pub w: u32,
+    pub h: u32,
+    pub rotation: crate::geom::Orientation,
+    /// The region file the emulator wrote it into.
+    pub path: PathBuf,
+}
+
+/// Takes each [`RegionFrame`] on the emu host's reader thread. Never blocks.
+pub type OnRegion = Arc<dyn Fn(RegionFrame) + Send + Sync>;
+
 /// How Flare starts its emu host.
 #[derive(Clone)]
 pub struct EmuConfig {
@@ -71,6 +89,8 @@ pub struct EmuConfig {
     pub region_dir: Option<PathBuf>,
     /// Tests: instead of starting a real emulator.
     pub launcher: Option<Launcher>,
+    /// Flare's frame thread (rule 1364): each frame record with its region, as soon as it is read.
+    pub on_region: Option<OnRegion>,
 }
 
 impl EmuConfig {
@@ -87,6 +107,7 @@ impl EmuConfig {
             on_event: None,
             region_dir: None,
             launcher: None,
+            on_region: None,
         }
     }
 
@@ -380,13 +401,33 @@ impl Shared {
                 w,
                 h,
                 rotation,
-            } => self.event(SourceEvent::Region {
-                target,
-                seq,
-                t_us,
-                size_px: crate::geom::Size::new(f64::from(w), f64::from(h)),
-                rotation,
-            }),
+            } => {
+                // The frame thread copies it out of the region at once (rule 1364); the UI hears of it too.
+                if let Some(on) = &self.cfg.on_region {
+                    let path = lock(&self.state)
+                        .regions
+                        .get(&target)
+                        .map(|r| r.path().to_path_buf());
+                    if let Some(path) = path {
+                        on(RegionFrame {
+                            target: target.clone(),
+                            seq,
+                            t_us,
+                            w,
+                            h,
+                            rotation,
+                            path,
+                        });
+                    }
+                }
+                self.event(SourceEvent::Region {
+                    target,
+                    seq,
+                    t_us,
+                    size_px: crate::geom::Size::new(f64::from(w), f64::from(h)),
+                    rotation,
+                });
+            }
             HostLine::Broken { why } => self.go_broken(why),
             // Android setup's progress and a first boot's "Preparing" (PR A2b): shown by the panel from PR A4.
             HostLine::Setup { event } => log::debug!("emu host setup: {event:?}"),

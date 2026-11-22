@@ -1232,7 +1232,7 @@ impl DeviceCtl {
     fn log_path(&mut self) {
         let (path, why) = {
             let f = self.frames.borrow();
-            (f.path(), f.refused().unwrap_or("").to_string())
+            (f.path(), f.refused().unwrap_or_default())
         };
         if path == self.path_logged || path == FramePath::None {
             return;

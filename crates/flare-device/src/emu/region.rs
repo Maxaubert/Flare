@@ -43,10 +43,15 @@ pub fn url(path: &Path) -> String {
     format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
 }
 
-/// The bytes a region needs for a screen of `w` by `h` pixels in any rotation.
+/// A region's size is a whole number of these (64 KiB). Flare hands the mapped region to the GPU as it is (rule 1364):
+/// a D3D12 heap opened on the mapped view (`OpenExistingHeapFromAddress`) and a Metal no-copy buffer
+/// (`newBufferWithBytesNoCopy`, a whole number of 16 KiB pages) both take this size (spike S3).
+pub const ALIGN: u64 = 64 * 1024;
+
+/// The bytes a region needs for a screen of `w` by `h` pixels in any rotation, rounded up to [`ALIGN`].
 pub fn bytes_for(w: u32, h: u32) -> u64 {
     let side = u64::from(w.max(h));
-    side * side * 4
+    (side * side * 4).div_ceil(ALIGN) * ALIGN
 }
 
 /// A region file. Dropping it deletes the file (detach).
@@ -150,8 +155,11 @@ mod tests {
             )),
             "file:////Users/a/Library/Caches/TemporaryItems/avd/running/flare/12-1.rgba"
         );
-        assert_eq!(bytes_for(1080, 2400), 2400 * 2400 * 4);
+        // 2400 * 2400 * 4 = 23,040,000 bytes, rounded up to whole 64 KiB blocks for the GPU import.
+        assert_eq!(bytes_for(1080, 2400), 352 * ALIGN);
+        assert!(bytes_for(1080, 2400) >= 2400 * 2400 * 4);
         assert_eq!(bytes_for(2400, 1080), bytes_for(1080, 2400));
+        assert_eq!(bytes_for(128, 128), ALIGN);
         assert_eq!(name(12, 3), "12-3.rgba");
         assert_eq!(pid_of("12-3.rgba"), Some(12));
         for bad in ["12.rgba", "x-1.rgba", "12-.rgba", "12-1.png", "12-a.rgba"] {

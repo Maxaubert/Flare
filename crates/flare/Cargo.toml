@@ -20,6 +20,8 @@ flare-help = { path = "../flare-help" }
 flare-surfaces = { path = "../flare-surfaces" }
 # The device panel (issue #248): the pure model and the fake source (PR 4a); the simulator source in PR 4b.
 flare-device = { path = "../flare-device" }
+# The Android device panel's frame region, mapped by the frame thread and handed to the GPU (Android plan PR A4).
+memmap2.workspace = true
 flare-mods = { path = "../flare-mods" }
 flare-convo = { path = "../flare-convo" }
 flare-web = { path = "../flare-web" }
@@ -53,6 +55,11 @@ mdns-sd.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+# The Android frame region as a D3D12 heap and a placed buffer on wgpu's own device (rule 1364): the version and the
+# Direct3D12 feature wgpu-hal already uses.
+windows.workspace = true
+# The emu host's guard and the detached emulator shutdown at quit (Android plan PR A4).
+flare-proc = { path = "../flare-proc" }
 
 # The process memory and the installed RAM off Windows (macOS: proc_pid_rusage, sysctl).
 [target.'cfg(not(windows))'.dependencies]
@@ -68,7 +75,7 @@ objc2-app-kit.workspace = true
 # The device panel's ring (PR 4b, rule 1311): each IOSurface slot wrapped as an MTLTexture on wgpu's own device.
 objc2-core-foundation.workspace = true
 objc2-io-surface.workspace = true
-objc2-metal = { workspace = true, features = ["objc2-io-surface", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "MTLTypes"] }
+objc2-metal = { workspace = true, features = ["block2", "objc2-io-surface", "MTLAllocation", "MTLBuffer", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "MTLTypes"] }
 
 [features]
 default = []
