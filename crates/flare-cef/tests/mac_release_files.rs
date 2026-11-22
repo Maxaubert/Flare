@@ -322,7 +322,8 @@ fn the_pack_checks_each_programs_role_ad_hoc_too() {
     let pack = read("tools/release/mac/pack.sh");
     let check = &pack[pack.find("check_bundle() {").unwrap()..];
     for needed in [
-        "for t in UpdateMac flare-mcp flare-parakeet-host flare-sim-host; do",
+        "for t in UpdateMac flare-mcp flare-parakeet-host flare-sim-host flare-emu-host; do",
+        "\"$app/Contents/Resources/flare-agent.jar\"",
         "Identifier=$BUNDLE_ID.$t",
         "flags=[^ ]*runtime",
         "carries entitlements",
@@ -357,4 +358,24 @@ fn the_sim_host_self_test_runs_in_ci_and_from_the_signed_bundle() {
         assert!(text.contains("--self-test)\" || rc=$?"));
         assert!(text.contains("exit \"$rc\""));
     }
+}
+
+/// Android plan PR A6: the emu host as the signed bundle ships it (a tool, hardened runtime, no entitlements) runs its
+/// self-test before vpk packs it. A release build has no repository copy of the agent helper jar, so this is the check
+/// that it finds `Contents/Resources/flare-agent.jar` with the hash it expects (rule 1369).
+#[test]
+fn the_emu_host_self_test_runs_from_the_signed_bundle() {
+    let wf = read(WF);
+    let step = wf
+        .find("target/mac-release/Flare.app/Contents/MacOS/flare-emu-host --self-test")
+        .expect("the release workflow runs the bundle's emu host");
+    assert!(
+        step > wf
+            .find("FLARE_SKIP_BUILD=1 FLARE_NOTARIZE=0 bash tools/release/mac/make-app.sh")
+            .unwrap()
+    );
+    assert!(step < wf.find("bash tools/release/mac/pack.sh").unwrap());
+    let text = &wf[step..wf.find("bash tools/release/mac/pack.sh").unwrap()];
+    assert!(text.contains("::notice::flare-emu-host --self-test skipped"));
+    assert!(text.contains("exit \"$rc\""));
 }

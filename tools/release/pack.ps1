@@ -34,6 +34,12 @@ Copy-Item -LiteralPath (Need $parakeetHost) -Destination (Join-Path $Stage 'flar
 # which the bundled claude-plugin names as its server (flare-agent/claude-plugin/.claude-plugin/plugin.json).
 $mcpServer = Join-Path (Split-Path -Parent $Exe) 'flare-mcp.exe'
 Copy-Item -LiteralPath (Need $mcpServer) -Destination (Join-Path $Stage 'flare-mcp.exe')
+# The Android device panel (Android plan PR A6): the emu host, built beside Flare.exe, and the agent helper jar the emu
+# host pushes into an emulator. The jar is checked in (crates/flare-device/assets, rule 1369) and goes beside the emu
+# host, where it looks first; it takes only a jar with the hash its build expects.
+$emuHost = Join-Path (Split-Path -Parent $Exe) 'flare-emu-host.exe'
+Copy-Item -LiteralPath (Need $emuHost) -Destination (Join-Path $Stage 'flare-emu-host.exe')
+Copy-Item -LiteralPath (Need (Join-Path $root 'crates\flare-device\assets\flare-agent.jar')) -Destination (Join-Path $Stage 'flare-agent.jar')
 foreach ($f in 'LICENSE', 'THIRD-PARTY-NOTICES.md') { Copy-Item -LiteralPath (Need (Join-Path $root $f)) -Destination $Stage }
 vpk pack --packId Flare --packTitle Flare --packAuthors Max --packVersion $Version --packDir $Stage --mainExe Flare.exe --icon (Join-Path $root 'build\icon.ico') --shortcuts StartMenuRoot --aumid com.flare.terminal --runtime win-x64 --channel win --delta BestSpeed --releaseNotes $Notes --outputDir $Out
 exit $LASTEXITCODE

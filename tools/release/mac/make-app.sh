@@ -52,6 +52,9 @@ if [ "${FLARE_SKIP_BUILD:-0}" != 1 ]; then
   (cd "$ROOT" && cargo build --release --locked -p flare-dictation --bin flare-parakeet-host)
   # The device panel's sim host (issue #248, rule 1310): a tool beside the app, nothing starts it before PR 4b.
   (cd "$ROOT" && cargo build --release --locked -p flare-device --bin flare-sim-host)
+  # The Android device panel's emu host (Android plan PR A6): a tool beside the app, nothing starts it before PR A4. Its
+  # agent helper jar is checked in (crates/flare-device/assets) and goes into Contents/Resources.
+  (cd "$ROOT" && cargo build --release --locked -p flare-emu-host)
 fi
 
 # The speech engine (rule 1138): whisper-server and parakeet-cli with Metal, built from the one pinned whisper.cpp

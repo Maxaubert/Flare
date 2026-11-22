@@ -5949,11 +5949,17 @@ running helper of this build is reused (a second Flare); another build's is told
 running helper blocks a new one. It ends 15 s after its last client leaves. A failed call starts it again once; a
 second failure switches that attach to `uiautomator dump` (about 2 s), and the tree's answer says `path: "dump"`
 (`device_state` shows "slow tree" in PR A4). The dump needs the helper gone first: it fails quietly while a helper holds
-the UI automation connection (checked by hand). Held by `the_checked_in_jar_is_built_from_its_sources`,
+the UI automation connection (checked by hand). PR A6 ships the jar where the emu host looks: beside
+`flare-emu-host.exe` in `current\` (`pack.ps1`, `stage-install.ps1`) and in `Flare.app/Contents/Resources`
+(`release::build`); the release runs the shipped emu host's self-test on both OSes, since a release build has no repo
+copy to fall back on. Held by `the_checked_in_jar_is_built_from_its_sources`,
 `the_helper_goes_only_to_an_emulator`, `the_helpers_constants_match_its_source`,
 `a_real_settings_screen_reads_the_same_both_ways` (`emu/agent.rs`), `a_helper_is_made_only_for_an_emulator`,
 `a_helper_that_cannot_start_falls_back_and_answers` and `the_jar_is_found_with_its_hash`
-(`flare-emu-host/src/agent.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations").
+(`flare-emu-host/src/agent.rs`), `the_package_ships_the_emu_host_and_the_agent_jar_beside_the_app`
+(`crates/flare/tests/release_files.rs`), `the_bundle_lists_the_emu_host_as_a_tool_and_carries_the_agent_jar`
+(`flare-cef/src/macos/release.rs`) and `the_emu_host_self_test_runs_from_the_signed_bundle`
+(`flare-cef/tests/mac_release_files.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations").
 
 1370. **No emulator window, taskbar button or Dock icon ever appears.** Spec 2026-11-22, anti-goals. The emulator runs
 with `-no-window` (the headless engine, spike A5), and on Windows every program Flare's Android side starts (the emu

@@ -2175,7 +2175,8 @@ Specs: `docs/superpowers/specs/2026-10-29-idle-install.md`, then `docs/superpowe
 only when the person clicks "Build ready". How to stage: `docs/shipping.md`, "Installing a local build with Build ready".
 
 - **Staging.** `tools/stage-install.ps1 [-Stable]` copies the release files into `<install>\staged\` under their names in
-  `current\` (`FlareStable.exe` or `Flare.exe`, `flare-mcp.exe`, `flare-parakeet-host.exe`, `LICENSE`,
+  `current\` (`FlareStable.exe` or `Flare.exe`, `flare-mcp.exe`, `flare-parakeet-host.exe`, `flare-emu-host.exe`,
+  `flare-agent.jar`, `LICENSE`,
   `THIRD-PARTY-NOTICES.md`, the pinned `conpty.dll` and `OpenConsole.exe` as `pack.ps1` ships them, `claude-plugin\`)
   and writes `staged.json` last: `{commit, built_at, files: {name: sha256}}`. Two names for one file (case, slashes) are
   refused. (`whisper\` is not staged; it changes only with a new engine and stays as installed.)
@@ -3189,4 +3190,26 @@ simulator in that tab's device panel, while the person watches and can take over
 - **`/device`.** The Claude plugin gains a `/device [name]` command: boots the device, looks once, waits.
 - **Tests.** `cargo nextest run -p flare -E 'test(device)'`, `cargo nextest run -p flare-mcp`, `cargo nextest run -p
   flare-ctl`; the e2e `deviceAgent` and `mcpDevice` run on the fake source.
+
+## Device panel: Android, PR A6: the emu host and the agent jar ship (not yet started), 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`
+(PR A6). Nothing in the app changes: the package and the bundle carry the Android parts, nothing starts them before A4.
+
+- **Windows.** `pack.ps1` puts `flare-emu-host.exe` (built beside `Flare.exe`) and the checked-in
+  `crates/flare-device/assets/flare-agent.jar` into `current\`; `verify-pack.ps1` refuses a portable zip without them,
+  and `tools/stage-install.ps1` stages both. `release.yml` and `update-e2e.yml` build the emu host before the pack.
+  Windows has no code signing in Flare's release, so neither is signed, like the other helpers.
+- **macOS.** `make-app.sh` builds `flare-emu-host`, and `flare-mac-app` puts it in `Flare.app/Contents/MacOS` as a tool
+  (`flare_cef::macos::release::TOOLS`: identifier `com.flare.terminal.flare-emu-host`, the hardened runtime, no
+  entitlements) and the jar in `Contents/Resources`. `pack.sh` checks both, ad hoc too. The Mac stage script copies the
+  whole bundle, so it carries them with no change.
+- **Checked in the release.** The emu host's `--self-test` runs from the packed folder (Windows, after `pack.ps1`) and
+  from the signed bundle (macOS, before vpk). A release build has no repository copy of the jar, so these runs show it
+  finds the shipped jar with the hash it expects (rule 1369).
+- **Tests.** `release_files::the_package_ships_the_emu_host_and_the_agent_jar_beside_the_app`, the stage script test
+  (`crates/flare-update/tests/stage_script.rs`), and on macOS
+  `release::tests::the_bundle_lists_the_emu_host_as_a_tool_and_carries_the_agent_jar`,
+  `sign::tests::the_emu_host_is_signed_as_a_tool_with_no_entitlements` and
+  `mac_release_files::the_emu_host_self_test_runs_from_the_signed_bundle`.
 

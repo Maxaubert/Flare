@@ -14,8 +14,9 @@
 //! - `Flare Helper (Renderer)` and `Flare Helper (GPU)`: `cs.allow-jit` (V8; SwiftShader's software GL in the GPU
 //!   process, Chromium's `helper-gpu-entitlements.plist`).
 //! - `Flare Helper`, `(Plugin)`, `(Alerts)`, and the tools (`flare-mcp`, `flare-parakeet-host`, `flare-sim-host`,
-//!   `UpdateMac`): none. Flare has no plugins (CEF 156 has no Pepper). The sim host loads CoreSimulator and
-//!   SimulatorKit (Apple's own) with no key: Step 0 S3 of the device panel plan (2026-11-19).
+//!   `flare-emu-host`, `UpdateMac`): none. Flare has no plugins (CEF 156 has no Pepper). The sim host loads
+//!   CoreSimulator and SimulatorKit (Apple's own) with no key: Step 0 S3 of the device panel plan (2026-11-19). The emu
+//!   host (Android plan PR A6) runs adb and talks gRPC on localhost, which needs no key either.
 //!
 //! Never `allow-unsigned-executable-memory`, `disable-library-validation` or the dyld environment key: every Mach-O
 //! in the bundle is signed by the same team; a library downloaded later (the dictation engines) must be signed by the
@@ -772,17 +773,29 @@ mod tests {
     /// SimulatorKit. A real ad-hoc sign of a stand-in Mach-O at its place in a bundle shows what `codesign` writes.
     #[test]
     fn the_sim_host_is_signed_as_a_tool_with_no_entitlements() {
-        let dir = std::env::temp_dir().join(format!("flare-sign-simhost-{}", std::process::id()));
+        a_device_host_is_signed_as_a_tool_with_no_entitlements("flare-sim-host");
+    }
+
+    /// Android plan PR A6: `Contents/MacOS/flare-emu-host` is signed the same way as the sim host: a tool, its own
+    /// identifier, the hardened runtime and no entitlements (it runs adb and talks gRPC on localhost).
+    #[test]
+    fn the_emu_host_is_signed_as_a_tool_with_no_entitlements() {
+        a_device_host_is_signed_as_a_tool_with_no_entitlements("flare-emu-host");
+    }
+
+    fn a_device_host_is_signed_as_a_tool_with_no_entitlements(name: &str) {
+        let dir = std::env::temp_dir().join(format!("flare-sign-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let app = dir.join("Flare.app");
         let macos = app.join("Contents/MacOS");
         fs::create_dir_all(&macos).expect("dir");
-        let exe = macos.join("flare-sim-host");
+        let exe = macos.join(name);
         let role = crate::macos::bundle::role_of(&app, &exe);
         assert_eq!(role, Role::Tool);
         assert!(entitlements(role).is_empty());
         assert!(entitlements_plist(role).is_none());
-        let id = "com.flare.terminal.flare-sim-host";
+        let id = format!("com.flare.terminal.{name}");
+        let id = id.as_str();
         let release = Signing::release(Some("Developer ID Application: X (T)"), None);
         let a = codesign_args(&release, role, Some(id), None);
         assert!(a.windows(2).any(|w| w == ["--options", "runtime"]), "{a:?}");
