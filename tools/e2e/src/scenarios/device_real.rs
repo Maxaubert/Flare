@@ -13,7 +13,7 @@
 //! Where the runner has no Xcode or no iOS runtime (open check 6), the scenario says so and skips the rest.
 
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use flare_e2e_proto::Request;
 use serde_json::Value;
@@ -263,10 +263,9 @@ fn steps(ctx: &mut Ctx, app: &mut App, udid: &str) -> Result<(), String> {
     );
     let before = num(&s["person_inputs"]);
     app.session.click(cx, cy)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && num(&state(app)["person_inputs"]) <= before {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    ctx.until("the person's touch is counted", 5000, &mut || {
+        num(&state(app)["person_inputs"]) > before
+    });
     let s = state(app);
     ctx.ok(
         num(&s["person_inputs"]) > before && s["state"] == "live",
