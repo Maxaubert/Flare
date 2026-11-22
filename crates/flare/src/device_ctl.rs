@@ -611,6 +611,18 @@ impl DeviceCtl {
         self.drain();
     }
 
+    /// A boot or a shutdown answered: the device reads its new state at once, and the list is read again.
+    fn settled(&mut self, t: &Target, state: DeviceState) {
+        if let Some(d) = self
+            .devices
+            .as_mut()
+            .and_then(|l| l.iter_mut().find(|d| &d.target == t))
+        {
+            d.state = state;
+        }
+        self.list();
+    }
+
     fn state_of(&self, t: &Target) -> Option<DeviceState> {
         self.devices
             .as_ref()?
@@ -668,15 +680,17 @@ impl DeviceCtl {
                     }
                     (Pending::Boot(t), r) => {
                         self.booting.remove(&t);
-                        if let Err(e) = r {
-                            self.fail(&t, e.message);
+                        match r {
+                            Err(e) => self.fail(&t, e.message),
+                            // The sim host answers a boot and sends no state of its own (the fake does): the
+                            // device reads booted now, so the panel attaches, and the list is read again.
+                            Ok(_) => self.settled(&t, DeviceState::Booted),
                         }
                     }
-                    (Pending::Shutdown(t), r) => {
-                        if let Err(e) = r {
-                            self.fail(&t, e.message);
-                        }
-                    }
+                    (Pending::Shutdown(t), r) => match r {
+                        Err(e) => self.fail(&t, e.message),
+                        Ok(_) => self.settled(&t, DeviceState::Shutdown),
+                    },
                 }
             }
             SourceEvent::Frames { target, screen, .. } => {
