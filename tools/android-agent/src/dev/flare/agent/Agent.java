@@ -27,16 +27,17 @@ import org.json.JSONObject;
  * user, inside an emulator only. It holds one UiAutomation connection and answers JSON lines on an abstract socket,
  * which the emu host reaches through `adb forward tcp:0 localabstract:flare-agent`.
  *
- * Requests: {"id":1,"op":"hello"|"tree"|"set_text"|"front_app"|"quit", ...}. Answers: {"id":1,"ok":{...}} or
- * {"id":1,"err":"why","code":"unavailable"|"not_found"|"busy"}. Events (no id): {"event":"windows","count":n}.
+ * Started as `Agent <socket> <nonce>`; hello echoes the nonce. Requests: {"id":1,"op":"hello"|"tree"|"set_text"|
+ * "front_app"|"quit", ...}. Answers: {"id":1,"ok":{...}} or {"id":1,"err":"why","code":"unavailable"|"not_found"|
+ * "busy"}. Events (no id): {"event":"windows","count":n}.
  *
  * It ends by itself when no client has been connected for a while, so it never outlives Flare by much, and it frees
  * the UiAutomation connection for a UI test or `uiautomator dump`.
  */
 public final class Agent {
     /** The wire protocol's version. Raise it when a request or answer changes shape. */
-    static final int PROTOCOL = 1;
-    /** The abstract socket's name. One helper per device; a second Flare reuses it. */
+    static final int PROTOCOL = 2;
+    /** The abstract socket's name. One helper per device; the emu host uses it only when hello echoes its nonce. */
     static final String SOCKET = "flare-agent";
     /** How long the helper waits for its first client, and lives on after its last one left. */
     static final long IDLE_MS = 15_000;
@@ -46,6 +47,11 @@ public final class Agent {
     static UiAutomation ui;
     static final Object uiLock = new Object();
     static String jarSha = "";
+    /**
+     * The emu host's random nonce from the command line, echoed in hello. Only the emu host that started this helper
+     * knows it, so an app that took the socket name first cannot pass for the helper.
+     */
+    static String nonce = "";
     static final List<Client> clients = new ArrayList<>();
     static long lastClientGone = System.currentTimeMillis();
     static long windowEvents = 0;
@@ -55,6 +61,7 @@ public final class Agent {
     public static void main(String[] args) throws Exception {
         Looper.prepareMainLooper();
         String socket = args.length > 0 ? args[0] : SOCKET;
+        nonce = args.length > 1 ? args[1] : "";
         jarSha = ownSha();
         LocalServerSocket server;
         try {

@@ -32,6 +32,8 @@ sha1_smol.workspace = true
 zip.workspace = true
 # The agent helper jar's SHA-256, checked before it is pushed (Android plan PR A3, rule 1369).
 sha2.workspace = true
+# The agent helper's start nonce, 128 bits from the OS (the getrandom Flare already uses).
+getrandom.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

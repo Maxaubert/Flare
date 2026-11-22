@@ -1474,6 +1474,78 @@ mod tests {
         assert!(s2.booted().is_empty());
     }
 
+    /// Rule 1366: a boot of an AVD whose emulator already runs (its discovery file is there: Android Studio, or another
+    /// Flare) launches nothing, only waits in the emu host, answers `started_elsewhere`, and is never marked as Flare's.
+    #[test]
+    fn a_boot_of_an_emulator_that_already_runs_is_never_flares() {
+        let dir = tempfile::tempdir().unwrap();
+        let launched = Arc::new(Mutex::new(Vec::new()));
+        let l = Arc::clone(&launched);
+        let launcher: Launcher = Arc::new(move |t: &Target| {
+            lock(&l).push(t.clone());
+            Ok(())
+        });
+        let mut s = source("serve", dir.path(), Some(launcher));
+        let running = s.sh.cfg.places.discovery_dir().unwrap();
+        std::fs::create_dir_all(&running).unwrap();
+        std::fs::write(
+            running.join("pid_4242.ini"),
+            "avd.id=Flare_Pixel\nport.serial=5554\ngrpc.port=8554\ngrpc.token=dG9rZW4=\n",
+        )
+        .unwrap();
+        let t = target();
+        let id = s.boot(&t);
+        let seen = until(&s, Duration::from_secs(30), answered(id));
+        let Some(SourceEvent::Answer { result: Ok(a), .. }) = seen.last() else {
+            panic!("{seen:?}")
+        };
+        assert!(is_started_elsewhere(a), "{a:?}");
+        assert!(lock(&launched).is_empty(), "nothing launched");
+        assert!(s.booted().is_empty(), "never Flare's to shut down");
+        assert!(
+            sent(dir.path())
+                .iter()
+                .any(|c| matches!(&c.req, Request::Boot { target } if *target == t)),
+            "the emu host still waits for it"
+        );
+        // Another AVD with no discovery file is launched and is Flare's.
+        let other = Target::emu("Other_Pixel").unwrap();
+        let id = s.boot(&other);
+        let seen = until(&s, Duration::from_secs(30), answered(id));
+        assert!(
+            matches!(
+                seen.last(),
+                Some(SourceEvent::Answer {
+                    result: Ok(Answer::Done),
+                    ..
+                })
+            ),
+            "{seen:?}"
+        );
+        assert_eq!(*lock(&launched), std::slice::from_ref(&other));
+        assert_eq!(s.booted(), std::slice::from_ref(&other));
+        // Once Flare booted it, its own discovery file does not make a second boot "elsewhere".
+        std::fs::write(
+            running.join("pid_4243.ini"),
+            "avd.id=Other_Pixel\nport.serial=5556\ngrpc.port=8556\ngrpc.token=dG9rZW4=\n",
+        )
+        .unwrap();
+        let id = s.boot(&other);
+        let seen = until(&s, Duration::from_secs(30), answered(id));
+        assert!(
+            matches!(
+                seen.last(),
+                Some(SourceEvent::Answer {
+                    result: Ok(Answer::Done),
+                    ..
+                })
+            ),
+            "{seen:?}"
+        );
+        assert_eq!(lock(&launched).len(), 1, "no second launch");
+        assert_eq!(s.booted(), std::slice::from_ref(&other));
+    }
+
     /// Rule 1368: text goes to the emu host as text (keys or the device's clipboard there); input reaches it in order.
     #[test]
     fn input_text_and_snapshots_go_to_the_emu_host() {

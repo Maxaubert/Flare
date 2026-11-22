@@ -429,14 +429,22 @@ fn download(
 }
 
 /// Unzips `zip` into `out` and answers its one top folder. Only names that stay inside `out` are taken
-/// (`enclosed_name`), every entry must be under one top folder, and unix modes are kept. A symlink is made only on unix
-/// and only when it points inside the package.
+/// (`enclosed_name`), every entry must be under one top folder, and unix modes are kept.
+///
+/// No link exists while files are written: folders and regular files come first, links last. A link's target must be
+/// relative with no `..` (so it can only point down from its own folder), and a link is made only on unix. Before
+/// each write the parent folder is canonicalized and must still be inside `out`, so nothing is ever written through a
+/// link.
 pub fn unzip(zip: &Path, out: &Path, cancel: &AtomicBool) -> Result<String, Stop> {
     let file = std::fs::File::open(zip).map_err(|e| format!("{}: {e}", zip.display()))?;
     let mut a =
         zip::ZipArchive::new(file).map_err(|e| format!("the download is not a zip: {e}"))?;
     let mut top: Option<String> = None;
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let root = out
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut links: Vec<(usize, PathBuf)> = Vec::new();
     for i in 0..a.len() {
         if cancel.load(Ordering::Relaxed) {
             return Err(Stop::Cancelled);
@@ -466,16 +474,15 @@ pub fn unzip(zip: &Path, out: &Path, cancel: &AtomicBool) -> Result<String, Stop
         let path = out.join(&rel);
         if e.is_dir() {
             std::fs::create_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            inside(&root, &path)?;
             continue;
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            inside(&root, parent)?;
         }
         if e.is_symlink() {
-            let mut target = String::new();
-            e.read_to_string(&mut target)
-                .map_err(|e| format!("the zip: {e}"))?;
-            link(&out.join(&first), &path, &target)?;
+            links.push((i, path));
             continue;
         }
         let mut w = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -486,50 +493,62 @@ pub fn unzip(zip: &Path, out: &Path, cancel: &AtomicBool) -> Result<String, Stop
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode & 0o755));
         }
     }
+    for (i, path) in links {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Stop::Cancelled);
+        }
+        let mut e = a.by_index(i).map_err(|e| format!("the zip: {e}"))?;
+        let mut target = String::new();
+        e.read_to_string(&mut target)
+            .map_err(|e| format!("the zip: {e}"))?;
+        if !link_target_ok(&target) {
+            return Err(Stop::Failed(format!(
+                "the zip has a link outside its folder: {target:?}"
+            )));
+        }
+        if let Some(parent) = path.parent() {
+            inside(&root, parent)?;
+        }
+        link(&path, &target)?;
+    }
     top.ok_or_else(|| Stop::Failed("the zip is empty".to_string()))
 }
 
-/// Whether a symlink at `at` pointing to `target` stays inside `root`.
-pub fn link_stays_inside(root: &Path, at: &Path, target: &str) -> bool {
+/// Refuses a write whose folder `dir`, with every link in it followed, is not inside `root` (already canonical).
+fn inside(root: &Path, dir: &Path) -> Result<(), Stop> {
+    let real = dir
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    if real.starts_with(root) {
+        Ok(())
+    } else {
+        Err(Stop::Failed(format!(
+            "the zip writes outside its folder: {}",
+            dir.display()
+        )))
+    }
+}
+
+/// Whether a link in a package may point at `target`: relative, not empty, no `..`, no backslash, no colon (a drive),
+/// no root. Such a target only ever points down from the link's own folder.
+pub fn link_target_ok(target: &str) -> bool {
     let t = Path::new(target);
-    if t.is_absolute() || target.contains('\\') || target.is_empty() {
+    if target.is_empty() || target.contains(['\\', ':']) || t.is_absolute() || t.has_root() {
         return false;
     }
-    let mut p = at.parent().map(Path::to_path_buf).unwrap_or_default();
-    for c in t.components() {
-        match c {
-            Component::Normal(n) => p.push(n),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !p.pop() {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-    }
-    p.starts_with(root)
+    t.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 #[cfg(unix)]
-fn link(root: &Path, at: &Path, target: &str) -> Result<(), Stop> {
-    if !link_stays_inside(root, at, target) {
-        return Err(Stop::Failed(format!(
-            "the zip has a link outside its folder: {target:?}"
-        )));
-    }
+fn link(at: &Path, target: &str) -> Result<(), Stop> {
     std::os::unix::fs::symlink(target, at)
         .map_err(|e| Stop::Failed(format!("{}: {e}", at.display())))
 }
 
 #[cfg(not(unix))]
-fn link(root: &Path, at: &Path, target: &str) -> Result<(), Stop> {
-    // Windows zips from Google hold no links; one is refused if it leaves the folder, else skipped.
-    if !link_stays_inside(root, at, target) {
-        return Err(Stop::Failed(format!(
-            "the zip has a link outside its folder: {target:?}"
-        )));
-    }
+fn link(at: &Path, _target: &str) -> Result<(), Stop> {
+    // Windows zips from Google hold no links; a safe one is skipped.
     log::warn!(
         "setup: a link in the zip is skipped on Windows: {}",
         at.display()
@@ -985,28 +1004,116 @@ mod tests {
         let ok = put("ok.zip", zip_of("emulator", &[("lib/a.txt", "a")]));
         assert_eq!(unzip(&ok, &d.path().join("o3"), &no).unwrap(), "emulator");
         assert!(d.path().join("o3/emulator/lib/a.txt").is_file());
-        let root = Path::new("/o/emulator");
-        assert!(link_stays_inside(
-            root,
-            Path::new("/o/emulator/lib/a.so"),
-            "a.so.1"
-        ));
-        assert!(link_stays_inside(
-            root,
-            Path::new("/o/emulator/lib/x/a"),
-            "../b"
-        ));
-        assert!(!link_stays_inside(
-            root,
-            Path::new("/o/emulator/a"),
-            "../../etc/passwd"
-        ));
-        assert!(!link_stays_inside(
-            root,
-            Path::new("/o/emulator/a"),
-            "/etc/passwd"
-        ));
-        assert!(!link_stays_inside(root, Path::new("/o/emulator/a"), ""));
+        assert!(link_target_ok("a.so.1"));
+        assert!(link_target_ok("x/./a.so"));
+        assert!(!link_target_ok("../b"));
+        assert!(!link_target_ok("x/../../etc/passwd"));
+        assert!(!link_target_ok("/etc/passwd"));
+        assert!(!link_target_ok("C:\\Windows"));
+        assert!(!link_target_ok("C:/Windows"));
+        assert!(!link_target_ok(""));
+    }
+
+    /// A hostile zip: a link that would let a later file land outside the folder, a link out by `..`, an absolute
+    /// link, and a link named like a folder that files go into. Nothing lands outside `out`, no link is followed
+    /// while files are written, and every one is refused.
+    #[test]
+    fn a_hostile_zip_writes_nothing_outside_its_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let no = AtomicBool::new(false);
+        let o = zip::write::SimpleFileOptions::default();
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("dotdot", {
+                let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                w.add_symlink("pkg/up", "../../outside", o).unwrap();
+                w.start_file("pkg/a.txt", o).unwrap();
+                w.write_all(b"a").unwrap();
+                w.finish().unwrap().into_inner()
+            }),
+            ("absolute", {
+                let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                w.add_symlink("pkg/abs", outside.to_string_lossy(), o)
+                    .unwrap();
+                w.finish().unwrap().into_inner()
+            }),
+            // The link comes first in the zip; were it made at once, `pkg/l/x` would be written through it.
+            ("link_then_file", {
+                let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                w.add_symlink("pkg/l", "../../outside", o).unwrap();
+                w.start_file("pkg/l/x", o).unwrap();
+                w.write_all(b"x").unwrap();
+                w.finish().unwrap().into_inner()
+            }),
+            // A safe-looking link named like a folder files go into: the files are written first, as a real folder,
+            // so the link cannot take its place.
+            ("link_over_folder", {
+                let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                w.add_symlink("pkg/l", "sub", o).unwrap();
+                w.start_file("pkg/l/x", o).unwrap();
+                w.write_all(b"x").unwrap();
+                w.finish().unwrap().into_inner()
+            }),
+        ];
+        for (name, bytes) in cases {
+            let z = d.path().join(format!("{name}.zip"));
+            std::fs::write(&z, bytes).unwrap();
+            let out = d.path().join(format!("o-{name}"));
+            let r = unzip(&z, &out, &no);
+            if cfg!(unix) || name != "link_over_folder" {
+                assert!(r.is_err(), "{name}: {r:?}");
+            }
+            assert_eq!(
+                std::fs::read_dir(&outside).unwrap().count(),
+                0,
+                "{name} wrote outside"
+            );
+            assert!(
+                !out.join("pkg/l").is_symlink(),
+                "{name}: a link replaced a folder"
+            );
+        }
+        // A link that points down inside the package is made on unix (skipped on Windows), after the files.
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        w.start_file("pkg/lib/a.so.1", o).unwrap();
+        w.write_all(b"so").unwrap();
+        w.add_symlink("pkg/lib/a.so", "a.so.1", o).unwrap();
+        let z = d.path().join("good.zip");
+        std::fs::write(&z, w.finish().unwrap().into_inner()).unwrap();
+        let out = d.path().join("o-good");
+        assert_eq!(unzip(&z, &out, &no).unwrap(), "pkg");
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::read_to_string(out.join("pkg/lib/a.so")).unwrap(),
+            "so"
+        );
+        #[cfg(not(unix))]
+        assert!(!out.join("pkg/lib/a.so").exists());
+    }
+
+    /// The canonical-parent check refuses a folder that is a link out of the package (made here by hand, as a
+    /// stand-in for one left by anything else).
+    #[cfg(unix)]
+    #[test]
+    fn a_write_through_a_planted_link_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let out = d.path().join("o");
+        std::fs::create_dir_all(out.join("pkg")).unwrap();
+        std::os::unix::fs::symlink(&outside, out.join("pkg/l")).unwrap();
+        let root = out.canonicalize().unwrap();
+        assert!(inside(&root, &out.join("pkg")).is_ok());
+        assert!(inside(&root, &out.join("pkg/l")).is_err());
+        let o = zip::write::SimpleFileOptions::default();
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        w.start_file("pkg/l/x", o).unwrap();
+        w.write_all(b"x").unwrap();
+        let z = d.path().join("p.zip");
+        std::fs::write(&z, w.finish().unwrap().into_inner()).unwrap();
+        assert!(unzip(&z, &out, &AtomicBool::new(false)).is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 
     #[test]

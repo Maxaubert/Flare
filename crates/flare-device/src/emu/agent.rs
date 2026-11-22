@@ -13,8 +13,9 @@ use crate::geom::Size;
 use crate::tree::{AndroidNode, Rect, UiNode, android_role};
 
 /// The helper's wire protocol (`Agent.PROTOCOL` in the Java source).
-pub const PROTOCOL: u64 = 1;
-/// The abstract socket the helper listens on (`Agent.SOCKET`). One helper per device: a second Flare reuses it.
+pub const PROTOCOL: u64 = 2;
+/// The abstract socket the helper listens on (`Agent.SOCKET`). One helper per device. Any app in the device could
+/// bind this name first, so a helper is trusted only when its hello echoes the nonce it was started with.
 pub const SOCKET: &str = "flare-agent";
 /// The helper's process name in the device (`app_process --nice-name`), so an old one can be found and stopped.
 pub const PROCESS: &str = "flare-agent";
@@ -51,12 +52,29 @@ pub fn device_jar(sha256: &str) -> String {
     )
 }
 
-/// The device-side command that starts the helper (run through `adb shell`). The path is Flare's own, made by
-/// [`device_jar`] from a hex hash, so nothing else reaches the shell.
-pub fn start_command(device_jar: &str) -> String {
+/// The device-side command that starts the helper (run through `adb shell`) with the emu host's `nonce`, which its
+/// hello echoes. The path is Flare's own, made by [`device_jar`] from a hex hash, and a nonce that is not
+/// [`nonce_ok`] is left out, so nothing else reaches the shell.
+pub fn start_command(device_jar: &str, nonce: &str) -> String {
+    let nonce = if nonce_ok(nonce) { nonce } else { "" };
     format!(
-        "CLASSPATH={device_jar} exec app_process /system/bin --nice-name={PROCESS} {MAIN_CLASS} {SOCKET}"
+        "CLASSPATH={device_jar} exec app_process /system/bin --nice-name={PROCESS} {MAIN_CLASS} {SOCKET} {nonce}"
     )
+    .trim_end()
+    .to_string()
+}
+
+/// A nonce as the emu host makes it: 32 lowercase hex digits (128 random bits).
+pub fn nonce_ok(nonce: &str) -> bool {
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A nonce from 16 random bytes.
+pub fn nonce_from(bytes: [u8; 16]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The device-side command that removes the jars of other builds, keeping `keep` (a path from [`device_jar`]).
@@ -165,11 +183,21 @@ pub struct Hello {
     pub api: u32,
     #[serde(default)]
     pub release: String,
+    /// The nonce the helper was started with.
+    #[serde(default)]
+    pub nonce: String,
 }
 
 impl Hello {
-    /// Whether this is the helper this build pushes (so it can be reused, say by a second Flare).
-    pub fn is_ours(&self) -> bool {
+    /// Whether this is the helper of this build that this emu host started with `nonce`, so it may be used. The
+    /// agent name, protocol and jar hash are only what the answer claims; the nonce is the proof, since an app that
+    /// took the socket first never saw it.
+    pub fn is_ours(&self, nonce: &str) -> bool {
+        self.is_this_build() && nonce_ok(nonce) && self.nonce == nonce
+    }
+
+    /// Whether the answer claims this build. Nothing is trusted on this alone.
+    pub fn is_this_build(&self) -> bool {
         self.agent == "flare-agent" && self.protocol == PROTOCOL && self.jar_sha256 == jar_sha256()
     }
 }
@@ -560,12 +588,25 @@ mod tests {
         let jar = device_jar(jar_sha256());
         assert!(jar.starts_with("/data/local/tmp/flare-agent-"));
         assert_eq!(jar.len(), "/data/local/tmp/flare-agent-.jar".len() + 12);
+        let nonce = nonce_from([0xab; 16]);
+        assert!(nonce_ok(&nonce));
         assert_eq!(
-            start_command(&jar),
+            start_command(&jar, &nonce),
             format!(
-                "CLASSPATH={jar} exec app_process /system/bin --nice-name=flare-agent dev.flare.agent.Agent flare-agent"
+                "CLASSPATH={jar} exec app_process /system/bin --nice-name=flare-agent dev.flare.agent.Agent flare-agent {nonce}"
             )
         );
+        // A nonce that is not 32 hex digits never reaches the shell.
+        for bad in [
+            "",
+            "x; reboot",
+            &"A".repeat(32),
+            &"0".repeat(31),
+            &"0".repeat(33),
+        ] {
+            assert!(!nonce_ok(bad), "{bad}");
+            assert!(start_command(&jar, bad).ends_with(" flare-agent"), "{bad}");
+        }
     }
 
     #[test]
@@ -613,20 +654,32 @@ mod tests {
         );
         assert_eq!(read_line("not json"), None);
         assert_eq!(read_line(r#"{"ok":1}"#), None, "no id");
+        let nonce = nonce_from([7; 16]);
         let h: Hello = serde_json::from_str(&format!(
-            r#"{{"agent":"flare-agent","protocol":1,"jar_sha256":"{}","api":37,"release":"17","pid":1234}}"#,
+            r#"{{"agent":"flare-agent","protocol":{PROTOCOL},"jar_sha256":"{}","api":37,"release":"17","pid":1234,"nonce":"{nonce}"}}"#,
             jar_sha256()
         ))
         .unwrap();
-        assert!(h.is_ours());
+        assert!(h.is_ours(&nonce));
         assert!(
             !Hello {
                 jar_sha256: "0".repeat(64),
                 ..h.clone()
             }
-            .is_ours(),
+            .is_ours(&nonce),
             "another build's helper is stopped, not reused"
         );
+        // An app that bound the socket first can copy every claim but the nonce.
+        assert!(!h.is_ours(&nonce_from([8; 16])), "another nonce");
+        assert!(
+            !Hello {
+                nonce: String::new(),
+                ..h.clone()
+            }
+            .is_ours(""),
+            "no nonce is never ours"
+        );
+        assert!(h.is_this_build());
     }
 
     /// A Settings-like screen at 420 dpi (scale 2.625) as the helper sends it.

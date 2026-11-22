@@ -2085,6 +2085,7 @@ version = "0.1.0"
 dependencies = [
  "flare-device",
  "flare-proc",
+ "getrandom 0.2.17",
  "libc",
  "log",
  "prost",

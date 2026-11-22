@@ -2,8 +2,10 @@
 //!
 //! Per attached emulator: the jar is pushed (only to an `emulator-<port>` serial, never a real phone), started with
 //! `app_process` through a held `adb shell` (so it ends with this host), and reached through `adb forward tcp:0
-//! localabstract:flare-agent` on localhost. A helper of the same build already running (a second Flare) is reused; an
-//! old one is told to quit, then stopped by name, since a running helper blocks a new one (Step 0 S4).
+//! localabstract:flare-agent` on localhost with a random nonce on its command line, which its hello echoes. Any app in
+//! the device could bind that socket name first, so only a helper that echoes the nonce this emu host process started
+//! it with is reused; anything else is told to quit and the helpers are stopped by name, since a running helper blocks
+//! a new one (Step 0 S4).
 //!
 //! The tree comes from the helper (about 5 ms warm). When a call fails, the helper is started again once; when that
 //! fails too, the tree comes from `uiautomator dump` (about 2 s, "slow tree") until the next attach. The dump needs the
@@ -11,6 +13,7 @@
 //!
 //! Every function here BLOCKS (adb, the socket): the host calls them on blocking workers only.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -111,6 +114,21 @@ pub fn jar_fact() -> String {
         Some(_) => agent::jar_sha256().get(..12).unwrap_or("").to_string(),
         None => "missing".to_string(),
     }
+}
+
+/// The nonce of the helper this emu host process started on each emulator (by serial). Only a helper that echoes it
+/// is reused; it never leaves this process.
+fn started() -> &'static Mutex<HashMap<String, String>> {
+    static STARTED: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    STARTED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A fresh nonce for a helper's start: 128 bits from the OS.
+fn new_nonce() -> Result<String, String> {
+    let mut b = [0u8; 16];
+    getrandom::getrandom(&mut b)
+        .map_err(|e| format!("no random nonce for the agent helper: {e}"))?;
+    Ok(agent::nonce_from(b))
 }
 
 /// Why a call to the helper did not give a result.
@@ -325,16 +343,20 @@ impl Helper {
                 p
             }
         };
-        // A helper already there (another Flare's, or one this host left): reuse it when it is this build's.
+        // Something already answers on the socket. Any app in the device could have bound that name first, so it is
+        // reused only when its hello echoes the nonce this emu host started a helper with on this device. Anything
+        // else (an app, another Flare's helper, an old build) is told to quit and the helpers are stopped by name.
+        let known = lock(started()).get(&self.serial).cloned();
         if let Ok(mut c) = Conn::open(port, Arc::clone(&self.changed)) {
             match c.hello() {
-                Ok(h) if h.is_ours() => {
+                Ok(h) if known.as_deref().is_some_and(|n| h.is_ours(n)) => {
                     st.conn = Some(c);
                     return Ok("reused");
                 }
                 Ok(h) => {
                     self.log.line(&format!(
-                        "{}: an agent helper of another build is running (protocol {}, {}): stopping it",
+                        "{}: something that is not this host's agent helper answers on its socket (protocol {}, {}): \
+                         stopping it",
                         self.serial,
                         h.protocol,
                         h.jar_sha256.get(..12).unwrap_or("?")
@@ -346,6 +368,7 @@ impl Helper {
             }
         }
         self.kill_leftovers();
+        let nonce = new_nonce()?;
         let jar = jar().ok_or_else(|| {
             format!(
                 "no flare-agent.jar with SHA-256 {} beside the emu host",
@@ -359,16 +382,17 @@ impl Helper {
         if !pushed.ok() {
             return Err(format!("adb push failed: {}", pushed.stderr.trim()));
         }
-        let child = self.spawn(&device_jar)?;
+        let child = self.spawn(&device_jar, &nonce)?;
         st.child = Some(child);
         let mut c = Conn::open(port, Arc::clone(&self.changed))?;
         let h = c.hello().map_err(|e| format!("{e:?}"))?;
-        if !h.is_ours() {
+        if !h.is_ours(&nonce) {
             return Err(format!(
-                "the agent helper that answered is not this build's ({})",
+                "the agent helper that answered is not the one this host started ({})",
                 h.jar_sha256.get(..12).unwrap_or("?")
             ));
         }
+        lock(started()).insert(self.serial.clone(), nonce);
         self.log.line(&format!(
             "{}: agent helper on Android {} (API {})",
             self.serial, h.release, h.api
@@ -389,12 +413,12 @@ impl Helper {
     }
 
     /// Starts the helper under a held `adb shell` and waits for its `ready` line. Its later output goes to the log.
-    fn spawn(&self, device_jar: &str) -> Result<Child, String> {
+    fn spawn(&self, device_jar: &str, nonce: &str) -> Result<Child, String> {
         let mut c = command(&self.adb);
         c.arg("-s")
             .arg(&self.serial)
             .arg("shell")
-            .arg(agent::start_command(device_jar))
+            .arg(agent::start_command(device_jar, nonce))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -638,11 +662,11 @@ mod tests {
     /// A stand-in helper on a local port: answers hello and tree, refuses set_text, sends a window event, and goes
     /// silent on `stuck`.
     fn fake_helper() -> u16 {
-        fake_helper_with(false)
+        fake_helper_with(false, "")
     }
 
-    /// The same, refusing every tree when `refuse_tree` (a helper that cannot read the screen).
-    fn fake_helper_with(refuse_tree: bool) -> u16 {
+    /// The same, refusing every tree when `refuse_tree` (a helper that cannot read the screen), and echoing `nonce`.
+    fn fake_helper_with(refuse_tree: bool, nonce: &'static str) -> u16 {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -656,7 +680,8 @@ mod tests {
                         let out = match v["op"].as_str().unwrap() {
                             "hello" => json!({"id": id, "ok": {
                                 "agent": "flare-agent", "protocol": agent::PROTOCOL,
-                                "jar_sha256": agent::jar_sha256(), "api": 37, "release": "17"}}),
+                                "jar_sha256": agent::jar_sha256(), "api": 37, "release": "17",
+                                "nonce": nonce}}),
                             "tree" if refuse_tree => {
                                 json!({"id": id, "code": "unavailable", "err": "NullPointerException"})
                             }
@@ -681,7 +706,7 @@ mod tests {
     fn calls_get_their_answers_and_events_count() {
         let changed = Arc::new(AtomicU64::new(0));
         let mut c = Conn::open(fake_helper(), Arc::clone(&changed)).unwrap();
-        assert!(c.hello().unwrap().is_ours());
+        assert!(c.hello().unwrap().is_this_build());
         let t = c.call("tree", Value::Null, Duration::from_secs(5)).unwrap();
         assert_eq!(t["front_app"], "a.b");
         assert_eq!(changed.load(Ordering::Relaxed), 42);
@@ -740,11 +765,57 @@ mod tests {
         assert_eq!(lock(&h.st).failures, 0);
         h.stop();
 
-        let h = helper_on(fake_helper_with(true));
+        let h = helper_on(fake_helper_with(true, ""));
         assert!(h.tree(2.625, Size::new(411.0, 914.0)).is_err());
         let st = lock(&h.st);
         assert!(st.dump_only, "refused, then the restart failed: the dump");
         assert_eq!(st.failures, FAILURES_BEFORE_DUMP);
+    }
+
+    /// Security: something on the helper's socket that claims this build but does not echo the nonce this host
+    /// started its helper with (an app that bound the name first) is never reused; the host starts its own instead
+    /// (which fails here: no adb). One that echoes the nonce is reused.
+    #[test]
+    fn only_a_helper_that_echoes_this_hosts_nonce_is_reused() {
+        const NONCE: &str = "0123456789abcdef0123456789abcdef";
+        let impostor = Helper::new(
+            "/no/such/adb".into(),
+            "emulator-5596".into(),
+            Log::open(None),
+        )
+        .unwrap();
+        lock(started()).insert("emulator-5596".into(), NONCE.into());
+        let mut st = State {
+            port: Some(fake_helper_with(false, "ffffffffffffffffffffffffffffffff")),
+            ..State::default()
+        };
+        assert!(
+            impostor.start(&mut st).is_err(),
+            "not reused, and no adb to start one"
+        );
+        assert!(st.conn.is_none());
+
+        let ours = Helper::new(
+            "/no/such/adb".into(),
+            "emulator-5598".into(),
+            Log::open(None),
+        )
+        .unwrap();
+        let mut st = State {
+            port: Some(fake_helper_with(false, NONCE)),
+            ..State::default()
+        };
+        assert!(
+            ours.start(&mut st).is_err(),
+            "no nonce known for this device yet"
+        );
+        lock(started()).insert("emulator-5598".into(), NONCE.into());
+        assert_eq!(ours.start(&mut st), Ok("reused"));
+        assert!(st.conn.is_some());
+
+        let n = new_nonce().unwrap();
+        assert!(agent::nonce_ok(&n));
+        assert_ne!(n, new_nonce().unwrap());
     }
 
     /// Rule 1369: a helper only for an emulator's serial.

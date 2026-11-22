@@ -86,6 +86,7 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `unicode-normalization` 0.1.25 (MIT OR Apache-2.0): the accent folding of Find a setting and the command help search, as JavaScript's `normalize('NFKD')` does (M7).
 - `fancy-regex` (dev only, 0.19.2): the lookbehind the command help catalogue gate needs (M7).
 - `uuid`: the per-shell random tab token (`FLARE_TAB_ID`).
+- `getrandom` 0.2.17 (already used by `flare`): the random nonce `flare-emu-host` starts the Android agent helper with, so only the helper it started is trusted (Android PR A7).
 - `serde`: derives the (de)serialisation of the state files (`tabs.json`, `window.json`, the settings file).
 - `serde_json`: reads and writes those JSON state files, and encodes the single-instance hand-off message.
 - `rfd`: the native folder picker for "Ask" new tabs (MIT; default features off, so on Windows it pulls only `log`, `raw-window-handle` and `windows-sys`).
