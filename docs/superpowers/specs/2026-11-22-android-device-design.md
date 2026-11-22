@@ -140,11 +140,14 @@ Facts, with the spike or report that holds them:
    protocol as the sim host (`wire.rs`, a new `Hello` kind). Reasons: the gRPC stack (tonic, prost, tokio) stays
    out of `flare.exe`; a hung or crashed gRPC call cannot block or crash Flare; the client supervisor, restarts and
    still-mode fallback in `client.rs` are reused.
-2. **Flare owns the frame region**, not the emu host. Flare makes a page-aligned file-backed mapping per device
-   (`<profile>/device/frames/<pid>-<n>.rgba`, sized for the device's largest screen, deleted on detach and at
-   start), maps it once, and sends its `file:///` URL to the emu host, which passes it to the emulator. The spike used
-   exactly this on both OSes. Named shared memory is not used (not tested; a file under the profile is easy to clean
-   and to keep private: user-only permissions).
+2. **Flare owns the frame region**, not the emu host. Flare makes a page-aligned file-backed mapping per device,
+   sized for the device's largest screen, maps it once, and sends its `file:///` URL to the emu host, which passes it
+   to the emulator. **Where**: emulator 37.3.10 accepts a region file only inside the emulator's discovery folder,
+   `/tmp` or `/tmp/android-<user>` (it answers PERMISSION_DENIED for anything else; Step 0 S7, 2026-11-22; 37.2.13
+   did not check). So the file goes in a `flare` folder inside the discovery folder:
+   `~/Library/Caches/TemporaryItems/avd/running/flare/<pid>-<n>.rgba` (macOS, tested) and
+   `%LOCALAPPDATA%\Temp\avd\running\flare\<pid>-<n>.rgba` (Windows, to confirm on 37.3.10 in S5), user-only
+   permissions, deleted on detach and when Flare starts. Named shared memory is not used.
 3. **Frame records travel on the emu host's stdout** as one small JSON line each (`{"frame":{target,seq,t_us,w,h,
    rotation}}`), 60 a second at most. No mach port, no extra descriptor: the same channel on both OSes.
 4. **The GPU copy happens at once, off the UI thread.** A frame thread in Flare reads each frame record and right
@@ -246,7 +249,12 @@ Flare's.
   (`licenses/android-sdk-license` with the licence text's hash).
 - **Licence**: before the first download the panel shows Google's licence text, taken from the package list (the
   `android-sdk-license` element), with [Accept and set up] and [Cancel]. Nothing is downloaded before that click.
-- **Size**: about 2 GB (system image about 1.5 GB, emulator about 350 MB, platform-tools about 15 MB). The panel shows
+- **Size**: about 2.5 GB to download and about 8 GB on disk once unpacked with one device (Step 0 S7 on the Mac:
+  emulator 421 MB, platform-tools 17 MB, API 37 arm64 image 2.1 GB, downloaded and checked in 48 s; 8.0 GB on disk
+  after the first boot). The licence screen says the disk size, and Flare checks free space first.
+- **First boot**: a new device spends its first minute or two compiling apps in the background, and draws only
+  about 36 fps meanwhile (S7). Flare shows "Preparing <name>..." after the first boot and runs
+  `pm bg-dexopt-job` once before it calls the device ready. The panel shows
   one progress bar with MB and a [Cancel]; a cancelled or broken download leaves nothing half-unpacked (unpack to a
   temporary folder, then rename).
 - **The device**: Flare writes one AVD itself, "Flare Pixel" (an `avd` folder beside Flare's SDK folder,
