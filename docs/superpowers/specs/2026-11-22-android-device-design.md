@@ -146,7 +146,7 @@ Facts, with the spike or report that holds them:
    `/tmp` or `/tmp/android-<user>` (it answers PERMISSION_DENIED for anything else; Step 0 S7, 2026-11-22; 37.2.13
    did not check). So the file goes in a `flare` folder inside the discovery folder:
    `~/Library/Caches/TemporaryItems/avd/running/flare/<pid>-<n>.rgba` (macOS, tested) and
-   `%LOCALAPPDATA%\Temp\avd\running\flare\<pid>-<n>.rgba` (Windows, to confirm on 37.3.10 in S5), user-only
+   `%LOCALAPPDATA%\Temp\avd\running\flare\<pid>-<n>.rgba` (Windows, tested; Windows 37.3.10 does not enforce the rule, Flare keeps one place on both), user-only
    permissions, deleted on detach and when Flare starts. Named shared memory is not used.
 3. **Frame records travel on the emu host's stdout** as one small JSON line each (`{"frame":{target,seq,t_us,w,h,
    rotation}}`), 60 a second at most. No mach port, no extra descriptor: the same channel on both OSes.
