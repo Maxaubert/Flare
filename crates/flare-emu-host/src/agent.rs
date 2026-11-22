@@ -85,7 +85,7 @@ pub fn candidates() -> Vec<PathBuf> {
         out.push(dir.join("flare-agent.jar"));
         out.push(dir.join("../Resources/flare-agent.jar"));
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     out.push(PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../flare-device/assets/flare-agent.jar"
@@ -212,7 +212,8 @@ struct State {
     conn: Option<Conn>,
     /// The local port of `adb forward`, kept for the attach.
     port: Option<u16>,
-    /// The held `adb shell` the helper runs under.
+    /// The held `adb shell` the helper runs under; None for a reused helper (another Flare's), which is never told
+    /// to quit.
     child: Option<Child>,
     failures: u32,
     /// After a failed restart: the dump only, until the next attach.
@@ -454,7 +455,11 @@ impl Helper {
             };
             match r {
                 Ok(v) => match serde_json::from_value::<Tree>(v) {
-                    Ok(t) => return Ok(self.answer(&t, scale, screen_dp, TreePath::Helper)),
+                    Ok(t) => {
+                        // A good tree: an old hiccup no longer counts towards the dump.
+                        st.failures = 0;
+                        return Ok(self.answer(&t, scale, screen_dp, TreePath::Helper));
+                    }
                     Err(e) => {
                         self.log.line(&format!(
                             "{}: an agent tree that does not read: {e}",
@@ -463,8 +468,14 @@ impl Helper {
                         self.failed(&mut st);
                     }
                 },
+                // The helper is alive but cannot read the tree (a new Android version, a lost connection to the
+                // UI automation): a failure like no answer, so the dump takes over after one restart (rule 1369).
                 Err(CallErr::Refused(code, why)) => {
-                    return Err((Fail::from_code(&code).unwrap_or(Fail::Unavailable), why));
+                    self.log.line(&format!(
+                        "{}: agent helper refused the tree ({code}): {why}",
+                        self.serial
+                    ));
+                    self.failed(&mut st);
                 }
                 Err(CallErr::Broken(e)) => {
                     self.log
@@ -543,7 +554,11 @@ impl Helper {
     /// BLOCKING: ends the helper and the forward (detach, or the emulator went).
     pub fn stop(&self) {
         let mut st = lock(&self.st);
-        if let Some(c) = st.conn.as_mut() {
+        // Only a helper this host started is told to quit; a reused one (another Flare's) only loses this client
+        // and ends by itself when its last client is gone.
+        if st.child.is_some()
+            && let Some(c) = st.conn.as_mut()
+        {
             let _ = c.call("quit", Value::Null, HELLO_LIMIT);
         }
         st.conn = None;
@@ -623,6 +638,11 @@ mod tests {
     /// A stand-in helper on a local port: answers hello and tree, refuses set_text, sends a window event, and goes
     /// silent on `stuck`.
     fn fake_helper() -> u16 {
+        fake_helper_with(false)
+    }
+
+    /// The same, refusing every tree when `refuse_tree` (a helper that cannot read the screen).
+    fn fake_helper_with(refuse_tree: bool) -> u16 {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -637,6 +657,9 @@ mod tests {
                             "hello" => json!({"id": id, "ok": {
                                 "agent": "flare-agent", "protocol": agent::PROTOCOL,
                                 "jar_sha256": agent::jar_sha256(), "api": 37, "release": "17"}}),
+                            "tree" if refuse_tree => {
+                                json!({"id": id, "code": "unavailable", "err": "NullPointerException"})
+                            }
                             "tree" => {
                                 writeln!(w, r#"{{"event":"windows","count":42}}"#).unwrap();
                                 json!({"id": id, "ok": {"windows": [], "front_app": "a.b", "nodes": 0}})
@@ -689,6 +712,39 @@ mod tests {
         });
         let mut c = Conn::open(port, Arc::new(AtomicU64::new(0))).unwrap();
         assert!(matches!(c.hello(), Err(CallErr::Broken(_))));
+    }
+
+    /// A helper connected to a stand-in (no adb on this path: a restart fails).
+    fn helper_on(port: u16) -> Helper {
+        let h = Helper::new(
+            "/no/such/adb".into(),
+            "emulator-5554".into(),
+            Log::open(None),
+        )
+        .unwrap();
+        lock(&h.st).conn = Some(Conn::open(port, Arc::clone(&h.changed)).unwrap());
+        h
+    }
+
+    /// A good tree answers from the helper and clears an old failure; a helper that refuses every tree is a failure
+    /// too, so after one failed restart the attach falls back to the dump (rule 1369).
+    #[test]
+    fn a_good_tree_clears_failures_and_a_refused_tree_falls_back() {
+        let h = helper_on(fake_helper());
+        lock(&h.st).failures = 1;
+        let v = h.tree(2.625, Size::new(411.0, 914.0)).unwrap();
+        assert_eq!(v["path"], "helper");
+        assert_eq!(v["front_app"], "a.b");
+        assert_eq!(v["changed"], 42);
+        assert_eq!(v["tree"]["role"], "AXApplication");
+        assert_eq!(lock(&h.st).failures, 0);
+        h.stop();
+
+        let h = helper_on(fake_helper_with(true));
+        assert!(h.tree(2.625, Size::new(411.0, 914.0)).is_err());
+        let st = lock(&h.st);
+        assert!(st.dump_only, "refused, then the restart failed: the dump");
+        assert_eq!(st.failures, FAILURES_BEFORE_DUMP);
     }
 
     /// Rule 1369: a helper only for an emulator's serial.

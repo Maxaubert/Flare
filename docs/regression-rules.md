@@ -5924,9 +5924,10 @@ own clipboard and paste.** Spec 2026-11-22, builder's call 8. `emu::keys::text_s
 (`KeyboardEvent` with `codeType: Usb`, the usage on page 7, `0x07_0004` for A) and anything else through gRPC
 `setClipboard`, which is the device's own clipboard, then Ctrl+V. PR A3 puts the agent helper's set-text in between:
 text the keymap cannot type goes to the focused field through the helper (`Helper::insert_text`, `set_text` with
-`mode: insert`), which splices it in at the cursor as keys would (`ACTION_SET_TEXT` alone replaces the whole field) and
-puts the cursor after it; a password field, no focused field or no helper falls through to the clipboard and paste.
-Checked by hand on API 37: "blåbær ørret 😀" into Settings search and the probe app's field. Held by
+`mode: insert`), which splices it in at the field's selection as keys would (`ACTION_SET_TEXT` alone replaces the whole
+field) and asks for the cursor after it; a password field, no focused field or no helper falls through to the clipboard
+and paste. Checked by hand on API 37: "blåbær ørret 😀" into Settings search and the probe app's field, each time at
+the end of the text (an insert in the middle is not checked by hand yet). Held by
 `text_without_keys_goes_through_the_devices_clipboard` (`keys.rs`),
 `input_text_and_snapshots_go_to_the_emu_host` (`emu_client.rs`) and
 `non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs` (`client.rs`, which reads every source file of

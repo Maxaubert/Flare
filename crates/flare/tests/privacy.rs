@@ -122,6 +122,9 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // Google's licence in Flare, downloads the emulator, platform-tools and one system image from dl.google.com only.
     ("flare-emu-host/src/setup.rs", "Android devices"),
     ("flare-device/src/emu/setup.rs", "Android devices"),
+    // Android plan PR A3 (rule 1369): the emu host reaches the agent helper inside the emulator through adb's forward,
+    // a port on 127.0.0.1 only.
+    ("flare-emu-host/src/agent.rs", "Android devices"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.
