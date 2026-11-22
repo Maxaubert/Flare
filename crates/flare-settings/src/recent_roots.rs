@@ -159,8 +159,6 @@ pub fn toggle_pin(s: &PrefStore, path: &str) {
 /// Remote tabs' folders (rule 1213), kept apart from this machine's: `flare.recentRemoteRoots`, a JSON array of
 /// `{"machine": id, "path": folder}`, the front the newest, capped like the local list. An older Flare never reads it.
 const REMOTE_KEY: &str = "flare.recentRemoteRoots";
-/// The most remote folders the + menu shows, after this machine's.
-pub const REMOTE_SHOWN: usize = 3;
 
 /// A folder on another machine, by the machine's id in `machines.json`.
 #[derive(Clone, Debug, PartialEq, Eq)]

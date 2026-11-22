@@ -3593,12 +3593,11 @@ mod flow {
         assert_eq!(w.ctl.borrow().remote_tunnels(), [(id.clone(), 5173, 50124)]);
     }
 
-    /// Rule 1213: a remote tab's folder joins the recent folders with its machine (the host's home folder only once its
-    /// shell names it); the + menu lists it with the folder glyph and "on <machine>" (rule 1282), and its pick opens a
-    /// remote tab there.
+    /// Rule 1213: a remote tab's folder joins the remote recents with its machine (the host's home folder only once its
+    /// shell names it). Rule 1357 (Max, 2026-11-21: "only recents from this pc"): the + menu never lists it; the
+    /// machine's own row is second, right under "Choose a folder…".
     #[test]
-    fn a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again() {
-        use crate::menus_ui::{GLYPH_FOLDER_FILL, glyph_path};
+    fn a_remote_tabs_folder_joins_the_remote_recents_but_not_the_plus_menu() {
         use flare_settings::recent_roots::{RemoteRoot, recent_roots, remote_roots};
         let w = Wx::new(1.0);
         w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
@@ -3633,27 +3632,15 @@ mod flow {
             "the first folder named, once"
         );
         w.h.comp.invoke_plus_menu(10.0, 10.0);
-        let i = menu_row(&w, "proj").expect("the remote folder's row");
-        let row = w.h.comp.get_menu_rows().row_data(i).unwrap();
-        assert_eq!(row.icon.as_str(), glyph_path(GLYPH_FOLDER_FILL));
-        assert_eq!(row.hint.as_str(), "on Mac Mini");
-        let made = w.remote.made().len();
-        w.h.comp.invoke_menu_picked(i as i32);
-        // The home tab's own pty can be made late on a busy runner, so find the picked folder's pty among the new ones
-        // instead of taking the next one made.
-        let picked = |w: &Wx| {
-            w.remote.made()[made..].iter().any(|m| {
-                m.0.remote
-                    .as_ref()
-                    .is_some_and(|s| s.machine == "mac" && s.folder == "/Users/max/proj")
-            })
-        };
-        w.pump_until("the picked folder's remote pty", |w| picked(w));
-        assert!(picked(&w));
-        // A machine no longer linked takes its folders off the list.
-        w.ctl.borrow_mut().on_msg(UiMsg::Machines(Vec::new()));
-        w.h.comp.invoke_plus_menu(10.0, 10.0);
-        assert!(menu_row(&w, "proj").is_none());
+        assert_eq!(menu_row(&w, "Mac Mini"), Some(1), "the machine is second");
+        assert!(menu_row(&w, "proj").is_none(), "no remote folder's row");
+        let rows = w.h.comp.get_menu_rows();
+        assert!(
+            (0..rows.row_count())
+                .filter_map(|i| rows.row_data(i))
+                .all(|r| !r.hint.starts_with("on ")),
+            "no row names a machine as its folder's"
+        );
     }
 
     /// Rule 1192 as amended by 1305: a remote tab's menu has Close tab and no "Hide here only" (Max 2026-11-19: it left
