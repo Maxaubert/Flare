@@ -141,8 +141,8 @@ Files: `tools/android-agent/` (Java source, build script, probe app), `crates/fl
 
 ## PR A4: the panel shows Android (first visible change)
 
-Mockup first (open decision 7): the header with Back, Home, Recents and the menu; the chooser with both kinds; the
-new setup lines. Files: `crates/flare/src/device_frames.rs` (Windows and the region path), `device_ctl.rs`,
+No mockup (Max, 2026-11-22): the header keeps the iOS buttons (Home, Lock sends Power, Rotate); Back and Recents
+go in the menu; setup lines use the existing style. Files: `crates/flare/src/device_frames.rs` (Windows and the region path), `device_ctl.rs`,
 `device_glue.rs`, `ui/panel.slint`, `Cargo.toml` (`windows` feature `Win32_Graphics_Direct3D12`).
 
 1. `device_frames.rs`: a region path on both OSes. The frame thread copies each record's region into the ring with
