@@ -1,6 +1,21 @@
-# Flare
+<div align="center">
+  <img src="docs/assets/flare-icon.png" alt="Flare logo" width="128">
 
-A fast native Windows terminal for AI CLIs, written in Rust with Slint. A port of Prism Terminal.
+  # Flare
+
+  A fast native terminal for AI CLIs on Windows and macOS.
+
+  [![Windows release](https://img.shields.io/github/v/release/Maxaubert/Flare?style=flat-square&color=ff4800&label=windows)](https://github.com/Maxaubert/Flare/releases/latest)
+  [![Windows 10 | 11](https://img.shields.io/badge/Windows-10%20%7C%2011-ff4800?style=flat-square)](#build)
+  [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-ff4800?style=flat-square&logo=apple&logoColor=white)](#build)
+  [![Rust](https://img.shields.io/badge/Rust-Slint-ff4800?style=flat-square&logo=rust&logoColor=white)](#dependencies)
+
+  [![Licence: proprietary](https://img.shields.io/badge/licence-proprietary-ff4800?style=flat-square)](LICENSE)
+
+  [Download for Windows](https://github.com/Maxaubert/Flare/releases/latest/download/Flare-win-Setup.exe) · [Releases](https://github.com/Maxaubert/Flare/releases) · [Features](docs/features.md) · [Rules](docs/regression-rules.md)
+</div>
+
+Written in Rust with Slint. A port of Prism Terminal.
 
 Work in progress. Design: [docs/superpowers/specs/2026-10-17-flare-design.md](docs/superpowers/specs/2026-10-17-flare-design.md).
 Plan: [docs/superpowers/plans/2026-10-17-flare-roadmap.md](docs/superpowers/plans/2026-10-17-flare-roadmap.md).
