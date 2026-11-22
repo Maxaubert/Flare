@@ -5912,12 +5912,15 @@ the pass is refused (logged once, `refused` in `device.state`); with no wgpu dev
 region is copied by the CPU at most 30 a second (the slow mark). The mapping, the import and the pipeline are made on
 the frame thread (rule 34). A record that comes while an older one waits replaces it (counted as dropped); a slot on
 show is never written, and it is freed only from `on_submitted_work_done` after the frame that replaced it (rule
-1311's pattern). Android frames come turned, so Slint does not turn them again. `device.state` reports the route
-(`gpu`, `upload`, `cpu`) and the copies, drops and copy time p50 and p99. Held by
-`a_region_frame_is_copied_by_the_gpu_into_the_ring`, `a_full_size_frame_and_a_turned_one_copy_into_the_ring`,
-`a_refused_import_uploads_the_region_instead`, `a_shown_slot_is_freed_only_after_the_gpu_is_done` and
-`without_a_gpu_the_region_is_copied_by_the_cpu` (`device_region.rs`, headless on both OSes' own GPU API). Source: Max,
-2026-11-22.
+1311's pattern). The newest slot is the newest copy on the frame thread, not the emulator's `seq`, which starts again
+with each new stream (a resume, an emu host restart). Each frame record of an attached device also counts as a change
+(the emulator sends a frame only on change), so the agent's input calls answer `changed` from it while the stream runs.
+Android frames come turned, so Slint does not turn them again. `device.state` reports the route (`gpu`, `upload`,
+`cpu`) and the copies, drops and copy time p50 and p99. Held by `a_region_frame_is_copied_by_the_gpu_into_the_ring`,
+`a_full_size_frame_and_a_turned_one_copy_into_the_ring`, `a_refused_import_uploads_the_region_instead`,
+`a_shown_slot_is_freed_only_after_the_gpu_is_done`, `the_newest_copy_shows_when_a_new_stream_starts_its_seq_again` and
+`without_a_gpu_the_region_is_copied_by_the_cpu` (`device_region.rs`, headless on both OSes' own GPU API) and
+`an_android_frame_record_counts_as_a_change` (`device_ctl.rs`). Source: Max, 2026-11-22.
 
 1365. **The stream runs only while the panel is seen; input, the tree, `snapshot` and the agent keep working while it
 is paused.** Spec 2026-11-22, builder's call 6. In the emu host, `pause` cancels `streamScreenshot` (the emulator then
@@ -5925,8 +5928,12 @@ reads nothing back) and `resume` opens it again; the held input stream, `getScre
 `getStatus` go on. Checked on a real emulator in A2: no `region` line while paused, frames again at once on resume.
 PR A4 sends the pause from the panel's visibility: `DeviceCtl` pauses every attached device but the front panel's, and
 all of them while the window is minimised or occluded, for both kinds through the same `Multi` source
-(`device_sources.rs`), which routes each request by its target's kind. Held by
-`an_attached_device_gets_a_region_from_flare_and_frames_back` (`emu_client.rs`) and `both_sources_answer_as_one`
+(`device_sources.rs`), which routes each request by its target's kind. After an emu host restart `EmuSource` sends a
+paused device's pause again with its frames line (once the new host has it, before the region), so a hidden panel never
+streams; a pause sent with the attach was refused as "not attached". A stream that ends by itself while not paused is
+opened again (1 to 16 s, five tries with no frame). Held by `an_attached_device_gets_a_region_from_flare_and_frames_back`
+and `a_paused_device_stays_paused_after_the_emu_host_restarts` (`emu_client.rs`),
+`a_frame_stream_that_ends_is_opened_again_a_few_times` (`host.rs`) and `both_sources_answer_as_one`
 (`device_sources.rs`). Source: Max, 2026-11-22.
 
 1366. **An emulator Flare booted is shut down at quit (setting, detached, quit never waits) and stops by itself 5
@@ -5942,10 +5949,15 @@ adds the quit side: `<profile>/device/booted.json` holds both kinds by target na
 simulator `udid` entries still read), and with `flare.device.shutdown_on_quit` on, quit starts one detached
 `flare-emu-host --shutdown <avd>...` (no window, never waited for, outside the guard) that asks each running AVD it
 names for `setVmState(SHUTDOWN)` and exits. A kind whose source is not running never forgets its entries from a list
-that could not include them. Held by `a_boot_starts_the_emulator_in_flare_then_waits_in_the_emu_host`
+that could not include them. Only an emulator Flare started is recorded: a boot of an AVD that already ran (Android
+Studio's, or a list that was out of date) answers `started_elsewhere` and is waited for but never Flare's. Each
+emulator entry carries its boot's time (`<avd>@<ms>` on the quit command line, a new boot replaces an old entry's
+time), and quit leaves an emulator running whose discovery file was made after that time: the one Flare booted idled
+out and the person started the same AVD again. Held by `a_boot_starts_the_emulator_in_flare_then_waits_in_the_emu_host`
 (`emu_client.rs`), `a_guarded_helper_ends_with_its_guard` (`flare-proc/src/job.rs`), the boot command tests of rule
-1362, `an_android_device_boots_and_shuts_down_at_quit` and `booted_json_holds_both_kinds` (`device_ctl.rs`). Source:
-Max, 2026-11-22.
+1362, `an_android_device_boots_and_shuts_down_at_quit`, `an_emulator_that_already_ran_is_never_flares_to_shut_down`
+and `booted_json_holds_both_kinds` (`device_ctl.rs`), and `only_the_emulator_flare_booted_is_shut_down`
+(`flare-emu-host/src/quit.rs`). Source: Max, 2026-11-22.
 
 1367. **Agent coordinates for Android are dp (pixels / (dpi / 160)); only the emu host converts dp to pixels.
 `device_look`'s PNG is at dp size.** Spec 2026-11-22, builder's call 7. The dp is Android's match for the iOS point:
@@ -6008,7 +6020,11 @@ host, the emulator, adb, `emulator -accel-check`) starts with `CREATE_NO_WINDOW`
 `emu::boot::command`). Checked by hand in A2: the count of visible windows was the same before and after a headless
 boot. The real e2e scenario (A5) checks the visible windows before and after. A4: Flare's own detached programs at
 quit (`device_ctl::spawn_detached`, the `simctl` and `flare-emu-host --shutdown` commands) also start with
-`CREATE_NO_WINDOW` on Windows. Held by `the_boot_command_always_uses_a_token_and_no_window` (`boot.rs`) and
+`CREATE_NO_WINDOW` on Windows. No Windows Firewall dialog either: adb's mDNS binds UDP 5353 on every network, and
+Windows asks about that the first time an `adb.exe` from a new folder (Flare's own SDK) does it (seen in A2b's real
+setup). So the emulator's command and every program the emu host runs get `ADB_MDNS=0` (`emu::boot::ADB_MDNS`); with
+it the adb server binds only its localhost port (its socket list, platform-tools 37.0.1, 2026-11-22). Held by
+`the_boot_command_always_uses_a_token_and_no_window` and `the_command_is_checked_and_detached` (`boot.rs`) and
 `every_program_starts_without_a_window` (`flare-emu-host/src/run.rs`). Source: Max, 2026-11-22.
 
 1371. **Each source lists its own buttons; a press of another source's button is refused with `unavailable`.** Spec

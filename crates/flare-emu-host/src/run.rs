@@ -20,9 +20,12 @@ impl Ran {
     }
 }
 
-/// A command that shows no window.
+/// A command that shows no window. adb's mDNS is off for every program the emu host runs (an adb it starts binds only
+/// localhost, so Windows shows no Firewall dialog: `flare_device::emu::boot::ADB_MDNS`, rule 1370).
 pub fn command(program: &Path) -> Command {
     let mut c = Command::new(program);
+    let (k, v) = flare_device::emu::boot::ADB_MDNS;
+    c.env(k, v);
     no_window(&mut c);
     c
 }
@@ -122,6 +125,12 @@ pub(crate) mod tests {
         }
         #[cfg(windows)]
         assert_eq!(flare_proc::job::NO_WINDOW, 0x0800_0000);
+        // adb stays off the network, so no Firewall dialog shows (rule 1370).
+        let c = command(Path::new("adb"));
+        assert!(
+            c.get_envs()
+                .any(|(k, v)| k == "ADB_MDNS" && v == Some(std::ffi::OsStr::new("0")))
+        );
     }
 
     #[test]
