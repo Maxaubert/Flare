@@ -3938,6 +3938,17 @@ mod tests {
             .cloned()
             .expect("Settings lists a labelled element");
         eprintln!("Settings: {first}");
+        // The tree came from the agent helper this emu host started (its hello echoed the nonce), not from the slow
+        // `uiautomator dump` (PR A7 review: a helper whose hello lacked the nonce was refused on every start).
+        let log = std::fs::read_to_string(logs.path().join("emu-host.log")).unwrap_or_default();
+        assert!(
+            log.contains("agent helper started"),
+            "the helper started: {log}"
+        );
+        assert!(
+            !log.contains("the tree uses uiautomator dump"),
+            "no fall back to the dump: {log}"
+        );
         let (r, ms) = call(
             &mut d,
             AgentReq::Act(DeviceOp::Tap {

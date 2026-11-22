@@ -575,6 +575,20 @@ mod tests {
             java.contains("getUid() != 2000 && c.getUid() != 0"),
             "only adb's forward may talk to it"
         );
+        // PR A7: the emu host uses a helper only when its hello echoes the nonce (`Hello::is_ours`). A hello without
+        // it fails every start, and the tree falls back to the slow dump for good. CI cannot boot an emulator, so the
+        // source is checked: the nonce comes from the command line and goes into hello's answer.
+        let java = java.replace('\r', "");
+        let hello = java
+            .split("static JSONObject hello()")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n").next())
+            .expect("Agent.java has hello()");
+        assert!(
+            hello.contains(".put(\"nonce\", nonce)"),
+            "hello must echo the nonce: {hello}"
+        );
+        assert!(java.contains("nonce = args.length > 1 ? args[1] : \"\";"));
     }
 
     /// Rule 1369: pushed only to an emulator, by a serial from its discovery file; the start command holds only

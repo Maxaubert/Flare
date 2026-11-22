@@ -284,7 +284,9 @@ public final class Agent {
                 .put("api", Build.VERSION.SDK_INT)
                 .put("release", Build.VERSION.RELEASE)
                 .put("pid", android.os.Process.myPid())
-                .put("events", events);
+                .put("events", events)
+                // The emu host reuses this helper only when this echoes the nonce it started it with (rule 1369).
+                .put("nonce", nonce);
     }
 
     static String err(long id, String code, String why) {
