@@ -465,6 +465,13 @@ impl Shared {
             HostLine::Broken { why } => self.go_broken(why),
             // Android setup's progress and a first boot's "Preparing" (PR A2b), shown by the panel.
             HostLine::Setup { event } => self.event(SourceEvent::Setup(event)),
+            // A change seen while paused (PR A7): Flare counts one more for the device.
+            HostLine::Changed { target, count } => {
+                self.event(SourceEvent::Changed { target, count })
+            }
+            HostLine::Mode { target, mode, why } => {
+                self.event(SourceEvent::Mode { target, mode, why })
+            }
         }
     }
 }
@@ -562,7 +569,17 @@ fn supervise(sh: Arc<Shared>) {
         };
         if !first {
             // Every open panel again: attach. Its frames line brings back the pause (if it was paused) and the region.
-            let attached = lock(&sh.state).attached.clone();
+            let (attached, booted) = {
+                let st = lock(&sh.state);
+                (st.attached.clone(), st.booted.clone())
+            };
+            // Every emulator Flare booted is kept alive again too, attached or not (rule 1366, PR A7): the old emu
+            // host's keep-alives ended with it.
+            for t in booted {
+                if !attached.iter().any(|a| a.target == t) {
+                    sh.send(Request::Keep { target: t }, sh.internal(), None);
+                }
+            }
             for a in attached {
                 sh.send(Request::Attach { target: a.target }, sh.internal(), None);
             }
@@ -1004,6 +1021,12 @@ impl DeviceSource for EmuSource {
 
     fn setup(&mut self, step: crate::wire::SetupStep) -> Option<ReqId> {
         Some(self.request(Request::Setup { step }, Kind::Value))
+    }
+
+    fn keep(&mut self, target: &Target) {
+        self.tell(Request::Keep {
+            target: target.clone(),
+        });
     }
 }
 
@@ -1544,6 +1567,16 @@ mod tests {
         );
         assert_eq!(lock(&launched).len(), 1, "no second launch");
         assert_eq!(s.booted(), std::slice::from_ref(&other));
+        // Rule 1366 (PR A7): Flare asks the emu host to keep an emulator it booted alive, attached or not.
+        s.keep(&other);
+        let end = Instant::now() + Duration::from_secs(10);
+        while !sent(dir.path())
+            .iter()
+            .any(|c| matches!(&c.req, Request::Keep { target } if *target == other))
+        {
+            assert!(Instant::now() < end, "no keep sent");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Rule 1368: text goes to the emu host as text (keys or the device's clipboard there); input reaches it in order.

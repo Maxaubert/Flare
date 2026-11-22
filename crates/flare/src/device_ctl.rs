@@ -40,7 +40,7 @@ use flare_device::source::{
     Answer, Button, DeviceInfo, DeviceSource, DeviceState, InputState, ReqId, Screen, SourceEvent,
     Touch,
 };
-use flare_device::source::{Key, Phase, SourceKind};
+use flare_device::source::{FrameMode, Key, Phase, SourceKind};
 use flare_device::target::{self, Target};
 use flare_device::wire::SetupStep;
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
@@ -75,6 +75,48 @@ pub const XCODE_STORE: &str = "https://apps.apple.com/app/xcode/id497799835";
 /// The slow mark's reason on the CPU path.
 pub const CPU_SLOW: &str =
     "The picture is copied by the CPU: this renderer cannot show the device's own frames.";
+
+/// The still line over a live picture (rule 1312): the source is broken (the simulator's still mode), or an Android
+/// emulator gives only still pictures (PR A7, the spec's last fallback), with the reason.
+fn still_line(broken: Option<&str>, live: bool, mode: FrameMode, why: &str) -> String {
+    match (broken, live, mode) {
+        (_, false, _) => String::new(),
+        (Some(why), true, _) => {
+            format!("Live view unavailable: {why}. Showing a picture every half second.")
+        }
+        (None, true, FrameMode::Still) => format!(
+            "Live view unavailable: {}. Showing a still picture three times a second.",
+            if why.is_empty() {
+                "the emulator sends no frames"
+            } else {
+                why
+            }
+        ),
+        _ => String::new(),
+    }
+}
+
+/// The slow mark's text, empty when the picture is not slow: a CPU picture (the fake source), the ring's import
+/// refused, or an Android emulator whose frames come in its gRPC messages (PR A7). Never on the zero-copy path.
+fn slow_line(live: bool, ring_path: Option<FramePath>, mode: FrameMode, why: &str) -> String {
+    if !live {
+        return String::new();
+    }
+    if mode == FrameMode::Slow {
+        return format!(
+            "The emulator sends its picture the slow way (at most 30 a second): {}.",
+            if why.is_empty() {
+                "its shared memory gave no frames"
+            } else {
+                why
+            }
+        );
+    }
+    match ring_path {
+        Some(FramePath::Cpu) | None => CPU_SLOW.to_string(),
+        Some(_) => String::new(),
+    }
+}
 
 /// The timer that stops the sim host once no device panel is left for [`IDLE_MS`].
 pub const IDLE_TICK: &str = "device.idle";
@@ -725,6 +767,9 @@ struct Dev {
     /// The tab whose panel drives it; another tab showing it is view only.
     driver: Option<String>,
     changed: u64,
+    /// How an Android device's frames come now (PR A7: the spec's fallbacks), and why when not live.
+    mode: FrameMode,
+    mode_why: String,
 }
 
 /// One tab's device panel.
@@ -1167,7 +1212,15 @@ impl DeviceCtl {
         let Some(real) = self.real.as_mut() else {
             return;
         };
-        if has_panels || !running {
+        // Rule 1366 (PR A7): an emulator Flare booted must not idle out while Flare runs, so the emu host (whose
+        // keep-alives hold it) stays while one is alive. Its entry goes when it is seen shut down or gone; then the
+        // hosts stop as usual. Only a dead Flare lets it idle out.
+        let keeps = self
+            .booted
+            .devices
+            .iter()
+            .any(|(u, _)| target::parse(u).is_some_and(|t| t.source() == SourceKind::Emu));
+        if has_panels || !running || keeps {
             real.idle_since = None;
             return;
         }
@@ -1557,6 +1610,22 @@ impl DeviceCtl {
                         if forgot {
                             self.save_booted();
                         }
+                        // Rule 1366 (PR A7): every emulator Flare booted that runs is kept alive while Flare runs,
+                        // attached or not (one from an earlier run of Flare too).
+                        let keep: Vec<Target> = d
+                            .iter()
+                            .filter(|x| {
+                                x.booted_by_flare
+                                    && x.target.source() == SourceKind::Emu
+                                    && x.state == DeviceState::Booted
+                            })
+                            .map(|x| x.target.clone())
+                            .collect();
+                        if let Some(src) = self.source() {
+                            for t in &keep {
+                                src.keep(t);
+                            }
+                        }
                         self.devices = Some(d);
                         self.listing = false;
                         if self.xcode == Xcode::NotSetUp {
@@ -1662,7 +1731,11 @@ impl DeviceCtl {
             }
             SourceEvent::Frames { target, screen, .. } => {
                 self.agent_event(&AgentEvent::NewSession(target.clone()));
-                self.devs.entry(target).or_default().screen = Some(screen);
+                let d = self.devs.entry(target).or_default();
+                d.screen = Some(screen);
+                // A new attach starts on the normal path; the emu host says again if it falls back.
+                d.mode = FrameMode::Live;
+                d.mode_why.clear();
             }
             SourceEvent::Orientation {
                 target,
@@ -1706,11 +1779,38 @@ impl DeviceCtl {
                     self.new_frame = true;
                 }
             }
+            // The sim host's count is its own running count. An Android device's count is Flare's (one per frame
+            // record), so a change the emu host saw while paused (the agent helper's window events, PR A7) adds one:
+            // the count only ever grows, and input calls answer `changed: true` while the stream is paused too.
             SourceEvent::Changed { target, count } => {
-                if let Some(d) = self.devs.get_mut(&target) {
-                    d.changed = count;
-                }
+                let count = match self.devs.get_mut(&target) {
+                    Some(d) if target.source() == SourceKind::Emu => {
+                        d.changed += 1;
+                        d.changed
+                    }
+                    Some(d) => {
+                        d.changed = count;
+                        count
+                    }
+                    None => count,
+                };
                 self.agent_event(&AgentEvent::Changed(target, count));
+            }
+            SourceEvent::Mode { target, mode, why } => {
+                if let Some(d) = self.devs.get_mut(&target) {
+                    if d.mode != mode {
+                        log::info!(
+                            "device: {target}: frames {mode:?}{}",
+                            if why.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {why}")
+                            }
+                        );
+                    }
+                    d.mode = mode;
+                    d.mode_why = why;
+                }
             }
             SourceEvent::State { target, state } => {
                 if let Some(list) = self.devices.as_mut()
@@ -1969,6 +2069,7 @@ impl DeviceCtl {
                 app.set_panel_device_controls(false);
                 app.set_panel_device_still("".into());
                 app.set_panel_device_slow("".into());
+                app.set_panel_device_dim(false);
                 app.set_panel_device_foot("".into());
                 app.set_panel_device_detail("".into());
                 app.set_panel_device_has_cancel(false);
@@ -2086,21 +2187,17 @@ impl DeviceCtl {
             self.pushed.rows = rows;
         }
         let live = view.state == 0;
-        let still = match (&broken, live) {
-            (Some(why), true) => {
-                format!("Live view unavailable: {why}. Showing a picture every half second.")
-            }
-            _ => String::new(),
-        };
-        app.set_panel_device_still(still.into());
-        // The slow mark: a CPU picture (the fake source), or the ring's import refused. Never on the zero-copy path.
-        let slow = live
-            && broken.is_none()
-            && match ring_path {
-                Some(p) => p == FramePath::Cpu,
-                None => true,
-            };
-        app.set_panel_device_slow(if slow { CPU_SLOW } else { "" }.into());
+        let (mode, why) = target
+            .as_ref()
+            .and_then(|t| self.devs.get(t))
+            .map(|d| (d.mode, d.mode_why.clone()))
+            .unwrap_or_default();
+        app.set_panel_device_still(still_line(broken.as_deref(), live, mode, &why).into());
+        app.set_panel_device_slow(
+            slow_line(live && broken.is_none(), ring_path, mode, &why).into(),
+        );
+        // The display is off: the last picture stays, dimmed (spec "Frames").
+        app.set_panel_device_dim(live && pictured && mode == FrameMode::Asleep);
         app.set_panel_device_foot(self.foot(&tab).into());
         app.set_panel_device_controls(live && self.drives(&tab).is_some());
         let shown = self.frames_shown + self.frames.borrow().frames();
@@ -3317,6 +3414,55 @@ mod tests {
         assert!(d.booted.devices.is_empty());
     }
 
+    /// Rule 1366 (PR A7): an emulator Flare booted must not idle out while Flare runs. With no device panel left the
+    /// hosts stay while such an emulator is alive (the emu host's keep-alives hold it); once it is seen shut down they
+    /// stop two minutes later as before.
+    #[test]
+    fn the_emu_host_stays_while_an_emulator_flare_booted_runs() {
+        let now = Rc::new(std::cell::Cell::new(1_000u64));
+        let clock = {
+            let now = Rc::clone(&now);
+            Rc::new(move || now.get())
+        };
+        let mut d = DeviceCtl::new(post(), clock, None);
+        d.install_real(android_starter(FakeSource::android()), None, recorder().1);
+        d.set_ios(false);
+        d.install_android(Rc::new(|_: &[String]| {}));
+        d.on_xcode(XcodeAnswer {
+            xcode: None,
+            android: Some(AndroidSdk::Ready { avds: 1 }),
+            booted: Booted::default(),
+        });
+        d.ensure_source();
+        d.list();
+        let t = Target::emu("Flare_Pixel").unwrap();
+        d.boot(&t);
+        d.drain();
+        assert!(d.booted.has("emu/Flare_Pixel"));
+        // No panel for much longer than two minutes: the hosts stay.
+        d.idle(false);
+        now.set(1_000 + 3 * IDLE_MS);
+        d.idle(false);
+        assert!(
+            matches!(d.src, Some(Src::Real(_))),
+            "kept for the emulator Flare booted"
+        );
+        // The emulator is seen shut down (it died, or the person shut it down): two minutes later the hosts stop.
+        d.on_event(
+            Some(SourceKind::Emu),
+            SourceEvent::State {
+                target: t.clone(),
+                state: DeviceState::Shutdown,
+            },
+        );
+        assert!(!d.booted.has("emu/Flare_Pixel"));
+        d.idle(false);
+        assert!(matches!(d.src, Some(Src::Real(_))), "not at once");
+        now.set(1_000 + 4 * IDLE_MS + 1);
+        d.idle(false);
+        assert!(d.src.is_none(), "stopped two minutes after");
+    }
+
     type AgentRx = std::sync::mpsc::Receiver<Result<serde_json::Value, flare_ctl::CtlError>>;
 
     /// One agent call from tab `t1`.
@@ -3772,6 +3918,96 @@ mod tests {
         d.on_event(Some(SourceKind::Emu), region(3));
         assert_eq!(d.devs[&t].changed, 2);
         assert!(d.devs[&t].ring_frame);
+        // While the stream is paused the emu host sends the agent helper's window changes (PR A7): each one adds one
+        // to Flare's count, whatever the helper's own count says, so the count only grows.
+        d.devs.get_mut(&t).unwrap().paused = true;
+        d.on_event(
+            Some(SourceKind::Emu),
+            SourceEvent::Changed {
+                target: t.clone(),
+                count: 1,
+            },
+        );
+        assert_eq!(d.devs[&t].changed, 3);
+        d.on_event(
+            Some(SourceKind::Emu),
+            SourceEvent::Changed {
+                target: t.clone(),
+                count: 0,
+            },
+        );
+        assert_eq!(
+            d.devs[&t].changed, 4,
+            "a restarted helper's count never goes back"
+        );
+        // The simulator's count is its own.
+        let s = Target::sim("00000000-0000-4000-8000-0000000000aa").unwrap();
+        d.devs.entry(s.clone()).or_default();
+        d.on_event(
+            Some(SourceKind::Sim),
+            SourceEvent::Changed {
+                target: s.clone(),
+                count: 9,
+            },
+        );
+        assert_eq!(d.devs[&s].changed, 9);
+    }
+
+    /// The spec's fallbacks as the panel shows them (PR A7): the slow mark with its reason, the still line with its
+    /// reason, the dimmed picture while the display is off, and nothing on the normal path.
+    #[test]
+    fn an_android_frame_modes_show_as_slow_still_and_dim() {
+        assert_eq!(still_line(None, true, FrameMode::Live, ""), "");
+        assert_eq!(
+            slow_line(true, Some(FramePath::Gpu), FrameMode::Live, ""),
+            ""
+        );
+        let slow = slow_line(true, Some(FramePath::Gpu), FrameMode::Slow, "MMAP refused");
+        assert!(
+            slow.contains("slow way") && slow.contains("MMAP refused"),
+            "{slow}"
+        );
+        let still = still_line(None, true, FrameMode::Still, "no frame for 2 s");
+        assert!(
+            still.starts_with("Live view unavailable: no frame for 2 s.")
+                && still.contains("three times a second"),
+            "{still}"
+        );
+        assert_eq!(
+            still_line(None, false, FrameMode::Still, "x"),
+            "",
+            "only over a live picture"
+        );
+        assert!(still_line(Some("gone"), true, FrameMode::Live, "").contains("every half second"));
+        assert_eq!(
+            slow_line(true, Some(FramePath::Cpu), FrameMode::Live, ""),
+            CPU_SLOW
+        );
+        assert_eq!(slow_line(false, None, FrameMode::Slow, "x"), "");
+
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), Some(FakeSource::android()));
+        let t = Target::emu("Flare_Pixel").unwrap();
+        d.devs.entry(t.clone()).or_default().attached = true;
+        d.on_event(
+            Some(SourceKind::Emu),
+            SourceEvent::Mode {
+                target: t.clone(),
+                mode: FrameMode::Asleep,
+                why: String::new(),
+            },
+        );
+        assert_eq!(d.devs[&t].mode, FrameMode::Asleep);
+        // A new attach starts on the normal path again.
+        d.on_event(
+            Some(SourceKind::Emu),
+            SourceEvent::Frames {
+                target: t.clone(),
+                ring: 1,
+                screen: Screen::from_dpi(Size::new(1080.0, 2400.0), 420.0, Orientation::Rot0)
+                    .unwrap(),
+            },
+        );
+        assert_eq!(d.devs[&t].mode, FrameMode::Live);
     }
 
     /// Rule 1366: a boot of an emulator that already ran (Android Studio's, or a list that was out of date) waits

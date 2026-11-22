@@ -55,6 +55,8 @@ pub struct FakeSource {
     broken: Option<String>,
     /// Like the sim host: no `State` event of its own on a boot or a shutdown, only the answer.
     no_state_events: bool,
+    /// The emulators Flare asked to keep alive (`keep`), in order.
+    kept: Vec<Target>,
 }
 
 /// The colour of frame `seq`: a different solid colour each frame, opaque.
@@ -149,6 +151,7 @@ impl FakeSource {
             boot_ms: 0,
             booting: Vec::new(),
             fail_next: None,
+            kept: Vec::new(),
             broken: None,
             no_state_events: false,
         }
@@ -323,6 +326,11 @@ impl FakeSource {
     }
 
     /// Sends no `State` event on a boot or a shutdown, as the sim host does (a test of the answer alone).
+    /// The emulators Flare asked to keep alive, in order.
+    pub fn kept(&self) -> &[Target] {
+        &self.kept
+    }
+
     pub fn without_state_events(mut self) -> Self {
         self.no_state_events = true;
         self
@@ -424,6 +432,10 @@ impl FakeSource {
 }
 
 impl DeviceSource for FakeSource {
+    fn keep(&mut self, target: &Target) {
+        self.kept.push(target.clone());
+    }
+
     fn setup(&mut self, step: crate::wire::SetupStep) -> Option<ReqId> {
         // Only the Android fake sets anything up.
         if !self

@@ -733,11 +733,11 @@ mod mac {
                 Fail::Unavailable,
                 format!("{target}: the sim host takes no frame region"),
             ),
-            // Android setup (rule 1361) is the emu host's.
-            Request::Setup { .. } => host.err(
+            // Android setup (rule 1361) and an emulator's keep-alive (rule 1366) are the emu host's.
+            Request::Setup { .. } | Request::Keep { .. } => host.err(
                 id,
                 Fail::Unavailable,
-                "the sim host does no Android setup".to_string(),
+                "the sim host does no Android work".to_string(),
             ),
             Request::Detach { target } => {
                 let a = host

@@ -42,6 +42,10 @@ const ADB_LIMIT: Duration = Duration::from_secs(20);
 const DUMP_LIMIT: Duration = Duration::from_secs(30);
 /// Failures (a start or a call) before the tree falls back to the dump for the rest of the attach: one restart.
 const FAILURES_BEFORE_DUMP: u32 = 2;
+/// A tree that reads empty is read again this often, for at most this long (A5's real run: empty, then full 0.5 s
+/// later).
+const EMPTY_TREE_GAP: Duration = Duration::from_millis(150);
+const EMPTY_TREE_WAIT: Duration = Duration::from_secs(1);
 /// The most lines of the helper's own output that reach the log per start.
 const CHATTER_MAX: usize = 20;
 
@@ -512,6 +516,23 @@ impl Helper {
         Ok(self.answer(&t, scale, screen_dp, TreePath::Dump))
     }
 
+    /// BLOCKING: [`Helper::tree`], read again every [`EMPTY_TREE_GAP`] for up to [`EMPTY_TREE_WAIT`] while it holds
+    /// nothing the agent can use (the first read right after a boot or a launch can be empty). After that the empty
+    /// tree is the answer, as it is. The slow dump is never read twice.
+    pub fn tree_settled(&self, scale: f64, screen_dp: Size) -> Result<Value, Failed> {
+        let started = Instant::now();
+        loop {
+            let v = self.tree(scale, screen_dp)?;
+            if v["path"] == TreePath::Dump.name()
+                || !agent::tree_is_empty(&v, screen_dp)
+                || started.elapsed() + EMPTY_TREE_GAP > EMPTY_TREE_WAIT
+            {
+                return Ok(v);
+            }
+            std::thread::sleep(EMPTY_TREE_GAP);
+        }
+    }
+
     fn answer(&self, t: &Tree, scale: f64, screen_dp: Size, path: TreePath) -> Value {
         json!({
             "tree": agent::to_ui_tree(t, scale, screen_dp),
@@ -816,6 +837,70 @@ mod tests {
         let n = new_nonce().unwrap();
         assert!(agent::nonce_ok(&n));
         assert_ne!(n, new_nonce().unwrap());
+    }
+
+    /// A stand-in helper whose tree is empty for its first `empty_reads` reads, then holds one button. Counts reads.
+    fn fake_settling_helper(empty_reads: u64) -> (u16, Arc<AtomicU64>) {
+        let reads = Arc::new(AtomicU64::new(0));
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let r = Arc::clone(&reads);
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(s) = s else { break };
+                let r = Arc::clone(&r);
+                std::thread::spawn(move || {
+                    let mut w = s.try_clone().unwrap();
+                    for line in BufReader::new(s).lines().map_while(Result::ok) {
+                        let v: Value = serde_json::from_str(&line).unwrap();
+                        let id = v["id"].as_u64().unwrap();
+                        let n = r.fetch_add(1, Ordering::Relaxed);
+                        let windows = if n < empty_reads {
+                            json!([])
+                        } else {
+                            json!([{"type": 1, "layer": 0, "active": true, "focused": true, "package": "a.b",
+                                "b": [0, 0, 1080, 2400],
+                                "root": {"class": "android.widget.Button", "text": "OK", "clickable": true,
+                                    "b": [100, 100, 500, 300]}}])
+                        };
+                        let out = json!({"id": id, "ok": {"windows": windows, "front_app": "a.b", "nodes": 1}});
+                        writeln!(w, "{out}").unwrap();
+                    }
+                });
+            }
+        });
+        (port, reads)
+    }
+
+    /// The first read right after a boot or a launch can be empty: the tree is read again for up to a second while it
+    /// holds nothing, and a tree that stays empty is still the answer after that (never an error, never a hang).
+    #[test]
+    fn an_empty_tree_is_read_again_for_up_to_a_second() {
+        let screen = Size::new(411.0, 914.0);
+        let (port, reads) = fake_settling_helper(2);
+        let h = helper_on(port);
+        let started = Instant::now();
+        let v = h.tree_settled(2.625, screen).unwrap();
+        assert!(!agent::tree_is_empty(&v, screen), "{v}");
+        assert_eq!(
+            reads.load(Ordering::Relaxed),
+            3,
+            "two empty reads, then the button"
+        );
+        assert!(started.elapsed() < Duration::from_millis(900));
+        h.stop();
+
+        let (port, reads) = fake_settling_helper(u64::MAX);
+        let h = helper_on(port);
+        let started = Instant::now();
+        let v = h.tree_settled(2.625, screen).unwrap();
+        let took = started.elapsed();
+        assert!(agent::tree_is_empty(&v, screen));
+        assert_eq!(v["path"], "helper");
+        assert!(took >= Duration::from_millis(800), "{took:?}");
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        assert!(reads.load(Ordering::Relaxed) >= 5);
+        h.stop();
     }
 
     /// Rule 1369: a helper only for an emulator's serial.

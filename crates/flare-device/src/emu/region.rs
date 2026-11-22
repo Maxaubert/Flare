@@ -43,6 +43,23 @@ pub fn url(path: &Path) -> String {
     format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
 }
 
+/// The path back from a [`url`]: what the emu host writes into itself when the emulator gives no frames into the region
+/// (PR A7, the spec's fallbacks). Only a region file (`<pid>-<n>.rgba` in a `flare` folder) is taken, so a handle from
+/// anywhere else is never written.
+pub fn path_of_url(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file:///")?;
+    let p = PathBuf::from(if cfg!(windows) {
+        rest.to_string()
+    } else {
+        // `file:////Users/a/...` on macOS: the path keeps its own leading slash.
+        rest.strip_prefix('/')
+            .map_or_else(|| format!("/{rest}"), |r| format!("/{r}"))
+    });
+    let name = p.file_name()?.to_str()?;
+    let folder = p.parent()?.file_name()?.to_str()?;
+    (folder == FOLDER && pid_of(name).is_some() && !rest.contains("..")).then_some(p)
+}
+
 /// A region's size is a whole number of these (64 KiB). Flare hands the mapped region to the GPU as it is (rule 1364):
 /// a D3D12 heap opened on the mapped view (`OpenExistingHeapFromAddress`) and a Metal no-copy buffer
 /// (`newBufferWithBytesNoCopy`, a whole number of 16 KiB pages) both take this size (spike S3).
@@ -182,6 +199,16 @@ mod tests {
             let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode(r.path()), 0o600);
             assert_eq!(mode(&rd), 0o700);
+        }
+        // The emu host finds the file again from its URL (PR A7's fallbacks); nothing else is taken.
+        assert_eq!(path_of_url(&r.url()).as_deref(), Some(r.path()));
+        for bad in [
+            "file:///C:/Windows/notepad.exe",
+            "/x/flare/77-1.rgba",
+            "file:///x/flare/../flare/77-1.rgba",
+            "file:///x/other/77-1.rgba",
+        ] {
+            assert_eq!(path_of_url(bad), None, "{bad}");
         }
         let p = r.path().to_path_buf();
         drop(r);

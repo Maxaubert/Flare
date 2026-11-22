@@ -23,7 +23,7 @@ use flare_device::emu::{Places, avds, boot, flare_avd, keys};
 use flare_device::geom::{Orientation, Size};
 use flare_device::job::Fail;
 use flare_device::source::{
-    Button, DeviceInfo, DeviceState, InputState, Key, Phase, Screen, Touch,
+    Button, DeviceInfo, DeviceState, FrameMode, InputState, Key, Phase, Screen, Touch,
 };
 use flare_device::target::Target;
 use flare_device::wire::{
@@ -90,6 +90,12 @@ struct Device {
     ring: u32,
     /// The agent helper (PR A3, rule 1369): the UI tree and set-text. None without an emulator's adb serial.
     agent: Option<Arc<crate::agent::Helper>>,
+    /// The emulator's version, for the fallbacks' log lines.
+    version: String,
+    /// The frame mode last said to Flare, and why (PR A7).
+    told: Mutex<(FrameMode, String)>,
+    /// Why the frames last fell back from the shared memory (PR A7).
+    fell_back: Mutex<String>,
 }
 
 impl Device {
@@ -452,7 +458,7 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
                     let (scale, screen) = (d.scale, screen_dp(&d));
                     host.rt.spawn(async move {
                         let started = Instant::now();
-                        let r = tokio::task::spawn_blocking(move || a.tree(scale, screen))
+                        let r = tokio::task::spawn_blocking(move || a.tree_settled(scale, screen))
                             .await
                             .unwrap_or_else(|e| Err((Fail::Unavailable, e.to_string())));
                         match r {
@@ -491,6 +497,32 @@ fn handle(host: &Arc<Host>, c: Control) -> bool {
             });
         }
         Request::Setup { step } => setup_step(host, id, step),
+        // Rule 1366 (PR A7): an emulator Flare booted stays alive while Flare runs, attached or not. One that no
+        // longer runs is said to be shut down, so Flare forgets it.
+        Request::Keep { target } => {
+            let h = Arc::clone(host);
+            host.rt.spawn(async move {
+                if lock(&h.keep).contains_key(&target) {
+                    h.ok(id, Value::Null);
+                    return;
+                }
+                match reach(&h, &target).await {
+                    Ok((_, client)) => {
+                        keep_alive(&h, &target, client);
+                        h.log
+                            .line(&format!("{target}: kept alive while Flare runs"));
+                        h.ok(id, Value::Null);
+                    }
+                    Err((f, m)) => {
+                        let not_running = m == format!("{target} is not running");
+                        h.err(id, f, m);
+                        if not_running {
+                            gone(&h, &target);
+                        }
+                    }
+                }
+            });
+        }
         Request::Install { target, path } => {
             let h = Arc::clone(host);
             host.rt.spawn(async move {
@@ -1026,6 +1058,9 @@ async fn attach(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
         tasks: Mutex::new(Vec::new()),
         ring: host.rings.fetch_add(1, Ordering::Relaxed),
         agent,
+        version: r.version.clone().unwrap_or_else(|| "?".to_string()),
+        told: Mutex::new((FrameMode::Live, String::new())),
+        fell_back: Mutex::new(String::new()),
     });
     open_input(host, &d);
     lock(&host.devices).insert(target.clone(), Arc::clone(&d));
@@ -1056,8 +1091,43 @@ async fn attach(host: &Arc<Host>, target: &Target) -> Result<(), Failed> {
     if let Some(a) = d.agent.clone() {
         host.rt.spawn_blocking(move || a.warm());
     }
+    watch_changes(host, &d);
     Ok(())
 }
+
+/// While the frame stream is paused (rule 1365) no frame says the screen changed, so the agent helper's window
+/// events do (PR A7, spec "Frames": the "changed" counter comes from the helper while paused): each new count becomes
+/// one `changed` line, and the agent's input calls answer `changed: true`. Ends when the device is detached.
+fn watch_changes(host: &Arc<Host>, d: &Arc<Device>) {
+    let Some(a) = d.agent.clone() else {
+        return;
+    };
+    let h = Arc::clone(host);
+    let dd = Arc::clone(d);
+    let task = host.rt.spawn(async move {
+        let mut last = a.changed();
+        loop {
+            tokio::time::sleep(CHANGES_EVERY).await;
+            if !h.device(&dd.target).is_some_and(|x| Arc::ptr_eq(&x, &dd)) {
+                return;
+            }
+            let now = a.changed();
+            if now != last {
+                last = now;
+                if dd.paused.load(Ordering::Relaxed) {
+                    h.out.line(&HostLine::Changed {
+                        target: dd.target.clone(),
+                        count: now,
+                    });
+                }
+            }
+        }
+    });
+    lock(&d.tasks).push(task);
+}
+
+/// How often the agent helper's window count is looked at while a device is attached.
+const CHANGES_EVERY: Duration = Duration::from_millis(100);
 
 /// The screen in dp as it is shown now (the current orientation), for the tree's root.
 fn screen_dp(d: &Device) -> Size {
@@ -1331,9 +1401,13 @@ async fn snapshot(host: &Host, d: &Device) -> Result<Vec<u8>, Failed> {
         "the device turned while it was looked at".to_string(),
     ))
 }
-/// (Re)starts the frame stream when the device has a region and is not paused (rule 1365). A stream that ends by
-/// itself (the guest restarted, a gRPC hiccup) is opened again after [`stream_retry_wait`], while the device is still
-/// attached here and not paused; a pause, a detach or a new region aborts this task instead.
+/// (Re)starts the frame stream when the device has a region and is not paused (rule 1365). It starts on the normal
+/// path (MMAP into the region) and falls back in the spec's order ("Frames", fallbacks; PR A7): when MMAP is refused
+/// or writes nothing for [`SILENT_AFTER`] while the display is on, the pixels come in the gRPC messages and this host
+/// writes them into the region (at most 30 a second, the "slow" mark); when that fails too, a `getScreenshot` at most
+/// 3 times a second (the still badge). A stream that ends by itself after bringing frames is opened again in the same
+/// mode after [`stream_retry_wait`], while the device is still attached here and not paused; a pause, a detach or a
+/// new region aborts this task instead.
 fn restart_stream(host: &Arc<Host>, d: &Arc<Device>) {
     if let Some(s) = lock(&d.stream).take() {
         s.abort();
@@ -1348,13 +1422,32 @@ fn restart_stream(host: &Arc<Host>, d: &Arc<Device>) {
     let dd = Arc::clone(d);
     let task = host.rt.spawn(async move {
         let mut tries = 0;
+        let mut via = Via::Mmap;
         loop {
-            let got = stream(Arc::clone(&h), Arc::clone(&dd), url.clone(), bytes).await;
+            let ended = match via {
+                Via::Mmap | Via::Pixels => {
+                    stream(Arc::clone(&h), Arc::clone(&dd), &url, bytes, via).await
+                }
+                Via::Still => stills(Arc::clone(&h), Arc::clone(&dd), &url, bytes).await,
+            };
             let current = h.device(&dd.target).is_some_and(|x| Arc::ptr_eq(&x, &dd));
             if !current || dd.paused.load(Ordering::Relaxed) {
                 return;
             }
-            tries = if got { 1 } else { tries + 1 };
+            if let Some((next, why)) = fall_back(via, &ended) {
+                h.log.line(&format!(
+                    "{}: frames fall back to {} (emulator {}): {why}",
+                    dd.target,
+                    next.mode_name(),
+                    dd.version
+                ));
+                via = next;
+                *lock(&dd.fell_back) = why.clone();
+                tell_mode(&h, &dd, next.mode(), why);
+                tries = 0;
+                continue;
+            }
+            tries = if ended == Ended::Frames { 1 } else { tries + 1 };
             let Some(wait) = stream_retry_wait(tries) else {
                 h.log.line(&format!(
                     "{}: the frame stream was not opened again after {STREAM_RETRIES} tries",
@@ -1371,6 +1464,131 @@ fn restart_stream(host: &Arc<Host>, d: &Arc<Device>) {
         }
     });
     *lock(&d.stream) = Some(task);
+}
+
+/// How the frames reach Flare's region (the spec's "Frames", in fallback order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Via {
+    /// The emulator writes each frame into the region (MMAP).
+    Mmap,
+    /// The pixels come in each gRPC message; this host writes them into the region, at most 30 a second.
+    Pixels,
+    /// A `getScreenshot` at most 3 times a second, written into the region by this host.
+    Still,
+}
+
+impl Via {
+    fn mode(self) -> FrameMode {
+        match self {
+            Via::Mmap => FrameMode::Live,
+            Via::Pixels => FrameMode::Slow,
+            Via::Still => FrameMode::Still,
+        }
+    }
+
+    fn mode_name(self) -> &'static str {
+        match self {
+            Via::Mmap => "the shared memory",
+            Via::Pixels => "pixels in the gRPC messages (slow)",
+            Via::Still => "still pictures",
+        }
+    }
+}
+
+/// How a frame stream ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Ended {
+    /// It brought frames, then ended (the guest restarted, a gRPC hiccup): opened again in the same way.
+    Frames,
+    /// The emulator refused it, or it gave nothing usable for [`SILENT_AFTER`] while the display was on: the next
+    /// fallback, and why.
+    Failed(String),
+}
+
+/// No frame (or a region the emulator never wrote) this long after the stream opened, while the display is on: the
+/// stream does not work here (spec "Versions and failure modes").
+const SILENT_AFTER: Duration = Duration::from_secs(2);
+/// At most this many frames a second on the slow path.
+const SLOW_GAP: Duration = Duration::from_micros(1_000_000 / 30);
+/// At most this many still pictures a second.
+const STILL_GAP: Duration = Duration::from_micros(1_000_000 / 3);
+
+/// The next way to get frames after `via` ended as `ended`, with the reason; None to open the same way again.
+fn fall_back(via: Via, ended: &Ended) -> Option<(Via, String)> {
+    let Ended::Failed(why) = ended else {
+        return None;
+    };
+    match via {
+        Via::Mmap => Some((Via::Pixels, why.clone())),
+        Via::Pixels => Some((Via::Still, why.clone())),
+        Via::Still => None,
+    }
+}
+
+/// Says the device's frame mode to Flare, once per change.
+fn tell_mode(host: &Host, d: &Device, mode: FrameMode, why: String) {
+    {
+        let mut told = lock(&d.told);
+        if told.0 == mode && told.1 == why {
+            return;
+        }
+        *told = (mode, why.clone());
+    }
+    host.out.line(&HostLine::Mode {
+        target: d.target.clone(),
+        mode,
+        why,
+    });
+}
+
+/// After a picture of the display came: it is on, so a dimmed picture brightens and the path's own mode shows (with
+/// the reason it fell back, when it did).
+fn awake(host: &Host, d: &Device, via: Via) {
+    let why = if via == Via::Mmap {
+        String::new()
+    } else {
+        lock(&d.fell_back).clone()
+    };
+    tell_mode(host, d, via.mode(), why);
+}
+/// BLOCKING: reads the region's alpha samples from the file (a fresh read, so what the emulator wrote is seen).
+fn region_written_at(path: &std::path::Path, w: u32, h: u32) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let n = u64::from(w) * u64::from(h);
+    (0..16u64).any(|i| {
+        let px = n.saturating_sub(1) * i / 15;
+        let mut b = [0u8; 4];
+        f.seek(SeekFrom::Start(px * 4)).is_ok() && f.read_exact(&mut b).is_ok() && b[3] != 0
+    })
+}
+
+/// BLOCKING: writes one frame's pixels into the region (the slow and still paths). The emulator would have written
+/// the same bytes there with MMAP: rows top-down, RGBA, `w * 4` bytes a row.
+fn write_region(
+    path: &std::path::Path,
+    bytes: u64,
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom};
+    let need = u64::from(w) * u64::from(h) * 4;
+    if need > bytes || (rgba.len() as u64) < need {
+        return Err(format!(
+            "a {w}x{h} frame of {} bytes does not fit the region of {bytes}",
+            rgba.len()
+        ));
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    f.seek(SeekFrom::Start(0))
+        .and_then(|_| f.write_all(&rgba[..need as usize]))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// One frame's facts.
@@ -1403,36 +1621,65 @@ fn stream_retry_wait(tries: u32) -> Option<Duration> {
         .then(|| Duration::from_secs(1 << (tries - 1)))
 }
 
-/// `streamScreenshot` with MMAP into Flare's region (rule 1363); one `region` line per frame through the 60 fps cap.
-/// Returns whether any frame came before the stream ended (a refused stream brings none).
-async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) -> bool {
+/// Keeps the device's orientation from a frame's rotation, and says a turn.
+fn follow_turn(host: &Host, d: &Device, rotation: Orientation) {
+    let turned = {
+        let mut o = lock(&d.orientation);
+        let changed = *o != rotation;
+        *o = rotation;
+        changed
+    };
+    if turned {
+        host.out.line(&HostLine::Orientation {
+            target: d.target.clone(),
+            orientation: rotation,
+        });
+    }
+}
+
+/// `streamScreenshot` (rule 1363): with MMAP into Flare's region, or (the slow fallback) with the pixels in each
+/// message, written into the region here at most 30 a second. One `region` line per frame through the 60 fps cap.
+/// A 0x0 frame means the display is off: Flare dims the last picture (spec "Frames").
+async fn stream(host: Arc<Host>, d: Arc<Device>, url: &str, bytes: u64, via: Via) -> Ended {
     use pb::image_transport::TransportChannel;
+    let path = flare_device::emu::region::path_of_url(url);
     let fmt = pb::ImageFormat {
         format: pb::image_format::ImgFormat::Rgba8888 as i32,
         display: 0,
-        transport: Some(pb::ImageTransport {
+        transport: (via == Via::Mmap).then(|| pb::ImageTransport {
             channel: TransportChannel::Mmap as i32,
-            handle: url,
+            handle: url.to_string(),
         }),
         ..Default::default()
     };
     let mut s = match d.client.clone().stream_screenshot(fmt).await {
         Ok(r) => r.into_inner(),
         Err(e) => {
-            host.log.line(&format!(
-                "{}: the frame stream was refused: {} {}",
-                d.target,
+            let why = format!(
+                "the frame stream was refused ({} {})",
                 e.code(),
                 e.message()
-            ));
-            return false;
+            );
+            host.log.line(&format!("{}: {why}", d.target));
+            return Ended::Failed(why);
         }
     };
-    host.log.line(&format!("{}: frames streaming", d.target));
+    host.log.line(&format!(
+        "{}: frames streaming ({})",
+        d.target,
+        via.mode_name()
+    ));
+    let mut opened = Instant::now();
     let stats = Stats::default();
     let mut cap: FrameCap<Fact> = FrameCap::default();
     let mut last_seq: Option<u64> = None;
     let mut last_log = Instant::now();
+    // Whether a frame was seen in the region (MMAP) or written into it (slow): the stream works.
+    let mut proven = false;
+    // The display was off when the stream opened: no frame is owed until it wakes.
+    let mut asleep = false;
+    let mut last_write: Option<Instant> = None;
+    let mut pending: Option<(Fact, Vec<u8>)> = None;
     let send = |f: Fact| {
         stats.sent.fetch_add(1, Ordering::Relaxed);
         host.out.line(&HostLine::Region {
@@ -1444,20 +1691,54 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) -> boo
             rotation: f.rotation,
         });
     };
+    // The slow path: the newest pixels go into the region and out as a record, at most 30 a second.
+    let write = |f: Fact, rgba: Vec<u8>| -> bool {
+        let Some(p) = path.clone() else {
+            return false;
+        };
+        match write_region(&p, bytes, &rgba, f.w, f.h) {
+            Ok(()) => {
+                send(f);
+                true
+            }
+            Err(e) => {
+                host.log.line(&format!("{}: {e}", d.target));
+                false
+            }
+        }
+    };
     loop {
         let due = cap
             .due_us()
             .map(|us| host.epoch + Duration::from_micros(us));
+        let slow_due = pending.as_ref().and(last_write).map(|t| t + SLOW_GAP);
+        let silent_at = (!proven && !asleep).then(|| opened + SILENT_AFTER);
+        let wake = [due, slow_due, silent_at].into_iter().flatten().min();
         let msg = tokio::select! {
             m = s.message() => m,
             () = async {
-                match due {
+                match wake {
                     Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
                     None => std::future::pending().await,
                 }
             } => {
+                if !proven && !asleep && opened.elapsed() >= SILENT_AFTER {
+                    let why = if stats.received.load(Ordering::Relaxed) == 0 {
+                        "the emulator sent no frame for 2 s".to_string()
+                    } else {
+                        "the emulator wrote no frame into the shared memory for 2 s".to_string()
+                    };
+                    host.log.line(&format!("{}: {why}", d.target));
+                    return Ended::Failed(why);
+                }
                 if let Some(f) = cap.poll(host.now_us()) {
                     send(f);
+                }
+                if last_write.is_some_and(|t| t.elapsed() >= SLOW_GAP)
+                    && let Some((f, rgba)) = pending.take()
+                    && tokio::task::block_in_place(|| write(f, rgba))
+                {
+                    last_write = Some(Instant::now());
                 }
                 continue;
             }
@@ -1486,27 +1767,23 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) -> boo
         }
         last_seq = Some(seq);
         let f = img.format.unwrap_or_default();
-        // A 0x0 frame: the display is off. Nothing to show.
+        // A 0x0 frame: the display is off. The last picture stays, dimmed; nothing is owed until it wakes.
         if f.width == 0 || f.height == 0 {
+            asleep = true;
+            tell_mode(&host, &d, FrameMode::Asleep, String::new());
             continue;
         }
         if u64::from(f.width) * u64::from(f.height) * 4 > bytes {
             stats.too_big.fetch_add(1, Ordering::Relaxed);
             continue;
         }
-        let rotation = keys::orientation_of(f.rotation.map_or(0, |r| r.rotation));
-        let turned = {
-            let mut o = lock(&d.orientation);
-            let changed = *o != rotation;
-            *o = rotation;
-            changed
-        };
-        if turned {
-            host.out.line(&HostLine::Orientation {
-                target: d.target.clone(),
-                orientation: rotation,
-            });
+        if asleep {
+            // Awake again: the stream owes a frame within SILENT_AFTER from now.
+            asleep = false;
+            opened = Instant::now();
         }
+        let rotation = keys::orientation_of(f.rotation.map_or(0, |r| r.rotation));
+        follow_turn(&host, &d, rotation);
         let fact = Fact {
             seq,
             t_us: img.timestamp_us,
@@ -1514,23 +1791,132 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) -> boo
             h: f.height,
             rotation,
         };
-        if let Some(f) = cap.offer(fact, host.now_us()) {
-            send(f);
+        match via {
+            Via::Mmap => {
+                if !proven {
+                    // The emulator says a frame is there: is it? (An emulator whose MMAP is broken acks frames and
+                    // writes nothing.)
+                    let p = path.clone();
+                    let (w, h) = (f.width, f.height);
+                    proven = tokio::task::spawn_blocking(move || {
+                        p.is_some_and(|p| region_written_at(&p, w, h))
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if !proven {
+                        continue;
+                    }
+                }
+                awake(&host, &d, via);
+                if let Some(f) = cap.offer(fact, host.now_us()) {
+                    send(f);
+                }
+            }
+            Via::Pixels => {
+                if img.image.is_empty() {
+                    continue;
+                }
+                awake(&host, &d, via);
+                if last_write.is_none_or(|t| t.elapsed() >= SLOW_GAP) {
+                    if tokio::task::block_in_place(|| write(fact, img.image)) {
+                        proven = true;
+                        last_write = Some(Instant::now());
+                    }
+                } else {
+                    pending = Some((fact, img.image));
+                }
+            }
+            Via::Still => {}
         }
         if last_log.elapsed() >= STATS_EVERY {
             last_log = Instant::now();
             host.log.line(&format!(
-                "{}: frames received {}, sent {}, capped {}, seq gaps {}, too big {}",
+                "{}: frames received {}, sent {}, capped {}, seq gaps {}, too big {} ({})",
                 d.target,
                 stats.received.load(Ordering::Relaxed),
                 stats.sent.load(Ordering::Relaxed),
                 cap.capped(),
                 stats.gaps.load(Ordering::Relaxed),
-                stats.too_big.load(Ordering::Relaxed)
+                stats.too_big.load(Ordering::Relaxed),
+                via.mode_name()
             ));
         }
     }
-    stats.received.load(Ordering::Relaxed) > 0
+    if proven {
+        Ended::Frames
+    } else {
+        Ended::Failed("the frame stream ended before its first frame".to_string())
+    }
+}
+
+/// The last fallback: a `getScreenshot` (RGBA) at most 3 times a second, written into the region here, with the still
+/// badge. Runs until the device is paused or detached (the task is aborted) or the screenshots fail.
+async fn stills(host: Arc<Host>, d: Arc<Device>, url: &str, bytes: u64) -> Ended {
+    let Some(path) = flare_device::emu::region::path_of_url(url) else {
+        return Ended::Failed(format!("no region file in {url:?}"));
+    };
+    let mut seq: u64 = 0;
+    let mut fails = 0;
+    loop {
+        let started = Instant::now();
+        let r = d
+            .client
+            .clone()
+            .get_screenshot(pb::ImageFormat {
+                format: pb::image_format::ImgFormat::Rgba8888 as i32,
+                display: 0,
+                ..Default::default()
+            })
+            .await;
+        match r {
+            Err(e) => {
+                fails += 1;
+                host.log.line(&format!(
+                    "{}: a still picture failed ({fails}): {} {}",
+                    d.target,
+                    e.code(),
+                    e.message()
+                ));
+                if fails >= 3 {
+                    return Ended::Failed(format!("no still picture either: {}", e.message()));
+                }
+            }
+            Ok(img) => {
+                fails = 0;
+                let img = img.into_inner();
+                let f = img.format.unwrap_or_default();
+                if f.width == 0 || f.height == 0 {
+                    tell_mode(&host, &d, FrameMode::Asleep, String::new());
+                } else {
+                    let rotation = keys::orientation_of(f.rotation.map_or(0, |r| r.rotation));
+                    follow_turn(&host, &d, rotation);
+                    let p = path.clone();
+                    let (w, h) = (f.width, f.height);
+                    let pixels = img.image;
+                    let wrote =
+                        tokio::task::spawn_blocking(move || write_region(&p, bytes, &pixels, w, h))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()));
+                    match wrote {
+                        Ok(()) => {
+                            awake(&host, &d, Via::Still);
+                            seq += 1;
+                            host.out.line(&HostLine::Region {
+                                target: d.target.clone(),
+                                seq,
+                                t_us: host.now_us(),
+                                w,
+                                h,
+                                rotation,
+                            });
+                        }
+                        Err(e) => host.log.line(&format!("{}: {e}", d.target)),
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(STILL_GAP.saturating_sub(started.elapsed())).await;
+    }
 }
 
 #[cfg(test)]
@@ -1556,6 +1942,57 @@ mod tests {
         }
         let typed = keys::text_steps("bl\u{e5}b\u{e6}r");
         assert!(matches!(&typed[0], keys::TextStep::DeviceClipboard(_)));
+    }
+
+    /// The spec's fallbacks, in order (PR A7): a refused or silent MMAP stream goes to pixels in the gRPC messages
+    /// (slow), and that to still pictures; a stream that brought frames is opened again the same way.
+    #[test]
+    fn a_failed_stream_falls_back_in_the_specs_order() {
+        let failed = Ended::Failed("refused".into());
+        assert_eq!(
+            fall_back(Via::Mmap, &failed),
+            Some((Via::Pixels, "refused".to_string()))
+        );
+        assert_eq!(
+            fall_back(Via::Pixels, &failed),
+            Some((Via::Still, "refused".to_string()))
+        );
+        assert_eq!(fall_back(Via::Still, &failed), None, "retried with waits");
+        for via in [Via::Mmap, Via::Pixels, Via::Still] {
+            assert_eq!(fall_back(via, &Ended::Frames), None);
+        }
+        assert_eq!(
+            [Via::Mmap, Via::Pixels, Via::Still].map(Via::mode),
+            [FrameMode::Live, FrameMode::Slow, FrameMode::Still]
+        );
+        assert_eq!(SLOW_GAP, Duration::from_micros(33_333), "30 a second");
+        assert_eq!(STILL_GAP, Duration::from_micros(333_333), "3 a second");
+        assert_eq!(SILENT_AFTER, Duration::from_secs(2));
+    }
+
+    /// The slow and still paths write a frame into the region as the emulator would (rows top-down, RGBA), and only
+    /// a frame that fits; the MMAP check sees a region nobody wrote (all zero) apart from one the emulator wrote
+    /// (opaque alpha).
+    #[test]
+    fn frames_are_written_into_the_region_and_a_blank_region_is_seen() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("1-1.rgba");
+        let bytes = 64 * 1024;
+        std::fs::write(&p, vec![0u8; bytes]).unwrap();
+        assert!(!region_written_at(&p, 100, 100), "never written");
+        let mut px = vec![0u8; 100 * 100 * 4];
+        for (i, c) in px.chunks_mut(4).enumerate() {
+            c.copy_from_slice(&[(i % 251) as u8, 1, 2, 255]);
+        }
+        write_region(&p, bytes as u64, &px, 100, 100).unwrap();
+        let got = std::fs::read(&p).unwrap();
+        assert_eq!(&got[..px.len()], &px[..]);
+        assert_eq!(got.len(), bytes, "the region keeps its size");
+        assert!(region_written_at(&p, 100, 100));
+        // Too big for the region, or fewer pixels than the size says: refused, nothing written.
+        assert!(write_region(&p, bytes as u64, &px, 200, 200).is_err());
+        assert!(write_region(&p, bytes as u64, &px[..10], 100, 100).is_err());
+        assert!(!region_written_at(&d.path().join("none.rgba"), 1, 1));
     }
 
     /// A frame stream that ends by itself is opened again, waiting longer each time, and given up after

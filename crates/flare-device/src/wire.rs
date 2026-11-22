@@ -113,6 +113,12 @@ pub enum Request {
     Setup {
         step: SetupStep,
     },
+    /// The emu host only (PR A7, rule 1366): keep an emulator Flare booted alive while Flare runs (`getStatus` every
+    /// minute), attached or not. A new emu host after a restart gets one per such emulator. When it no longer runs, the
+    /// answer is an error and a `shutdown` state follows. The sim host answers it `unavailable`.
+    Keep {
+        target: Target,
+    },
 }
 
 /// One step of Android setup (rule 1361). Nothing is downloaded before `start`, and Flare sends `start` only from the
@@ -247,6 +253,21 @@ pub enum HostLine {
     /// Android setup's progress, or a new device's first-boot compile (emu host, Android plan PR A2b).
     Setup {
         event: SetupEvent,
+    },
+    /// The screen changed while the device's frame stream is paused (emu host, PR A7): the agent helper saw a window
+    /// change. `count` is the helper's own running count; Flare counts one change per line. Becomes
+    /// [`crate::source::SourceEvent::Changed`].
+    Changed {
+        target: Target,
+        count: u64,
+    },
+    /// How the device's frames come now (emu host, PR A7: the spec's fallbacks), and why when not live. Becomes
+    /// [`crate::source::SourceEvent::Mode`].
+    Mode {
+        target: Target,
+        mode: crate::source::FrameMode,
+        #[serde(default)]
+        why: String,
     },
 }
 
@@ -700,6 +721,34 @@ mod tests {
             r#"{"kind":"region","target":"emu/Flare_Pixel","seq":901,"t_us":15016000,"w":2400,"h":1080,"rotation":"rot90"}"#
         );
         assert_eq!(from_line::<HostLine>(&line), Some(region));
+        // A change seen while paused, and the frame path's mode (PR A7).
+        let changed = HostLine::Changed {
+            target: t.clone(),
+            count: 12,
+        };
+        assert_eq!(
+            to_line(&changed),
+            r#"{"kind":"changed","target":"emu/Flare_Pixel","count":12}"#
+        );
+        assert_eq!(from_line::<HostLine>(&to_line(&changed)), Some(changed));
+        let mode = HostLine::Mode {
+            target: t.clone(),
+            mode: crate::source::FrameMode::Still,
+            why: "MMAP refused".into(),
+        };
+        assert_eq!(
+            to_line(&mode),
+            r#"{"kind":"mode","target":"emu/Flare_Pixel","mode":"still","why":"MMAP refused"}"#
+        );
+        assert_eq!(from_line::<HostLine>(&to_line(&mode)), Some(mode));
+        assert_eq!(
+            from_line::<HostLine>(r#"{"kind":"mode","target":"emu/Flare_Pixel","mode":"asleep"}"#),
+            Some(HostLine::Mode {
+                target: t.clone(),
+                mode: crate::source::FrameMode::Asleep,
+                why: String::new(),
+            })
+        );
         // Flare hands the emu host its frame region.
         let c = Control {
             id: 4,

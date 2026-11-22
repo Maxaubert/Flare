@@ -323,6 +323,28 @@ pub enum SourceEvent {
     Broken(String),
     /// Android setup's progress, or a new device's first-boot compile (emu host, Android plan PR A2b).
     Setup(crate::wire::SetupEvent),
+    /// How an Android device's frames come now (the spec's fallbacks, PR A7), and why when not live.
+    Mode {
+        target: Target,
+        mode: FrameMode,
+        why: String,
+    },
+}
+
+/// How an Android device's frames reach its region (the spec's "Frames", fallbacks in order).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameMode {
+    /// The emulator writes each frame into the region (MMAP): the normal path.
+    #[default]
+    Live,
+    /// The emulator refused MMAP or wrote nothing for 2 s while awake: the emu host copies the pixels of each gRPC
+    /// message into the region, at most 30 a second ("slow" mark).
+    Slow,
+    /// That failed too: a `getScreenshot` at most 3 times a second (the still badge, with the reason).
+    Still,
+    /// The display is off (a 0x0 frame): the last picture stays, dimmed, until a frame comes.
+    Asleep,
 }
 
 /// A source of devices. See the module doc: nothing here blocks.
@@ -355,6 +377,11 @@ pub trait DeviceSource {
     fn setup(&mut self, step: crate::wire::SetupStep) -> Option<ReqId> {
         let _ = step;
         None
+    }
+    /// Keeps an emulator Flare booted alive while Flare runs, attached or not (rule 1366, PR A7). Nothing for a source
+    /// whose devices need no keep-alive.
+    fn keep(&mut self, target: &Target) {
+        let _ = target;
     }
 }
 

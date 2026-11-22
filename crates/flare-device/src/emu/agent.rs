@@ -202,6 +202,17 @@ impl Hello {
     }
 }
 
+/// Whether a `ui_tree` answer (`{"tree": ...}`) holds nothing the agent can use: no element left after the filter.
+/// Right after a boot or a launch the first read can be empty for a moment (A5's real run: 0 elements, then 11 half a
+/// second later), so the emu host reads again for a short while.
+pub fn tree_is_empty(answer: &Value, screen_dp: Size) -> bool {
+    answer
+        .get("tree")
+        .cloned()
+        .and_then(|t| serde_json::from_value::<UiNode>(t).ok())
+        .is_none_or(|t| crate::tree::filter_tree(&t, screen_dp).refs.is_empty())
+}
+
 /// One node as the helper (or the dump) reports it. Bounds are screen pixels in the current rotation.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]

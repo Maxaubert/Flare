@@ -788,6 +788,8 @@ export component PanelSlot inherits Rectangle {
     // Still pictures: the line under the badge ("" while live). The slow mark: why the view is slow ("" none).
     in property <string> device-still;
     in property <string> device-slow;
+    // The display is off (an Android frame of 0x0): the last picture stays, dimmed (spec "Frames").
+    in property <bool> device-dim;
     // A line along the bottom of the picture: "Connecting touch...", "Driven from <tab>. View only here."
     in property <string> device-foot;
     // The header's device buttons (a device the tab drives is on show).
@@ -1295,6 +1297,9 @@ export component PanelSlot inherits Rectangle {
                         transform-rotation: root.device-turn * 1deg;
                         source: root.device-frame;
                         image-fit: fill;
+                    }
+                    if root.device-dim: Rectangle {
+                        background: black.with-alpha(0.55);
                     }
                     // The agent's indicators (rule 1321): the trail, the ripples, the finger dot and its name, then
                     // the edge glow. Device points times the fit are window lengths inside the picture.

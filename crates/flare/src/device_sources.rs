@@ -295,6 +295,14 @@ impl DeviceSource for Multi {
         self.ids.insert((SourceKind::Emu, inner), Route::One(id));
         Some(id)
     }
+
+    fn keep(&mut self, target: &Target) {
+        if target.source() == SourceKind::Emu
+            && let Some(s) = self.emu.as_mut()
+        {
+            s.keep(target);
+        }
+    }
 }
 
 #[cfg(test)]
