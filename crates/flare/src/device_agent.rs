@@ -631,8 +631,11 @@ impl DeviceCtl {
     }
 
     fn tree_json(&self, t: &Target, node: &UiNode) -> (Value, RefMap, usize) {
-        let screen = self.screen_pt(t).unwrap_or(Size::new(0.0, 0.0));
-        let list = filter_tree(node, screen);
+        let (screen, o) = self.agent_screen(t);
+        let screen = screen.unwrap_or(Size::new(0.0, 0.0));
+        // In the points the agent taps: a turned screen's frames come in portrait points.
+        let node = flare_device::tree::in_orientation(node, screen, o);
+        let list = filter_tree(&node, screen);
         let refs = list.ref_map();
         (
             serde_json::to_value(&list.refs).unwrap_or(Value::Null),
