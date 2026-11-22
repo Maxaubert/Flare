@@ -193,6 +193,27 @@ fn read_last_reads_only_the_end_of_a_big_transcript_and_drops_the_line_it_cut() 
     assert!(got.iter().all(|e| e.role == Role::User));
 }
 
+/// Rule 1350: when the read window starts exactly on a line boundary, that first line is whole and is kept.
+#[test]
+fn read_last_keeps_a_whole_line_that_starts_right_at_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    let first = user("before the window");
+    // The second line with its '\n' is exactly READ_BYTES long, so the window starts right on it.
+    let pad = flare_convo::said::READ_BYTES as usize - 1 - user("").len();
+    let second = user(&"b".repeat(pad));
+    assert_eq!(second.len() + 1, flare_convo::said::READ_BYTES as usize);
+    append(&path, &format!("{first}\n{second}\n"));
+    let got = read_last(&path, READ_LAST).unwrap();
+    assert_eq!(got.len(), 1, "the whole line at the window's start is kept");
+    assert!(got[0].text.starts_with("bbb"));
+    // One byte more in the second line and the window starts inside it: then it is dropped.
+    let path2 = dir.path().join("t.jsonl");
+    let cut = user(&"b".repeat(pad + 1));
+    append(&path2, &format!("{first}\n{cut}\n"));
+    assert!(read_last(&path2, READ_LAST).unwrap().is_empty());
+}
+
 #[test]
 fn a_tail_started_at_the_end_reads_only_what_comes_next() {
     let dir = tempfile::tempdir().unwrap();

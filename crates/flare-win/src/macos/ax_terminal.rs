@@ -35,7 +35,8 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 /// What the terminal shows this frame: the cursor's cell, the grid's area (both device pixels from the view's top
-/// left), the cursor's line and its column.
+/// left), the cursor's line and its column as a char index in that line (not a cell: a wide character is one char
+/// over two cells, `Emulator::row_char_index`, rule 1352).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AxFrame {
     pub cell: AxCell,

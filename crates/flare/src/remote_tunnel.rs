@@ -338,7 +338,7 @@ mod tests {
         );
         // Rule 1249: a paired machine's tunnel uses its address, port, Flare's key and known-hosts file.
         let paired = Machine {
-            host: Some("192.168.0.139".into()),
+            host: Some("192.0.2.139".into()),
             port: Some(2222),
             key: Some(r"C:\Users\John Doe\flare\id_flare_ed25519".into()),
             known_hosts: Some("/Users/max/flare/known_hosts".into()),
@@ -363,7 +363,7 @@ mod tests {
                 "-l",
                 "max",
                 "--",
-                "192.168.0.139"
+                "192.0.2.139"
             ]
         );
         let argv = tunnel_argv("ssh", &mac(None), 1, 2).unwrap();

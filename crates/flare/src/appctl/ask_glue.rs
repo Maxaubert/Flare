@@ -220,6 +220,7 @@ impl AppCtl {
                 values,
                 via_call,
                 generation,
+                own: _,
             } => {
                 if !self.plugin_live(&plugin, generation) {
                     let _ = reply.send(Err(CtlError::new(

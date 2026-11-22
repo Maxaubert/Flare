@@ -157,6 +157,13 @@ fn subtext_tip_only_when_cut(panel_w: f32) {
             "scale {scale}: a cut sub fires tip"
         );
         assert_eq!(h.comp.get_tip_text().as_str(), LONG_SUB, "scale {scale}");
+        // Rule 1349: leaving the row takes the tip back, so it never shows late over something else.
+        h.move_to(5.0, 5.0);
+        assert_eq!(
+            h.comp.get_tip_text().as_str(),
+            "",
+            "scale {scale}: the tip outlived the hover"
+        );
     }
 }
 

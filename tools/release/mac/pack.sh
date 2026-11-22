@@ -79,7 +79,7 @@ check_bundle() {
   # Each program's role, ad hoc too (rule 1052): the app's identifier and its three keys; the tools (Velopack's
   # UpdateMac, flare-mcp, flare-parakeet-host, flare-sim-host) by their own identifier, under the hardened runtime, with
   # no entitlements (the sim host loads CoreSimulator and SimulatorKit with none: Step 0 S3 of the device panel plan).
-  local info ents t
+  local info ents t gate
   info="$(codesign -d --verbose=2 "$app/Contents/MacOS/Flare" 2>&1)"
   ents="$(codesign -d --entitlements - --xml "$app/Contents/MacOS/Flare" 2>/dev/null)"
   grep -qx "Identifier=$BUNDLE_ID" <<<"$info" || { echo "$what: Flare is not $BUNDLE_ID" >&2; exit 1; }
@@ -99,7 +99,10 @@ check_bundle() {
   fi
   if [ "$notarized" = 1 ]; then
     xcrun stapler validate "$app"
-    spctl -a -t exec -vvv "$app" 2>&1 | grep -q "source=Notarized Developer ID" || { echo "$what: not accepted as notarized" >&2; exit 1; }
+    # Read spctl's whole answer first (rule 1342): a grep that quits at the match would give spctl a SIGPIPE, and
+    # pipefail would turn the match into a failure.
+    gate="$(spctl -a -t exec -vvv "$app" 2>&1 || true)"
+    grep -q "source=Notarized Developer ID" <<<"$gate" || { echo "$what: not accepted as notarized" >&2; exit 1; }
   fi
   echo "checked: $what"
 }

@@ -289,6 +289,8 @@ export component ColourField inherits Rectangle {
         changed has-hover => {
             if swatch-ta.has-hover {
                 root.tip("Pick a colour", swatch.absolute-position.x, swatch.absolute-position.y, swatch.width, swatch.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
             }
         }
     }
@@ -377,6 +379,8 @@ component PopButton inherits Rectangle {
         changed has-hover => {
             if ta.has-hover {
                 root.tip(root.tooltip, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
             }
         }
     }
@@ -910,6 +914,8 @@ export component ColourPopover inherits Rectangle {
                 changed has-hover => {
                     if self.has-hover {
                         root.tip("Before and after", box.absolute-position.x + root.chip-x, box.absolute-position.y + root.foot-y, root.chip-w, root.foot-h);
+                    } else {
+                        root.tip("", 0px, 0px, 0px, 0px);
                     }
                 }
             }

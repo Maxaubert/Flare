@@ -165,20 +165,22 @@ pub fn bracket_step(e: &KeyEvent, c: &KeyContext) -> Option<i32> {
     }
 }
 
-fn k(e: &KeyEvent) -> String {
-    e.key.to_lowercase()
-}
-
-/// The letter, by the key the layout types; the physical key answers only for a key named outside
-/// ASCII (Russian, Greek), as in flare-term's `is_key` (regression rule 11).
-fn letter(e: &KeyEvent, l: char) -> bool {
+/// The key `ch`, by the key the layout types; the physical key `code` answers only for a key named
+/// outside ASCII (Russian, Greek), as in flare-term's `is_key` (regression rules 8 and 1330).
+fn key_is(e: &KeyEvent, ch: char, code: &str) -> bool {
     let mut chars = e.key.chars();
     if let (Some(c), None) = (chars.next(), chars.next())
         && c.is_ascii()
     {
-        return c.to_ascii_lowercase() == l;
+        return c.to_ascii_lowercase() == ch;
     }
-    e.code == format!("Key{}", l.to_ascii_uppercase())
+    e.code == code
+}
+
+/// The letter, by the key the layout types, else by its physical key (see `key_is`). Every chord
+/// on a letter reads its key through here, never through the raw key text (rule 1330).
+fn letter(e: &KeyEvent, l: char) -> bool {
+    key_is(e, l, &format!("Key{}", l.to_ascii_uppercase()))
 }
 
 fn is_digit_1_to_9(e: &KeyEvent) -> bool {
@@ -206,24 +208,24 @@ fn jump_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
 }
 
 fn settings_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && !e.shift && e.key == ","
+    primary(e, c) && !e.shift && key_is(e, ',', "Comma")
 }
 
 fn find_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && e.shift && k(e) == "k"
+    primary(e, c) && e.shift && letter(e, 'k')
 }
 
 fn sidebar_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && e.shift && k(e) == "b" && c.vertical
+    primary(e, c) && e.shift && letter(e, 'b') && c.vertical
 }
 
 fn sidebar_agent_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && !e.shift && k(e) == "s" && c.vertical
+    primary(e, c) && !e.shift && letter(e, 's') && c.vertical
 }
 
 /// Without Shift: Ctrl+Shift+T reopens the tab closed last (rule 1236).
 fn new_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && !e.shift && k(e) == "t"
+    primary(e, c) && !e.shift && letter(e, 't')
 }
 
 /// The app's modifier with Shift and this letter, by the layout's letter (rule 11): the app keys of rule 1236. With
@@ -253,13 +255,13 @@ fn open_folder_matches(e: &KeyEvent, c: &KeyContext) -> bool {
 }
 
 fn close_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && k(e) == "w"
+    primary(e, c) && letter(e, 'w')
 }
 
 /// Windows: a full-screen program keeps Ctrl+F (Ctrl+Shift+F still finds). macOS: a program never
 /// hears a Cmd key, so Cmd+F always finds.
 fn find_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && k(e) == "f" && (e.shift || !c.full_screen || c.os.is_mac())
+    primary(e, c) && letter(e, 'f') && (e.shift || !c.full_screen || c.os.is_mac())
 }
 
 fn agent_guard_matches(e: &KeyEvent, c: &KeyContext) -> bool {
@@ -962,6 +964,64 @@ mod tests {
             chord_of(&KeyEvent::new("T", "").ctrl().shift(), &c),
             Some(ChordId::ReopenTab)
         );
+    }
+
+    #[test]
+    fn every_chord_works_on_a_russian_layout_by_its_physical_key() {
+        // Rule 1330: a Russian layout names the key in Cyrillic and sends the physical code. Every
+        // chord on a letter (or the comma) falls back to that code, with or without Shift.
+        let c = on();
+        let ru = |key: &str, code: &str| KeyEvent::new(key, code).ctrl();
+        let cases = [
+            (ru("\u{435}", "KeyT"), Some(ChordId::NewTab)),
+            (ru("\u{446}", "KeyW"), Some(ChordId::CloseTab)),
+            (ru("\u{426}", "KeyW").shift(), Some(ChordId::CloseTab)),
+            (ru("\u{430}", "KeyF"), Some(ChordId::Find)),
+            (ru("\u{410}", "KeyF").shift(), Some(ChordId::Find)),
+            (ru("\u{41b}", "KeyK").shift(), Some(ChordId::FindTab)),
+            (ru("\u{418}", "KeyB").shift(), Some(ChordId::Sidebar)),
+            (ru("\u{431}", "Comma"), Some(ChordId::Settings)),
+            (ru("\u{415}", "KeyT").shift(), Some(ChordId::ReopenTab)),
+            (ru("\u{422}", "KeyN").shift(), Some(ChordId::NewTabIn)),
+            (ru("\u{41a}", "KeyR").shift(), Some(ChordId::RemoteTab)),
+            (ru("\u{414}", "KeyL").shift(), Some(ChordId::Browser)),
+            (ru("\u{423}", "KeyE").shift(), Some(ChordId::OpenFolder)),
+            (ru("\u{417}", "KeyP").shift(), Some(ChordId::Panel)),
+            (ru("\u{429}", "KeyO").shift(), Some(ChordId::PanelFocus)),
+            (ru("\u{432}", "KeyD"), Some(ChordId::AgentGuard)),
+        ];
+        for (e, want) in &cases {
+            assert_eq!(chord_of(e, &c), *want, "{e:?}");
+        }
+        // The agent key Ctrl+S (sidebar) too.
+        let agent = KeyContext {
+            agent_keys: true,
+            agent_here: false,
+            ..c
+        };
+        assert_eq!(
+            chord_of(&ru("\u{44b}", "KeyS"), &agent),
+            Some(ChordId::Sidebar)
+        );
+        // On the Mac the same keys with Cmd.
+        let m = mac();
+        for (key, code, id) in [
+            ("\u{435}", "KeyT", ChordId::NewTab),
+            ("\u{446}", "KeyW", ChordId::CloseTab),
+            ("\u{430}", "KeyF", ChordId::Find),
+            ("\u{431}", "Comma", ChordId::Settings),
+        ] {
+            assert_eq!(
+                chord_of(&KeyEvent::new(key, code).meta(), &m),
+                Some(id),
+                "{key}"
+            );
+        }
+        // An ASCII name still decides alone: Dvorak's "t" sits on physical KeyK, its "," on KeyW.
+        assert_eq!(chord_of(&ru("t", "KeyK"), &c), Some(ChordId::NewTab));
+        assert_eq!(chord_of(&ru(",", "KeyW"), &c), Some(ChordId::Settings));
+        assert_eq!(chord_of(&ru("x", "KeyT"), &c), None);
+        assert_eq!(chord_of(&ru("o", "Comma"), &c), None);
     }
 
     const APP_KEYS: [(ChordId, char); 5] = [

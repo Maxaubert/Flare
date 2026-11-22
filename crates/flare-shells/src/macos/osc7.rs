@@ -74,13 +74,13 @@ fn percent_decode(s: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    const HOST: Option<&str> = Some("Maxs-Mac.local");
+    const HOST: Option<&str> = Some("Office-Mac.local");
 
     #[test]
     fn reads_a_report_from_this_machine() {
         for data in [
-            "file://Maxs-Mac.local/Users/max/proj",
-            "file://maxs-mac/Users/max/proj",
+            "file://Office-Mac.local/Users/max/proj",
+            "file://office-mac/Users/max/proj",
             "file:///Users/max/proj",
             "file://localhost/Users/max/proj",
             "FILE:///Users/max/proj/",

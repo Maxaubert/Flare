@@ -2009,7 +2009,6 @@ version = "0.1.0"
 dependencies = [
  "flare-agent",
  "flare-settings",
- "log",
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
@@ -2020,7 +2019,6 @@ name = "flare-dictation"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "flare-diag",
  "flare-shells",
  "flare-win",
  "libc",
@@ -2093,7 +2091,6 @@ name = "flare-mcp"
 version = "0.1.0"
 dependencies = [
  "flare-ctl",
- "serde",
  "serde_json",
 ]
 
@@ -2149,7 +2146,6 @@ dependencies = [
  "flare-theme",
  "log",
  "rusty-leveldb",
- "serde",
  "serde_json",
  "tempfile",
  "unicode-normalization",
@@ -2190,8 +2186,6 @@ dependencies = [
  "flare-shells",
  "flare-term",
  "flare-win",
- "log",
- "serde",
  "serde_json",
  "tempfile",
 ]
@@ -2285,7 +2279,6 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "raw-window-handle",
  "rfd",
- "serde",
  "serde_json",
  "tempfile",
  "uuid",
@@ -3846,7 +3839,6 @@ dependencies = [
 name = "material-spike"
 version = "0.1.0"
 dependencies = [
- "flare-theme",
  "flare-win",
  "png",
  "raw-window-handle",

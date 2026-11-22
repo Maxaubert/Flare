@@ -8,6 +8,10 @@
 //!   first when an agent is at work, then the 10 s toast with Cancel runs, then the swap.
 //! - Nothing installs on its own. A build stays on offer until it is installed or a new stage replaces it.
 //! - Cancel stops the countdown and leaves the build waiting for the next click.
+//! - An agent may ask for the install (`install.staged`, 2026-11-20, rule 1326): that **arms** the build. An armed build
+//!   installs once every agent is idle (no agent working or waiting on a question, no close question up) and has been
+//!   for [`IDLE_MS`] without a break; then the same toast with Cancel runs. Work or a question in the countdown puts it
+//!   back to waiting for idle (still armed); the person's Cancel, a failed swap or a new stage disarm it.
 
 use crate::copy;
 
@@ -15,12 +19,16 @@ use crate::copy;
 pub const COUNTDOWN_MS: u64 = 10_000;
 /// How long a one-line notice ("Installed abc1234") stays.
 pub const NOTICE_MS: u64 = 8_000;
+/// How long every agent must stay idle before an armed build starts its countdown (the idle install spec's 60 s).
+pub const IDLE_MS: u64 = 60_000;
 
 /// The flow's waits; the e2e shortens them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Times {
     pub countdown_ms: u64,
     pub notice_ms: u64,
+    /// How long an armed build waits for idle to hold ([`IDLE_MS`]).
+    pub idle_ms: u64,
 }
 
 impl Default for Times {
@@ -28,6 +36,7 @@ impl Default for Times {
         Self {
             countdown_ms: COUNTDOWN_MS,
             notice_ms: NOTICE_MS,
+            idle_ms: IDLE_MS,
         }
     }
 }
@@ -64,6 +73,34 @@ pub enum Do {
     Swap,
 }
 
+/// What an agent's `install.staged` found ([`StagedFlow::arm`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Armed {
+    /// No build is ready.
+    NoBuild,
+    /// Armed now, or already armed: it installs once every agent is idle.
+    Armed,
+    /// The toast already counts down, or the swap runs.
+    Installing,
+}
+
+impl Armed {
+    /// The answer's `state` word.
+    pub fn word(self) -> &'static str {
+        match self {
+            Armed::NoBuild => "none",
+            Armed::Armed => "armed",
+            Armed::Installing => "installing",
+        }
+    }
+}
+
+/// Pure: whether every agent is idle for an armed install. `working` and `questions` count the tabs whose agent works
+/// or waits on a question; `asking` is a close question (or any of Flare's own questions) on screen.
+pub fn all_idle(working: usize, questions: usize, asking: bool) -> bool {
+    working == 0 && questions == 0 && !asking
+}
+
 /// What the window shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StagedView {
@@ -82,6 +119,10 @@ pub struct StagedFlow {
     phase: Phase,
     notice: Option<(String, u64)>,
     times: Times,
+    /// An agent asked for the install: it starts on its own once idle has held for `times.idle_ms`.
+    armed: bool,
+    /// Since when every agent has been idle, while armed and waiting.
+    idle_since: Option<u64>,
 }
 
 impl StagedFlow {
@@ -91,7 +132,53 @@ impl StagedFlow {
             phase: Phase::Waiting,
             notice: None,
             times,
+            armed: false,
+            idle_since: None,
         }
+    }
+
+    /// An agent asked for the install. Nothing starts here: the controller's clock feeds [`StagedFlow::idle`].
+    pub fn arm(&mut self) -> Armed {
+        if self.ready.is_none() {
+            return Armed::NoBuild;
+        }
+        if self.phase != Phase::Waiting {
+            return Armed::Installing;
+        }
+        if !self.armed {
+            self.armed = true;
+            self.idle_since = None;
+        }
+        Armed::Armed
+    }
+
+    /// An agent's install waits for idle (or counts down for it).
+    pub fn armed(&self) -> bool {
+        self.armed
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+        self.idle_since = None;
+    }
+
+    /// One reading of whether every agent is idle ([`all_idle`]), for an armed build that waits. True when idle has
+    /// held for `times.idle_ms` and the countdown started now; any break starts the wait over.
+    pub fn idle(&mut self, idle: bool, now: u64) -> bool {
+        if !self.armed || self.ready.is_none() || self.phase != Phase::Waiting {
+            return false;
+        }
+        if !idle {
+            self.idle_since = None;
+            return false;
+        }
+        let since = *self.idle_since.get_or_insert(now);
+        if now.saturating_sub(since) < self.times.idle_ms {
+            return false;
+        }
+        self.idle_since = None;
+        self.start_countdown(now);
+        true
     }
 
     pub fn ready(&self) -> Option<&Ready> {
@@ -115,6 +202,8 @@ impl StagedFlow {
         }
         self.ready = r;
         self.phase = Phase::Waiting;
+        // The agent asked for that build: a new stage (or none) waits for a new ask.
+        self.disarm();
     }
 
     /// The chip was clicked: install now (once the controller has asked, if it must). A click while the toast is up
@@ -123,6 +212,9 @@ impl StagedFlow {
         if self.ready.is_none() || self.phase != Phase::Waiting {
             return Do::Nothing;
         }
+        // The person's click takes over an agent's ask (rule 1326): the click's rules apply from here (the close
+        // question when an agent works, else at once), so "click to install now" is never held back for idle.
+        self.disarm();
         Do::Ask
     }
 
@@ -137,23 +229,29 @@ impl StagedFlow {
         };
     }
 
-    /// Cancel on the toast: back to waiting for a click.
+    /// Cancel on the toast: back to waiting for a click. The person's no also ends an agent's ask.
     pub fn cancel(&mut self) {
         if matches!(self.phase, Phase::Countdown { .. }) {
             self.phase = Phase::Waiting;
+            self.disarm();
         }
     }
 
-    /// The controller stops a countdown to ask first (an agent started working after a click with none at work):
-    /// back to waiting.
+    /// The controller stops a countdown (an agent started working, or a question came up): back to waiting, for a
+    /// click or, while armed, for idle again.
     pub fn pause(&mut self) {
-        self.cancel();
+        if matches!(self.phase, Phase::Countdown { .. }) {
+            self.phase = Phase::Waiting;
+            self.idle_since = None;
+        }
     }
 
-    /// The controller took a good swap back before the restart (an agent got busy while it ran): back to waiting.
+    /// The controller took a good swap back before the restart (an agent got busy while it ran): back to waiting
+    /// (still armed when it was).
     pub fn taken_back(&mut self) {
         if self.phase == Phase::Installing {
             self.phase = Phase::Waiting;
+            self.idle_since = None;
         }
     }
 
@@ -180,6 +278,7 @@ impl StagedFlow {
             return;
         }
         self.phase = Phase::Waiting;
+        self.disarm();
         self.say(copy::STAGED_FAILED, now);
     }
 
@@ -188,9 +287,12 @@ impl StagedFlow {
         self.notice = Some((text.to_string(), now + self.times.notice_ms));
     }
 
-    /// Whether the controller's clock must run: a countdown or a notice. A build on offer needs none.
+    /// Whether the controller's clock must run: a countdown, a notice, or an armed build waiting for idle. A build only
+    /// on offer needs none.
     pub fn needs_tick(&self) -> bool {
-        matches!(self.phase, Phase::Countdown { .. }) || self.notice.is_some()
+        matches!(self.phase, Phase::Countdown { .. })
+            || self.notice.is_some()
+            || (self.armed && self.ready.is_some())
     }
 
     pub fn view(&self) -> StagedView {
@@ -198,7 +300,12 @@ impl StagedFlow {
         if self.ready.is_some() {
             v.chip_shown = true;
             v.chip_label = copy::STAGED_CHIP.to_string();
-            v.chip_aria = copy::STAGED_CHIP_ARIA.to_string();
+            v.chip_aria = if self.armed {
+                copy::STAGED_CHIP_ARMED_ARIA
+            } else {
+                copy::STAGED_CHIP_ARIA
+            }
+            .to_string();
         }
         match self.phase {
             Phase::Countdown { .. } => {
@@ -347,6 +454,105 @@ mod tests {
         f.tick(8_000);
         assert!(f.view().toast.is_empty());
         assert!(!f.needs_tick());
+    }
+
+    #[test]
+    fn arming_needs_a_build_and_never_starts_anything_by_itself() {
+        let mut f = StagedFlow::new(Times::default());
+        assert_eq!(f.arm(), Armed::NoBuild);
+        assert!(!f.armed());
+        let mut f = flow();
+        assert_eq!(f.arm(), Armed::Armed);
+        assert_eq!(f.arm(), Armed::Armed, "a second ask is the same answer");
+        assert!(
+            f.armed() && f.needs_tick(),
+            "an armed build reads idle on the clock"
+        );
+        assert_eq!(f.phase(), Phase::Waiting);
+        assert_eq!(
+            f.view().chip_aria,
+            "Build ready, installs when every agent is idle; click to install now"
+        );
+        for t in (0..=600_000).step_by(1_000) {
+            assert_eq!(f.tick(t), Do::Nothing, "the clock alone never installs");
+        }
+        f.start_countdown(0);
+        assert_eq!(f.arm(), Armed::Installing);
+        assert_eq!(Armed::Installing.word(), "installing");
+        assert_eq!(Armed::NoBuild.word(), "none");
+        assert_eq!(Armed::Armed.word(), "armed");
+    }
+
+    #[test]
+    fn an_armed_build_counts_down_only_after_a_full_minute_of_idle() {
+        let mut f = flow();
+        f.arm();
+        assert!(
+            !f.idle(false, 0),
+            "the calling agent's own turn still works"
+        );
+        assert!(!f.idle(true, 1_000));
+        assert!(!f.idle(true, 60_999));
+        assert!(!f.idle(false, 61_000), "work in the minute starts it over");
+        assert!(!f.idle(true, 62_000));
+        assert!(!f.idle(true, 121_999));
+        assert!(f.idle(true, 122_000));
+        assert_eq!(f.phase(), Phase::Countdown { ends: 132_000 });
+        assert!(
+            !f.idle(true, 200_000),
+            "once counting, idle does nothing more"
+        );
+        assert_eq!(f.tick(132_000), Do::Swap);
+    }
+
+    #[test]
+    fn work_in_the_countdown_keeps_it_armed_and_cancel_or_a_new_stage_disarm_it() {
+        let mut f = flow();
+        f.arm();
+        f.idle(true, 0);
+        assert!(f.idle(true, IDLE_MS));
+        f.pause();
+        assert_eq!(f.phase(), Phase::Waiting);
+        assert!(f.armed(), "work in the countdown waits for idle again");
+        assert!(!f.idle(true, IDLE_MS + 1), "the minute starts over");
+        assert!(f.idle(true, 2 * IDLE_MS + 1));
+        assert_eq!(f.tick(2 * IDLE_MS + 1 + COUNTDOWN_MS), Do::Swap);
+        f.taken_back();
+        assert!(f.armed(), "a swap taken back stays armed");
+        f.idle(true, 0);
+        assert!(f.idle(true, IDLE_MS));
+        f.cancel();
+        assert!(!f.armed(), "the person's Cancel ends the agent's ask");
+        assert!(!f.idle(true, 10 * IDLE_MS));
+        f.arm();
+        f.found(ready("s2"));
+        assert!(!f.armed(), "a new stage needs a new ask");
+        f.arm();
+        f.found(ready("s2"));
+        assert!(f.armed(), "the same stage again keeps it");
+        f.idle(true, 0);
+        f.idle(true, IDLE_MS);
+        assert_eq!(f.tick(IDLE_MS + COUNTDOWN_MS), Do::Swap);
+        f.swapped(false, 0);
+        assert!(!f.armed(), "a failed swap ends it");
+    }
+
+    #[test]
+    fn the_persons_click_takes_over_an_agents_ask() {
+        let mut f = flow();
+        f.arm();
+        assert_eq!(f.click(), Do::Ask);
+        assert!(!f.armed(), "the click's rules apply, not the idle wait");
+        f.start_countdown(0);
+        assert_eq!(f.tick(COUNTDOWN_MS), Do::Swap);
+    }
+
+    #[test]
+    fn idle_means_no_work_no_question_and_no_question_of_flares_own() {
+        assert!(all_idle(0, 0, false));
+        assert!(!all_idle(1, 0, false));
+        assert!(!all_idle(0, 1, false));
+        assert!(!all_idle(0, 0, true));
     }
 
     #[test]
