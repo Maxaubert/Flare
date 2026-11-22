@@ -357,6 +357,22 @@ impl Shared {
                     ring: device,
                     screen,
                 });
+                // Rule 1365: a device that is paused here stays paused in the emu host. The pause goes now, when the
+                // emu host has the device (its attach is done), and before the region that would start the stream.
+                // A pause sent with the attach after a restart came too early and was refused ("not attached").
+                let paused = lock(&self.state)
+                    .attached
+                    .iter()
+                    .any(|a| a.target == target && a.paused);
+                if paused {
+                    self.send(
+                        Request::Pause {
+                            target: target.clone(),
+                        },
+                        self.internal(),
+                        None,
+                    );
+                }
                 self.give_region(target, w, h);
             }
             HostLine::Orientation {
@@ -484,19 +500,10 @@ fn supervise(sh: Arc<Shared>) {
             }
         };
         if !first {
-            // Every open panel again: attach (the region comes back with its frames line), and pause what was paused.
+            // Every open panel again: attach. Its frames line brings back the pause (if it was paused) and the region.
             let attached = lock(&sh.state).attached.clone();
             for a in attached {
-                sh.send(
-                    Request::Attach {
-                        target: a.target.clone(),
-                    },
-                    sh.internal(),
-                    None,
-                );
-                if a.paused {
-                    sh.send(Request::Pause { target: a.target }, sh.internal(), None);
-                }
+                sh.send(Request::Attach { target: a.target }, sh.internal(), None);
             }
         }
         first = false;
@@ -987,6 +994,14 @@ mod tests {
             };
             match c.req {
                 Request::Quit => break,
+                // The first emu host ends on a pause (a crash while the panel is hidden); the next one serves.
+                Request::Pause { .. }
+                    if mode == "die-on-pause"
+                        && std::fs::read_to_string(dir.join("starts"))
+                            .is_ok_and(|s| s.lines().count() == 1) =>
+                {
+                    std::process::exit(1);
+                }
                 Request::List => say(
                     &mut out,
                     &HostLine::Ok {
@@ -1277,6 +1292,44 @@ mod tests {
             })
             .collect();
         assert_eq!(ops, ["attach", "region", "pause", "resume", "detach"]);
+    }
+
+    /// Rule 1365 after a restart: a device that was paused (its panel hidden) is paused again in the new emu host
+    /// once its attach is done (with its frames line), before its region is handed over, so its stream never starts.
+    #[test]
+    fn a_paused_device_stays_paused_after_the_emu_host_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = source("die-on-pause", dir.path(), None);
+        let t = target();
+        s.attach(&t);
+        until(&s, Duration::from_secs(30), |e| {
+            matches!(e, SourceEvent::Region { .. })
+        });
+        // Hidden: the first emu host ends on the pause; the next one attaches the device again.
+        s.pause(&t, true);
+        let end = Instant::now() + Duration::from_secs(30);
+        let ops = loop {
+            let ops: Vec<&'static str> = sent(dir.path())
+                .iter()
+                .map(|c| match c.req {
+                    Request::Attach { .. } => "attach",
+                    Request::Region { .. } => "region",
+                    Request::Pause { .. } => "pause",
+                    Request::Resume { .. } => "resume",
+                    _ => "other",
+                })
+                .collect();
+            if ops.len() >= 6 || Instant::now() > end {
+                break ops;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(starts(dir.path()), 2);
+        assert_eq!(
+            ops,
+            ["attach", "region", "pause", "attach", "pause", "region"],
+            "the pause comes after the new attach is done and before the region"
+        );
     }
 
     /// Rule 1366: Flare starts the emulator itself (detached, outside the guarded emu host), then the emu host waits for
