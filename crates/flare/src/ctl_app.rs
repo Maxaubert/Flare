@@ -191,6 +191,9 @@ pub enum CtlOp {
         /// A plugin's generation ([`Hub::generation`]) when the call was checked (0 for the agent): a plugin
         /// switched off since, even if on again, is refused.
         generation: u64,
+        /// The tab is the caller's own (its token's). A hidden session answers a call on it as `unavailable`, naming
+        /// its opener, only when this is true; any other caller gets the answer an unknown tab gets (rule 1306).
+        own: bool,
     },
     BadgeClear {
         tab: String,
@@ -206,6 +209,8 @@ pub enum CtlOp {
         label: String,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     ProgressClear {
         tab: String,
@@ -234,6 +239,10 @@ pub enum CtlOp {
     /// transcript. Answered with `{session, folder, claude_dir}` (`session` null when none is known).
     SessionOf {
         tab: String,
+        /// Whether a hidden session (rule 1302) may answer: true for its opener's `remote.fetch` and `remote.convo`,
+        /// and for a call made with that session's own tab token. A plugin naming it gets the answer an unknown tab
+        /// gets (rule 1306).
+        hidden_ok: bool,
     },
     /// `tabs.input` (plugins phase 5): text a plugin types into the tab's shell as one paste, checked on the call's
     /// thread (the permission, the tab, the size, the characters, the rate), and an Enter after it when asked.
@@ -252,6 +261,8 @@ pub enum CtlOp {
         tab: String,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `bar.hide`: the plugin's bar leaves the tab (another plugin's stays).
     BarHide {
@@ -276,6 +287,8 @@ pub enum CtlOp {
     /// plugin's page). Answered with `{tab, url, host}`.
     FillPage {
         tab: String,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `browser.fill`: checked on the call's thread (the plugin, the params, the tab it may fill, its asks); the window
     /// checks the page's site against the login's addresses, asks the person in its own dialog and on Allow types
@@ -291,6 +304,8 @@ pub enum CtlOp {
         via_call: bool,
         /// As for `BadgeSet`.
         generation: u64,
+        /// As for `BadgeSet`.
+        own: bool,
     },
     /// `secret.ask`: Flare's own masked field, titled with the plugin's name. Answered with `{text}` (to this
     /// plugin only, never logged) or `{cancelled: true}`.
@@ -338,21 +353,24 @@ pub enum CtlOp {
         tool: String,
         input: Value,
     },
-    /// `remote.open` (remote sessions PR 2): a new tab in a host folder the call's thread checked is one, with a session
-    /// id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host answered lately is answered
-    /// with the tab it opened, not a second one (rule 1210).
+    /// `remote.open` (remote sessions PR 2): a hidden session (rule 1302) in a host folder the call's thread checked
+    /// is one, with a session id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host
+    /// answered lately is answered with the session it opened, not a second one (rule 1210). `opener` is the opener's
+    /// machine as its link named it (`viewer_of`), None when the bridge named none.
     RemoteOpen {
         folder: String,
         resume: Option<String>,
         open_id: Option<String>,
+        opener: Option<String>,
     },
-    /// `remote.tabs`: every shell tab with its folder, title, the agent's state word and session.
+    /// `remote.tabs`: every hidden session (rule 1303) with its folder, title, the agent's state word and session.
     RemoteTabs,
-    /// `remote.attach`: connection `conn` follows the tab (its handle and output tail go into the `RemoteHost`).
-    /// Answered with `{tab, cols, rows, seq}`.
+    /// `remote.attach`: connection `conn` follows the hidden session (its handle and output tail go into the
+    /// `RemoteHost`). Answered with `{tab, cols, rows, seq}`. `viewer` renames the session's opener (rule 1302).
     RemoteAttach {
         tab: String,
         conn: u64,
+        viewer: Option<String>,
     },
     /// `remote.input`: intents the call's thread checked (rule 279), typed into the tab.
     RemoteInput {
@@ -367,17 +385,24 @@ pub enum CtlOp {
         rows: usize,
         viewer: Option<String>,
     },
-    /// The last remote viewer of the tab detached or went: its size goes back to the window. Never ends it (rule 280).
+    /// The last remote viewer of the tab detached or went. Never ends it (rule 280); a hidden session keeps its
+    /// opener's size (rule 1302).
     RemoteRelease {
         tab: String,
     },
-    /// `remote.close`: the tab closes the way a person's close does; an agent at work asks first (rule 48).
+    /// `remote.close`: the hidden session ends at once, never asking on this screen (rule 1305).
     RemoteClose {
         tab: String,
     },
-    /// `remote.status` (remote sessions PR 4): every shell tab as the host's own marks say it (rule 294). Answered with
-    /// `{tabs}`; the worker numbers it.
+    /// `remote.status` (remote sessions PR 4): every hidden session as the host's own marks say it (rules 294, 1303).
+    /// Answered with `{tabs}`; the worker numbers it.
     RemoteStatus,
+    /// `remote.find` (rule 1307): the hidden session that holds `open_id` (an id the worker checked), answered with
+    /// `{tab}`. Only hidden sessions are searched, never a strip tab; `no_tab` when none holds it, `unavailable` while
+    /// this window has not restored its saved tabs yet.
+    RemoteFind {
+        open_id: String,
+    },
     /// `open.remote` (remote sessions PR 5): a tab here that shows a session on `machine` (an id the worker found in
     /// `machines.json`) in the host's `folder`, resuming `resume` there (checked with `valid_resume`). In front only
     /// when `front` (the `flare open` command); the agent's open leaves the front tab where it is. Answered with `{tab}`.
@@ -386,6 +411,16 @@ pub enum CtlOp {
         folder: String,
         resume: Option<String>,
         front: bool,
+        /// The caller's own tab (an agent's token), None for `flare open --on`: a hidden session's agent is refused
+        /// (rule 1302), since a tab it opened would show on this screen.
+        caller: Option<String>,
+    },
+    /// `install.staged` (rule 1326): the call's worker read the stage (`sig`, `Manifest::signature`) and checked who
+    /// signed it; the window arms its flow for that stage (or with `check` only says where it stands). Answered at once
+    /// with `{state, why?}`; the install itself waits for every agent to be idle.
+    InstallStaged {
+        sig: String,
+        check: bool,
     },
 }
 
@@ -457,7 +492,9 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::RemoteRelease { .. } => "CtlOp::RemoteRelease",
             CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
             CtlOp::RemoteStatus => "CtlOp::RemoteStatus",
+            CtlOp::RemoteFind { .. } => "CtlOp::RemoteFind",
             CtlOp::OpenRemote { .. } => "CtlOp::OpenRemote",
+            CtlOp::InstallStaged { .. } => "CtlOp::InstallStaged",
         })
     }
 }
@@ -562,6 +599,11 @@ pub struct AppDispatcher {
     /// Device panel PR 5: the agent's `device.*` tools work in this run (kept by the window: the panel is offered with
     /// an Xcode, and the window shows). False lists none and answers each `unavailable`.
     device: Arc<AtomicBool>,
+    /// The staged build of an installed copy (rule 1326): `install.staged` reads it. Without it (a build run from a
+    /// build folder) `install.staged` is not listed and answers `refused`.
+    staged: Option<crate::appctl::staged_glue::StagedProbe>,
+    /// Whether `install.staged` holds an agent to a Developer ID build (macOS; a test sets it).
+    staged_mac: bool,
 }
 
 /// The longest host folder `open.remote` takes, in bytes.
@@ -599,7 +641,82 @@ impl AppDispatcher {
             remote: None,
             machines: None,
             device: Arc::new(AtomicBool::new(false)),
+            staged: None,
+            staged_mac: cfg!(target_os = "macos"),
         }
+    }
+
+    /// An installed copy (rule 1326): `install.staged` reads the stage with `probe`. `mac` holds the agent to a
+    /// Developer ID build.
+    pub fn with_staged(
+        mut self,
+        probe: crate::appctl::staged_glue::StagedProbe,
+        mac: bool,
+    ) -> Self {
+        self.staged = Some(probe);
+        self.staged_mac = mac;
+        self
+    }
+
+    /// `install.staged` (rule 1326): the agent's (the `install_staged_build` tool, `flare --install-staged`). It does
+    /// what a click on "Build ready" does, but armed: the install starts only once every agent is idle (the caller's
+    /// own turn included), so it never cuts off a session. Read here, on the call's worker: the stage's manifest and
+    /// who signed it (`codesign`, a fraction of a second). On macOS an agent installs only a Developer ID build.
+    /// Answered at once: `state` is `armed`, `installing`, `none` or `refused` (`staged` for a `check`), with the
+    /// commit, `signed` and a `why` when there is one.
+    fn install_staged(&self, params: &Value) -> Result<Value, CtlError> {
+        only_fields(params, &["check"], "install.staged")?;
+        let check = match params.get("check") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                return Err(CtlError::new(
+                    code::BAD_PARAMS,
+                    "check must be true or false",
+                ));
+            }
+        };
+        let Some(probe) = self.staged.as_ref() else {
+            return Ok(json!({
+                "state": "refused",
+                "why": "this Flare is not an installed copy (it runs from a build folder), so it installs no staged build",
+            }));
+        };
+        let look = match probe() {
+            Ok(Some(l)) => l,
+            Ok(None) => return Ok(json!({"state": "none", "why": "no build is staged"})),
+            Err(why) => {
+                return Ok(
+                    json!({"state": "none", "why": format!("the stage is not ready: {why}")}),
+                );
+            }
+        };
+        let mut out = json!({
+            "commit": look.commit,
+            "short": flare_update::staged::short(&look.commit),
+            "built_at": look.built_at,
+            "signed": look.signing.word(),
+            "developer_id": look.signing.developer_id(),
+            "signer": look.signing.describe(),
+        });
+        if !check
+            && let Err(why) =
+                crate::appctl::staged_glue::agent_may_install(&look.signing, self.staged_mac)
+        {
+            out["state"] = json!("refused");
+            out["why"] = json!(why);
+            return Ok(out);
+        }
+        let answer = self.ask(CtlOp::InstallStaged {
+            sig: look.sig,
+            check,
+        })?;
+        for k in ["state", "why"] {
+            if let Some(v) = answer.get(k) {
+                out[k] = v.clone();
+            }
+        }
+        Ok(out)
     }
 
     /// Serves remote sessions (PR 2): the bridge key resolves to the bridge grant and `remote.*` is answered.
@@ -619,7 +736,7 @@ impl AppDispatcher {
     /// opened here (it is the host's to check, rule 287); a resume id must pass `valid_resume`. The tab opens at once
     /// and its link connects on its own worker, so the answer never waits for ssh. Whoever calls, the opened tab takes
     /// no typing from them: the agent's grant has no `remote.*`, `shell.input` or `tabs.input` (rule 299).
-    fn open_remote(&self, params: &Value) -> Result<Value, CtlError> {
+    fn open_remote(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let machines = self.machines.as_ref().ok_or_else(|| {
             CtlError::new(code::UNAVAILABLE, "this Flare opens no remote sessions")
         })?;
@@ -676,6 +793,7 @@ impl AppDispatcher {
             folder: folder.to_string(),
             resume,
             front,
+            caller: ctx.tab.clone(),
         })
     }
 
@@ -699,6 +817,12 @@ impl AppDispatcher {
             )),
             None => Self::tab_of_call(ctx),
         }
+    }
+
+    /// Whether `tab` is the caller's own (the tab of the token it called with). Only then may a hidden session answer
+    /// as one (rule 1306); any other caller naming it gets the answer an unknown tab gets.
+    fn owns(ctx: &CallContext, tab: &str) -> bool {
+        ctx.tab.as_deref() == Some(tab)
     }
 
     /// Whether the person's click on one of the calling plugin's actions or sidebar items gave it scope on `tab`.
@@ -815,6 +939,7 @@ impl AppDispatcher {
         // Read before anything is checked, so a switch off during the checks is seen by the window.
         let generation = self.generation_of(ctx);
         let (tab, source) = self.decor_target(ctx, params)?;
+        let own = Self::owns(ctx, &tab);
         let spend = (tab.clone(), source.clone());
         let key = str_param(params, "key")?
             .ok_or_else(|| bad("key is required".into()))?
@@ -869,6 +994,7 @@ impl AppDispatcher {
                     tip: line("tip")?,
                     tone,
                     generation,
+                    own,
                 }
             }
             Method::TabsBadgeClear => CtlOp::BadgeClear { tab, source, key },
@@ -889,6 +1015,7 @@ impl AppDispatcher {
                     value,
                     label: line("label")?,
                     generation,
+                    own,
                 }
             }
             Method::TabsProgressClear => CtlOp::ProgressClear { tab, source, key },
@@ -1131,7 +1258,12 @@ impl AppDispatcher {
             READ_RATE,
             "session.read calls for one tab",
         )?;
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        // A hidden session answers only a call made with its own tab token (rule 1306).
+        let hidden_ok = Self::owns(ctx, &tab);
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok,
+        })?;
         let none = || Ok(json!({"tab": tab, "session": null, "entries": []}));
         let (Some(session), Some(folder), Some(dir)) = (
             at["session"].as_str(),
@@ -1223,6 +1355,7 @@ impl AppDispatcher {
         self.ask(if method == Method::BarShow {
             CtlOp::BarShow {
                 plugin,
+                own: Self::owns(ctx, &tab),
                 tab,
                 generation,
             }
@@ -1477,7 +1610,8 @@ impl AppDispatcher {
         Self::plugin_caller(ctx, "the address of a page to fill")?;
         only_fields(params, &["tab"], "browser.fill.page")?;
         let tab = self.fill_tab(ctx, params)?;
-        self.ask(CtlOp::FillPage { tab })
+        let own = Self::owns(ctx, &tab);
+        self.ask(CtlOp::FillPage { tab, own })
     }
 
     /// `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`: checked here (the params, the tab,
@@ -1487,6 +1621,7 @@ impl AppDispatcher {
         let (plugin, plugin_name, generation) = self.fill_caller(ctx, "filling a login")?;
         let tab = self.fill_tab(ctx, params)?;
         let via_call = !self.may_see_tab(ctx, &tab);
+        let own = Self::owns(ctx, &tab);
         let req = flare_mods::fill::parse_fill(params)?;
         let hub = self.hub()?;
         hub.asks().admit(&plugin, Instant::now())?;
@@ -1499,6 +1634,7 @@ impl AppDispatcher {
             values: req.values,
             via_call,
             generation,
+            own,
         };
         self.ask_by(op, Instant::now() + ASK_CALL_WAIT)
     }
@@ -1593,7 +1729,7 @@ impl AppDispatcher {
                 ));
             }
         }
-        let own = ctx.tab.as_deref() == Some(tab.as_str());
+        let own = Self::owns(ctx, &tab);
         self.ask(CtlOp::ShowMod {
             tab,
             mod_id: mod_id.to_string(),
@@ -2464,6 +2600,34 @@ fn key_event_of(k: flare_ctl::remote::KeyIntent) -> flare_term::keys::KeyEvent {
     }
 }
 
+/// A checked mouse intent as the event the host's terminal reports (rule 1317).
+fn remote_mouse_of(m: flare_ctl::remote::MouseIntent) -> flare_term::handle::RemoteMouse {
+    use flare_ctl::remote::{MouseAct, MouseBtn};
+    use flare_term::handle::{RemoteMouse, RemoteMouseAct};
+    use flare_term::mouse_report::{MouseButton, MouseMods};
+    RemoteMouse {
+        act: match m.act {
+            MouseAct::Press => RemoteMouseAct::Press,
+            MouseAct::Release => RemoteMouseAct::Release,
+            MouseAct::Motion => RemoteMouseAct::Motion,
+            MouseAct::WheelUp => RemoteMouseAct::WheelUp,
+            MouseAct::WheelDown => RemoteMouseAct::WheelDown,
+        },
+        button: m.button.map(|b| match b {
+            MouseBtn::Left => MouseButton::Left,
+            MouseBtn::Middle => MouseButton::Middle,
+            MouseBtn::Right => MouseButton::Right,
+        }),
+        col: m.col,
+        row: m.row,
+        mods: MouseMods {
+            shift: m.shift,
+            alt: m.alt,
+            ctrl: m.ctrl,
+        },
+    }
+}
+
 impl AppDispatcher {
     /// The remote host, or `unavailable` when this run serves no remote sessions.
     fn remote_host(&self) -> Result<&Arc<crate::remote_host::RemoteHost>, CtlError> {
@@ -2553,6 +2717,7 @@ impl AppDispatcher {
                     folder: dir.to_string_lossy().into_owned(),
                     resume,
                     open_id,
+                    opener: viewer_of(ctx),
                 })
             }
             Method::RemoteLs => {
@@ -2575,6 +2740,7 @@ impl AppDispatcher {
                 self.ask(CtlOp::RemoteAttach {
                     tab,
                     conn: ctx.conn,
+                    viewer: viewer_of(ctx),
                 })
             }
             Method::RemoteDetach => {
@@ -2603,6 +2769,9 @@ impl AppDispatcher {
                         }
                         remote::Intent::Text(t) => flare_term::handle::RemoteIntent::Text(t),
                         remote::Intent::Paste(p) => flare_term::handle::RemoteIntent::Paste(p),
+                        remote::Intent::Mouse(m) => {
+                            flare_term::handle::RemoteIntent::Mouse(remote_mouse_of(m))
+                        }
                     })
                     .collect();
                 self.ask(CtlOp::RemoteInput { tab, intents })
@@ -2662,6 +2831,9 @@ impl AppDispatcher {
                     "rows": snap.rows,
                     "styled": styled,
                     "data": b64.encode(&snap.data),
+                    // Rule 1317: the program's mouse reports as words, which the viewer sets from the word alone.
+                    "mouse": flare_term::remote_pty::mouse_mode_word(snap.mouse),
+                    "sgr_mouse": snap.sgr_mouse,
                 }))
             }
             Method::RemoteClose => {
@@ -2676,6 +2848,20 @@ impl AppDispatcher {
                 let tabs = v.get("tabs").cloned().unwrap_or_else(|| json!([]));
                 let seq = host.status_seq(&tabs);
                 Ok(json!({"tabs": tabs, "seq": seq}))
+            }
+            Method::RemoteFind => {
+                // Rule 1307: the opener's own open id finds its hidden session after this Flare restarted.
+                only_fields(params, &["open_id"], "remote.find")?;
+                let open_id = str_param(params, "open_id")?
+                    .filter(|o| remote::valid_open_id(o))
+                    .ok_or_else(|| {
+                        CtlError::new(
+                            code::BAD_PARAMS,
+                            "open_id is 1 to 64 letters, digits, - or _",
+                        )
+                    })?
+                    .to_string();
+                self.ask(CtlOp::RemoteFind { open_id })
             }
             Method::RemoteConvo => self.remote_convo(host, params),
             Method::RemoteFetch => self.remote_fetch(host, params),
@@ -2706,7 +2892,10 @@ impl AppDispatcher {
                 "that tab is not followed: send remote.attach first",
             ));
         }
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok: true,
+        })?;
         let folder = at["folder"].as_str().unwrap_or_default();
         let file = crate::remote_files::resolve_fetch(folder, path, &self.home, host.temp())?;
         let c = crate::remote_files::read_chunk(&file, chunk)?;
@@ -2841,7 +3030,10 @@ impl AppDispatcher {
             REMOTE_CONVO_RATE,
             "remote.convo calls on one tab",
         )?;
-        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let at = self.ask(CtlOp::SessionOf {
+            tab: tab.clone(),
+            hidden_ok: true,
+        })?;
         let (Some(session), Some(folder), Some(dir)) = (
             at["session"].as_str(),
             at["folder"].as_str(),
@@ -2874,12 +3066,10 @@ pub const REMOTE_CONVO_RATE: f64 = 10.0;
 /// and the bridge says it as its `hello`'s client. An older bridge says only its own name, which names no machine, and
 /// so does a name that is empty, too long or holds a control character.
 pub fn viewer_of(ctx: &CallContext) -> Option<String> {
-    let name = ctx.client.trim();
-    (!name.is_empty()
-        && name != crate::serve_remote::BRIDGE_CLIENT
-        && name.chars().count() <= flare_ctl::session::MAX_MACHINE_NAME
-        && !name.chars().any(char::is_control))
-    .then(|| name.to_string())
+    // Rule 1306: the one check a hidden session's opener name meets at open, rename and restore.
+    flare_tabs::restore::valid_opener(&ctx.client)
+        .filter(|n| *n != crate::serve_remote::BRIDGE_CLIENT)
+        .map(str::to_string)
 }
 
 impl Dispatcher for AppDispatcher {
@@ -2971,6 +3161,10 @@ impl Dispatcher for AppDispatcher {
         // Opening a remote session (PR 5) only where this run has its machines.
         if self.machines.is_some() {
             all.push(Method::OpenRemoteSession);
+        }
+        // Installing the staged build (rule 1326) only in an installed copy.
+        if self.staged.is_some() {
+            all.push(Method::InstallStaged);
         }
         // Remote sessions (PR 2) only where this run serves them.
         if self.remote.is_some() {
@@ -3268,8 +3462,10 @@ impl AppDispatcher {
             | Method::RemoteStatus
             | Method::RemoteConvo
             | Method::RemoteFetch
-            | Method::RemotePut => self.remote_call(ctx, method, &params),
-            Method::OpenRemoteSession => self.open_remote(&params),
+            | Method::RemotePut
+            | Method::RemoteFind => self.remote_call(ctx, method, &params),
+            Method::OpenRemoteSession => self.open_remote(ctx, &params),
+            Method::InstallStaged => self.install_staged(&params),
             Method::DeviceList
             | Method::DeviceBoot
             | Method::DeviceShutdown
@@ -3363,6 +3559,13 @@ impl CtlServer {
         }
         if let Some(r) = remote {
             d = d.with_remote(r);
+        }
+        // An installed copy (rule 1326): the agent may install the staged build.
+        if let Some((layout, _)) = crate::appctl::staged_glue::started() {
+            d = d.with_staged(
+                crate::appctl::staged_glue::staged_probe(layout),
+                cfg!(target_os = "macos"),
+            );
         }
         let dispatcher = Arc::new(d);
         // sync-ok: startup, creates the pipe and its accept thread
@@ -6360,6 +6563,112 @@ mod tests {
         );
     }
 
+    /// Rule 1326: `install.staged` reads the stage on the worker, says its commit and signer, holds an agent on macOS to
+    /// a Developer ID build (before the window hears of it), and hands the window the stage's signature to arm. A run
+    /// that is no installed copy neither lists it nor installs anything.
+    #[test]
+    fn install_staged_reports_the_stage_and_its_signer_and_arms_only_a_developer_id_build() {
+        use crate::appctl::staged_glue::{StagedLook, StagedProbe};
+        use flare_update::signing::Signing;
+        let look = |signing: Signing| StagedLook {
+            commit: "65273b3c9b148ffac563d7ec2616eb1f77557c5c".into(),
+            built_at: "2026-11-20T07:38:41Z".into(),
+            sig: "sig-1".into(),
+            signing,
+        };
+        let probe = |l: Option<StagedLook>| -> StagedProbe { Arc::new(move || Ok(l.clone())) };
+        let dev = Signing::DeveloperId {
+            authority: "Developer ID Application: MAX AUBERT (WV7BY8CUM8)".into(),
+            team: Some("WV7BY8CUM8".into()),
+        };
+        let c = agent_in_tab();
+        // A Developer ID build: the window arms the stage it was read as.
+        let seen_sig = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen_sig.clone();
+        let r = rig(
+            move |op| match op {
+                CtlOp::InstallStaged { sig, check } => {
+                    s2.lock().unwrap().push((sig.clone(), *check));
+                    Ok(json!({"state": if *check { "staged" } else { "armed" }}))
+                }
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let ops = r.ops.clone();
+        let d = r.d.with_staged(probe(Some(look(dev.clone()))), true);
+        assert!(d.capabilities().contains(&Method::InstallStaged));
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "armed");
+        assert_eq!(v["commit"], "65273b3c9b148ffac563d7ec2616eb1f77557c5c");
+        assert_eq!(v["short"], "65273b3");
+        assert_eq!(v["signed"], "developer-id");
+        assert_eq!(v["developer_id"], true);
+        assert_eq!(v["signer"], "Developer ID (WV7BY8CUM8)");
+        let v = d
+            .call(&c, Method::InstallStaged, json!({"check": true}))
+            .unwrap();
+        assert_eq!(v["state"], "staged");
+        assert_eq!(
+            *seen_sig.lock().unwrap(),
+            [("sig-1".to_string(), false), ("sig-1".to_string(), true)]
+        );
+        assert_eq!(ops.lock().unwrap().len(), 2);
+        for bad in [json!({"check": "yes"}), json!({"now": true})] {
+            assert_eq!(
+                code_of(d.call(&c, Method::InstallStaged, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        // An ad hoc build on a Mac: refused before the window hears of it; a check still reports it.
+        let r = rig(|_| Ok(json!({"state": "staged"})), false, &[]);
+        let ops = r.ops.clone();
+        let d = r.d.with_staged(probe(Some(look(Signing::AdHoc))), true);
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "refused");
+        assert_eq!(v["signed"], "ad-hoc");
+        assert_eq!(v["developer_id"], false);
+        assert!(
+            v["why"]
+                .as_str()
+                .unwrap()
+                .contains("not signed with Developer ID"),
+            "{v}"
+        );
+        assert!(ops.lock().unwrap().is_empty(), "nothing armed");
+        let v = d
+            .call(&c, Method::InstallStaged, json!({"check": true}))
+            .unwrap();
+        assert_eq!(v["state"], "staged");
+        // Windows has no Developer ID: a stage there is armed as it is.
+        let r = rig(|_| Ok(json!({"state": "armed"})), false, &[]);
+        let not_checked = Signing::NotChecked {
+            why: "Windows builds carry no Developer ID".into(),
+        };
+        let d = r.d.with_staged(probe(Some(look(not_checked))), false);
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(
+            (v["state"].as_str(), v["signed"].as_str()),
+            (Some("armed"), Some("not-checked"))
+        );
+        // Nothing staged.
+        let r = rig(|_| Ok(json!({})), false, &[]);
+        let ops = r.ops.clone();
+        let d = r.d.with_staged(probe(None), true);
+        let v = d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "none");
+        assert!(ops.lock().unwrap().is_empty());
+        // No installed copy.
+        let bare = rig(|_| Ok(json!({})), false, &[]);
+        assert!(!bare.d.capabilities().contains(&Method::InstallStaged));
+        let v = bare.d.call(&c, Method::InstallStaged, json!({})).unwrap();
+        assert_eq!(v["state"], "refused");
+        assert!(v["why"].as_str().unwrap().contains("not an installed copy"));
+        assert!(bare.ops.lock().unwrap().is_empty());
+    }
+
     /// `remote.open` names a host folder: absolute, there on the disk (asked on the worker), with a resume id that is a
     /// session id. Only then does the window open a tab.
     #[test]
@@ -6426,6 +6735,32 @@ mod tests {
                 "CtlOp::RemoteOpen"
             ]
         );
+    }
+
+    /// Rule 1307: `remote.find` takes one open id, a short plain word as `remote.open` checks it, and asks the window
+    /// only then. No grant but the remote one reaches it.
+    #[test]
+    fn remote_find_answers_only_for_a_known_open_id() {
+        let (d, ops, _) = remote_rig();
+        let c = bridge(1);
+        for bad in [
+            json!({}),
+            json!({"open_id": ""}),
+            json!({"open_id": "a b"}),
+            json!({"open_id": "x".repeat(65)}),
+            json!({"open_id": 7}),
+            json!({"open_id": "o-1", "tab": "t1"}),
+        ] {
+            assert_eq!(
+                code_of(d.call(&c, Method::RemoteFind, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        assert!(ops.lock().unwrap().is_empty());
+        let _ = d.call(&c, Method::RemoteFind, json!({"open_id": "x".repeat(64)}));
+        assert_eq!(*ops.lock().unwrap(), ["CtlOp::RemoteFind"]);
+        assert_eq!(Method::parse("remote.find"), Some(Method::RemoteFind));
     }
 
     /// Remote sessions PR 7: `~` alone is the host's home folder (the + menu's shell on a machine, whose home the viewer

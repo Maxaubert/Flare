@@ -1021,7 +1021,41 @@ mod mac {
         }
     }
 
+    /// Rule 1324: the pulse watch reads the window's Metal layer: a drawable that is not the layer's
+    /// size in pixels is told apart from one that is.
+    fn the_metal_layer_reads_its_drawable_against_its_bounds() {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, AnyObject};
+        let mtm = mtm();
+        let (w, view) = window(mtm);
+        // No layer yet: nothing to read.
+        assert_eq!(flare_win::metal_layer::geom(view), None);
+        // SAFETY: the test window's own content view, on the main thread.
+        let v: &NSView = unsafe { &*(view as *const NSView) };
+        v.setWantsLayer(true);
+        let class = AnyClass::get(c"CAMetalLayer").expect("QuartzCore's CAMetalLayer");
+        // SAFETY: a new CAMetalLayer, added under the view's own layer as raw-window-metal does;
+        // every message is a plain CALayer / CAMetalLayer setter.
+        unsafe {
+            let metal: *mut AnyObject = msg_send![class, new];
+            let root: *mut AnyObject = msg_send![v, layer];
+            let () = msg_send![&*root, addSublayer: &*metal];
+            let () = msg_send![&*metal, setBounds: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(500.0, 300.0))];
+            let () = msg_send![&*metal, setContentsScale: 2.0f64];
+            let () = msg_send![&*metal, setDrawableSize: NSSize::new(1000.0, 600.0)];
+        }
+        let g = flare_win::metal_layer::geom(view).expect("the metal layer");
+        assert_eq!((g.drawable_w, g.drawable_h), (1000.0, 600.0));
+        assert_eq!((g.bounds_w, g.bounds_h, g.scale), (500.0, 300.0, 2.0));
+        assert!(!g.tagged, "wgpu leaves an sRGB surface untagged");
+        assert!(!w.isVisible(), "the test window must never show");
+    }
+
     pub const TESTS: &[(&str, fn())] = &[
+        (
+            "metal_layer_reads_its_drawable_against_its_bounds",
+            the_metal_layer_reads_its_drawable_against_its_bounds,
+        ),
         (
             "ax_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen",
             ax_terminal_tests::the_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen,

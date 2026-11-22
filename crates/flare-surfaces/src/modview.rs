@@ -372,7 +372,7 @@ mod tests {
             "http://example.com/",
             "https://localhost/",
             "https://127.0.0.1/",
-            "https://192.168.0.2/",
+            "https://10.0.0.2/",
             "https://flare-mod-other.local/",
             "https://router.lan/",
             "https://[::1]/",

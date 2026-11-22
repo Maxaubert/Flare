@@ -154,6 +154,50 @@ pub fn nearby_of(
     })
 }
 
+/// Pure: an announcement's instance name without the " (N)" an mDNS name conflict adds (`Office-Mac-Mini (2)` is
+/// `Office-Mac-Mini`).
+fn base_instance(id: &str) -> &str {
+    let inst = id
+        .strip_suffix(SERVICE)
+        .map(|s| s.trim_end_matches('.'))
+        .unwrap_or(id);
+    inst.strip_suffix(')')
+        .and_then(|s| s.rsplit_once(" ("))
+        .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(inst, |(base, _)| base)
+}
+
+/// Pure: one entry per computer (rule 1297). A computer on two networks at once (Ethernet and WiFi) hears its own
+/// announcement on the other one, takes it for another computer and renames itself `<name> (2)` there, so it is found
+/// twice. Entries with the same instance name once the " (N)" goes, the same TXT name, system and port are one
+/// computer: the one without the suffix (else the first by id) stays, its own addresses first, then the other's.
+pub fn merge_nearby(mut list: Vec<Nearby>) -> Vec<Nearby> {
+    list.sort_by(|a, b| a.id.len().cmp(&b.id.len()).then(a.id.cmp(&b.id)));
+    let mut out: Vec<Nearby> = Vec::new();
+    for n in list {
+        let same = out.iter_mut().find(|o| {
+            base_instance(&o.id) == base_instance(&n.id)
+                && o.name == n.name
+                && o.os == n.os
+                && o.port == n.port
+        });
+        match same {
+            // The kept entry's own addresses stay first: an announcement's TXT is not proof, so a renamed copy's
+            // addresses are only tried after them.
+            Some(o) => {
+                for a in n.addrs {
+                    if !o.addrs.contains(&a) {
+                        o.addrs.push(a);
+                    }
+                }
+            }
+            None => out.push(n),
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+    out
+}
+
 /// Pure: a name from the other computer, as Flare shows it: no control character, 60 characters at most, trimmed.
 pub fn clean_name(s: &str) -> String {
     clean_upto(s, 60)
@@ -417,7 +461,19 @@ pub fn host_session(
     if ctx.stopped() {
         return done(None, false);
     }
-    let before = ctx.io.list_in();
+    // Audit #3: a record that cannot be read is never saved over, so no key goes in that it would not list.
+    let before = match ctx.io.load_in() {
+        Ok(list) => list,
+        Err(e) => {
+            log::warn!("pairing: {e}");
+            refuse(
+                &mut ch,
+                s,
+                "This computer's list of linked computers could not be read.",
+            );
+            return done(None, false);
+        }
+    };
     // The same key paired before: it is in already, so a failure later leaves it there.
     let was_in = before.iter().any(|m| m.key == key_field);
     let admin = match crate::sharing::install_key(&*ctx.os, &line) {
@@ -622,6 +678,12 @@ pub fn viewer_session(
             }
         }
     };
+    // Audit #3: the list is read before the other computer adds this one's key, and a file that cannot be read whole is
+    // never saved over.
+    let mut list = match ctx.io.load() {
+        Ok(list) => list,
+        Err(e) => return fail(e),
+    };
     let public = match ctx.files.ensure_key(&ctx.me.name) {
         Ok(k) => k,
         Err(e) => return fail(e),
@@ -678,7 +740,6 @@ pub fn viewer_session(
     } else {
         host_name
     };
-    let mut list = ctx.io.list();
     // Pairing a machine again keeps its id (and its tabs). It is the same machine only when it proves the same SSH host
     // key: a name or an address the other computer says could be anyone's, so neither ever picks an entry to replace.
     let old = list
@@ -1307,7 +1368,7 @@ impl RealPairNet {
 /// Pure: the mDNS host name the announcement's address records go under (rule 1256): the computer name in letters,
 /// digits and dashes, then `-flare.local.`. Never the computer's own `.local` name: macOS' mDNSResponder (and Windows'
 /// own responder) answer that one, and a second answer from `mdns-sd` is a name conflict, after which macOS renames
-/// the Mac ("Maxs-Mac-mini (2)"). The readable name stays in the instance name and the TXT `name`.
+/// the Mac ("Office-Mac-mini (2)"). The readable name stays in the instance name and the TXT `name`.
 pub fn mdns_host(name: &str) -> String {
     let mut h: String = name
         .chars()
@@ -1433,9 +1494,7 @@ impl PairNet for RealPairNet {
                     _ => false,
                 };
                 if changed {
-                    let mut list: Vec<Nearby> = seen.values().cloned().collect();
-                    list.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
-                    found(list);
+                    found(merge_nearby(seen.values().cloned().collect()));
                 }
             }
         });

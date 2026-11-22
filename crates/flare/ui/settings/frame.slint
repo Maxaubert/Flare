@@ -138,6 +138,11 @@ export component SetFrame inherits Rectangle {
     out property <bool> field-open: input.has-focus || root.find-text != "";
     out property <bool> clear-visible: root.find-text != "";
     out property <bool> list-focused: list-scope.has-focus;
+    // The rail's scrolling list starts under the Find field; its height runs to the last item's foot plus 12 px.
+    out property <length> rail-list-top: root.find-y + root.find-h;
+    out property <length> rail-list-h: root.rail.length == 0 ? 0px
+        : root.rail[root.rail.length - 1].y + 36px + 12px - root.rail-list-top;
+    out property <length> rail-scroll: -rail-fl.content-y;
     out property <bool> field-focused: input.has-focus;
 
     public function focus-field() { input.focus(); }
@@ -184,18 +189,29 @@ export component SetFrame inherits Rectangle {
             vertical-alignment: center;
             accessible-role: text;
         }
-        for item[i] in root.rail: RailButton {
-            x: root.item-x;
-            y: item.y;
-            width: root.item-w;
-            item: item;
-            index: i;
-            focus-target <=> root.focus-rail-index;
-            narrow: root.narrow;
-            on: item.chosen && !root.searching;
-            chosen => { root.page-chosen(item.id); }
-            key(k) => { root.rail-key(k, i); }
-            tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+        // The items under the Find field. A frame too short for them all (About never rises over the item above it,
+        // rule 1345) scrolls them with the wheel; otherwise the list fits and nothing moves.
+        rail-fl := Flickable {
+            x: 0px;
+            y: root.rail-list-top;
+            width: parent.width - Px.hair();
+            height: max(0px, parent.height - self.y);
+            content-width: self.width;
+            content-height: max(self.height, root.rail-list-h);
+            interactive: false;
+            for item[i] in root.rail: RailButton {
+                x: root.item-x;
+                y: item.y - root.rail-list-top;
+                width: root.item-w;
+                item: item;
+                index: i;
+                focus-target <=> root.focus-rail-index;
+                narrow: root.narrow;
+                on: item.chosen && !root.searching;
+                chosen => { root.page-chosen(item.id); }
+                key(k) => { root.rail-key(k, i); }
+                tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+            }
         }
     }
 
@@ -498,6 +514,8 @@ export component FramePreview inherits Window {
     out property <bool> content-focused: content-fs.has-focus;
     out property <bool> field-focused: fr.field-focused;
     out property <bool> list-focused: fr.list-focused;
+    out property <length> rail-scroll: fr.rail-scroll;
+    out property <length> rail-list-top: fr.rail-list-top;
 
     public function focus-field() { fr.focus-field(); }
     public function focus-list() { fr.focus-list(); }
@@ -527,7 +545,7 @@ export component FramePreview inherits Window {
             { id: "agents", label: "Agents", icon: "M12 4l8 8-8 8-8-8z", end: false, chosen: root.chosen-id == "agents", y: Px.snap(174.5px) },
             { id: "dictation", label: "Dictation", icon: "M12 4v10M8 8v4M16 8v4", end: false, chosen: root.chosen-id == "dictation", y: Px.snap(212.5px) },
             { id: "diagnostics", label: "Diagnostics", icon: "M4 12h4l3-7 3 14 3-7h3", end: false, chosen: root.chosen-id == "diagnostics", y: Px.snap(250.5px) },
-            { id: "about", label: "About", icon: "M12 8v1M12 12v5", end: true, chosen: root.chosen-id == "about", y: Px.snap(root.height - 12px - 36px) },
+            { id: "about", label: "About", icon: "M12 8v1M12 12v5", end: true, chosen: root.chosen-id == "about", y: max(Px.snap(root.height - 12px - 36px), Px.snap(288.5px)) },
         ];
         page-chosen(id) => { root.page-picked = id; }
         find-edited(t) => { root.edited-text = t; }

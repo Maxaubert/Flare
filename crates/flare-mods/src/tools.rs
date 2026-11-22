@@ -207,8 +207,9 @@ mod tests {
             "device_launch",
             "device_install",
             "device_state",
+            "install_staged_build",
         ];
-        assert_eq!(builtin.len(), 36);
+        assert_eq!(builtin.len(), 37);
         for id in ["notes", "a-b-c", "zzz"] {
             let name = tool_name(id, "show_image");
             assert!(name.starts_with(PREFIX));

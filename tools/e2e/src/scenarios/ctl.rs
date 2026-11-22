@@ -737,8 +737,9 @@ fn mcp_on(
                 "set_tab_progress",
                 "clear_tab_progress",
                 "open_remote_session",
+                "install_staged_build",
             ],
-        format!("tools/list names the eight show tools, the ten browser tools, the twelve device tools (the fake under --e2e), the four tab tools and the remote session tool ({names:?})"),
+        format!("tools/list names the eight show tools, the ten browser tools, the twelve device tools (the fake under --e2e), the four tab tools, the remote session tool and the staged build tool ({names:?})"),
     );
     ctx.ok(
         replies

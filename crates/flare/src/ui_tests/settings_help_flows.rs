@@ -61,6 +61,7 @@ fn fx(opts: Opts) -> Fx {
             session: None,
         }],
         active: 0,
+        hidden: Vec::new(),
     };
     std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only
     let prefs = PrefStore::memory();

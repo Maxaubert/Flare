@@ -142,6 +142,10 @@ pub enum Method {
     /// One chunk of a file the viewer copies to the host (a dropped file, a pasted image; remote sessions PR 6, rule
     /// 304): written into the tab's own upload folder on the host, under a name the host cleans.
     RemotePut,
+    /// The hidden session a `remote.open` with this `open_id` made, by its tab id now (rule 1307): after the host's
+    /// Flare restarted, its opener finds the session again. Only hidden sessions are searched; `no_tab` when none holds
+    /// the id.
+    RemoteFind,
     /// Opens a tab in this Flare that shows a session on another machine (remote sessions PR 5): a machine named in
     /// `machines.json`, a folder there and an optional Claude session to resume. The agent's (owner decision: no
     /// prompt) and the `flare open --on` command's. The opened tab takes no typing from either (rule 299).
@@ -167,6 +171,10 @@ pub enum Method {
     DeviceInstall,
     /// Booted or not, live or still and why, frames a second, the last takeover.
     DeviceState,
+    /// Installs the staged build the way a click on "Build ready" does, once every agent is idle (2026-11-20, rule
+    /// 1326): it arms the install and answers at once (`armed`, `installing`, `none` or `refused`, the commit and who
+    /// signed it). The agent's and the `flare --install-staged` command's; no permission opens it.
+    InstallStaged,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -217,11 +225,14 @@ pub enum Namespace {
     /// The device panel's agent tools (`device.*`, issue #248 PR 5): the agent's only. No permission opens it, so no
     /// mod or plugin reaches it (rule 1322), and neither does a remote link, the bridge or the app's own UI.
     Device,
+    /// The staged build (`install.staged`, rule 1326): the agent's and the app's. No permission opens it, so no mod or
+    /// plugin reaches it, and neither does a remote link or the bridge.
+    Install,
 }
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 22] = [
+    pub const ALL: [Namespace; 23] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -244,6 +255,7 @@ impl Namespace {
         Namespace::Remote,
         Namespace::Open,
         Namespace::Device,
+        Namespace::Install,
     ];
 
     /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
@@ -259,6 +271,7 @@ impl Namespace {
             | Namespace::Remote
             | Namespace::Open
             | Namespace::Device => None,
+            Namespace::Install => None,
             Namespace::Decor => Some(Permission::Decorate),
             Namespace::Panel => Some(Permission::Panel),
             Namespace::View => Some(Permission::View),
@@ -281,7 +294,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 76] = [
+    pub const ALL: [Method; 78] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -345,6 +358,7 @@ impl Method {
         Method::RemoteConvo,
         Method::RemoteFetch,
         Method::RemotePut,
+        Method::RemoteFind,
         Method::OpenRemoteSession,
         Method::DeviceList,
         Method::DeviceBoot,
@@ -358,6 +372,7 @@ impl Method {
         Method::DeviceLaunch,
         Method::DeviceInstall,
         Method::DeviceState,
+        Method::InstallStaged,
     ];
 
     /// The wire name.
@@ -426,6 +441,7 @@ impl Method {
             Method::RemoteConvo => "remote.convo",
             Method::RemoteFetch => "remote.fetch",
             Method::RemotePut => "remote.put",
+            Method::RemoteFind => "remote.find",
             Method::OpenRemoteSession => "open.remote",
             Method::DeviceList => "device.list",
             Method::DeviceBoot => "device.boot",
@@ -439,6 +455,7 @@ impl Method {
             Method::DeviceLaunch => "device.launch",
             Method::DeviceInstall => "device.install",
             Method::DeviceState => "device.state",
+            Method::InstallStaged => "install.staged",
         }
     }
 
@@ -503,7 +520,8 @@ impl Method {
             | Method::RemoteStatus
             | Method::RemoteConvo
             | Method::RemoteFetch
-            | Method::RemotePut => Namespace::Remote,
+            | Method::RemotePut
+            | Method::RemoteFind => Namespace::Remote,
             Method::OpenRemoteSession => Namespace::Open,
             Method::DeviceList
             | Method::DeviceBoot
@@ -517,6 +535,7 @@ impl Method {
             | Method::DeviceLaunch
             | Method::DeviceInstall
             | Method::DeviceState => Namespace::Device,
+            Method::InstallStaged => Namespace::Install,
         }
     }
 
@@ -600,6 +619,7 @@ mod tests {
                 Namespace::Remote => prefix == "remote",
                 Namespace::Open => prefix == "open",
                 Namespace::Device => prefix == "device",
+                Namespace::Install => prefix == "install",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
@@ -645,8 +665,8 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 76);
-        assert_eq!(Namespace::ALL.len(), 22);
+        assert_eq!(Method::ALL.len(), 78);
+        assert_eq!(Namespace::ALL.len(), 23);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
         }
@@ -682,6 +702,7 @@ mod tests {
             Method::RemoteClose,
             Method::RemoteStatus,
             Method::RemoteConvo,
+            Method::RemoteFind,
         ] {
             assert_eq!(m.timeout(), DEFAULT_TIMEOUT, "{}", m.name());
             assert_eq!(m.namespace(), Namespace::Remote, "{}", m.name());
@@ -700,6 +721,17 @@ mod tests {
         assert_eq!(Method::OpenRemoteSession.namespace(), Namespace::Open);
         assert_eq!(Method::OpenRemoteSession.timeout(), DEFAULT_TIMEOUT);
         assert_eq!(Namespace::Open.permission(), None);
+    }
+
+    /// Rule 1326: `install.staged` answers at once (it arms the install; it never waits for idle) and no permission
+    /// opens it.
+    #[test]
+    fn install_staged_is_a_short_call_of_its_own_namespace() {
+        assert_eq!(Method::parse("install.staged"), Some(Method::InstallStaged));
+        assert_eq!(Method::InstallStaged.namespace(), Namespace::Install);
+        assert_eq!(Method::InstallStaged.timeout(), DEFAULT_TIMEOUT);
+        assert_eq!(Namespace::Install.permission(), None);
+        assert_eq!(Method::parse("install"), None);
     }
 
     /// `notice.show` (2026-11-17) is a short call of its own namespace, opened by `actions`.

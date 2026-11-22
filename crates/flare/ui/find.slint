@@ -68,12 +68,15 @@ export component FindBar inherits Rectangle {
 
     // The readout is at least 52 px wide and grows with its text, so the box grows with it.
     property <length> readout-w: max(52px, measure.preferred-width);
+    // The input is 180 px, less what the bar would run past a narrow grid by (rule 1347), but never under 60 px.
+    property <length> fixed-w: 16px + 6px + root.readout-w + 6px + 20px + 6px + 20px + 6px + 20px;
+    out property <length> input-w: max(60px, min(180px, root.width - 4px - 12px - root.fixed-w - 2 * Px.hair()));
 
     bar := Rectangle {
         visible: root.open;
-        width: Px.snap(16px + 180px + 6px + root.readout-w + 6px + 20px + 6px + 20px + 6px + 20px) + 2 * Px.hair();
+        width: Px.snap(root.fixed-w + root.input-w) + 2 * Px.hair();
         height: Px.snap(28px) + 2 * Px.hair();
-        x: Px.snap(root.width - self.width - 12px);
+        x: Px.snap(max(4px, root.width - self.width - 12px));
         y: Px.snap(12px);
         background: Theme.side-flat;
         border-radius: Theme.radius-sm;
@@ -88,7 +91,7 @@ export component FindBar inherits Rectangle {
         FocusScope {
             x: Px.hair() + Px.snap(8px);
             y: Px.hair() + Px.snap(4px);
-            width: Px.snap(180px);
+            width: Px.snap(root.input-w);
             height: Px.snap(20px);
             capture-key-pressed(event) => {
                 if (event.text == Key.Return) {
@@ -132,7 +135,7 @@ export component FindBar inherits Rectangle {
 
         // The readout, right-aligned in a box at least 52 px wide.
         Rectangle {
-            x: Px.hair() + Px.snap(8px + 180px + 6px);
+            x: Px.hair() + Px.snap(8px + root.input-w + 6px);
             y: Px.hair() + Px.snap(4px);
             width: Px.snap(root.readout-w);
             height: Px.snap(20px);

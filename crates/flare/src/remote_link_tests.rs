@@ -58,6 +58,15 @@ struct HostState {
     /// Rule 1215: the files put with `exec` (where they went), and an older host that refuses `exec`.
     runnable: Vec<String>,
     no_exec: bool,
+    /// Rule 1307: an older host with no `remote.find`, and the next this many finds answered `unavailable` (the host
+    /// still restoring its tabs).
+    no_find: bool,
+    find_not_yet: u32,
+    /// Rule 1317: an older host that knows no mouse intent, the mouse mode its snapshots name (None: an older host
+    /// that names none), and when each `remote.input` came.
+    no_mouse: bool,
+    snapshot_mouse: Option<(&'static str, bool)>,
+    input_at: Vec<Instant>,
 }
 
 #[derive(Clone, Default)]
@@ -143,9 +152,22 @@ impl FakeHost {
                 if styled {
                     v["styled"] = json!(true);
                 }
+                if let Some((word, sgr)) = st.snapshot_mouse {
+                    v["mouse"] = json!(word);
+                    v["sgr_mouse"] = json!(sgr);
+                }
                 Ok(v)
             }
             Method::RemoteInput => {
+                st.input_at.push(Instant::now());
+                if st.no_mouse
+                    && p["intents"]
+                        .as_array()
+                        .is_some_and(|a| a.iter().any(|i| i.get("mouse").is_some()))
+                {
+                    // What an older host's `parse_intents` answers, and it types nothing of the call.
+                    return Err(CtlError::new(code::BAD_PARAMS, "no intent is called mouse"));
+                }
                 let intents = parse_intents(p.get("intents"))?;
                 let n = intents.len();
                 st.tabs
@@ -261,8 +283,45 @@ impl FakeHost {
                     json!({"tab": tab, "name": name, "done": true, "host_path": host, "paste": format!("'{host}'")}),
                 )
             }
+            Method::RemoteFind => {
+                if st.no_find {
+                    return Err(CtlError::new(code::UNKNOWN_METHOD, "an older host"));
+                }
+                if st.find_not_yet > 0 {
+                    st.find_not_yet -= 1;
+                    return Err(CtlError::new(
+                        code::UNAVAILABLE,
+                        "this Flare is still restoring its tabs",
+                    ));
+                }
+                let o = p["open_id"].as_str().unwrap_or_default();
+                st.open_ids
+                    .get(o)
+                    .filter(|t| st.tabs.contains_key(*t))
+                    .map(|t| json!({"tab": t}))
+                    .ok_or_else(no_tab)
+            }
             _ => Err(CtlError::new(code::FORBIDDEN, "not here")),
         }
+    }
+
+    /// The host's Flare starts again (rule 1307): every link breaks, nothing is followed, and each session comes back
+    /// under a new tab id with its output and its open id.
+    fn restart(&self) {
+        let mut st = lk(self);
+        let old: Vec<(String, HostTab)> = st.tabs.drain().collect();
+        for (was, t) in old {
+            st.next += 1;
+            let id = format!("h{}", st.next);
+            st.tabs.insert(id.clone(), t);
+            for v in st.open_ids.values_mut() {
+                if *v == was {
+                    *v = id.clone();
+                }
+            }
+        }
+        st.attached.clear();
+        st.epoch += 1;
     }
 
     fn print(&self, tab: &str, b: &[u8]) {
@@ -363,7 +422,14 @@ fn rig_with(host: FakeHost, host_tab: Option<&str>) -> Rig {
 }
 
 fn rig_timed(host: FakeHost, host_tab: Option<&str>, timing: Timing) -> Rig {
-    let live = flare_term::remote_pty::RemoteLive::new(host_tab.map(str::to_string), 0);
+    rig_live(
+        host,
+        flare_term::remote_pty::RemoteLive::new(host_tab.map(str::to_string), 0, None),
+        timing,
+    )
+}
+
+fn rig_live(host: FakeHost, live: flare_term::remote_pty::RemoteLive, timing: Timing) -> Rig {
     let sp = RemoteSpawner::new(
         Arc::new(FakeConnector {
             host: host.clone(),
@@ -471,6 +537,166 @@ fn typing_reaches_the_host_as_intents_and_sizes_as_the_last_one() {
     });
 }
 
+fn press(col: u16, row: u16) -> Intent {
+    Intent::Mouse(MouseIntent {
+        act: MouseAct::Press,
+        button: Some(MouseBtn::Left),
+        col,
+        row,
+        shift: false,
+        alt: false,
+        ctrl: false,
+    })
+}
+
+fn release(col: u16, row: u16) -> Intent {
+    let Intent::Mouse(mut m) = press(col, row) else {
+        unreachable!()
+    };
+    m.act = MouseAct::Release;
+    Intent::Mouse(m)
+}
+
+/// Rule 1317: a click the tab's terminal reports reaches the host as mouse intents, in order with the typing.
+#[test]
+fn a_click_reaches_the_host_as_mouse_intents_in_order_with_the_typing() {
+    let mut r = rig();
+    r.live_on();
+    r.writer.write_all(b"\x1b[<0;5;3M\x1b[<0;5;3m").unwrap();
+    r.writer.write_all(b"\r").unwrap();
+    wait_for("the click", || r.host.typed("h1").len() >= 3);
+    assert_eq!(
+        r.host.typed("h1"),
+        vec![
+            press(4, 2),
+            release(4, 2),
+            Intent::Key(KeyIntent {
+                key: "Enter".into(),
+                code: "Enter".into(),
+                ..KeyIntent::default()
+            }),
+        ]
+    );
+}
+
+/// Rule 1317: an older host refuses a call with a mouse intent (and types nothing of it): the call goes again without
+/// the mouse, so the keys in it still arrive, and the link sends no mouse intent after.
+#[test]
+fn an_older_host_without_mouse_intents_still_gets_the_keys_and_the_link_stays() {
+    let host = FakeHost::default();
+    lk(&host).no_mouse = true;
+    let mut r = rig_with(host, None);
+    r.live_on();
+    r.writer.write_all(b"a\x1b[<0;5;3Mb").unwrap();
+    wait_for("the keys", || r.host.typed("h1").len() >= 2);
+    assert_eq!(
+        r.host.typed("h1"),
+        vec![Intent::Text("a".into()), Intent::Text("b".into())]
+    );
+    let calls = r.host.calls("remote.input");
+    r.writer.write_all(b"\x1b[<0;5;3m").unwrap();
+    r.writer.write_all(b"c").unwrap();
+    wait_for("c", || r.host.typed("h1").len() >= 3);
+    assert_eq!(
+        r.host.calls("remote.input"),
+        calls + 1,
+        "no call with a mouse intent again"
+    );
+    assert_eq!(r.live.link(), LinkState::Live, "the link stays");
+}
+
+/// Rule 1317: a mouse event typed while the link is down is never kept; the keys are.
+#[test]
+fn a_click_while_the_link_is_down_is_never_sent_later() {
+    let mut r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() != LinkState::Live);
+    r.writer.write_all(b"\x1b[<0;5;3Mx\x1b[<0;5;3m").unwrap();
+    lk(&r.host).refuse = false;
+    wait_for("x", || !r.host.typed("h1").is_empty());
+    r.live_on();
+    std::thread::sleep(Duration::from_millis(50)); // sync-ok: test code only, nothing more may come
+    assert_eq!(r.host.typed("h1"), vec![Intent::Text("x".into())]);
+}
+
+/// Rule 1317: a dragged mouse sends at most one motion call each `MOTION_GAP`, and the pointer's last place always
+/// arrives; the press and release around it go at once.
+#[test]
+fn a_dragged_mouse_is_paced_and_its_last_place_arrives() {
+    let mut r = rig();
+    r.live_on();
+    r.writer.write_all(b"\x1b[<0;1;1M").unwrap();
+    let start = Instant::now();
+    let mut x = 1;
+    while start.elapsed() < Duration::from_millis(400) {
+        x += 1;
+        r.writer
+            .write_all(format!("\x1b[<32;{};1M", x % 900 + 1).as_bytes())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(1)); // sync-ok: test code only, a mouse moving
+    }
+    let last = (x % 900) as u16;
+    wait_for("the last place", || {
+        r.host
+            .typed("h1")
+            .iter()
+            .any(|i| matches!(i, Intent::Mouse(m) if m.act == MouseAct::Motion && m.col == last))
+    });
+    r.writer.write_all(b"\x1b[<0;1;1m").unwrap();
+    wait_for("the release", || {
+        r.host
+            .typed("h1")
+            .last()
+            .is_some_and(|i| matches!(i, Intent::Mouse(m) if m.act == MouseAct::Release))
+    });
+    let typed = r.host.typed("h1");
+    let motions = typed
+        .iter()
+        .filter(|i| matches!(i, Intent::Mouse(m) if m.act == MouseAct::Motion))
+        .count();
+    // 400 ms of motion at one call each 40 ms: about 10, never hundreds.
+    assert!(motions <= 16, "{motions} motions crossed");
+    let at = lk(&r.host).input_at.clone();
+    let quick = at
+        .windows(2)
+        .filter(|w| w[1].saturating_duration_since(w[0]) < MOTION_GAP / 2)
+        .count();
+    // The press, the first motion and the release go at once; motion alone never comes closer than the gap.
+    assert!(quick <= 3, "{quick} calls came closer than the gap");
+}
+
+/// Rule 1317: the mouse mode a snapshot names is set on this tab's terminal after the text; an older host names none
+/// and nothing is set.
+#[test]
+fn a_snapshots_mouse_mode_reaches_the_tabs_terminal() {
+    let host = FakeHost::default();
+    lk(&host).snapshot_mouse = Some(("drag", true));
+    let r = rig_with(host, None);
+    r.live_on();
+    wait_for("the modes", || r.text().contains("\x1b[?1002h\x1b[?1006h"));
+    let older = rig();
+    older.live_on();
+    assert!(!older.text().contains("\x1b[?100"), "{:?}", older.text());
+}
+
+/// Rule 279 (amended by 1317): a mouse intent over a cell the host would refuse is left out of the call, which keeps
+/// the typing around it.
+#[test]
+fn a_mouse_intent_past_the_limits_is_left_out_of_the_call() {
+    use flare_term::handle::{RemoteMouse, RemoteMouseAct};
+    let far = RemoteIntent::Mouse(RemoteMouse {
+        act: RemoteMouseAct::Press,
+        button: Some(flare_term::mouse_report::MouseButton::Left),
+        col: flare_ctl::remote::MAX_COLS,
+        row: 0,
+        mods: Default::default(),
+    });
+    let batches = input_batches(&[RemoteIntent::Text("a".into()), far]);
+    assert_eq!(batches, vec![vec![Intent::Text("a".into())]]);
+}
+
 /// Rule 288 and the reconnect: the link breaks, the host prints meanwhile, the tab attaches again and goes on from
 /// the number it read: every byte once, no snapshot (the number is still in the ring).
 #[test]
@@ -575,6 +801,9 @@ fn a_host_tab_that_is_gone_ends_the_tab() {
     }));
     assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok()); // sync-ok: test code only, never the app
     wait_for("the end", || r.live.link() == LinkState::Ended);
+    // A tab saved before the open id (rule 1307) has nothing to find its session by: no find is asked.
+    assert_eq!(r.host.calls("remote.find"), 0);
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
 }
 
 /// Closing the tab closes the host session; the quit only detaches and the session lives on.
@@ -742,10 +971,10 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
         id: "pc".into(),
         name: "Max's PC".into(),
         kind: Some(Os::Pc),
-        ssh: "192.168.0.139".into(),
+        ssh: "192.0.2.139".into(),
         user: Some("max".into()),
         flare: "flare".into(),
-        host: Some("192.168.0.139".into()),
+        host: Some("192.0.2.139".into()),
         port: Some(2222),
         key: Some("/Users/max/Library/Flare/id_flare_ed25519".into()),
         known_hosts: Some(r"C:\Users\John Doe\AppData\Flare\known_hosts".into()),
@@ -773,7 +1002,7 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
             "-l",
             "max",
             "--",
-            "192.168.0.139",
+            "192.0.2.139",
             r#"cmd /c "flare" --serve-remote"#,
         ]
     );
@@ -820,9 +1049,9 @@ fn flares_key_is_made_private_before_ssh_runs_with_it() {
         id: "mac".into(),
         name: "Mac".into(),
         kind: Some(Os::Mac),
-        ssh: "192.168.0.120".into(),
+        ssh: "192.0.2.120".into(),
         flare: "flare".into(),
-        host: Some("192.168.0.120".into()),
+        host: Some("192.0.2.120".into()),
         key: Some(key.to_string_lossy().into_owned()),
         ..Machine::default()
     };
@@ -862,7 +1091,7 @@ fn flares_key_is_made_private_before_ssh_runs_with_it() {
 #[test]
 fn machines_json_reads_and_writes_the_address_port_key_and_known_hosts() {
     let raw = r#"{"machines":[
-        {"id":"pc","name":"Max's PC","kind":"pc","host":"192.168.0.139","port":2222,"user":"max",
+        {"id":"pc","name":"Max's PC","kind":"pc","host":"192.0.2.139","port":2222,"user":"max",
          "key":"C:/Flare/id_flare_ed25519","known_hosts":"C:/Flare/known_hosts"},
         {"id":"bad-port","ssh":"x","port":70000},
         {"id":"zero-port","ssh":"x","port":0},
@@ -873,11 +1102,8 @@ fn machines_json_reads_and_writes_the_address_port_key_and_known_hosts() {
     let ms = parse_machines(raw);
     assert_eq!(ms.len(), 1, "{ms:?}");
     let pc = &ms[0];
-    assert_eq!(
-        pc.ssh, "192.168.0.139",
-        "the address stands in for the alias"
-    );
-    assert_eq!(pc.target(), "192.168.0.139");
+    assert_eq!(pc.ssh, "192.0.2.139", "the address stands in for the alias");
+    assert_eq!(pc.target(), "192.0.2.139");
     assert_eq!(pc.port, Some(2222));
     assert_eq!(pc.key.as_deref(), Some("C:/Flare/id_flare_ed25519"));
     assert_eq!(pc.known_hosts.as_deref(), Some("C:/Flare/known_hosts"));
@@ -1017,7 +1243,7 @@ fn the_hosts_status_of_the_tab_reaches_the_window_on_change_and_wakes_it() {
     lk(&host).states = Some(HashMap::new());
     let woke = Arc::new(AtomicU64::new(0));
     let w2 = Arc::clone(&woke);
-    let live = flare_term::remote_pty::RemoteLive::new(None, 0);
+    let live = flare_term::remote_pty::RemoteLive::new(None, 0, None);
     let sp = RemoteSpawner::new(
         Arc::new(FakeConnector {
             host: host.clone(),
@@ -1802,4 +2028,159 @@ fn the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole() {
     k.keep(vec![text("gone")], &[t0], t0, age);
     k.clear();
     assert_eq!(k.take(t0, age), (vec![], false));
+}
+
+// ---- the opener finds its session again (rules 1307, 1308) ----
+
+/// The tab's pty end, caught: `Some` once the tab ended as a shell that exits.
+fn exits(r: &mut Rig) -> std::sync::mpsc::Receiver<Option<u32>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    r.pty.on_exit(Box::new(move |c| {
+        let _ = tx.send(c);
+    }));
+    rx
+}
+
+/// Rule 1307: the host's Flare restarts and brings the session back under a new id. The tab's link gets `no_tab` for
+/// the old id, asks `remote.find` with its open id once, follows the new id from a fresh snapshot and says so in one
+/// line, after the snapshot. No new session is opened.
+#[test]
+fn a_no_tab_after_a_host_restart_finds_the_session_by_open_id_and_takes_a_snapshot() {
+    let r = rig();
+    r.live_on();
+    r.host.print("h1", b"before\r\n");
+    wait_for("before", || r.text().contains("before"));
+    r.host.restart();
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    r.host.print("h2", b"after\r\n");
+    wait_for("after", || r.text().contains("after"));
+    let line = restarted_line("mac");
+    // Said once the found session's screen is quiet (`RESTART_LINE_QUIET`).
+    wait_for("the restart line", || r.text().contains(&line));
+    let t = r.text();
+    assert_eq!(t.matches(&line).count(), 1, "{t:?}");
+    assert!(
+        t.rfind(&line) > t.rfind("before"),
+        "the line comes after the new snapshot: {t:?}"
+    );
+    assert_eq!(r.host.calls("remote.find"), 1);
+    assert_eq!(r.host.calls("remote.open"), 1, "no second session");
+    assert_eq!(r.host.calls("remote.snapshot"), 2, "a fresh snapshot");
+    assert_eq!(lk(&r.host).tabs.len(), 1);
+}
+
+/// Rule 1307: a restored tab (its host tab and its open id from `tabs.json`) finds its session after a host restart
+/// that came while this Flare was away.
+#[test]
+fn a_restored_tab_finds_its_session_after_a_host_restart_while_away() {
+    let host = FakeHost::default();
+    {
+        let mut st = lk(&host);
+        st.tabs.insert(
+            "h9".into(),
+            HostTab {
+                out: b"still here\r\n".to_vec(),
+                ..HostTab::default()
+            },
+        );
+        st.next = 9;
+        st.open_ids.insert("o-1".into(), "h9".into());
+    }
+    host.restart();
+    let live = flare_term::remote_pty::RemoteLive::new(Some("h9".into()), 4, Some("o-1".into()));
+    let r = rig_live(host, live, fast());
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h10"));
+    r.live_on();
+    wait_for("the screen", || r.text().contains("still here"));
+    wait_for("the restart line", || {
+        r.text().contains(&restarted_line("mac"))
+    });
+    assert_eq!(r.host.calls("remote.open"), 0);
+}
+
+/// Rule 1308: the session's shell exited on the host, so `remote.find` finds nothing. The tab stays, with one red line,
+/// and its link ends; the tab is not ended as a shell that exits (its line would go with it).
+#[test]
+fn an_ended_answer_leaves_the_tab_with_its_line() {
+    let mut r = rig();
+    let ended = exits(&mut r);
+    r.live_on();
+    lk(&r.host).tabs.remove("h1");
+    wait_for("the end", || r.live.link() == LinkState::Ended);
+    wait_for("the line", || r.text().contains(&ended_line("mac")));
+    assert_eq!(r.text().matches(&ended_line("mac")).count(), 1);
+    assert_eq!(r.host.calls("remote.find"), 1);
+    assert!(
+        ended.recv_timeout(Duration::from_millis(200)).is_err(), // sync-ok: test code only, never the app
+        "the tab stays to show its line"
+    );
+    assert_eq!(r.host.calls("remote.open"), 1, "nothing opened again");
+}
+
+/// Rule 1307: an older host has no `remote.find` (`unknown_method`): the tab ends as before, with no line.
+#[test]
+fn an_older_host_without_find_ends_the_tab_as_before() {
+    let mut r = rig();
+    let ended = exits(&mut r);
+    r.live_on();
+    {
+        let mut st = lk(&r.host);
+        st.no_find = true;
+        st.tabs.remove("h1");
+    }
+    assert!(ended.recv_timeout(Duration::from_secs(5)).is_ok()); // sync-ok: test code only, never the app
+    wait_for("the end", || r.live.link() == LinkState::Ended);
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
+    assert_eq!(r.host.calls("remote.find"), 1);
+}
+
+/// Rule 1307: what was typed while the link was down was for the lost tab: it is never typed into the found one. What
+/// is typed after goes there.
+#[test]
+fn kept_typing_is_never_sent_to_the_found_tab() {
+    let mut r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() == LinkState::Down);
+    r.writer.write_all(b"rm -rf build").unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    r.host.restart();
+    lk(&r.host).refuse = false;
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    r.writer.write_all(b"ls").unwrap();
+    wait_for("the new typing", || !r.host.typed("h2").is_empty());
+    assert_eq!(r.host.typed("h2"), vec![Intent::Text("ls".into())]);
+}
+
+/// Rule 1307: a find the host cannot answer yet (it is still restoring its tabs) is asked again on the same link; the
+/// tab never ends for it.
+#[test]
+fn a_find_the_host_cannot_answer_yet_is_asked_again_on_the_same_link() {
+    let r = rig();
+    r.live_on();
+    lk(&r.host).find_not_yet = 3;
+    r.host.restart();
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    assert_eq!(r.host.calls("remote.find"), 4);
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
+}
+
+/// Rule 1307: a find still refused after the patience never ends the tab: the link is tried again later, and finds it
+/// then.
+#[test]
+fn a_find_refused_past_the_patience_tries_the_link_again_and_never_ends_the_tab() {
+    let r = rig();
+    r.live_on();
+    lk(&r.host).find_not_yet = u32::MAX;
+    r.host.restart();
+    wait_for("a later link", || lk(&r.host).connects >= 3);
+    assert_ne!(r.live.link(), LinkState::Ended);
+    lk(&r.host).find_not_yet = 0;
+    wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
+    r.live_on();
+    assert!(!r.text().contains("was ended"), "{:?}", r.text());
 }

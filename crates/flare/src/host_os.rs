@@ -329,33 +329,32 @@ mod tests {
     fn the_greeting_comes_first_and_ssh_only_when_it_says_nothing() {
         let mut looks = Looks::default();
         looks.banners.insert(
-            ("192.168.0.139".into(), 2222),
+            ("192.0.2.139".into(), 2222),
             "SSH-2.0-OpenSSH_for_Windows_9.5\r\n".into(),
         );
-        looks.banners.insert(
-            ("192.168.0.120".into(), 22),
-            "SSH-2.0-OpenSSH_9.8\r\n".into(),
-        );
+        looks
+            .banners
+            .insert(("192.0.2.120".into(), 22), "SSH-2.0-OpenSSH_9.8\r\n".into());
         looks.unames.insert("mac".into(), "Darwin\n".into());
-        let evo = SshHost {
-            alias: "evo-x2".into(),
-            host_name: "192.168.0.139".into(),
+        let home = SshHost {
+            alias: "home-pc".into(),
+            host_name: "192.0.2.139".into(),
             port: Some(2222),
             os: None,
         };
         let mac = SshHost {
             alias: "mac".into(),
-            host_name: "192.168.0.120".into(),
+            host_name: "192.0.2.120".into(),
             ..SshHost::default()
         };
-        assert_eq!(find_os(&looks, &evo), Some(MachineOs::Pc));
+        assert_eq!(find_os(&looks, &home), Some(MachineOs::Pc));
         assert_eq!(find_os(&looks, &mac), Some(MachineOs::Mac));
         assert_eq!(find_os(&looks, &SshHost::plain("nas")), None);
         assert_eq!(
             *looks.asked.lock().unwrap(),
             [
-                "banner 192.168.0.139:2222",
-                "banner 192.168.0.120:22",
+                "banner 192.0.2.139:2222",
+                "banner 192.0.2.120:22",
                 "uname mac",
                 "banner nas:22",
                 "uname nas",
@@ -370,21 +369,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = cache_file(dir.path());
         assert!(read_cache(&path).is_empty(), "no file, no systems");
-        let evo: HostKey = ("evo-x2".into(), "192.168.0.139".into());
+        let home: HostKey = ("home-pc".into(), "192.0.2.139".into());
         let pi: HostKey = ("pi".into(), "pi".into());
-        remember(&path, &[(evo.clone(), MachineOs::Pc)], 100).unwrap();
+        remember(&path, &[(home.clone(), MachineOs::Pc)], 100).unwrap();
         remember(&path, &[(pi.clone(), MachineOs::Linux)], 200).unwrap();
         let got = read_cache(&path);
-        assert_eq!(got.get(&evo), Some(&(MachineOs::Pc, 100)));
+        assert_eq!(got.get(&home), Some(&(MachineOs::Pc, 100)));
         assert_eq!(got.get(&pi), Some(&(MachineOs::Linux, 200)));
         // Found again: the time moves on. Nothing found: the file is left as it was.
-        remember(&path, &[(evo.clone(), MachineOs::Pc)], 300).unwrap();
+        remember(&path, &[(home.clone(), MachineOs::Pc)], 300).unwrap();
         remember(&path, &[], 400).unwrap();
         let got = read_cache(&path);
-        assert_eq!(got.get(&evo), Some(&(MachineOs::Pc, 300)));
+        assert_eq!(got.get(&home), Some(&(MachineOs::Pc, 300)));
         assert_eq!(got.len(), 2);
         // The same name reaching another computer is another entry.
-        assert!(!got.contains_key(&("evo-x2".to_string(), "10.0.0.9".to_string())));
+        assert!(!got.contains_key(&("home-pc".to_string(), "10.0.0.9".to_string())));
         assert!(parse_cache("not json").is_empty());
         let odd = r#"{"hosts":[{"alias":"a","host_name":"a","os":"amiga"},{"alias":"b","os":"pc"},
             {"alias":"c","host_name":"c","os":"mac"}]}"#;

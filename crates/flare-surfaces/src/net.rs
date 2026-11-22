@@ -227,7 +227,7 @@ mod tests {
             "https://[fd00::1]/",
             "https://[fe80::1]/",
             "https://[::ffff:127.0.0.1]/",
-            "https://[::ffff:192.168.0.1]/",
+            "https://[::ffff:10.0.0.1]/",
             "https://[64:ff9b::a00:1]/",
             "https://user:pw@example.com/",
             "not an address",
@@ -322,7 +322,7 @@ mod tests {
                 "mixed.example",
                 443,
                 to(vec![
-                    sa("192.168.0.2:443"),
+                    sa("10.0.0.2:443"),
                     sa("93.184.215.14:443"),
                     sa("[::1]:443")
                 ])

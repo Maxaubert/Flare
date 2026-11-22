@@ -389,7 +389,7 @@ mod tests {
     /// Rule 1285: each host comes with the computer it reaches, its first `HostName` as ssh reads it, else its name.
     #[test]
     fn each_host_has_its_first_host_name_else_its_own_name() {
-        let cfg = "Host mac\n  HostName 192.168.0.120\n  User max\n\
+        let cfg = "Host mac\n  HostName 192.0.2.120\n  User max\n\
                    Host a\nHost b\n  HostName b.example\n\
                    Host *.lan\n  HostName %h.example\n\
                    Host nas.lan\n  HostName never\n\
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(
             named(&[(".ssh/config", cfg)]),
             [
-                ("mac".to_string(), "192.168.0.120".to_string()),
+                ("mac".to_string(), "192.0.2.120".to_string()),
                 ("a".into(), "%a".into()),
                 ("b".into(), "b.example".into()),
                 ("nas.lan".into(), "nas.lan.example".into()),
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn each_host_has_its_first_port() {
         let home = PathBuf::from("/home/max");
-        let cfg = "Host evo-x2\n  HostName 192.168.0.139\n  Port 2222\n  Port 22\n\
+        let cfg = "Host home-pc\n  HostName 192.0.2.139\n  Port 2222\n  Port 22\n\
                    Host pi\n  Port nope\nHost nas\nHost *\n  Port 2200\n";
         let text = cfg.to_string();
         let read = |p: &Path| (p == home.join(".ssh/config")).then(|| text.clone());
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(
             ports,
             [
-                ("evo-x2".to_string(), Some(2222)),
+                ("home-pc".to_string(), Some(2222)),
                 ("pi".into(), Some(2200)),
                 ("nas".into(), Some(2200)),
             ]

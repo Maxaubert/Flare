@@ -1556,6 +1556,65 @@ fn a_background_page_that_ends_is_started_again_three_times_in_five_minutes_then
     );
 }
 
+/// Rule 1355: a background page that crashes or fails its load has its view closed, not left in the browser, and
+/// the one the crash limit stops leaves no view behind.
+#[test]
+fn a_background_page_that_crashes_or_fails_its_load_has_its_view_closed() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| plugin_with(r, "pager", &[], false));
+    turn(&f, "pager", true);
+    for round in 1..=4 {
+        bg_up(&f, &slot, "pager");
+        bg_say(
+            &slot,
+            "pager",
+            WebEvent::Gone {
+                tab: "pager".into(),
+                why: "crashed".into(),
+            },
+        );
+        f.pump();
+        assert_eq!(
+            bg_opens(&slot, "pager").1,
+            round,
+            "crash {round} closes the view"
+        );
+    }
+    assert!(running(&f).is_empty(), "the fourth end stops it");
+    assert!(
+        fake(&slot).view(&View::background("pager")).is_none(),
+        "the stopped plugin leaves no view"
+    );
+    assert!(w.hub.stopped("pager").is_some());
+    // A failed load of the navigation that began closes it too.
+    turn(&f, "pager", false);
+    turn(&f, "pager", true);
+    let closes = bg_opens(&slot, "pager").1;
+    for e in [
+        WebEvent::Loading {
+            tab: "pager".into(),
+            url: "https://flare-mod-pager.local/".into(),
+            nav: 78,
+        },
+        WebEvent::Loaded {
+            tab: "pager".into(),
+            url: "https://flare-mod-pager.local/".into(),
+            ok: false,
+            status: "404".into(),
+            nav: 78,
+        },
+    ] {
+        bg_say(&slot, "pager", e);
+    }
+    f.pump();
+    assert_eq!(
+        bg_opens(&slot, "pager").1,
+        closes + 1,
+        "the failed load closes it"
+    );
+}
+
 #[test]
 fn a_background_page_that_does_not_answer_the_ping_in_ten_seconds_is_closed_and_counts_as_ended() {
     let (f, _h, _) = live(Opts::default());
@@ -1958,6 +2017,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
         tip: String::new(),
         tone: flare_tabs::decor::Tone::Ink,
         generation,
+        own: false,
     })
     .unwrap_err();
     assert_eq!(e.code, code::UNAUTHORIZED);
@@ -1968,6 +2028,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
         value: Some(0.5),
         label: String::new(),
         generation,
+        own: false,
     })
     .unwrap_err();
     assert_eq!(e.code, code::UNAUTHORIZED);
@@ -1990,6 +2051,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
         tip: String::new(),
         tone: flare_tabs::decor::Tone::Ink,
         generation: w.hub.generation("flip"),
+        own: false,
     })
     .unwrap();
     assert!(f.ctl.borrow().has_decor(&a));

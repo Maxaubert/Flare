@@ -112,8 +112,9 @@ pub fn view_rect(cell: AxCell, scale: f64, view_h: f64, flipped: bool) -> (f64, 
 
 /// Pure: the element's text and the cursor's index in it (UTF-16 units, as NSRange counts). The text is the
 /// cursor's line (`row_text`, trailing blanks trimmed), padded with spaces out to the cursor when it stands past the
-/// line's end, so the index is always inside or at the end of the text. A wide character counts as one character,
-/// the first of its two cells (`row_text` skips the spacer).
+/// line's end, so the index is always inside or at the end of the text. `col` is a char index in `row_text`, not a
+/// cell column: a wide character is one char over two cells, so the caller maps the cursor's cell first
+/// (`Emulator::row_char_index`, rule 1352).
 pub fn caret_line(row_text: &str, col: usize) -> (String, usize) {
     let mut text = row_text.to_string();
     let have = text.chars().count();
