@@ -12,7 +12,8 @@ One gating step (spikes, no PR), then six code PRs. Each builds and passes its o
 - A2b (Android setup: Flare downloads the emulator, platform-tools and an image from Google into its own SDK folder
   after the licence click, and writes its own AVD; no Java) ships alone, unwired.
 - A3 (agent helper jar) ships alone.
-- A4 (Flare side: frames, panel, setup, menu entry) is the first visible change. Mockup first (open decision 7).
+- A4 (Flare side: frames, panel, setup, menu entry) is the first visible change. No mockup (Max, 2026-11-22): the
+  iOS panel's buttons are reused (Home, Lock as Power, Rotate), Back and Recents go in the menu.
 - A5 (agent tools for Android, capabilities on Windows) ships after A4.
 - A6 (bundle and sign: the emu host and the jar in the Windows installer and in `Flare.app`) can merge right after
   A2, like iOS PR 6, so the release path is proven early.

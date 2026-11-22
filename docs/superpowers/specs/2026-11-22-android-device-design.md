@@ -328,8 +328,10 @@ In Flare:
   reset the emu host lifts every open contact.
 - Wheel and trackpad: a short touch drag at the pointer, as for iOS. (gRPC `WheelEvent` would scroll only views
   that take mouse wheel; a drag scrolls everything a finger does.)
-- Header buttons for Android: Back, Home, Recents, and a menu with Power, Volume up and down, Rotate left and right,
-  Shut down, Choose device.
+- Header buttons for Android: **the same buttons as the iOS panel** (Max, 2026-11-22: "use the same buttons as the ios
+  simulator if possible"): Home, Lock (sends Power on Android) and Rotate, same icons, places and tooltips. Back and
+  Recents go into the existing menu, beside Volume up and down, Shut down and Choose device. Android's own on-screen
+  gesture navigation (swipe from the edge for Back) works in the picture anyway. No new header button and no mockup.
 - Takeover: unchanged (`person_input(tab)`).
 
 ### UI tree and agent helper
@@ -458,7 +460,7 @@ run (`avdmanager create avd -n flare-test-<n>`) and deleted after, never one of 
 | 4 | **Changed by Max later on 2026-11-22**: Flare installs everything itself (its own SDK folder, downloads from Google after the licence click, no Java, its own AVD). See "Setup". |
 | 5 | `-idle-grpc-timeout 300` watchdog for emulators Flare booted. |
 | 6 | If S2 cannot fix it, the Mac ships at its measured touch latency with a note. |
-| 7 | Mockup step before PR A4. |
+| 7 | **Changed by Max later on 2026-11-22**: no mockup; the Android panel uses the iOS panel's buttons (Home, Lock as Power, Rotate), with Back and Recents in the menu, and the existing setup-line style. |
 | 8 | Next-gen emulator: still-picture fallback only. |
 
 ## Open checks for Max's by-hand test
