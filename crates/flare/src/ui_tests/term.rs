@@ -169,6 +169,37 @@ fn the_bar_is_332_by_28_plus_two_hairlines() {
     }
 }
 
+/// Rule 1347: in the narrowest terminal (MIN_GRID, 320 px) the bar stays whole: it starts at least 4 px in from the
+/// left, it ends 12 px from the right, and the input shrinks to make room (the readout and buttons keep their size).
+#[test]
+fn the_bar_fits_the_narrowest_terminal() {
+    for s in SCALES {
+        let h = Harness::new(s, 320, 200, || FindBarPreview::new().unwrap());
+        h.comp.set_open(true);
+        h.advance(0);
+        let f = h.render();
+        let (x0, _, x1, _) = bar_box(&f, s);
+        let floor = (4.0 * s).round() as u32;
+        assert!(
+            x0 + 1 >= floor,
+            "scale {s}: the bar starts at {x0}, under {floor}"
+        );
+        let right_gap = f.w - (x1 + 1);
+        let want = (12.0 * s).round() as u32;
+        assert!(
+            right_gap.abs_diff(want) <= 1,
+            "scale {s}: right gap {right_gap}, want {want}"
+        );
+        // Typing still reaches the input, and the close button at the right still answers.
+        h.comp.invoke_focus_input();
+        h.key_text("abc");
+        h.advance(0);
+        assert_eq!(h.comp.get_last_query().as_str(), "abc", "scale {s}");
+        h.click(320.0 - 12.0 - 8.0 - 10.0, 12.0 + 14.0);
+        assert_eq!(h.comp.get_close_count(), 1, "scale {s}");
+    }
+}
+
 #[test]
 fn the_border_is_a_hairline_and_the_fill_is_side_flat() {
     for s in [1.0_f32, 1.5, 2.25] {
@@ -732,6 +763,7 @@ mod flow {
                     session: None,
                 }],
                 active: 0,
+                hidden: Vec::new(),
             };
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
             let prefs = PrefStore::memory();
@@ -2806,6 +2838,66 @@ mod flow {
         assert_eq!(w.quiet(), before, "nothing reached the local shell");
     }
 
+    /// Rule 1317: on a remote tab whose host program asked for mouse reports (here set as a snapshot's mouse mode
+    /// sets it), a click is a press and a release for the link, at the cell clicked; before that it is a local
+    /// selection click and nothing reaches the link.
+    #[test]
+    fn a_click_on_a_remote_tab_in_mouse_mode_reaches_the_link_as_mouse_intents() {
+        use flare_term::handle::{RemoteIntent, RemoteMouse, RemoteMouseAct};
+        use flare_term::mouse_report::{MouseButton, MouseMods};
+        let w = Wx::new(1.0);
+        let before = w.written();
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, true);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        let io = w.remote.made()[0].1.clone();
+        let front = || w.slot.borrow().clone().expect("a tab in front");
+        w.pump_until("the remote tab in front", |w| {
+            w.slot.borrow().as_ref().is_some_and(|h| h.id() == id)
+        });
+        io.push_output(b"Which one?\r\n  1. Red\r\n  2. Blue\r\n");
+        w.pump_until("the menu", |_| {
+            front().screen_tail(5).join("\n").contains("2. Blue")
+        });
+        let at = w.cell_center_css(3, 1);
+        w.down(at, PointerEventButton::Left);
+        w.up(at, PointerEventButton::Left);
+        w.pump();
+        assert!(
+            io.take_outgoing(Duration::from_millis(30))
+                .intents
+                .is_empty(),
+            "no mouse mode: a local click"
+        );
+        io.push_output(&flare_term::remote_pty::mouse_mode_bytes("click", true).unwrap());
+        w.pump_until("the mouse mode", |_| front().mode().sgr_mouse);
+        w.step(1000);
+        w.down(at, PointerEventButton::Left);
+        w.up(at, PointerEventButton::Left);
+        let mut typed = Vec::new();
+        let t = Instant::now();
+        while typed.len() < 2 && t.elapsed() < Duration::from_secs(5) {
+            typed.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+            w.pump();
+        }
+        let click = |act| {
+            RemoteIntent::Mouse(RemoteMouse {
+                act,
+                button: Some(MouseButton::Left),
+                col: 3,
+                row: 1,
+                mods: MouseMods::default(),
+            })
+        };
+        assert_eq!(
+            typed,
+            vec![click(RemoteMouseAct::Press), click(RemoteMouseAct::Release)]
+        );
+        assert_eq!(w.quiet(), before, "nothing reached the local shell");
+    }
+
     /// A remote tab in front, its link the test's: the tab's id and its live state (where its errands wait).
     fn remote_in_front(w: &Wx) -> (String, flare_term::remote_pty::RemoteLive) {
         let id = w
@@ -3223,6 +3315,98 @@ mod flow {
         assert!(!w.h.comp.get_rfolder_open());
     }
 
+    /// Rule 1299 (Max, 2026-11-18: "clicking Documents just reopens the Users folder, it doesn't go into Documents,
+    /// and it happens on single click"): with the real pointer in the window, one click picks the folder and nothing
+    /// else (no ask, the list neither scrolls back nor is built again), and a double-click goes into it.
+    #[test]
+    fn in_the_window_one_click_picks_and_a_double_click_goes_in() {
+        const NAMES: [&str; 20] = [
+            "Applications",
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Library",
+            "Movies",
+            "Music",
+            "Pictures",
+            "Public",
+            "a1",
+            "a2",
+            "a3",
+            "a4",
+            "a5",
+            "a6",
+            "a7",
+            "a8",
+            "a9",
+            "b1",
+            "b2",
+        ];
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let mut l = FakeLister {
+            home: "/Users/max".into(),
+            ..FakeLister::default()
+        };
+        l.folders.insert(
+            "/Users/max".into(),
+            NAMES.iter().map(|n| (*n, true)).collect(),
+        );
+        l.folders
+            .insert("/Users/max/a3".into(), vec![("inside", true)]);
+        let lister = Arc::new(l);
+        w.ctl.borrow_mut().set_folder_lister(lister.clone());
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").unwrap();
+        w.h.comp.invoke_menu_picked(i as i32);
+        listed(&w);
+        w.run(100);
+        let (lx, ly, lw) = (
+            w.h.comp.get_rfolder_list_x(),
+            w.h.comp.get_rfolder_list_y(),
+            w.h.comp.get_rfolder_list_w(),
+        );
+        let x = lx + lw / 2.0;
+        // Scrolled down three rows, so a list built again would show by jumping back to the top.
+        w.h.wheel(x, ly + 60.0, 0.0, -84.0);
+        w.run(400);
+        let scrolled = w.h.comp.get_rfolder_scrolled();
+        assert!(scrolled < -1.0, "the list scrolled: {scrolled}");
+        let row_y = |i: f32| ly + 1.0 + scrolled + i * 28.0 + 14.0;
+        let asks = |l: &FakeLister| {
+            l.asks
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|a| a.1.clone())
+                .collect::<Vec<_>>()
+        };
+        // One click on a3: picked, footer names it, nothing asked, the list where it was.
+        w.h.click(x, row_y(11.0));
+        w.run(600);
+        assert_eq!(w.h.comp.get_rfolder_selected(), 11, "one click picks");
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max/a3");
+        assert!(!w.h.comp.get_rfolder_loading(), "one click asks nothing");
+        assert_eq!(asks(&lister), [None], "one click asks nothing");
+        assert_eq!(
+            w.h.comp.get_rfolder_scrolled(),
+            scrolled,
+            "the list stays where it was"
+        );
+        // A double-click on it goes in.
+        w.h.click(x, row_y(11.0));
+        w.h.advance(40);
+        w.h.click(x, row_y(11.0));
+        listed(&w);
+        assert_eq!(
+            asks(&lister),
+            [None, Some("/Users/max/a3".to_string())],
+            "a double-click goes in"
+        );
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max/a3");
+        assert_eq!(crumb_labels(&w), ["Mac Mini", "/", "Users", "max", "a3"]);
+    }
+
     /// Rule 1282: a machine that does not answer is one line in the dialog (Settings > Machines' words), and nothing
     /// opens; Cancel closes it, and an answer that comes after is never taken.
     #[test]
@@ -3472,46 +3656,45 @@ mod flow {
         assert!(menu_row(&w, "proj").is_none());
     }
 
-    /// Rule 1192: a remote tab's menu has "Hide here only" after Close tab; it lets go here and the host session goes on
-    /// (`remote.detach`), where Close ends it everywhere (`remote.close`). A local tab has no such row.
+    /// Rule 1192 as amended by 1305: a remote tab's menu has Close tab and no "Hide here only" (Max 2026-11-19: it left
+    /// a hidden session nobody sees); Close ends the session everywhere (`remote.close`).
     #[test]
-    fn hide_here_only_detaches_and_close_ends_the_session_everywhere() {
+    fn a_remote_tabs_menu_has_close_and_no_hide_here_only() {
         use flare_term::remote_pty::Leaving;
         let w = Wx::new(1.0);
-        let local = w
-            .ctl
-            .borrow()
-            .model()
-            .active()
-            .map(|t| t.id.clone())
-            .unwrap();
-        w.h.comp.invoke_tab_menu(local.as_str().into(), 10.0, 10.0);
-        assert_eq!(menu_row(&w, crate::menus_ui::HIDE_HERE), None);
-        let (hide, _) = remote_in_front(&w);
-        let close = w
-            .ctl
-            .borrow_mut()
-            .open_remote("mac", "/Users/max/two", None, true);
-        w.pump_until("two remote ptys", |w| w.remote.made().len() == 2);
-        w.h.comp.invoke_tab_menu(hide.as_str().into(), 10.0, 10.0);
-        let i = menu_row(&w, crate::menus_ui::HIDE_HERE).expect("Hide here only");
-        assert_eq!(i, 1, "right after Close tab");
-        w.h.comp.invoke_menu_picked(i as i32);
-        w.pump();
-        assert!(
-            w.ctl.borrow().model().remote_of(&hide).is_none(),
-            "gone here"
-        );
-        let io0 = w.remote.made()[0].1.clone();
-        w.pump_until("the detach", |_| io0.leaving().is_some());
-        assert_eq!(io0.leaving(), Some(Leaving::Detach));
+        let (close, _) = remote_in_front(&w);
         w.h.comp.invoke_tab_menu(close.as_str().into(), 10.0, 10.0);
-        let c = menu_row(&w, "Close tab").unwrap();
+        assert_eq!(menu_row(&w, "Hide here only"), None);
+        let c = menu_row(&w, "Close tab").expect("Close tab");
+        assert_eq!(c, 0);
         w.h.comp.invoke_menu_picked(c as i32);
         w.pump();
-        let io1 = w.remote.made()[1].1.clone();
-        w.pump_until("the close", |_| io1.leaving().is_some());
-        assert_eq!(io1.leaving(), Some(Leaving::Close));
+        let io0 = w.remote.made()[0].1.clone();
+        w.pump_until("the close", |_| io0.leaving().is_some());
+        assert_eq!(io0.leaving(), Some(Leaving::Close));
+    }
+
+    /// Rule 1305: the opener asks before closing a remote tab whose host names an agent, even an idle one its hub never
+    /// saw working or asking (the host never asks for a hidden session).
+    #[test]
+    fn the_opener_asks_before_closing_an_idle_remote_claude_tab() {
+        let w = Wx::new(1.0);
+        let (id, _) = remote_in_front(&w);
+        let live = w.ctl.borrow().model().remote_live(&id).cloned().unwrap();
+        live.set_status(flare_term::remote_pty::HostStatus {
+            state: "idle".into(),
+            agent: Some("claude".into()),
+            ..flare_term::remote_pty::HostStatus::default()
+        });
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        w.pump();
+        assert!(!w.ctl.borrow().hub().working(&id), "never seen working");
+        w.ctl.borrow_mut().request_close(&id);
+        assert!(w.ctl.borrow().ask_text().is_some(), "the close asks first");
+        assert!(
+            w.ctl.borrow().model().remote_of(&id).is_some(),
+            "still open"
+        );
     }
 
     /// Rule 1279: a remote tab opened in the host's home (`~`) takes the folder the host's first status names (the

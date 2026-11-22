@@ -33,17 +33,20 @@ use base64::Engine as _;
 use flare_ctl::framing::Wire;
 use flare_ctl::remote::{
     FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, FOLDER_DIRS_MAX, FOLDER_FILES_MAX, FOLDER_MAX, Intent,
-    KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, OUTPUT_MAX, chunks_of, intents_json,
+    KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, MouseAct, MouseBtn, MouseIntent, OUTPUT_MAX,
+    chunks_of, intent_weight, intents_json,
 };
 use flare_ctl::{
     Client, ClientError, CtlError, Method, RemoteHelloInfo, RemoteHelloParams, StdioWire, code,
 };
 use flare_tabs::tabs::Os;
 use flare_term::handle::RemoteIntent;
+use flare_term::handle::{RemoteMouse, RemoteMouseAct};
+use flare_term::mouse_report::MouseButton;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_term::remote_pty::{
     Errand, ErrandFail, Fetched, Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip,
-    Upload, UploadFolder, plain_snapshot, styled_snapshot,
+    Upload, UploadFolder, mouse_mode_bytes, plain_snapshot, styled_snapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -433,14 +436,96 @@ fn wire_intent(i: &RemoteIntent) -> Intent {
         }),
         RemoteIntent::Text(t) => Intent::Text(t.clone()),
         RemoteIntent::Paste(p) => Intent::Paste(p.clone()),
+        RemoteIntent::Mouse(m) => Intent::Mouse(wire_mouse(m)),
+    }
+}
+
+/// The wire form of a mouse event (rule 1317).
+fn wire_mouse(m: &RemoteMouse) -> MouseIntent {
+    MouseIntent {
+        act: match m.act {
+            RemoteMouseAct::Press => MouseAct::Press,
+            RemoteMouseAct::Release => MouseAct::Release,
+            RemoteMouseAct::Motion => MouseAct::Motion,
+            RemoteMouseAct::WheelUp => MouseAct::WheelUp,
+            RemoteMouseAct::WheelDown => MouseAct::WheelDown,
+        },
+        button: m.button.map(|b| match b {
+            MouseButton::Left => MouseBtn::Left,
+            MouseButton::Middle => MouseBtn::Middle,
+            MouseButton::Right => MouseBtn::Right,
+        }),
+        col: m.col,
+        row: m.row,
+        shift: m.mods.shift,
+        alt: m.mods.alt,
+        ctrl: m.mods.ctrl,
     }
 }
 
 /// The bytes an intent counts toward `MAX_INPUT_BYTES`, as the host counts them.
 fn weight(i: &Intent) -> usize {
-    match i {
-        Intent::Key(k) => k.key.len() + k.code.len() + k.text.as_ref().map_or(0, String::len),
-        Intent::Text(s) | Intent::Paste(s) => s.len(),
+    intent_weight(i)
+}
+
+/// The host refused a call for its mouse intents: an older Flare that knows none (rule 1317) answers `bad_params`
+/// naming the kind, and types nothing of the call.
+fn refuses_mouse(e: &CtlError) -> bool {
+    e.code == code::BAD_PARAMS && e.message.contains("no intent is called mouse")
+}
+
+/// The least time between two `remote.input` calls that carry only a pointer's motion (rule 1317): at most 25 a
+/// second, half the host's 50 calls a second on a tab, so a dragged mouse never spends the typing's share.
+pub const MOTION_GAP: Duration = Duration::from_millis(40);
+
+/// Paces a remote tab's mouse motion (rule 1317): typing that is only a motion waits until [`MOTION_GAP`] after the
+/// last motion sent, and a newer motion takes its place meanwhile. Anything else goes at once, with the motion held
+/// before it, in order.
+#[derive(Default)]
+pub struct MotionPace {
+    held: Option<RemoteIntent>,
+    last: Option<Instant>,
+}
+
+fn is_motion(i: &RemoteIntent) -> bool {
+    matches!(i, RemoteIntent::Mouse(m) if m.is_motion())
+}
+
+impl MotionPace {
+    /// What to send now of `typed` (with the motion held before it, if any).
+    pub fn pace(&mut self, typed: Vec<RemoteIntent>, now: Instant) -> Vec<RemoteIntent> {
+        let mut all: Vec<RemoteIntent> = self.held.take().into_iter().collect();
+        for i in typed {
+            if is_motion(&i) && all.last().is_some_and(is_motion) {
+                all.pop();
+            }
+            all.push(i);
+        }
+        let only_motion = !all.is_empty() && all.iter().all(is_motion);
+        if only_motion
+            && self
+                .last
+                .is_some_and(|t| now.saturating_duration_since(t) < MOTION_GAP)
+        {
+            self.held = all.pop();
+            return Vec::new();
+        }
+        if all.iter().any(is_motion) {
+            self.last = Some(now);
+        }
+        all
+    }
+
+    /// How long until the motion held may go, when one is held.
+    pub fn due(&self, now: Instant) -> Option<Duration> {
+        self.held.as_ref()?;
+        let at = self.last? + MOTION_GAP;
+        Some(at.saturating_duration_since(now))
+    }
+
+    /// The link went down: a motion held is dropped with it.
+    pub fn clear(&mut self) {
+        self.held = None;
     }
 }
 
@@ -463,13 +548,15 @@ fn pieces(s: &str) -> Vec<String> {
 }
 
 /// Pure: the typing as `remote.input` calls, in order, each within `MAX_INTENTS` and `MAX_INPUT_BYTES` (the host
-/// refuses a call over either, and types nothing of it). A long text or paste is cut on character boundaries.
+/// refuses a call over either, and types nothing of it). A long text or paste is cut on character boundaries. A mouse
+/// event over a cell the host would refuse (past `MAX_COLS` or `MAX_ROWS`) is left out, so it never costs the call.
 pub fn input_batches(typed: &[RemoteIntent]) -> Vec<Vec<Intent>> {
     let mut all: Vec<Intent> = Vec::new();
     for i in typed {
         match wire_intent(i) {
             Intent::Text(t) => all.extend(pieces(&t).into_iter().map(Intent::Text)),
             Intent::Paste(p) => all.extend(pieces(&p).into_iter().map(Intent::Paste)),
+            Intent::Mouse(m) if !m.in_bounds() => {}
             key => all.push(key),
         }
     }
@@ -910,10 +997,13 @@ impl PtySpawner for RemoteSpawner {
             convo: crate::remote_convo::ConvoMirror::new(),
             convo_next: None,
             convo_off: false,
-            open_id: flare_term::session::new_ctl_token(),
             open_id_on: true,
+            restarted: false,
+            restart_line_at: None,
             kept: KeptTyping::default(),
             styled_on: true,
+            mouse_on: true,
+            pace: MotionPace::default(),
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -928,6 +1018,23 @@ enum Step {
     Ended,
     /// The link broke: wait, then try again.
     Down,
+    /// The host says the tab is gone (`no_tab`): the session asks `remote.find` once on the same link (rule 1307).
+    /// Never leaves [`Worker::session`].
+    Gone,
+}
+
+/// How long after the snapshot of a found session the restart line waits, at least, and then for a quiet output poll
+/// (rule 1307).
+const RESTART_LINE_QUIET: Duration = Duration::from_millis(500);
+
+/// The line a remote tab shows when its session went on after the host's Flare restarted (rule 1307).
+pub fn restarted_line(machine: &str) -> String {
+    format!("Flare restarted on {machine}. The session goes on.")
+}
+
+/// The line a remote tab shows when its session ended on the host by itself, its shell exited (rule 1308).
+pub fn ended_line(machine: &str) -> String {
+    format!("This session was ended on {machine}.")
 }
 
 struct Worker {
@@ -950,14 +1057,22 @@ struct Worker {
     convo: crate::remote_convo::ConvoMirror,
     convo_next: Option<Instant>,
     convo_off: bool,
-    /// This tab's `remote.open` id, the same across its reconnects (rule 1210), and whether the host takes it (an older
-    /// host refuses the param).
-    open_id: String,
+    /// Whether the host takes this tab's `remote.open` id (rule 1210; an older host refuses the param). The id itself
+    /// is the tab's, kept in its live state and saved with it (rule 1307).
     open_id_on: bool,
+    /// The host's Flare restarted and the tab found its session under a new id: the line is shown once the new
+    /// snapshot is in and the host's screen went quiet, not before the time here (rule 1307).
+    restarted: bool,
+    restart_line_at: Option<Instant>,
     /// The typing kept while the link is down (rule 1210).
     kept: KeptTyping,
     /// Whether the host takes `remote.snapshot {styled}` (rule 1213; an older host refuses the param).
     styled_on: bool,
+    /// Whether the host of this link takes mouse intents (rule 1317; an older host refuses the kind). Asked again on
+    /// every new link, so a host that was updated meanwhile gets them.
+    mouse_on: bool,
+    /// The pace of the tab's mouse motion (rule 1317).
+    pace: MotionPace,
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -1050,6 +1165,10 @@ impl KeptTyping {
     ) {
         self.forget_old(now, max_age);
         for (n, i) in intents.into_iter().enumerate() {
+            // A mouse event is never kept (rule 1317): a click sent later would land on a screen that changed.
+            if matches!(i, RemoteIntent::Mouse(_)) {
+                continue;
+            }
             let w = weight(&wire_intent(&i));
             if self.full || self.bytes + w > KEPT_TYPING_MAX {
                 self.full = true;
@@ -1093,7 +1212,8 @@ impl Worker {
         loop {
             live.set_link(LinkState::Connecting);
             match self.session() {
-                Step::Ended => break,
+                // `Gone` never leaves the session; ended, as a `no_tab` would be, if it ever did.
+                Step::Ended | Step::Gone => break,
                 Step::Down => {
                     // A link that was up starts the back-off again from its shortest wait.
                     if live.link() == LinkState::Live {
@@ -1183,13 +1303,124 @@ impl Worker {
             .push_output(format!("\r\n\x1b[31m{text}\x1b[0m\r\n").as_bytes());
     }
 
-    /// One life of the link: connect, open or attach, catch up, then the polls until it breaks or the tab goes.
+    /// The tab's host session is gone and nothing finds it: the tab ends as a shell that exits, and what was typed
+    /// meanwhile is never typed into another tab.
+    fn end_here(&mut self) -> Step {
+        self.kept.clear();
+        self.io.finish(None);
+        Step::Ended
+    }
+
+    /// One life of the link: connect, open or attach, catch up, then the polls until it breaks or the tab goes. A
+    /// `no_tab` asks `remote.find` once per life, on the same link (rule 1307).
     fn session(&mut self) -> Step {
+        let mut link = match self.link_and_tab() {
+            Ok(l) => l,
+            Err(step) => return step,
+        };
+        let Some(mut tab) = self.spec.live.host_tab() else {
+            return Step::Down;
+        };
+        let mut asked = false;
+        loop {
+            match self.follow(&mut *link, &tab) {
+                Step::Gone if !asked => {
+                    asked = true;
+                    match self.find(&mut *link, &tab) {
+                        Ok(t) => tab = t,
+                        Err(step) => return step,
+                    }
+                }
+                Step::Gone => return self.end_here(),
+                step => return step,
+            }
+        }
+    }
+
+    /// Rule 1307: the host said the tab is gone. A tab that has its open id (and a host that takes one) asks the host
+    /// once where its session is now:
+    /// - `{tab}`: the host's Flare restarted and brought the session back under a new id. The tab follows it from a
+    ///   fresh snapshot and says so in one line. The same id (only the follow was lost) goes on from the number read.
+    /// - `no_tab`: the session ended on the host by itself (its shell exited, rule 1308). The tab stays, with one red
+    ///   line, and its link ends.
+    /// - `unknown_method` (an older host), or no open id (a tab saved before the key): the tab ends as before.
+    /// - Any other refusal (`unavailable` while the host restores its tabs, `busy`, a timeout): asked again on this link
+    ///   for up to `attach_patience`, then the link is tried again later. Never an end.
+    ///
+    /// The typing kept meanwhile is dropped in every case: it was typed for the lost tab.
+    fn find(&mut self, link: &mut dyn Link, lost: &str) -> Result<String, Step> {
+        self.kept.clear();
+        let Some(open_id) = self.spec.live.open_id().filter(|_| self.open_id_on) else {
+            return Err(self.end_here());
+        };
+        let end = Instant::now() + self.t.attach_patience;
+        loop {
+            match link.call(Method::RemoteFind, json!({"open_id": open_id}), self.t.call) {
+                Ok(v) => {
+                    let Some(found) = v["tab"].as_str().map(str::to_string) else {
+                        return Err(Step::Down);
+                    };
+                    // Typing and a size asked during the find: the size is kept, the typing was for the lost tab.
+                    let out = self.io.take_outgoing(Duration::ZERO);
+                    if let Some(s) = out.size {
+                        self.size = Some(s);
+                    }
+                    self.kept.clear();
+                    if let Some(how) = out.leaving {
+                        let m = match how {
+                            Leaving::Close => Method::RemoteClose,
+                            Leaving::Detach => Method::RemoteDetach,
+                        };
+                        let _ = link.call(m, json!({"tab": found}), self.t.end_call);
+                        return Err(Step::Ended);
+                    }
+                    if found != lost {
+                        log::info!("remote.find: the host's Flare restarted, the session goes on");
+                        self.spec.live.set_host_tab(&found);
+                        self.fresh = true;
+                        self.restarted = true;
+                        self.convo = crate::remote_convo::ConvoMirror::new();
+                        self.convo_next = None;
+                    }
+                    return Ok(found);
+                }
+                Err(LinkError::Refused(e)) if e.code == code::NO_TAB => {
+                    self.say(&ended_line(&self.spec.machine));
+                    return Err(Step::Ended);
+                }
+                Err(LinkError::Refused(e)) if e.code == code::UNKNOWN_METHOD => {
+                    log::info!("remote.find unknown to the host: the tab ends as before");
+                    return Err(self.end_here());
+                }
+                Err(LinkError::Refused(e))
+                    if e.code == code::UNAVAILABLE && Instant::now() < end =>
+                {
+                    log::info!("remote.find not yet ({}), asking again", e.message);
+                    if self.hold(self.t.attach_retry, false).is_some() {
+                        // The tab let go while its session was being looked for: nothing here to close.
+                        return Err(Step::Ended);
+                    }
+                    self.kept.clear();
+                }
+                Err(LinkError::Refused(e)) => {
+                    log::info!(
+                        "remote.find refused ({}), the link tries again later",
+                        e.code
+                    );
+                    return Err(Step::Down);
+                }
+                Err(LinkError::Down(_)) => return Err(Step::Down),
+            }
+        }
+    }
+
+    /// Connects, and opens the host tab when the tab has none yet. The link, or what the session comes to.
+    fn link_and_tab(&mut self) -> Result<Box<dyn Link>, Step> {
         if let Some(how) = self.io.leaving() {
             if how == Leaving::Close {
                 self.close_without_a_link();
             }
-            return Step::Ended;
+            return Err(Step::Ended);
         }
         let mut link = match self.connector.connect(&self.spec.machine) {
             Ok(l) => l,
@@ -1203,21 +1434,24 @@ impl Worker {
                     self.say(&r.message);
                     self.told = true;
                 }
-                return Step::Down;
+                return Err(Step::Down);
             }
         };
+        if self.spec.live.host_tab().is_none() {
+            let t = self.open(&mut *link)?;
+            self.spec.live.set_host_tab(&t);
+        }
+        Ok(link)
+    }
+
+    /// Attaches to `tab`, catches up (a snapshot when fresh), sends the typing kept, then the polls until the link
+    /// breaks, the tab goes, or the host says the tab is gone ([`Step::Gone`]).
+    fn follow(&mut self, link: &mut dyn Link, tab: &str) -> Step {
         let live = self.spec.live.clone();
-        let tab = match live.host_tab() {
-            Some(t) => t,
-            None => match self.open(&mut *link) {
-                Ok(t) => {
-                    live.set_host_tab(&t);
-                    t
-                }
-                Err(step) => return step,
-            },
-        };
-        if let Some(step) = self.attach(&mut *link, &tab) {
+        // A new link asks again whether its host takes mouse intents; a motion held for the old one is gone (rule 1317).
+        self.mouse_on = true;
+        self.pace.clear();
+        if let Some(step) = self.attach(link, tab) {
             return step;
         }
         // What the tab typed and sized while the link came up joins the typing kept meanwhile, so the age and the cap
@@ -1242,21 +1476,26 @@ impl Worker {
             return self.failed(e);
         }
         let caught = if self.fresh {
-            self.snapshot(&mut *link, &tab)
+            self.snapshot(link, tab)
         } else {
-            self.catch_up(&mut *link, &tab)
+            self.catch_up(link, tab)
         };
         if let Err(e) = caught {
             return self.failed(e);
         }
         self.fresh = false;
+        // Rule 1307: said once the host's screen settled after the snapshot (the polls, `RESTART_LINE_QUIET`): a
+        // Windows host's console can repaint the whole screen after the resize, which would wipe a line said at once.
+        if std::mem::take(&mut self.restarted) {
+            self.restart_line_at = Some(Instant::now() + RESTART_LINE_QUIET);
+        }
         live.set_link(LinkState::Live);
         // The host's status is asked at once on every attach, and its first answer is always news (rule 294).
         self.status.attached();
-        if let Err(e) = self.send_kept(&mut *link, &tab) {
+        if let Err(e) = self.send_kept(link, tab) {
             return self.failed(e);
         }
-        self.pump(&mut *link, &tab)
+        self.pump(link, tab)
     }
 
     /// `remote.open` for a tab with no host tab yet, with this tab's open id (rule 1210): an open whose answer a broken
@@ -1264,7 +1503,8 @@ impl Worker {
     /// refuses the unknown param (`bad_params` naming it): the open goes again without it, on this link, and later
     /// opens of this tab leave it out.
     fn open(&mut self, link: &mut dyn Link) -> Result<String, Step> {
-        let id = self.open_id_on.then_some(self.open_id.as_str());
+        let open_id = self.open_id_on.then(|| self.spec.live.open_id_or_new());
+        let id = open_id.as_deref();
         let mut answer = link.call(
             Method::RemoteOpen,
             open_params(&self.spec, id),
@@ -1305,11 +1545,10 @@ impl Worker {
             match link.call(Method::RemoteAttach, json!({"tab": tab}), self.t.call) {
                 Ok(_) => return None,
                 Err(LinkError::Refused(e)) if e.code == code::NO_TAB => {
-                    // The host's tab is gone (closed there, or the host started again): the tab ends as a shell that
-                    // exits, and what was typed meanwhile is never typed into another tab.
+                    // The host's tab is gone (ended there, or the host started again): the session looks for it once
+                    // (rule 1307), and what was typed meanwhile is never typed into another tab.
                     self.kept.clear();
-                    self.io.finish(None);
-                    return Some(Step::Ended);
+                    return Some(Step::Gone);
                 }
                 Err(LinkError::Refused(e))
                     if e.code == code::UNAVAILABLE && Instant::now() < end =>
@@ -1364,14 +1603,13 @@ impl Worker {
         Ok(())
     }
 
-    /// What a failed call means: the session gone on the host ends the tab (and drops the typing kept for it); anything
-    /// else is a broken link.
+    /// What a failed call means: the session gone on the host drops the typing kept for it and is looked for once
+    /// (rule 1307, [`Step::Gone`]); anything else is a broken link.
     fn failed(&mut self, e: LinkError) -> Step {
         match e {
             LinkError::Refused(r) if r.code == code::NO_TAB => {
                 self.kept.clear();
-                self.io.finish(None);
-                Step::Ended
+                Step::Gone
             }
             _ => Step::Down,
         }
@@ -1411,6 +1649,13 @@ impl Worker {
             } else {
                 plain_snapshot(&data)
             });
+        // Rule 1317: the mouse reports the host's program asked for, set here from the answer's word, so a click on a
+        // restored or caught-up tab still reaches it. An older host names none: the modes here stay as they are.
+        if let Some(word) = v["mouse"].as_str()
+            && let Some(modes) = mouse_mode_bytes(word, v["sgr_mouse"].as_bool() == Some(true))
+        {
+            self.io.push_output(&modes);
+        }
         self.spec.live.set_seq(seq);
         Ok(())
     }
@@ -1590,19 +1835,9 @@ impl Worker {
                     return self.failed(e);
                 }
             }
-            for batch in input_batches(&out.intents) {
-                busy = true;
-                match link.call(
-                    Method::RemoteInput,
-                    json!({"tab": tab, "intents": intents_json(&batch)}),
-                    self.t.call,
-                ) {
-                    Ok(_) => {}
-                    Err(LinkError::Refused(e)) if e.code != code::NO_TAB => {
-                        log::warn!("remote.input refused: {}", e.message);
-                    }
-                    Err(e) => return self.failed(e),
-                }
+            let typed = self.pace.pace(out.intents, Instant::now());
+            if let Err(e) = self.send_typing(link, tab, typed, &mut busy) {
+                return self.failed(e);
             }
             // File work (remote sessions PR 6) comes after the typing asked before it, so a dropped file's path is
             // pasted where the person was typing.
@@ -1656,12 +1891,74 @@ impl Worker {
             if let Err(e) = self.poll_convo(link, tab) {
                 return self.failed(e);
             }
+            // Rule 1307: the restart line, once the found session's screen is quiet.
+            if !busy && self.restart_line_at.is_some_and(|at| Instant::now() >= at) {
+                self.restart_line_at = None;
+                self.io.push_output(
+                    format!(
+                        "\r\n\x1b[2m{}\x1b[0m\r\n",
+                        restarted_line(&self.spec.machine)
+                    )
+                    .as_bytes(),
+                );
+            }
             idle = if busy {
                 self.t.poll_min
             } else {
                 next_backoff(idle, self.t.poll_max)
             };
+            // A motion held for its pace goes when its time comes, not at the next idle poll (rule 1317).
+            if let Some(due) = self.pace.due(Instant::now()) {
+                idle = idle.min(due.max(Duration::from_millis(1)));
+            }
         }
+    }
+
+    /// The typing as `remote.input` calls. A host that knows no mouse intent (an older Flare, rule 1317) refuses the
+    /// call whole: the call goes again without them, and this link sends none after. Any other refusal is logged and
+    /// that call's typing dropped, as before; a broken link or a gone tab is handed back.
+    fn send_typing(
+        &mut self,
+        link: &mut dyn Link,
+        tab: &str,
+        mut typed: Vec<RemoteIntent>,
+        busy: &mut bool,
+    ) -> Result<(), LinkError> {
+        if !self.mouse_on {
+            typed.retain(|i| !matches!(i, RemoteIntent::Mouse(_)));
+        }
+        for mut batch in input_batches(&typed) {
+            if !self.mouse_on {
+                batch.retain(|i| !matches!(i, Intent::Mouse(_)));
+                if batch.is_empty() {
+                    continue;
+                }
+            }
+            *busy = true;
+            loop {
+                match link.call(
+                    Method::RemoteInput,
+                    json!({"tab": tab, "intents": intents_json(&batch)}),
+                    self.t.call,
+                ) {
+                    Ok(_) => break,
+                    Err(LinkError::Refused(e)) if self.mouse_on && refuses_mouse(&e) => {
+                        log::info!("remote.input: an older host without mouse intents");
+                        self.mouse_on = false;
+                        batch.retain(|i| !matches!(i, Intent::Mouse(_)));
+                        if batch.is_empty() {
+                            break;
+                        }
+                    }
+                    Err(LinkError::Refused(e)) if e.code != code::NO_TAB => {
+                        log::warn!("remote.input refused: {}", e.message);
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(())
     }
 }
 

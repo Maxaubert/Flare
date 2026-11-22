@@ -9,7 +9,6 @@ publish = false
 flare-agent = { path = "../flare-agent" }
 flare-settings = { path = "../flare-settings" }
 serde_json.workspace = true
-log.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

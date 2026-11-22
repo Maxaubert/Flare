@@ -126,8 +126,24 @@ Development tools in `tools/`, never shipped in the installer:
 - `tools/pt-shot/pt-settings.mjs`: Playwright (from Prism's `node_modules`) takes Prism Terminal's
   Settings screenshots for the comparison (M7).
 - `tools/settings-matrix`: PowerShell scripts that take Flare's Settings screenshots beside Prism
-- `tools/make-icon.py`: builds the icon files (`build/icon.ico`, `build/icon-source.png`, `docs/assets/flare-icon.png`) from the original Flare icon, `assets/icon/flare-color.svg`, the shipped app icon on both systems (the Mac's `Flare.icns` is made from `build/icon-source.png`). Regenerate with `python tools/make-icon.py` (needs `rsvg-convert` or an ImageMagick whose SVG reader is librsvg); `python -I tools/test_make_icon.py` checks it. The other designs in `assets/icon/app-icons/` are choices in Settings > Appearance > App icon, drawn at run time.
   Terminal's at every display scaling and compose them (M7).
+- `tools/make-icon.py`: builds the icon files (`build/icon.ico`, `build/icon-source.png`, `docs/assets/flare-icon.png`) from the original Flare icon, `assets/icon/flare-color.svg`, the shipped app icon on both systems (the Mac's `Flare.icns` is made from `build/icon-source.png`). Regenerate with `python tools/make-icon.py` (needs `rsvg-convert` or an ImageMagick whose SVG reader is librsvg); `python -I tools/test_make_icon.py` checks it. The other designs in `assets/icon/app-icons/` are choices in Settings > Appearance > App icon, drawn at run time.
+- `tools/e2e`: the `flare-e2e` harness crate (see Test above).
+- `tools/release`: the release scripts (`pack.ps1`, `verify-pack.ps1`, the notes and the CI gates), see
+  [docs/shipping.md](docs/shipping.md).
+- `tools/oracle-update`: Node. Runs Prism Terminal's own TypeScript on a seeded corpus and writes the
+  golden fixtures the Flare tests compare against. Its README says how.
+- `tools/pt-perf`: Node. Measures the installed Prism Terminal the way Flare is measured, for the
+  performance baseline. Its README says how.
+- `tools/dpi-matrix`: every headless scene at every display scaling on both renderers, with a check
+  script and contact sheets (M10). Its README says how.
+- `tools/m5-compare`, `tools/m9-matrix`, `tools/glass-light`, `tools/visual`: scripts that check and
+  compose screenshot sets for earlier milestones and audits (contact sheets, side-by-sides, contrast).
+- `tools/fonts`: builds the `assets/selawik` fonts from Microsoft's Selawik release.
+- `tools/model-viewer`: builds `assets/three/viewer.js`, the 3D model viewer, with esbuild.
+- The scripts loose in `tools/` (`fetch-whisper.ps1`, `fetch-conpty.ps1`, `build-whisper-macos.sh`,
+  `stage-install.ps1`, `shot-window.ps1`) fetch or build vendored pieces, stage a local install and
+  take window screenshots. Each one's header says what it does.
 
 ## Release
 

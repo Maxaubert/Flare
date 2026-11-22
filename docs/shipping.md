@@ -110,19 +110,27 @@ pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
 
 ### On the Mac (2026-11-11, rule 1132)
 
-For Max's ad hoc `/Applications/Flare.app`. Max runs Claude Code inside it, so **an agent never replaces that bundle**:
-only Max's click on "Build ready" does. Always stage a Mac build this way, so it shows as an update in the running app:
+For Max's `/Applications/Flare.app`. Max runs Claude Code inside it, so **an agent never replaces that bundle**:
+only the running app does, on Max's click on "Build ready" or an agent's armed install (below, rule 1326). Always stage a
+Mac build this way, so it shows as an update in the running app:
 
 ```
 tools/release/mac/stage-install.sh
 ```
 
-- It builds Flare.app with `tools/release/mac/make-app.sh` into a temp folder (ad hoc, or `FLARE_MAC_SIGN_IDENTITY`
-  when set; never notarized), copies it to `~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames that to
+- It builds Flare.app with `tools/release/mac/make-app.sh` into a temp folder, signed with Developer ID (never
+  notarized): `FLARE_MAC_SIGN_IDENTITY` when set, else the login Keychain's "Developer ID Application" identity
+  (`security find-identity -v -p codesigning`, read only; team `WV7BY8CUM8` first when there are several). It copies it to `~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames that to
   `staged/` (the old stage's manifest goes first) and writes `staged/staged.json` last: the commit, `built_at` and the
   sha256 of every file in the bundle by its path in it (`Contents/MacOS/Flare`), the Windows format. It never touches
   `/Applications`.
-- `FLARE_STAGE_APP=<built Flare.app>` stages a bundle already built (no cargo); `FLARE_STAGE_ROOT=<folder>` stages
+- **Only a Developer ID stage (2026-11-21, rule 1356).** With no Developer ID identity, or a built or given bundle that
+  `codesign -dv` does not show as Developer ID (an `Authority=Developer ID Application:` line and a `TeamIdentifier`),
+  that fails `codesign --verify --deep --strict`, or whose helper apps and frameworks are not all Developer ID signed by
+  the same team, the script stages nothing and says why. An ad hoc signature is a per-build cdhash, so installing one drops Flare's
+  TCC grants (Screen Recording broke that way on 2026-11-20); a Developer ID build keeps them. `FLARE_STAGE_ALLOW_ADHOC=1`
+  stages an ad hoc build anyway (the tests and CI use it; they have no Keychain identity).
+- `FLARE_STAGE_APP=<built Flare.app>` stages a bundle already built (no cargo; the same signature check); `FLARE_STAGE_ROOT=<folder>` stages
   somewhere else (the tests use a temp one; a root in an `Applications` folder or a bundle is refused).
 - The app side: a `.app` in an `Applications` folder is an installed copy, ad hoc or Velopack's, with live updates on or
   off. It polls `staged/staged.json` every 2 s; the chip shows once every hash matches. An `--e2e` run never looks at the
@@ -132,10 +140,35 @@ tools/release/mac/stage-install.sh
   `open -n /Applications/Flare.app --args ... --after-pid <pid>`. `install.json` and `install.lock` live in
   `~/Library/Application Support/Flare/`. `Flare.app.old` goes once the new build has been up 20 s (or quit cleanly);
   two early deaths put it back. A swap taken back moves the new bundle back to `staged/`, so it stays on offer.
-- An ad hoc signature changes with every build, so macOS may ask again for permissions it gave Flare (microphone,
-  folders, accessibility) after an install. The bundle id (`com.flare.terminal`) stays the same.
+- An ad hoc signature changes with every build, so macOS asks again for permissions it gave Flare (microphone,
+  folders, accessibility, Screen Recording) after an ad hoc install. That is why only a Developer ID build is staged
+  unless `FLARE_STAGE_ALLOW_ADHOC=1`. The bundle id (`com.flare.terminal`) stays the same.
 - First install: a build from before this feature cannot read the Mac stage. Max installs one build with it by hand
   once; from then on every stage shows as "Build ready".
+
+### An agent installs the staged build (2026-11-20, rule 1326)
+
+Max, 2026-11-20: agents may install the staged build themselves, and "always stage and install the signed build". So
+stage a Developer ID build on the Mac (the script finds the Keychain's Developer ID identity itself and refuses an ad hoc
+build, rule 1356):
+
+```
+tools/release/mac/stage-install.sh
+```
+
+then install it with the agent's `install_staged_build` tool (the `flare-status` plugin's MCP server) or the command
+
+```
+/Applications/Flare.app/Contents/MacOS/Flare --install-staged          # arm the install
+/Applications/Flare.app/Contents/MacOS/Flare --install-staged --check  # only report the stage
+```
+
+(Windows: `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe --install-staged`). It does what the click does, armed: the
+install waits until no agent in any tab works or waits on a question (the caller too, so end the turn), for a minute
+without a break, then the 10 s toast with Cancel, the swap and the restart; sessions resume. It answers at once with
+`armed`, `installing`, `none` or `refused` (why), the commit and whether the stage is Developer ID signed. On the Mac an
+ad hoc stage is refused (`codesign` checks the staged bundle); Max's own click still installs any stage. Exit codes: 0
+armed, installing or staged; 2 nothing staged; 3 refused; 1 no Flare running on that profile.
 
 ## SmartScreen
 

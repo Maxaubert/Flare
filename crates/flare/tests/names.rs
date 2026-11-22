@@ -644,6 +644,8 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_UPDATE_SOURCE",
     // Build ready (2026-10-29): the countdown, shortened by the e2e clickInstall.
     "FLARE_E2E_STAGED_COUNTDOWN_MS",
+    // An agent's install (2026-11-20, rule 1326): the idle minute, shortened for an e2e.
+    "FLARE_E2E_STAGED_IDLE_MS",
     "FLARE_E2E_PICK_COLOUR",
     // M10 Appendix F: reduced motion under --e2e (read in e2e.rs as a concatenated name).
     "FLARE_E2E_REDUCED_MOTION",

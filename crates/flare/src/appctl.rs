@@ -216,8 +216,6 @@ mod surfaces7;
 mod text_sel_glue;
 mod web_glue;
 
-#[cfg(test)]
-pub(crate) use remote_glue::HOST_CONVO_EVERY_MS;
 pub use surfaces7::install as install_surfaces7;
 
 /// Publishes a control channel event: name, params, and the tab it is about (its connections only).
@@ -2116,10 +2114,19 @@ impl AppCtl {
         self.hub.agent_here(id) || self.model.has_agent(id)
     }
 
+    /// Whether closing the tab asks first (rule 48). A remote tab counts the agent its host names, idle or not (rule
+    /// 1305): its Close asks here, since the host never asks for a hidden session.
+    fn close_asks(&self, id: &str) -> bool {
+        flare_agent::close::asks_before_closing_tab(
+            self.agent_present(id) || self.hub.remote_agent(id).is_some(),
+        )
+    }
+
     fn agent_named(&self, id: &str) -> DetectedAgent {
         self.hub
             .agent_kind(id)
             .filter(|_| self.hub.agent_here(id))
+            .or_else(|| self.hub.remote_agent(id))
             .unwrap_or_else(|| detected(self.model.agent_kind(id)))
     }
 
@@ -2142,8 +2149,10 @@ impl AppCtl {
             .tabs
             .iter()
             .filter(|t| t.kind == TabKind::Shell && t.pending.is_none())
+            .chain(self.model.hidden().iter().map(|h| &h.tab))
             .map(|t| t.id.clone())
             .collect();
+        // Hidden sessions save their agent and session too (rules 1286, 1302).
         for id in ids {
             let want = self
                 .hub
@@ -2217,7 +2226,8 @@ impl AppCtl {
             .restoring
             .iter()
             .filter(|(id, (_, at))| {
-                let tab = self.model.state.tabs.iter().any(|t| &t.id == *id);
+                let tab =
+                    self.model.state.tabs.iter().any(|t| &t.id == *id) || self.model.is_hidden(id);
                 let resuming = self.deps.host.handle(id).is_some_and(|h| h.resuming());
                 !tab || self.hub.agent_here(id)
                     || (!resuming && now.saturating_sub(*at) >= RESTORE_GRACE_MS)
@@ -2318,11 +2328,13 @@ impl AppCtl {
 
     /// The hub sees the host's handles as they are now, and forgets a tab that has gone.
     fn sync_hub(&mut self) {
+        // Hidden sessions too (rule 1302): the hub tracks their agents for `remote.status` and keep-awake.
         let live: HashMap<String, Arc<TermHandle>> = self
             .model
             .state
             .tabs
             .iter()
+            .chain(self.model.hidden().iter().map(|h| &h.tab))
             .filter_map(|t| self.deps.host.handle(&t.id).map(|h| (t.id.clone(), h)))
             .collect();
         let gone: Vec<String> = self
@@ -2615,14 +2627,37 @@ impl AppCtl {
         for s in spawns {
             // A remote tab attaches to its host session again; it is not new work (rule 288).
             if let Some(r) = &s.remote {
-                let live = flare_term::remote_pty::RemoteLive::new(r.host_tab.clone(), r.last_seq);
+                // Rule 1307: the tab keeps its open id. A tab the host never answered gets one if it had none; a tab
+                // with a host tab and no open id is from before the key and stays without one (it ends once, as
+                // before, when its host tab is gone).
+                let open_id = r.open_id.clone().or_else(|| {
+                    r.host_tab
+                        .is_none()
+                        .then(flare_term::session::new_ctl_token)
+                });
+                let live = flare_term::remote_pty::RemoteLive::new(
+                    r.host_tab.clone(),
+                    r.last_seq,
+                    open_id,
+                );
                 self.model.set_remote_live(&s.id, live.clone());
                 self.start_remote(&s.id, &r.machine, &s.cwd, None, live);
                 continue;
             }
-            self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
+            // A hidden session comes back hidden, at its opener's last size (rule 1302), resumed as a local tab is.
+            match self.model.hidden_of(&s.id).map(|h| h.size) {
+                Some(size) => {
+                    self.deps
+                        .host
+                        .spawn_hidden(&s.id, &s.cwd, s.resume.as_deref(), size);
+                }
+                None => self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref()),
+            }
             self.note_spawn(&s.id, &s.cwd, s.resume.is_some());
             self.hub.on_spawned(&s.id, &s.cwd, s.resume.as_deref());
+            if self.model.is_hidden(&s.id) {
+                self.hub.on_hidden_tab(&s.id);
+            }
             // Only an id that passed the check is a resume; the rest is a plain shell.
             let kind = valid_resume(s.resume.as_deref()).map(agent_of_resume);
             self.model.set_agent(&s.id, kind);
@@ -2664,7 +2699,13 @@ impl AppCtl {
         resume: Option<&str>,
         front: bool,
     ) -> String {
-        let live = flare_term::remote_pty::RemoteLive::default();
+        // Rule 1307: the tab's open id is made with the tab and saved with it, so it finds its session again after the
+        // host's Flare restarted.
+        let live = flare_term::remote_pty::RemoteLive::new(
+            None,
+            0,
+            Some(flare_term::session::new_ctl_token()),
+        );
         let before = self.model.state.active_id.clone();
         let id = self
             .model
@@ -2863,7 +2904,7 @@ impl AppCtl {
         if !self.model.state.tabs.iter().any(|t| t.id == id) {
             return;
         }
-        if flare_agent::close::asks_before_closing_tab(self.agent_present(id)) {
+        if self.close_asks(id) {
             let label = self
                 .model
                 .state
@@ -3145,18 +3186,13 @@ impl AppCtl {
             tab.cwd.clone()
         };
         let shell = tab.kind == TabKind::Shell;
-        let remote = tab.remote.is_some();
+        // A remote tab's Close ends its session (rule 1192); "Hide here only" is gone (Max 2026-11-19): it left a
+        // hidden session nobody sees.
         let mut rows: Vec<(MenuRowData, String)> =
             tab_menu_rows(&cwd, self.key_label_of(ChordId::CloseTab))
                 .into_iter()
                 .map(|r| (r, String::new()))
                 .collect();
-        // A remote tab (remote sessions PR 7, rule 1192): Close ends the session everywhere; this only lets go here.
-        if remote {
-            let mut hide = MenuRowData::plain(crate::menus_ui::HIDE_HERE);
-            hide.icon = crate::menus_ui::GLYPH_PANEL;
-            rows.insert(1, (hide, String::new()));
-        }
         // The plugins' actions for a shell tab, one flyout under each plugin's name (plugins phase 4).
         if shell {
             self.plugin_menu_rows(id, &mut rows);
@@ -3278,7 +3314,6 @@ impl AppCtl {
             MenuKind::Machines => self.machine_menu_picked(&path.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
-                crate::menus_ui::HIDE_HERE => self.hide_remote(&id.clone()),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
@@ -4190,10 +4225,71 @@ impl AppCtl {
         Ok(())
     }
 
+    /// A shell tab of the strip. Never a hidden session (rule 1302): plugins, toasts and panels pass those by.
     fn is_shell_tab(&self, tab: &str) -> bool {
         flare_tabs::tabs::shell_tabs(&self.model.state)
             .iter()
             .any(|t| t.id == tab)
+    }
+
+    /// The folder of a session this window runs: a strip shell tab or a hidden session (rule 1302). Only the calls
+    /// that must work for a hidden session's own agent and its opener read it: its hooks' `panel.state`, `tabs.list`
+    /// of its own tab, its folder, and `session.read` behind `remote.fetch`.
+    fn session_tab_folder(&self, tab: &str) -> Option<String> {
+        flare_tabs::tabs::shell_tabs(&self.model.state)
+            .into_iter()
+            .find(|t| t.id == tab)
+            .or_else(|| self.model.hidden_of(tab).map(|h| &h.tab))
+            .map(|t| t.cwd.clone())
+    }
+
+    /// Rule 1302: a call from a hidden session's agent that would show something on this machine's screen (a panel,
+    /// a `show_*` tool, the browser panel, a mini-app, a plugin's page, a fill, a badge or progress) answers
+    /// `unavailable`, naming the opener. None for every other call.
+    ///
+    /// Rule 1306: only a call made with the hidden tab's own token hears that. A caller that named the tab (a plugin
+    /// with `tabs`, a click scope, a tool scope) gets None here, so its op goes on to its own handler, which answers a
+    /// hidden tab exactly as a tab that does not exist (`is_shell_tab` is false for it). It learns neither that the
+    /// session exists nor its opener's name.
+    fn hidden_refusal(&self, op: &CtlOp) -> Option<flare_ctl::CtlError> {
+        let (tab, own) = match op {
+            // These take their tab from the caller's token (`tab_of_call`), so the caller is always the tab's own.
+            CtlOp::PanelClose { tab }
+            | CtlOp::ShowFile { tab, .. }
+            | CtlOp::ShowText { tab, .. }
+            | CtlOp::ShowConvo { tab, .. }
+            | CtlOp::ShowApp { tab, .. }
+            | CtlOp::BrowserOpen { tab, .. }
+            | CtlOp::BrowserNavigate { tab, .. }
+            | CtlOp::BrowserAgent { tab, .. }
+            | CtlOp::BrowserPoint { tab, .. }
+            | CtlOp::ModTool { tab, .. } => (tab, true),
+            // These may carry a tab the caller named (`scoped_tab`, `fill_tab`).
+            CtlOp::ShowMod { tab, own, .. }
+            | CtlOp::BadgeSet { tab, own, .. }
+            | CtlOp::ProgressSet { tab, own, .. }
+            | CtlOp::Fill { tab, own, .. }
+            | CtlOp::FillPage { tab, own }
+            | CtlOp::BarShow { tab, own, .. } => (tab, *own),
+            // A tab it opens would show on this screen, and with an empty strip it would come to the front.
+            CtlOp::OpenRemote {
+                caller: Some(tab), ..
+            } => (tab, true),
+            _ => return None,
+        };
+        if !own {
+            return None;
+        }
+        let h = self.model.hidden_of(tab)?;
+        let why = if matches!(op, CtlOp::OpenRemote { .. }) {
+            format!(
+                "this session shows on {}; it cannot open a tab on this machine's screen",
+                h.opener
+            )
+        } else {
+            remote_glue::hidden_unavailable(&h.opener)
+        };
+        Some(flare_ctl::CtlError::new(flare_ctl::code::UNAVAILABLE, why))
     }
 
     /// One call of the control channel, on the UI thread. The tab is the caller's own (resolved from
@@ -4204,6 +4300,20 @@ impl AppCtl {
         let no_tab = || CtlError::new(code::NO_TAB, "that tab is closed");
         match op {
             CtlOp::Tabs { own } => {
+                // A hidden session's agent sees its own tab, as any agent (rule 1302); never in front here.
+                if let Some(h) = own.as_deref().and_then(|o| self.model.hidden_of(o)) {
+                    let at = self
+                        .model
+                        .hidden()
+                        .iter()
+                        .position(|x| x.tab.id == h.tab.id);
+                    let title = at
+                        .and_then(|i| self.model.hidden_labels().get(i).cloned())
+                        .unwrap_or_default();
+                    return Ok(
+                        json!({"tabs": [{"id": h.tab.id, "title": title, "active": false}]}),
+                    );
+                }
                 let active = self.model.state.active_id.clone();
                 let tabs: Vec<serde_json::Value> = self
                     .model
@@ -4226,17 +4336,15 @@ impl AppCtl {
                 Ok(json!({"tabs": tabs}))
             }
             CtlOp::TabCwd { tab } => {
-                let t = flare_tabs::tabs::shell_tabs(&self.model.state)
-                    .into_iter()
-                    .find(|t| t.id == tab)
-                    .ok_or_else(no_tab)?;
-                Ok(json!({"cwd": t.cwd}))
+                let cwd = self.session_tab_folder(&tab).ok_or_else(no_tab)?;
+                Ok(json!({"cwd": cwd}))
             }
             // The window routes this one through `ctl_panel_context`, which also reads a page's selection; here it is
             // answered at once with what is known without the page, and only for a prompt the person sent.
             CtlOp::PanelContext { tab, cwd } => self.panel_context_once(&tab, cwd),
             CtlOp::PanelState { tab, cwd } => {
-                if !self.is_shell_tab(&tab) {
+                // A hidden session's hooks ask too (rule 1302): its agent folder is kept, its panel is never open.
+                if self.session_tab_folder(&tab).is_none() {
                     return Err(no_tab());
                 }
                 // The agent's hooks name the folder its session works in: a relative file link is read from it.
@@ -4341,6 +4449,7 @@ impl AppCtl {
                 tip,
                 tone,
                 generation,
+                own: _,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
@@ -4380,6 +4489,7 @@ impl AppCtl {
                 value,
                 label,
                 generation,
+                own: _,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
@@ -4415,7 +4525,7 @@ impl AppCtl {
                 generation,
             } => self.ctl_actions_set(plugin, key, tab, state, generation),
             // Sessions and typing (plugins phase 5): checked on the worker, applied in `sessions_glue`.
-            CtlOp::SessionOf { tab } => self.ctl_session_of(&tab),
+            CtlOp::SessionOf { tab, hidden_ok } => self.ctl_session_of(&tab, hidden_ok),
             CtlOp::TabInput {
                 plugin,
                 tab,
@@ -4428,6 +4538,7 @@ impl AppCtl {
                 plugin,
                 tab,
                 generation,
+                own: _,
             } => self.ctl_bar_show(plugin, tab, generation),
             CtlOp::BarHide { plugin, tab } => self.ctl_bar_hide(plugin, tab),
             // The agents' icon motions (owner 2026-10-26): checked on the worker, applied in `plugins_glue`.
@@ -4446,7 +4557,7 @@ impl AppCtl {
                 generation,
             } => self.ctl_notice_show(&plugin, &text, error, generation),
             // The address of a page to fill (the `fill` permission), applied in `ask_glue`.
-            CtlOp::FillPage { tab } => self.ctl_fill_page(&tab),
+            CtlOp::FillPage { tab, own: _ } => self.ctl_fill_page(&tab),
             // Remote sessions (PR 2): checked on the worker, applied in `remote_glue`.
             op @ (CtlOp::RemoteOpen { .. }
             | CtlOp::RemoteTabs
@@ -4455,7 +4566,8 @@ impl AppCtl {
             | CtlOp::RemoteResize { .. }
             | CtlOp::RemoteRelease { .. }
             | CtlOp::RemoteClose { .. }
-            | CtlOp::RemoteStatus) => self.ctl_remote(op),
+            | CtlOp::RemoteStatus
+            | CtlOp::RemoteFind { .. }) => self.ctl_remote(op),
             // Remote sessions PR 5: a tab here that shows a session on another machine (the agent's `open.remote` and
             // `flare open --on`). The worker checked the machine and the params; the link connects on its own worker.
             CtlOp::OpenRemote {
@@ -4463,10 +4575,13 @@ impl AppCtl {
                 folder,
                 resume,
                 front,
+                caller: _,
             } => {
                 let tab = self.open_remote(&machine, &folder, resume.as_deref(), front);
                 Ok(json!({"tab": tab, "machine": machine, "folder": folder}))
             }
+            // Rule 1326: an agent's install of the staged build, armed until every agent is idle (`staged_glue`).
+            CtlOp::InstallStaged { sig, check } => Ok(self.staged_arm(&sig, check)),
             // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
@@ -5341,6 +5456,28 @@ impl AppCtl {
                     for_ms,
                 ))
             })
+            .chain(self.busy_hidden())
+            .collect()
+    }
+
+    /// The hidden sessions at work (rule 1302): the quit ask and the install hold name each "<folder> (for
+    /// <opener>)", so an update never silently ends one mid-answer.
+    fn busy_hidden(&self) -> Vec<(String, DetectedAgent, u64)> {
+        let labels = self.model.hidden_labels();
+        self.model
+            .hidden()
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| self.agent_present(&h.tab.id))
+            .filter_map(|(i, h)| {
+                let for_ms = self.working_for_ms(&h.tab.id)?;
+                let folder = labels.get(i).cloned().unwrap_or_default();
+                Some((
+                    remote_glue::hidden_label(&folder, &h.opener),
+                    self.agent_named(&h.tab.id),
+                    for_ms,
+                ))
+            })
             .collect()
     }
 
@@ -5691,6 +5828,12 @@ impl AppCtl {
                         flare_ctl::code::TIMEOUT,
                         "Flare's window did not answer in time",
                     )));
+                } else if let Some(e) = self.hidden_refusal(&req.op) {
+                    // Rule 1302: nothing of a hidden session shows on this screen; a mini-app's folder goes at once.
+                    if let CtlOp::ShowApp { spec, .. } = req.op {
+                        self.panels.remove_folder(spec);
+                    }
+                    let _ = req.reply.send(Err(e));
                 } else {
                     match req.op {
                         // These wait for the page to load: the browser's message answers them.
@@ -5829,7 +5972,8 @@ impl AppCtl {
                     }
                     self.remember_remote_home(&id, &path);
                 }
-                HostEvent::Output { id } => self.dev_read(&id),
+                // A hidden session's dev server is its opener's to show (rule 1302): no chip here.
+                HostEvent::Output { id } if !self.model.is_hidden(&id) => self.dev_read(&id),
                 // A shell the session's end killed is not a tab the person closed (rule 1239): Windows ends the
                 // console processes with DBG_TERMINATE_PROCESS about 220 ms before WM_ENDSESSION, and closing each
                 // tab then saved a strip of one (2026-11-14: 8 of 9 tabs lost on a restart).
@@ -5840,13 +5984,27 @@ impl AppCtl {
                 {
                     self.hold_for_session_end();
                 }
+                // A hidden session whose shell never started goes (rule 1302): nobody here reads its "Could not start"
+                // line, and its opener hears `no_tab` instead of attaching to it forever.
+                HostEvent::StartFailed { id } if self.model.is_hidden(&id) => {
+                    self.note_close(&id);
+                    self.deps.host.kill(&id);
+                    self.working.remove(&id);
+                    self.term.tab_closed(&id);
+                    self.forget_tab_surfaces(&id);
+                    if self.model.close_hidden(&id) {
+                        changed = true;
+                    }
+                }
                 HostEvent::Exited { id, .. } => {
                     self.note_close(&id);
                     self.deps.host.kill(&id);
                     self.working.remove(&id);
                     self.term.tab_closed(&id);
                     self.forget_tab_surfaces(&id);
-                    if self.model.close(&id) {
+                    // A hidden session whose shell ended goes too (rule 1302): its followers hear `no_tab` (the
+                    // surfaces' forget above), and it is never kept as a session with no shell.
+                    if self.model.close(&id) || self.model.close_hidden(&id) {
                         changed = true;
                     }
                 }
@@ -5860,7 +6018,8 @@ impl AppCtl {
                     terminal_news = true;
                 }
                 // The handle lets one bell through a second per tab: the button flashes, no sound.
-                HostEvent::Bell { .. } => (self.flash)(),
+                // A hidden session's bell flashes nothing here (rule 1304).
+                HostEvent::Bell { id } if !self.model.is_hidden(&id) => (self.flash)(),
                 _ => {}
             }
         }
@@ -6166,6 +6325,7 @@ mod tests {
                     })
                     .collect(),
                 active: opts.active,
+                hidden: Vec::new(),
             };
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
         }
@@ -9892,6 +10052,7 @@ two",
             tip: tip.into(),
             tone: flare_tabs::decor::Tone::Ink,
             generation: 0,
+            own: true,
         }
     }
 
@@ -9903,6 +10064,7 @@ two",
             value,
             label: "Review".into(),
             generation: 0,
+            own: true,
         }
     }
 
@@ -10046,6 +10208,7 @@ two",
             tip: String::new(),
             tone: flare_tabs::decor::Tone::Ink,
             generation: 0,
+            own: true,
         };
         ctl_call(&f, op).unwrap();
         assert!(f.ctl.borrow().has_decor(&a));

@@ -72,6 +72,10 @@ def ink_table(d):
             for s in SCALES:
                 f = scale_of(s)
                 im = load(d, "strip-3", s, r)
+                if im is None:
+                    # No gpu pass (no adapter) or no strip-3 scene (`-Only`): nothing to measure.
+                    out.append("n/a")
+                    continue
                 c = im.convert("L").crop((round(x0 * f), round(y0 * f), round(x1 * f), round(y1 * f)))
                 bg, px = c.getpixel((0, 0)), c.load()
                 pts = [(x, y) for y in range(c.height) for x in range(c.width) if px[x, y] - bg > 40]
