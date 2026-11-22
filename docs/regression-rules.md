@@ -5911,7 +5911,10 @@ through the 60 fps cap (`cap::FrameCap`). Rows are top-down (S1). Flare maps and
 (`region.rs`) and `an_attached_device_gets_a_region_from_flare_and_frames_back` (`emu_client.rs`). Source: Max,
 2026-11-22. A4: the region's size is rounded up to 64 KiB (`region::ALIGN`), the size the GPU import takes; the frame
 thread lets go of a detached device's mapping (buffer, heap, then the view) before the file is deleted, since Windows
-refuses to delete a mapped file. Held also by `a_released_region_can_be_deleted` (`device_region.rs`).
+refuses to delete a mapped file. Held also by `a_released_region_can_be_deleted` (`device_region.rs`). A7 review: every
+path that drops an import (a release, a new wgpu device, a refused first copy) waits until the device the import was
+made on is idle, not the renderer's current one, and the view is unmapped only after that (`Imported`'s `Drop`; `Mapped`
+holds the import before the map). Held also by `a_new_gpu_device_lets_go_of_the_old_import_first`.
 
 1364. **Each frame is copied out of the single-buffered region on the GPU at once, off the UI thread, into the device's
 ring; the UI thread only shows the newest finished slot. At most 60 a second; no frame queue.** Spec 2026-11-22,
@@ -6051,7 +6054,10 @@ copy to fall back on. Held by `the_checked_in_jar_is_built_from_its_sources`,
 (`flare-emu-host/src/agent.rs`), `the_package_ships_the_emu_host_and_the_agent_jar_beside_the_app`
 (`crates/flare/tests/release_files.rs`), `the_bundle_lists_the_emu_host_as_a_tool_and_carries_the_agent_jar`
 (`flare-cef/src/macos/release.rs`) and `the_emu_host_self_test_runs_from_the_signed_bundle`
-(`flare-cef/tests/mac_release_files.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations").
+(`flare-cef/tests/mac_release_files.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations"). A7 review:
+the helper's `hello` must put the nonce in its answer (`Agent.java`); a hello without it refused every start and sent
+every tree to the dump. `the_helpers_constants_match_its_source` checks the Java source for it, and the opt-in
+`a_real_emulator_answers_the_agent_tools` (`device_ctl.rs`) checks the emu host's log for a started helper and no dump.
 
 1370. **No emulator window, taskbar button or Dock icon ever appears.** Spec 2026-11-22, anti-goals. The emulator runs
 with `-no-window` (the headless engine, spike A5), and on Windows every program Flare's Android side starts (the emu
