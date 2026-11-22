@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use flare_ctl::text::clean_text;
 use serde::{Deserialize, Serialize};
 
-use crate::geom::Size;
+use crate::geom::{Orientation, Size};
 
 /// The most elements one look lists.
 pub const MAX_REFS: usize = 300;
@@ -125,6 +125,61 @@ fn actionable(role: &str) -> bool {
             | "AXMenuItem"
             | "AXIncrementor"
     )
+}
+
+/// The tree in points of the screen's current orientation. The accessibility frames of a turned screen come in the
+/// device's own portrait points (seen 2026-11-22 on an iPad in landscape: Settings' icon at portrait (758, 1182) is
+/// drawn at (194, 758)); a tree whose largest frame is portrait-shaped while the screen is landscape is turned the
+/// way the picture is. A tree that is landscape already is kept. `screen` is the current orientation's size.
+pub fn in_orientation(root: &UiNode, screen: Size, o: Orientation) -> UiNode {
+    let quarter = matches!(o, Orientation::Rot90 | Orientation::Rot270);
+    if !quarter || screen.w <= screen.h || !portrait_frames(root, screen) {
+        return root.clone();
+    }
+    // The portrait screen: the current one turned back.
+    let portrait = screen.turned();
+    let mut out = root.clone();
+    turn(&mut out, portrait, o);
+    out
+}
+
+/// Whether the frames are the portrait screen's: the widest frame is taller than wide, or a frame reaches below
+/// the landscape screen's foot.
+fn portrait_frames(root: &UiNode, screen: Size) -> bool {
+    let r = root.frame;
+    if !r.is_empty() && r.h > r.w {
+        return true;
+    }
+    fn below(n: &UiNode, foot: f64) -> bool {
+        n.frame.y + n.frame.h > foot || n.children.iter().any(|c| below(c, foot))
+    }
+    below(root, screen.h + 1.0)
+}
+
+/// One frame and its children from portrait points to the screen turned `o` (the inverse of
+/// [`crate::geom::to_portrait_ratio`]'s turn).
+fn turn(n: &mut UiNode, portrait: Size, o: Orientation) {
+    let f = n.frame;
+    let (w, h) = (portrait.w, portrait.h);
+    n.frame = match o {
+        // Shown turned clockwise: portrait (px, py) is drawn at (h - py, px).
+        Orientation::Rot90 => Rect {
+            x: h - (f.y + f.h),
+            y: f.x,
+            w: f.h,
+            h: f.w,
+        },
+        Orientation::Rot270 => Rect {
+            x: f.y,
+            y: w - (f.x + f.w),
+            w: f.h,
+            h: f.w,
+        },
+        _ => f,
+    };
+    for c in &mut n.children {
+        turn(c, portrait, o);
+    }
 }
 
 /// The list the agent sees of the tree under `root` on a `screen` sized screen.
@@ -330,5 +385,58 @@ mod tests {
             serde_json::from_str(r#"{"role":"AXButton","frame":{"x":1,"y":2,"w":3,"h":4}}"#)
                 .unwrap();
         assert!(n.enabled && n.label.is_empty() && n.children.is_empty());
+    }
+
+    /// Max, 2026-11-22: on an iPad in landscape a ref tap was "off the screen": the frames were portrait points.
+    #[test]
+    fn a_landscape_tree_in_portrait_points_is_turned_with_the_picture() {
+        let screen = Size::new(1376.0, 1032.0);
+        let root = node(
+            "AXApplication",
+            "",
+            (0.0, 0.0, 1032.0, 1376.0),
+            vec![node(
+                "AXButton",
+                "Settings",
+                (710.0, 1146.0, 96.0, 72.0),
+                vec![],
+            )],
+        );
+        let t = in_orientation(&root, screen, Orientation::Rot90);
+        assert_eq!(
+            t.frame,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1376.0,
+                h: 1032.0
+            }
+        );
+        // Drawn at (194, 758), where the picture shows it.
+        assert_eq!(t.children[0].frame.center(), (194.0, 758.0));
+        let l = filter_tree(&t, screen);
+        assert_eq!(labels(&l), ["Settings"]);
+        // Turned the other way, the same point goes to the opposite side.
+        let u = in_orientation(&root, screen, Orientation::Rot270);
+        assert_eq!(u.children[0].frame.center(), (1182.0, 1032.0 - 758.0));
+        // Each corner stays on the screen.
+        for f in [t.frame, u.frame] {
+            assert!(f.x >= 0.0 && f.y >= 0.0 && f.x + f.w <= 1376.0 && f.y + f.h <= 1032.0);
+        }
+    }
+
+    #[test]
+    fn a_tree_in_landscape_points_or_a_portrait_screen_is_kept() {
+        let wide = node(
+            "AXApplication",
+            "",
+            (0.0, 0.0, 1376.0, 1032.0),
+            vec![node("AXButton", "Go", (100.0, 900.0, 80.0, 40.0), vec![])],
+        );
+        let l = Size::new(1376.0, 1032.0);
+        assert_eq!(in_orientation(&wide, l, Orientation::Rot90), wide);
+        let tall = node("AXApplication", "", (0.0, 0.0, 1032.0, 1376.0), vec![]);
+        assert_eq!(in_orientation(&tall, l.turned(), Orientation::Rot0), tall);
+        assert_eq!(in_orientation(&tall, l.turned(), Orientation::Rot180), tall);
     }
 }
