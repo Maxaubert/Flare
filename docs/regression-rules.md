@@ -6017,8 +6017,9 @@ copy to fall back on. Held by `the_checked_in_jar_is_built_from_its_sources`,
 1370. **No emulator window, taskbar button or Dock icon ever appears.** Spec 2026-11-22, anti-goals. The emulator runs
 with `-no-window` (the headless engine, spike A5), and on Windows every program Flare's Android side starts (the emu
 host, the emulator, adb, `emulator -accel-check`) starts with `CREATE_NO_WINDOW` (`flare_emu_host::run::command`,
-`emu::boot::command`). Checked by hand in A2: the count of visible windows was the same before and after a headless
-boot. The real e2e scenario (A5) checks the visible windows before and after. A4: Flare's own detached programs at
+`emu::boot::command`). Checked by hand in A2 and A4: the count of visible windows was the same before and after a
+headless boot (26 and 26 in A4). No automated test counts windows: the real runs are opt-in Rust tests run by hand
+(A5 deviation 3; GitHub's runners cannot run the emulator's hypervisor). A4: Flare's own detached programs at
 quit (`device_ctl::spawn_detached`, the `simctl` and `flare-emu-host --shutdown` commands) also start with
 `CREATE_NO_WINDOW` on Windows. No Windows Firewall dialog either: adb's mDNS binds UDP 5353 on every network, and
 Windows asks about that the first time an `adb.exe` from a new folder (Flare's own SDK) does it (seen in A2b's real
