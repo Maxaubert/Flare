@@ -90,7 +90,7 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `serde_json`: reads and writes those JSON state files, and encodes the single-instance hand-off message.
 - `rfd`: the native folder picker for "Ask" new tabs (MIT; default features off, so on Windows it pulls only `log`, `raw-window-handle` and `windows-sys`).
 - `raw-window-handle`: hands the window's handle to `rfd`, so the picker is parented to Flare's window (an unparented picker can open behind a fullscreen window).
-- `sha2`: checks the bundled ConPTY files against their pinned hashes at start.
+- `sha2`: checks the bundled ConPTY files against their pinned hashes at start, and in `flare-emu-host` the Android agent helper's jar before it is pushed (Android plan PR A3).
 - `tempfile` (dev only): temporary folders for the tests; never shipped.
 - Bundled ConPTY 1.25.260303002 (`conpty.dll`, `OpenConsole.exe`): MIT licence, (c) Microsoft Corporation, https://github.com/microsoft/terminal. Loaded by absolute path before the first pty opens.
 - `velopack`: the installer, the one-click per-user update and the first-run and uninstall hooks (`flare-update`, `crates/flare`). Its update source is switched off until the repository is public: the `live-updates` cargo feature is off by default (M9 D1, O28).
@@ -144,6 +144,10 @@ Development tools in `tools/`, never shipped in the installer:
   compose screenshot sets for earlier milestones and audits (contact sheets, side-by-sides, contrast).
 - `tools/fonts`: builds the `assets/selawik` fonts from Microsoft's Selawik release.
 - `tools/model-viewer`: builds `assets/three/viewer.js`, the 3D model viewer, with esbuild.
+- `tools/android-agent`: the Java source of the Android agent helper `flare-agent.jar` (Android plan PR A3) and
+  `build.py`, which builds it with `javac` and the SDK's `d8` into `crates/flare-device/assets` with its hashes (a
+  test checks them, so CI needs no Java). `tools/android-agent/probe` is the probe app for the frame and touch
+  checks, never shipped. Its README says how.
 - The scripts loose in `tools/` (`fetch-whisper.ps1`, `fetch-conpty.ps1`, `build-whisper-macos.sh`,
   `stage-install.ps1`, `shot-window.ps1`) fetch or build vendored pieces, stage a local install and
   take window screenshots. Each one's header says what it does.

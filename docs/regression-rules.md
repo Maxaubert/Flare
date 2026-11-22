@@ -5922,11 +5922,37 @@ PR A1 holds the model; PR A5 the tool side. Held by `dp_map_to_pixels_in_every_o
 1368. **Typing never touches the computer's clipboard: HID keys, then the agent helper's set-text, then the device's
 own clipboard and paste.** Spec 2026-11-22, builder's call 8. `emu::keys::text_steps` types keymap text as USB HID keys
 (`KeyboardEvent` with `codeType: Usb`, the usage on page 7, `0x07_0004` for A) and anything else through gRPC
-`setClipboard`, which is the device's own clipboard, then Ctrl+V. The agent helper's set-text (PR A3) comes first once
-it is there. Held by `text_without_keys_goes_through_the_devices_clipboard` (`keys.rs`),
+`setClipboard`, which is the device's own clipboard, then Ctrl+V. PR A3 puts the agent helper's set-text in between:
+text the keymap cannot type goes to the focused field through the helper (`Helper::insert_text`, `set_text` with
+`mode: insert`), which splices it in at the cursor as keys would (`ACTION_SET_TEXT` alone replaces the whole field) and
+puts the cursor after it; a password field, no focused field or no helper falls through to the clipboard and paste.
+Checked by hand on API 37: "blåbær ørret 😀" into Settings search and the probe app's field. Held by
+`text_without_keys_goes_through_the_devices_clipboard` (`keys.rs`),
 `input_text_and_snapshots_go_to_the_emu_host` (`emu_client.rs`) and
 `non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs` (`client.rs`, which reads every source file of
 flare-device). Source: Max, 2026-11-22.
+
+1369. **The agent helper jar is built from source in the repo and its hash is checked in CI; it is pushed only to
+emulators (never to a real phone in v1) and reached only through `adb forward` to localhost; when it fails, the tree
+comes from `uiautomator dump` with a "slow tree" mark.** Spec 2026-11-22, builder's call 14. Android plan PR A3. The
+source is `tools/android-agent/src` (Java, `UiAutomation` over the shell's `UiAutomationConnection`, which needs
+`Looper.prepareMainLooper()` first). `tools/android-agent/build.py` builds it with `javac` and the SDK's `d8` into
+`crates/flare-device/assets/flare-agent.jar` and writes `flare-agent.jar.sha256`: the jar's SHA-256 and the hash of
+`src/` plus `build.py` (each file's path and bytes without CR, in path order, so both OSes hash alike). The test
+`the_checked_in_jar_is_built_from_its_sources` checks both with no Java, so a changed source with an old jar fails CI.
+The emu host takes only a jar with the expected hash (`agent::jar`, beside the emu host, in `Resources`, or the repo's
+in a debug build; the self-test fails without it) and makes a helper only for an `emulator-<port>` serial from the
+emulator's own discovery file (`emu::agent::serial_ok`). The helper listens on the abstract socket `flare-agent` and
+refuses any peer that is not the shell user or root (adb's forward), so an app inside the device cannot use it. A
+running helper of this build is reused (a second Flare); another build's is told to quit, then killed by name, since a
+running helper blocks a new one. It ends 15 s after its last client leaves. A failed call starts it again once; a
+second failure switches that attach to `uiautomator dump` (about 2 s), and the tree's answer says `path: "dump"`
+(`device_state` shows "slow tree" in PR A4). The dump needs the helper gone first: it fails quietly while a helper holds
+the UI automation connection (checked by hand). Held by `the_checked_in_jar_is_built_from_its_sources`,
+`the_helper_goes_only_to_an_emulator`, `the_helpers_constants_match_its_source`,
+`a_real_settings_screen_reads_the_same_both_ways` (`emu/agent.rs`), `a_helper_is_made_only_for_an_emulator`,
+`a_helper_that_cannot_start_falls_back_and_answers` and `the_jar_is_found_with_its_hash`
+(`flare-emu-host/src/agent.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations").
 
 1370. **No emulator window, taskbar button or Dock icon ever appears.** Spec 2026-11-22, anti-goals. The emulator runs
 with `-no-window` (the headless engine, spike A5), and on Windows every program Flare's Android side starts (the emu
