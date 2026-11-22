@@ -1274,7 +1274,9 @@ async fn snapshot(host: &Host, d: &Device) -> Result<Vec<u8>, Failed> {
         "the device turned while it was looked at".to_string(),
     ))
 }
-/// (Re)starts the frame stream when the device has a region and is not paused (rule 1365).
+/// (Re)starts the frame stream when the device has a region and is not paused (rule 1365). A stream that ends by
+/// itself (the guest restarted, a gRPC hiccup) is opened again after [`stream_retry_wait`], while the device is still
+/// attached here and not paused; a pause, a detach or a new region aborts this task instead.
 fn restart_stream(host: &Arc<Host>, d: &Arc<Device>) {
     if let Some(s) = lock(&d.stream).take() {
         s.abort();
@@ -1287,9 +1289,30 @@ fn restart_stream(host: &Arc<Host>, d: &Arc<Device>) {
     };
     let h = Arc::clone(host);
     let dd = Arc::clone(d);
-    let task = host
-        .rt
-        .spawn(async move { stream(h, dd, url, bytes).await });
+    let task = host.rt.spawn(async move {
+        let mut tries = 0;
+        loop {
+            let got = stream(Arc::clone(&h), Arc::clone(&dd), url.clone(), bytes).await;
+            let current = h.device(&dd.target).is_some_and(|x| Arc::ptr_eq(&x, &dd));
+            if !current || dd.paused.load(Ordering::Relaxed) {
+                return;
+            }
+            tries = if got { 1 } else { tries + 1 };
+            let Some(wait) = stream_retry_wait(tries) else {
+                h.log.line(&format!(
+                    "{}: the frame stream was not opened again after {STREAM_RETRIES} tries",
+                    dd.target
+                ));
+                return;
+            };
+            h.log.line(&format!(
+                "{}: the frame stream opens again in {} s",
+                dd.target,
+                wait.as_secs()
+            ));
+            tokio::time::sleep(wait).await;
+        }
+    });
     *lock(&d.stream) = Some(task);
 }
 
@@ -1312,8 +1335,20 @@ struct Stats {
     too_big: AtomicU64,
 }
 
+/// How many times in a row a frame stream that ended by itself is opened again before the emu host gives up (logged).
+const STREAM_RETRIES: u32 = 5;
+
+/// The wait before the `tries`-th new try of a frame stream that ended by itself (1, 2, 4, 8, 16 s), None once
+/// [`STREAM_RETRIES`] are used up. A stream that brought frames before it ended starts again at the first try.
+fn stream_retry_wait(tries: u32) -> Option<Duration> {
+    (1..=STREAM_RETRIES)
+        .contains(&tries)
+        .then(|| Duration::from_secs(1 << (tries - 1)))
+}
+
 /// `streamScreenshot` with MMAP into Flare's region (rule 1363); one `region` line per frame through the 60 fps cap.
-async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
+/// Returns whether any frame came before the stream ended (a refused stream brings none).
+async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) -> bool {
     use pb::image_transport::TransportChannel;
     let fmt = pb::ImageFormat {
         format: pb::image_format::ImgFormat::Rgba8888 as i32,
@@ -1333,7 +1368,7 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
                 e.code(),
                 e.message()
             ));
-            return;
+            return false;
         }
     };
     host.log.line(&format!("{}: frames streaming", d.target));
@@ -1438,6 +1473,7 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: String, bytes: u64) {
             ));
         }
     }
+    stats.received.load(Ordering::Relaxed) > 0
 }
 
 #[cfg(test)]
@@ -1463,6 +1499,18 @@ mod tests {
         }
         let typed = keys::text_steps("bl\u{e5}b\u{e6}r");
         assert!(matches!(&typed[0], keys::TextStep::DeviceClipboard(_)));
+    }
+
+    /// A frame stream that ends by itself is opened again, waiting longer each time, and given up after
+    /// STREAM_RETRIES tries in a row with no frame.
+    #[test]
+    fn a_frame_stream_that_ends_is_opened_again_a_few_times() {
+        let waits: Vec<u64> = (1..=STREAM_RETRIES)
+            .map(|t| stream_retry_wait(t).expect("a wait").as_secs())
+            .collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16]);
+        assert_eq!(stream_retry_wait(0), None);
+        assert_eq!(stream_retry_wait(STREAM_RETRIES + 1), None);
     }
 
     /// Rule 1362: the hello says the host's kind and facts, and no token.
