@@ -382,6 +382,38 @@ mod mac {
         m.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// The sim host gets stdin, stdout and stderr only. Any other descriptor Flare holds without
+    /// close-on-exec (one a library opened, one a parent left open, a pipe another thread made
+    /// between `pipe` and `fcntl`) is marked close-on-exec in the child just before its exec.
+    fn no_inherited_descriptors(cmd: &mut Command) {
+        use std::os::unix::process::CommandExt;
+        // Read before the fork: the highest descriptor number this process may hold.
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes into the struct it is given.
+        let top = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } == 0 {
+            libc::c_int::try_from(lim.rlim_cur).unwrap_or(libc::c_int::MAX)
+        } else {
+            4096
+        }
+        .min(1 << 16);
+        // SAFETY: the closure runs between fork and exec and calls only fcntl, which is
+        // async-signal-safe; it allocates nothing.
+        unsafe {
+            cmd.pre_exec(move || {
+                for fd in 3..top {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                        libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+
     impl Shared {
         fn event(&self, e: SourceEvent) {
             let _ = lock(&self.tx).send(e);
@@ -702,6 +734,7 @@ mod mac {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let pending = flare_proc::guard::guard_command(&mut cmd)?;
+        no_inherited_descriptors(&mut cmd);
         let mut child = cmd.spawn()?; // sync-ok: the supervisor thread
         *lock(&sh.guard) = Some(pending.started());
         sh.expect_pid
@@ -1762,6 +1795,10 @@ mod tests {
     #[test]
     fn the_sim_host_gets_developer_dir_and_no_extra_descriptors() {
         let dir = tempfile::tempdir().unwrap();
+        // A descriptor without close-on-exec, as a library or the parent may leave one (CI did).
+        // SAFETY: open on a static C string; the descriptor is closed at the end.
+        let stray = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+        assert!(stray > 2);
         let s = source("fds", dir.path(), None);
         let end = Instant::now() + Duration::from_secs(30);
         let hello = loop {
@@ -1786,5 +1823,7 @@ mod tests {
             hello.simkit_version
         );
         assert_eq!(s.broken(), None);
+        // SAFETY: the descriptor opened above, closed once.
+        unsafe { libc::close(stray) };
     }
 }
