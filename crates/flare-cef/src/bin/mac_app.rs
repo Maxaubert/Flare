@@ -2,8 +2,9 @@
 //!
 //! ```text
 //! flare-mac-app <out dir> <bin dir>     build and sign Flare.app from the release flare, flare-mcp, flare-cef-helper,
-//!                                       flare-parakeet-host and the speech engine (FLARE_WHISPER_DIR, default
-//!                                       vendor/macos/whisper, built by tools/build-whisper-macos.sh)
+//!                                       flare-parakeet-host, flare-sim-host and the speech engine
+//!                                       (FLARE_WHISPER_DIR, default vendor/macos/whisper, built by
+//!                                       tools/build-whisper-macos.sh)
 //! flare-mac-app check-key               whether codesign can use the identity's key without a prompt (exit 1: no)
 //! flare-mac-app resign <app>            sign a bundle again, inside out by role (one a packager added programs to)
 //! flare-mac-app sign-file <file>        sign one file, the DMG (no entitlements)

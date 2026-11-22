@@ -3122,3 +3122,15 @@ PR 6 puts it in the bundle and PR 4b shows its frames.
 - **Flare's side** (`flare_device::client::SimSource`, not yet used by the app): starts the sim host guarded with
   `DEVELOPER_DIR` set to the Xcode `flare_device::xcode` picks, reads its rings and frame records, frees slots, restarts
   it at most three times in five minutes, then shows still pictures at most three a second (rule 1312).
+
+## Device panel, PR 6: the sim host in Flare.app (not yet started), 2026-11-19
+
+Issue #248, plan `docs/superpowers/plans/2026-11-19-device-panel.md` (PR 6). Nothing in the app changes: the bundle
+carries the sim host, nothing starts it before PR 4b.
+
+- **In the bundle.** `make-app.sh` builds `flare-sim-host` and `flare-mac-app` puts it in `Flare.app/Contents/MacOS`
+  beside `flare-mcp` and `flare-parakeet-host` (`flare_cef::macos::release::TOOLS`), signed as a tool: identifier
+  `com.flare.terminal.flare-sim-host`, the hardened runtime, no entitlements (Step 0 S3 showed it loads CoreSimulator
+  and SimulatorKit with none). `pack.sh` checks it like the other tools, ad hoc too.
+- **Checked in CI.** The ci macos job runs `flare-sim-host --self-test`, and the release workflow runs the signed
+  bundle's copy before vpk packs it; both pass with the reason when the runner's Xcode cannot be tested.

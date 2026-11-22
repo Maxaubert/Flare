@@ -219,6 +219,21 @@ jobs:
         shell: bash
         run: FLARE_SKIP_BUILD=1 FLARE_NOTARIZE=0 bash tools/release/mac/make-app.sh
 
+      # The device panel's sim host as the bundle ships it (signed as a tool, hardened runtime, no entitlements) still
+      # loads CoreSimulator and SimulatorKit and finds every class and selector it uses. Headless; with no Xcode, or
+      # one under the floor, it passes and says why it skipped.
+      - name: Sim host self-test, from the signed bundle
+        if: steps.gate.outputs.go == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The JSON names what is missing: print it before a failure ends the step.
+          rc=0
+          out="$(target/mac-release/Flare.app/Contents/MacOS/flare-sim-host --self-test)" || rc=$?
+          printf '%s\n' "$out"
+          if grep -q '"skipped": "' <<<"$out"; then echo "::notice::flare-sim-host --self-test skipped: $(grep '"skipped"' <<<"$out")"; fi
+          exit "$rc"
+
       - name: Pack for Velopack, sign by role, notarize, staple, check, DMG
         if: steps.gate.outputs.go == 'true'
         shell: bash
