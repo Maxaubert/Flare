@@ -5747,8 +5747,10 @@ PR #293 took 1317). Device panel PR 4b: the sim host boots with `simctl boot` an
 Simulator`), and its private frame and input paths need no window; Flare runs `open` only for the Xcode the pick chose
 (the "Open Xcode" button, never under `--e2e`). Restore and open show the device with Boot and boot nothing; only the
 person's Boot, Boot again or a pick in the list boots (the agent's `device_boot` is PR 5). The device panel is offered
-on macOS on Apple silicon only (`device_ctl::real_platform`), its tab menu entry ("Device panel") only once the Xcode
-pick found an Xcode (`menu_entry_offered`) and never for a remote tab. The sim host never calls `AXIsProcessTrusted`
+on macOS on Apple silicon only (`device_ctl::real_platform`), only once the Xcode pick found an Xcode
+(`menu_entry_offered`) and never for a remote tab. **No tab menu entry opens it** (Max, 2026-11-22: "device panel
+should be removed from a right click option, it should be me asking you 'open the simulator in the side panel so i can
+test our app'"): the agent's `device_boot` opens it. The sim host never calls `AXIsProcessTrusted`
 (rule 1315). Held by `the_menu_entry_is_offered_only_on_apple_silicon_with_xcode` (`device_ctl.rs`),
 `restore_shows_boot_and_never_boots` (`panel_ctl.rs`) and the opt-in e2e `deviceReal`, which checks the simulator it
 made is still shut down after the panel opened on it. Agent half (device panel PR 5): `device_boot` boots only the

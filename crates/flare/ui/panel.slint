@@ -1454,7 +1454,10 @@ export component PanelSlot inherits Rectangle {
                     width: parent.width;
                     height: Px.snap(foot-text.preferred-height + 16px);
                     background: Theme.ground.with-alpha(0.9);
+                    // At the top: an element with no y is centred.
                     Rectangle {
+                        x: 0;
+                        y: 0;
                         width: parent.width;
                         height: Px.hair();
                         background: Theme.divider;
@@ -1555,7 +1558,10 @@ export component PanelSlot inherits Rectangle {
                             accessible-role: button;
                             accessible-label: row.name;
                             accessible-action-default => { root.device-pick(i); }
+                            // At the row's top: an element with no y is centred, which drew the rule through the text.
                             if i > 0: Rectangle {
+                                x: 0;
+                                y: 0;
                                 width: parent.width;
                                 height: Px.hair();
                                 background: Theme.divider;

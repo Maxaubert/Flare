@@ -13,9 +13,6 @@ use flare_surfaces::PanelKind;
 use super::*;
 use crate::device_ctl::{AgentCall, CHOOSE, DeviceMsg, Effect, REMOTE_WORDS, Woken};
 
-/// The tab menu's row that opens the device panel (macOS on Apple silicon with Xcode, or the fake under `--e2e`).
-pub const DEVICE_MENU_ROW: &str = "Device panel";
-
 impl AppCtl {
     /// The device panel follows the panels after the web panel did (`sync_panels`).
     pub(super) fn sync_device(&mut self, app: &AppWindow, front: Option<&str>) {
@@ -282,11 +279,6 @@ impl AppCtl {
             };
             post(UiMsg::Device(DeviceMsg::Xcode(answer)));
         });
-    }
-
-    /// The tab menu offers the device panel (macOS on Apple silicon with Xcode, or the fake under `--e2e`).
-    pub(super) fn device_menu_offered(&self, tab: &str) -> bool {
-        self.device.menu_offered() && self.is_shell_tab(tab)
     }
 
     /// Quit (rule 1319): the sim host goes, and the simulators Flare booted are shut down, detached, when the setting

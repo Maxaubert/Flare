@@ -3234,7 +3234,6 @@ impl AppCtl {
             tab.cwd.clone()
         };
         let shell = tab.kind == TabKind::Shell;
-        let remote = tab.remote.is_some();
         // A remote tab's Close ends its session (rule 1192); "Hide here only" is gone (Max 2026-11-19): it left a
         // hidden session nobody sees.
         let mut rows: Vec<(MenuRowData, String)> =
@@ -3242,13 +3241,6 @@ impl AppCtl {
                 .into_iter()
                 .map(|r| (r, String::new()))
                 .collect();
-        // The device panel (PR 4b): a local shell tab, on macOS on Apple silicon with Xcode (rule 1317: never for a
-        // remote tab).
-        if shell && !remote && self.device_menu_offered(id) {
-            let mut device = MenuRowData::plain(device_glue::DEVICE_MENU_ROW);
-            device.icon = crate::menus_ui::GLYPH_PANEL;
-            rows.push((device, String::new()));
-        }
         // The plugins' actions for a shell tab, one flyout under each plugin's name (plugins phase 4).
         if shell {
             self.plugin_menu_rows(id, &mut rows);
@@ -3371,11 +3363,6 @@ impl AppCtl {
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
-                device_glue::DEVICE_MENU_ROW => {
-                    // The device panel on this tab, on its device list (device panel PR 4b).
-                    let id = id.clone();
-                    self.device_open(&id, None);
-                }
                 _ => {}
             },
             MenuKind::Term { tab } if row.label == ASK_AGENT_ROW => {
