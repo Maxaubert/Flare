@@ -758,8 +758,9 @@ mod tests {
     /// Device panel PR 5: `/device` boots a device, looks once and waits, with only those two tools allowed.
     #[test]
     fn the_device_command_boots_a_device_looks_once_and_then_waits() {
-        let text = read_plugin_file("commands/device.md");
-        assert!(text.starts_with("---\n") || text.starts_with("---\r\n"));
+        // A Windows checkout may have CRLF: compare with LF line ends.
+        let text = read_plugin_file("commands/device.md").replace("\r\n", "\n");
+        assert!(text.starts_with("---\n"));
         for word in [
             "description:",
             "argument-hint:",
