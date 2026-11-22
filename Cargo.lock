@@ -1867,7 +1867,7 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 name = "flare"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chacha20poly1305",
  "ed25519-dalek",
  "embed-resource",
@@ -1927,7 +1927,7 @@ dependencies = [
 name = "flare-agent"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "flare-win",
  "log",
  "regex",
@@ -1941,7 +1941,7 @@ dependencies = [
 name = "flare-cef"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cef",
  "cef-dll-sys",
  "flare-surfaces",
@@ -1983,7 +1983,7 @@ dependencies = [
 name = "flare-device"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "block2 0.6.2",
  "dispatch2",
  "flare-ctl",
@@ -2018,7 +2018,7 @@ dependencies = [
 name = "flare-dictation"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "flare-shells",
  "flare-win",
  "libc",
@@ -2039,7 +2039,7 @@ dependencies = [
 name = "flare-e2e"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "flare-agent",
  "flare-ctl",
  "flare-diag",
@@ -2196,7 +2196,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "flare-agent",
  "flare-proc",
  "flare-render",
@@ -2263,7 +2263,7 @@ dependencies = [
 name = "flare-win"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "block2 0.6.2",
  "dispatch2",
  "flare-proc",
