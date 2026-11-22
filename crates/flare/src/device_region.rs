@@ -1399,4 +1399,150 @@ mod tests {
         f.sync();
         std::fs::remove_file(&r.path).expect("the region file goes once it is let go");
     }
+
+    /// The real path end to end (opt-in, `FLARE_DEVICE_REAL=1`, `cargo build -p flare-emu-host` first; by hand only):
+    /// an AVD written for the test into its own folder (deleted after; the person's AVDs are never listed) boots
+    /// headless with the person's SDK (read only), `EmuSource` attaches, and the frame thread copies its region on this
+    /// process's own wgpu device while swipes make frames. Then the region file is gone after detach, and quit's own
+    /// command (`flare-emu-host --shutdown`) ends the emulator. `FLARE_DEVICE_IMAGE` names another image package.
+    #[test]
+    fn a_real_emulator_region_copies_on_the_gpu() {
+        use flare_device::emu::discovery;
+        use flare_device::emu::{Places, flare_avd};
+        use flare_device::emu_client::{EmuConfig, EmuSource};
+        use flare_device::source::{DeviceSource, Phase, SourceEvent, Touch};
+        use std::time::Instant;
+        if std::env::var("FLARE_DEVICE_REAL").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set FLARE_DEVICE_REAL=1 to run against an emulator made for the test"
+            );
+            return;
+        }
+        let exe = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(|d| d.parent())
+            .map(|d| d.join(flare_win::names::EMU_HOST_EXE))
+            .unwrap();
+        assert!(exe.exists(), "build the emu host first: {}", exe.display());
+        let (device, queue, info) = flare_render::gpu::headless_device().expect("a wgpu device");
+        let home = tempfile::tempdir().unwrap();
+        let abi = if cfg!(target_arch = "aarch64") {
+            "arm64-v8a"
+        } else {
+            "x86_64"
+        };
+        let image = std::env::var("FLARE_DEVICE_IMAGE")
+            .unwrap_or_else(|_| format!("system-images;android-37.0;google_apis;{abi}"));
+        let img = flare_avd::Image::from_path(&image).expect("an image package path");
+        flare_avd::write(home.path(), &img).expect("the AVD is written");
+        let mut places = Places::from_env();
+        places.android_avd_home = Some(home.path().to_path_buf());
+        let running_dir = places.discovery_dir().expect("a discovery folder");
+        let logs = tempfile::tempdir().unwrap();
+        let mut cfg = EmuConfig::new(exe.clone(), logs.path().join("emu-host.log"), places);
+        cfg.logs_dir = Some(logs.path().to_path_buf());
+        cfg.env = vec![(
+            "ANDROID_AVD_HOME".into(),
+            home.path().to_string_lossy().to_string(),
+        )];
+        let kept = Rc::new(RefCell::new(Vec::new()));
+        let mut f = frames_keeping(&kept);
+        f.attach_gpu(&device, &queue);
+        cfg.on_region = Some(f.sink());
+        let mut src = EmuSource::start(cfg);
+        let t = Target::emu(flare_avd::NAME).unwrap();
+        /// Ends the emulator through quit's own command, whatever happens, and waits for it to go.
+        struct Down(PathBuf, PathBuf, PathBuf);
+        impl Drop for Down {
+            fn drop(&mut self) {
+                let started = Instant::now();
+                let _ = std::process::Command::new(&self.0)
+                    .args(["--shutdown", flare_avd::NAME])
+                    .env("ANDROID_AVD_HOME", &self.1)
+                    .status();
+                while started.elapsed() < Duration::from_secs(120)
+                    && discovery::of_avd(&discovery::read_all(&self.2), flare_avd::NAME).is_some()
+                {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                eprintln!(
+                    "--shutdown: gone after {:.1} s: {}",
+                    started.elapsed().as_secs_f64(),
+                    discovery::of_avd(&discovery::read_all(&self.2), flare_avd::NAME).is_none()
+                );
+            }
+        }
+        let _down = Down(exe.clone(), home.path().to_path_buf(), running_dir.clone());
+        let wait = |src: &EmuSource, id, limit: u64| {
+            let end = Instant::now() + Duration::from_secs(limit);
+            while Instant::now() < end {
+                if let Ok(SourceEvent::Answer { id: i, result }) =
+                    src.events().recv_timeout(Duration::from_millis(500))
+                    && i == id
+                {
+                    return result.map(|_| ()).map_err(|e| e.message);
+                }
+            }
+            Err("no answer in time".into())
+        };
+        let booted_at = Instant::now();
+        let id = src.boot(&t);
+        wait(&src, id, 600).expect("booted");
+        eprintln!("booted in {:.0} s", booted_at.elapsed().as_secs_f64());
+        let id = src.attach(&t);
+        wait(&src, id, 60).expect("attached");
+        f.show(Some(t.clone()));
+        let started = Instant::now();
+        let mut last_swipe = Instant::now() - Duration::from_secs(2);
+        let mut shown = 0;
+        while started.elapsed() < Duration::from_secs(20) {
+            while src.events().try_recv().is_ok() {}
+            if last_swipe.elapsed() > Duration::from_millis(700) {
+                last_swipe = Instant::now();
+                for (phase, y) in [
+                    (Phase::Start, 700.0),
+                    (Phase::Move, 500.0),
+                    (Phase::End, 300.0),
+                ] {
+                    src.touch(&t, Touch::one(phase, 200.0, y));
+                }
+            }
+            if f.frame_image(started.elapsed().as_millis() as u64)
+                .is_some()
+            {
+                shown += 1;
+            }
+            f.after_render();
+            queue.submit([]);
+            let _ = device.poll(wgpu::PollType::Poll);
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        let (copied, dropped, p50, p99) = f.stats();
+        eprintln!(
+            "{} ({:?}): route {:?}, refused {:?}, {copied} copied, {dropped} dropped, {shown} shown in 20 s, copy CPU p50 {p50:.3} ms p99 {p99:.3} ms",
+            info.name,
+            info.backend,
+            f.path(),
+            f.refused()
+        );
+        assert!(copied > 0, "frames came through the region");
+        let last = kept.borrow().last().cloned().expect("a ring texture shown");
+        let px = flare_render::gpu::read_texture(&device, &queue, &last);
+        let lit = px
+            .chunks(4)
+            .filter(|p| p[0] > 16 || p[1] > 16 || p[2] > 16)
+            .count();
+        eprintln!("{}x{}, {lit} lit pixels", last.width(), last.height());
+        assert!(lit > 1000, "the picture is the device's screen, not black");
+        let region = src.region_path(&t).expect("a region");
+        src.detach(&t);
+        f.release(&t);
+        f.sync();
+        let end = Instant::now() + Duration::from_secs(5);
+        while region.exists() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!region.exists(), "the region is deleted after detach");
+    }
 }
