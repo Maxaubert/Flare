@@ -3191,6 +3191,20 @@ simulator in that tab's device panel, while the person watches and can take over
 - **Tests.** `cargo nextest run -p flare -E 'test(device)'`, `cargo nextest run -p flare-mcp`, `cargo nextest run -p
   flare-ctl`; the e2e `deviceAgent` and `mcpDevice` run on the fake source.
 
+## Device panel: Android, PR A4: the panel shows Android, 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`
+(PR A4). The first visible change.
+
+- **Where**: Windows (x64) offers the device panel in the tab menu, with Android only. A Mac on Apple silicon lists its
+  Android devices beside the iPhones once an Android SDK is found (Flare's own or the person's).
+- **Setup** (Windows): "Android devices need Google's Android emulator" [Set up]; Google's licence text in a box with
+  [Accept and set up] and [Cancel]; the download with its MB and [Cancel]; "Android needs Windows Hypervisor Platform"
+  [Turn on], then "Restart Windows to finish."; "Preparing <name>..." on a new device's first start.
+- **The panel**: the iOS header buttons (Home, Lock sends Power, Rotate); Back and Recents in the More menu instead of
+  Shake. Frames are copied on the GPU (rule 1364): zero copy on DX12 and Metal, an upload or a CPU copy as fallbacks.
+- **Quit**: the emulators Flare booted are asked to shut down (the setting `flare.device.shutdown_on_quit`), detached.
+- **The agent**: unchanged in this PR. The `device_*` tools for Android come with A5.
 ## Device panel: Android, PR A6: the emu host and the agent jar ship (not yet started), 2026-11-22
 
 Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`

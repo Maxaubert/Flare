@@ -5889,14 +5889,38 @@ macOS, sizes it for every rotation (`max(w, h)^2 * 4`), and gives the `file:///`
 through the 60 fps cap (`cap::FrameCap`). Rows are top-down (S1). Flare maps and copies the region in A4. Held by
 `a_region_is_made_user_only_and_deleted_on_detach_and_at_start`, `a_region_has_a_file_url_and_room_for_every_rotation`
 (`region.rs`) and `an_attached_device_gets_a_region_from_flare_and_frames_back` (`emu_client.rs`). Source: Max,
+2026-11-22. A4: the region's size is rounded up to 64 KiB (`region::ALIGN`), the size the GPU import takes; the frame
+thread lets go of a detached device's mapping (buffer, heap, then the view) before the file is deleted, since Windows
+refuses to delete a mapped file. Held also by `a_released_region_can_be_deleted` (`device_region.rs`).
+
+1364. **Each frame is copied out of the single-buffered region on the GPU at once, off the UI thread, into the device's
+ring; the UI thread only shows the newest finished slot. At most 60 a second; no frame queue.** Spec 2026-11-22,
+builder's calls 4 and 5; Step 0 S3. The emu host's reader hands each frame record straight to Flare's frame thread
+(`EmuConfig::on_region`, `crate::device_region`), never through the UI thread. The frame thread maps the region and
+copies it into a free slot of a ring of three `Rgba8Unorm` textures: zero copy where the machine allows it (Windows: a
+D3D12 heap opened on the mapped view with `OpenExistingHeapFromAddress`, a buffer placed on it, `buffer_from_raw` +
+`create_buffer_from_hal`; macOS: `newBufferWithBytesNoCopy` wrapped the same way), then a compute pass, because rows of
+4320 bytes break the 256-byte row rule of `copy_buffer_to_texture`. `write_texture` is the fallback when the import or
+the pass is refused (logged once, `refused` in `device.state`); with no wgpu device, or a texture Slint refuses, the
+region is copied by the CPU at most 30 a second (the slow mark). The mapping, the import and the pipeline are made on
+the frame thread (rule 34). A record that comes while an older one waits replaces it (counted as dropped); a slot on
+show is never written, and it is freed only from `on_submitted_work_done` after the frame that replaced it (rule
+1311's pattern). Android frames come turned, so Slint does not turn them again. `device.state` reports the route
+(`gpu`, `upload`, `cpu`) and the copies, drops and copy time p50 and p99. Held by
+`a_region_frame_is_copied_by_the_gpu_into_the_ring`, `a_full_size_frame_and_a_turned_one_copy_into_the_ring`,
+`a_refused_import_uploads_the_region_instead`, `a_shown_slot_is_freed_only_after_the_gpu_is_done` and
+`without_a_gpu_the_region_is_copied_by_the_cpu` (`device_region.rs`, headless on both OSes' own GPU API). Source: Max,
 2026-11-22.
 
 1365. **The stream runs only while the panel is seen; input, the tree, `snapshot` and the agent keep working while it
 is paused.** Spec 2026-11-22, builder's call 6. In the emu host, `pause` cancels `streamScreenshot` (the emulator then
 reads nothing back) and `resume` opens it again; the held input stream, `getScreenshot` for a snapshot and the minute's
 `getStatus` go on. Checked on a real emulator in A2: no `region` line while paused, frames again at once on resume.
-PR A4 sends the pause from the panel's visibility. Held by `an_attached_device_gets_a_region_from_flare_and_frames_back`
-(`emu_client.rs`). Source: Max, 2026-11-22.
+PR A4 sends the pause from the panel's visibility: `DeviceCtl` pauses every attached device but the front panel's, and
+all of them while the window is minimised or occluded, for both kinds through the same `Multi` source
+(`device_sources.rs`), which routes each request by its target's kind. Held by
+`an_attached_device_gets_a_region_from_flare_and_frames_back` (`emu_client.rs`) and `both_sources_answer_as_one`
+(`device_sources.rs`). Source: Max, 2026-11-22.
 
 1366. **An emulator Flare booted is shut down at quit (setting, detached, quit never waits) and stops by itself 5
 minutes after Flare dies; an emulator Flare did not boot is never shut down.** Spec 2026-11-22, builder's call 12, open
@@ -5907,9 +5931,14 @@ every process its program started, so an emulator the emu host started would be 
 down cleanly. The emulator runs with `-idle-grpc-timeout 300`; the emu host calls `getStatus` every minute, paused or
 not, for every emulator it booted or attached, so the timeout fires only once Flare is gone. `EmuSource` keeps which
 emulators it booted (`booted_by_flare`); a shutdown is `setVmState(SHUTDOWN)` and waits for the emulator to end. PR A4
-adds the quit side. Held by `a_boot_starts_the_emulator_in_flare_then_waits_in_the_emu_host` (`emu_client.rs`),
-`a_guarded_helper_ends_with_its_guard` (`flare-proc/src/job.rs`) and the boot command tests of rule 1362. Source: Max,
-2026-11-22.
+adds the quit side: `<profile>/device/booted.json` holds both kinds by target name (`emu/<avd>`; an old file's
+simulator `udid` entries still read), and with `flare.device.shutdown_on_quit` on, quit starts one detached
+`flare-emu-host --shutdown <avd>...` (no window, never waited for, outside the guard) that asks each running AVD it
+names for `setVmState(SHUTDOWN)` and exits. A kind whose source is not running never forgets its entries from a list
+that could not include them. Held by `a_boot_starts_the_emulator_in_flare_then_waits_in_the_emu_host`
+(`emu_client.rs`), `a_guarded_helper_ends_with_its_guard` (`flare-proc/src/job.rs`), the boot command tests of rule
+1362, `an_android_device_boots_and_shuts_down_at_quit` and `booted_json_holds_both_kinds` (`device_ctl.rs`). Source:
+Max, 2026-11-22.
 
 1367. **Agent coordinates for Android are dp (pixels / (dpi / 160)); only the emu host converts dp to pixels.
 `device_look`'s PNG is at dp size.** Spec 2026-11-22, builder's call 7. The dp is Android's match for the iOS point:
@@ -5965,9 +5994,10 @@ copy to fall back on. Held by `the_checked_in_jar_is_built_from_its_sources`,
 with `-no-window` (the headless engine, spike A5), and on Windows every program Flare's Android side starts (the emu
 host, the emulator, adb, `emulator -accel-check`) starts with `CREATE_NO_WINDOW` (`flare_emu_host::run::command`,
 `emu::boot::command`). Checked by hand in A2: the count of visible windows was the same before and after a headless
-boot. The real e2e scenario (A4, A5) checks the visible windows before and after. Held by
-`the_boot_command_always_uses_a_token_and_no_window` (`boot.rs`) and `every_program_starts_without_a_window`
-(`flare-emu-host/src/run.rs`). Source: Max, 2026-11-22.
+boot. The real e2e scenario (A5) checks the visible windows before and after. A4: Flare's own detached programs at
+quit (`device_ctl::spawn_detached`, the `simctl` and `flare-emu-host --shutdown` commands) also start with
+`CREATE_NO_WINDOW` on Windows. Held by `the_boot_command_always_uses_a_token_and_no_window` (`boot.rs`) and
+`every_program_starts_without_a_window` (`flare-emu-host/src/run.rs`). Source: Max, 2026-11-22.
 
 1371. **Each source lists its own buttons; a press of another source's button is refused with `unavailable`.** Spec
 2026-11-22, builder's call 9. `Button` gains `Back`, `Recents` and `Power`. `SourceKind::buttons()` lists each
