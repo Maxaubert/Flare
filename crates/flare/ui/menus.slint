@@ -310,11 +310,11 @@ export component ContextMenu inherits Rectangle {
                 width: panel.width;
                 padding: Px.hair();
                 for r[i] in root.rows: VerticalLayout {
+                    // Every row, a group's first too, is one hairline from the last, so a lit row fills the space
+                    // between its two rules (Max, 2026-11-22: a 9 px group gap left an unlit band each side of it).
                     if r.parent < 0 && i > 0: Rectangle {
-                        // A group starts after a wider gap with the rule in the middle of it (whole pixels).
-                        height: r.group ? Px.snap(9px) : Px.hair();
-                        background: r.group ? transparent : Theme.divider;
-                        if r.group: Rectangle { y: Px.snap(4px); height: Px.hair(); background: Theme.divider; }
+                        height: Px.hair();
+                        background: Theme.divider;
                     }
                     if r.parent < 0: MenuItem {
                         item: r;

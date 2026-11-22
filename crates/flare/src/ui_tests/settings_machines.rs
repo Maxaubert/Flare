@@ -1422,7 +1422,7 @@ fn paint_app(h: &Harness<AppWindow>, id: &str) {
 
 /// Rule 1281 (Max picked option A of the 2026-11-17 mockup): a machine's ⋯ menu is the shared ContextMenu, not the
 /// Select menu: its right edge on the button's, 4 px under it, at least 156 px wide, Test with the pulse glyph, then a
-/// 9 px group gap with its rule, then Remove with the Plugins page's trash, both 13 px glyphs in the label's ink (no
+/// hairline rule (a group's too since 2026-11-22), then Remove with the Plugins page's trash, both 13 px glyphs in the label's ink (no
 /// red). A pick acts through the page (Remove removes the machine); a press outside and Escape close it. A computer
 /// that reaches this one gets Remove alone. At every scale, in a dark and a light look.
 #[test]
@@ -1466,7 +1466,6 @@ fn a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_look
             );
             let dev = 1.0 / s + 0.01;
             let hair = s.floor().max(1.0) / s;
-            let snap = |v: f32| (v * s).round() / s;
             assert!(
                 (px + pw - 930.0).abs() <= dev,
                 "{what}: the right edge on the button's ({})",
@@ -1474,19 +1473,18 @@ fn a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_look
             );
             assert!((py - 134.0).abs() <= dev, "{what}: 4 px under it ({py})");
             assert!(pw >= 156.0 - 0.01, "{what}: at least 156 px ({pw})");
-            let want_h = 2.0 * hair + 28.0 + snap(9.0) + 28.0;
+            let want_h = 3.0 * hair + 28.0 + 28.0;
             assert!(
                 (ph - want_h).abs() <= dev,
-                "{what}: two rows and a group gap ({ph}, want {want_h})"
+                "{what}: two rows and one rule ({ph}, want {want_h})"
             );
             let theme = c.global::<crate::Theme>();
             let soft = rgb(theme.get_text_soft());
             let k = |v: f32| (v * s).round() as u32;
-            let tops = [py + hair, py + hair + 28.0 + snap(9.0)];
-            // The group's rule: a divider line in the middle of the gap, the panel's colour above and below it.
-            let gap_mid = tops[0] + 28.0 + snap(4.0);
-            let above = frame.px(k(px + 40.0), k(tops[0] + 28.0 + 1.0));
-            let rule = frame.px(k(px + 40.0), k(gap_mid) + (hair * s / 2.0) as u32);
+            let tops = [py + hair, py + hair + 28.0 + hair];
+            // The group's rule: one hairline right under Test, with no gap (a lit row reaches it).
+            let above = frame.px(k(px + 40.0), k(tops[0] + 28.0 - 2.0));
+            let rule = frame.px(k(px + 40.0), k(tops[0] + 28.0) + (hair * s / 2.0) as u32);
             assert_ne!(above, rule, "{what}: Remove starts a group with its rule");
             for (i, glyph) in [GLYPH_TEST, GLYPH_TRASH].into_iter().enumerate() {
                 let top = tops[i];
@@ -1548,7 +1546,7 @@ fn a_machines_menu_is_the_shared_menu_with_its_icons_at_every_scale_in_both_look
             f.h.key_text(&char::from(slint::platform::Key::Escape).to_string());
             // A click on Remove removes the machine.
             open("machine:mac");
-            let remove_y = c.get_row_menu_panel_y() + hair + 28.0 + snap(9.0) + 14.0;
+            let remove_y = c.get_row_menu_panel_y() + hair + 28.0 + hair + 14.0;
             f.h.click(c.get_row_menu_panel_x() + 60.0, remove_y);
             assert!(!f.b().get_row_menu_open(), "{what}: a pick closes");
             f.settle("the remove", |f| f.row("machine:mac").is_none());
