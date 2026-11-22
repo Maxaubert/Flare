@@ -13,8 +13,17 @@ use std::time::Duration;
 /// Writes `<file>.tmp` then renames it over `file` (Windows replaces in one step): the file is always the
 /// old one or the new one, never half of either.
 pub fn write_atomic(file: &Path, data: &str) -> io::Result<()> {
+    write_atomic_with(file, data, fs_write)
+}
+
+/// `write_atomic` with the temp file's write given (a test seam).
+fn write_atomic_with(
+    file: &Path,
+    data: &str,
+    write: impl FnOnce(&Path, &str) -> io::Result<()>,
+) -> io::Result<()> {
     let tmp = suffixed(file, ".tmp");
-    fs_write(&tmp, data)?; // sync-ok: only the startup read and the quit flush call this on a live path
+    write_tmp(&tmp, data, write)?; // sync-ok: only the startup read and the quit flush call this on a live path
     if let Err(e) = rename_file(&tmp, file) {
         let _ = remove_file(&tmp);
         return Err(e);
@@ -270,8 +279,31 @@ fn suffixed(file: &Path, suffix: &str) -> PathBuf {
 
 // Every disk call in this module goes through these three helpers; each runs on the caller's thread,
 // which is the worker thread or a sync path (see the callers' docs).
+// The temp file is flushed to the disk before the rename (audit #14): after a power loss NTFS can keep a rename but
+// not the data, which left the file empty or full of NULs.
 fn fs_write(path: &Path, data: &str) -> io::Result<()> {
-    std::fs::write(path, data) // sync-ok: worker thread, or the close, quit and startup paths
+    write_synced(path, data, sync_file)
+}
+
+/// Creates `path`, writes `data` and runs `sync` on the open file. The file is closed before this returns, so the
+/// rename that follows can replace it on Windows.
+fn write_synced(
+    path: &Path,
+    data: &str,
+    sync: impl FnOnce(&std::fs::File, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?; // sync-ok: worker thread, or the close, quit and startup paths
+    f.write_all(data.as_bytes())?; // sync-ok: worker thread, or the close, quit and startup paths
+    sync(&f, path)
+}
+
+// sync-ok: worker thread, or the close, quit and startup paths
+fn sync_file(f: &std::fs::File, path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    lock(&SYNCED).push(path.to_path_buf());
+    let _ = path;
+    f.sync_all() // sync-ok: worker thread, or the close, quit and startup paths
 }
 
 fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
@@ -290,9 +322,42 @@ fn wait<'a, T>(cv: &Condvar, g: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
     cv.wait(g).unwrap_or_else(PoisonError::into_inner) // sync-ok: the atomic writer waits on its own worker, never the UI
 }
 
+/// Test seam: every temp file `sync_file` flushed.
+#[cfg(test)]
+static SYNCED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit #14: every temp file is flushed to the disk before it is renamed, on all three paths.
+    #[test]
+    fn each_temp_file_is_flushed_before_the_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let synced = |name: &str| lock(&SYNCED).contains(&dir.path().join(name));
+        write_atomic(&dir.path().join("a.json"), "{}").unwrap();
+        assert!(synced("a.json.tmp"), "write_atomic");
+        let w = AtomicWriter::new(dir.path().join("b.json"));
+        w.save("{}".to_string());
+        w.idle();
+        assert!(synced("b.json.tmp"), "the background save");
+        w.save_now("{}").unwrap();
+        assert!(synced("b.json.now.tmp"), "save_now");
+    }
+
+    /// Audit #14: a flush that fails is a failed write: the old file stays and no temp file is left.
+    #[test]
+    fn a_failed_flush_keeps_the_old_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("tabs.json");
+        std::fs::write(&file, "old").unwrap();
+        let r = write_atomic_with(&file, "new", |p, d| {
+            write_synced(p, d, |_, _| Err(io::Error::other("no flush")))
+        });
+        assert!(r.is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
+        assert!(!dir.path().join("tabs.json.tmp").exists());
+    }
 
     #[test]
     fn write_atomic_replaces_and_leaves_no_temp() {

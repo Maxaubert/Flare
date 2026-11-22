@@ -67,7 +67,9 @@ make_dmg() {
   on_exit "hdiutil detach -quiet $(printf %q "$mnt") 2>/dev/null; rmdir $(printf %q "$mnt") 2>/dev/null"
   hdiutil attach -quiet -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$dmg"
   codesign --verify --deep --strict "$mnt/Flare.app"
-  spctl -a -t exec -vvv "$mnt/Flare.app" 2>&1 | grep -q "source=Notarized Developer ID"
+  # Into a file first, as above (rule 1342): a grep that quits at the match would give spctl a SIGPIPE under pipefail.
+  spctl -a -t exec -vvv "$mnt/Flare.app" 2>&1 | tee "$OUT/spctl-dmg-app.txt"
+  grep -q "source=Notarized Developer ID" "$OUT/spctl-dmg-app.txt"
   [ "$(readlink "$mnt/Applications")" = /Applications ]
   hdiutil detach -quiet "$mnt"
   rmdir "$mnt"

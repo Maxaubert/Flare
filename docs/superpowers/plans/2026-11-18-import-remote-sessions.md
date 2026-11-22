@@ -1,5 +1,7 @@
 # Import remote sessions: implementation plan (2026-11-18)
 
+**Superseded by 2026-11-19** (`docs/superpowers/specs/2026-11-19-remote-session-on-opener-design.md`): no imports; a session shows only on the machine that opened it.
+
 Spec: `docs/superpowers/specs/2026-11-18-import-remote-sessions-design.md`.
 Status: draft for Max's approval, together with the spec. Max's answers of 2026-11-18 are applied. Not started.
 

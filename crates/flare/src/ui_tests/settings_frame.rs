@@ -474,3 +474,36 @@ fn every_rail_label_is_as_heavy_as_the_chosen_one() {
         );
     }
 }
+
+/// Rule 1345: in a frame too short for the rail, About sits under the item above it (never over it, so that item
+/// keeps its clicks) and the rail scrolls with the wheel until About can be clicked. A tall frame does not scroll.
+#[test]
+fn a_short_frame_scrolls_the_rail_and_about_never_covers_an_item() {
+    for s in SCALES {
+        let h = make(s, 1000, 300);
+        let c = &h.comp;
+        assert_eq!(c.get_rail_scroll(), 0.0, "scale {s}");
+        // Diagnostics (250.5 to 286.5) takes its own click; About used to be drawn over it.
+        h.click(100.0, 268.5);
+        assert_eq!(c.get_page_picked().as_str(), "diagnostics", "scale {s}");
+        // The wheel over the rail brings About (288.5 to 324.5 in a 300 px frame) into view.
+        for _ in 0..4 {
+            h.wheel(100.0, 200.0, 0.0, -120.0);
+            h.advance(0);
+        }
+        let scroll = c.get_rail_scroll();
+        assert!(
+            scroll >= 324.5 + 12.0 - 300.0 - 0.5,
+            "scale {s}: rail scrolled {scroll}"
+        );
+        h.click(100.0, 288.5 + 18.0 - scroll);
+        assert_eq!(c.get_page_picked().as_str(), "about", "scale {s}");
+        // The Find field stays put.
+        assert!((c.get_find_y() - 52.5).abs() <= 1.0, "scale {s}");
+    }
+    // At a normal height the rail fits and the wheel moves nothing.
+    let h = wide(1.0);
+    h.wheel(100.0, 200.0, 0.0, -120.0);
+    h.advance(0);
+    assert_eq!(h.comp.get_rail_scroll(), 0.0);
+}

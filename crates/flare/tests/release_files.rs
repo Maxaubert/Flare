@@ -304,10 +304,11 @@ fn actions_are_pinned_to_major_tags_that_exist() {
         .lines()
         .filter_map(|l| {
             let t = l.trim().trim_start_matches("- ");
-            // `owner/name@<40-hex sha> # vN` (A4 L61): the allow-list names the action and its major.
+            // `owner/name@<40-hex sha> # vN.N.N` (A4 L61, audit 2026-11-21 #16): the allow-list names the action and
+            // its major, so a Dependabot bump inside the major keeps passing.
             let spec = t.strip_prefix("uses: ")?;
             let (action, rest) = spec.split_once('@')?;
-            let major = rest.split_once("# ")?.1.trim();
+            let major = rest.split_once("# ")?.1.trim().split('.').next()?;
             Some(format!("{action}@{major}"))
         })
         .collect();
@@ -542,6 +543,40 @@ fn pwsh() -> Option<&'static str> {
             .map(|s| s.success())
             .unwrap_or(false)
     })
+}
+
+/// Rule 1341: `gh` prints the generated notes as many lines, and PowerShell keeps them as an array. `notes.ps1`
+/// joins them with line breaks, so the notes keep their headings and bullets (before, `WriteAllText` joined them with
+/// spaces into one line). A fake `gh` stands in for the network.
+#[test]
+fn the_release_notes_keep_their_line_breaks() {
+    let Some(ps) = pwsh() else {
+        eprintln!("no PowerShell here");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("notes.md");
+    let run = dir.path().join("run.ps1");
+    let quote = |p: &std::path::Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
+    fs::write(
+        &run,
+        format!(
+            "function gh {{ $global:LASTEXITCODE = 0; '## What''s changed'; ''; '* one'; '* two' }}\n& {} -Tag v1 -Out {}\n",
+            quote(&root().join(NOTES)),
+            quote(&out)
+        ),
+    )
+    .unwrap();
+    let ok = std::process::Command::new(ps)
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(&run)
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{ok:?}");
+    assert_eq!(
+        fs::read_to_string(&out).unwrap(),
+        "## What's changed\n\n* one\n* two"
+    );
 }
 
 fn run_gate(deny_toml: &str, live: bool) -> i32 {

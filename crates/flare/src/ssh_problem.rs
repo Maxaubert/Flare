@@ -220,7 +220,7 @@ mod tests {
                 Some(SshProblem::NotAnswering),
             ),
             (
-                "ssh: connect to host 192.168.0.139 port 22: Connection refused",
+                "ssh: connect to host 192.0.2.139 port 22: Connection refused",
                 Some(SshProblem::NotAnswering),
             ),
             (
@@ -236,7 +236,7 @@ mod tests {
                 Some(SshProblem::NotAnswering),
             ),
             (
-                "max@192.168.0.139: Permission denied (publickey,keyboard-interactive).",
+                "max@192.0.2.139: Permission denied (publickey,keyboard-interactive).",
                 Some(SshProblem::NotPaired),
             ),
             (
@@ -329,7 +329,7 @@ mod tests {
     /// the host then refuses the login. Windows' OpenSSH and a Mac's say it in their own words.
     #[test]
     fn a_key_file_others_may_read_is_its_own_line() {
-        let windows = "Bad permissions. Try removing permissions for user: MAX\\\\CodexSandboxUsers (S-1-5-21-1-2-3-1008) \
+        let windows = "Bad permissions. Try removing permissions for user: PC\\\\CodexSandboxUsers (S-1-5-21-1-2-3-1008) \
              on file C:/Users/Admin/AppData/Roaming/FlareStable/id_flare_ed25519.\n\
              @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
              @         WARNING: UNPROTECTED PRIVATE KEY FILE!          @\n\
@@ -337,7 +337,7 @@ mod tests {
              Permissions for 'C:\\\\Users\\\\Admin\\\\AppData\\\\Roaming\\\\FlareStable\\\\id_flare_ed25519' are too open.\n\
              This private key will be ignored.\n\
              Load key \"C:\\\\Users\\\\Admin\\\\AppData\\\\Roaming\\\\FlareStable\\\\id_flare_ed25519\": bad permissions\n\
-             max@192.168.0.120: Permission denied (publickey,password,keyboard-interactive).";
+             max@192.0.2.120: Permission denied (publickey,password,keyboard-interactive).";
         assert_eq!(sort(windows), Some(SshProblem::KeyNotPrivate));
         let mac = "Permissions 0644 for '/Users/max/Library/Flare/id_flare_ed25519' are too open.\n\
              Load key \"/Users/max/Library/Flare/id_flare_ed25519\": bad permissions\n\

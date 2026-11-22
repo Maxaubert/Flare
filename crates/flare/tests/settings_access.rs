@@ -211,3 +211,67 @@ fn the_settings_font_is_the_system_ui_stack_whatever_the_theme() {
         }
     }
 }
+
+/// Every `.slint` file under `dir`, sub-folders included.
+fn slint_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display())) {
+        let p = e.expect("a folder entry").path();
+        if p.is_dir() {
+            slint_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "slint") {
+            out.push(p);
+        }
+    }
+}
+
+/// The text of the `{ ... }` block that opens at or after `from`.
+fn block_at(text: &str, from: usize) -> &str {
+    let open = from + text[from..].find('{').expect("a block opens");
+    let mut depth = 0usize;
+    for (i, ch) in text[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[open..=open + i];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("an unclosed block")
+}
+
+/// Rule 1349: a hover that asks for a tooltip also takes it back when the pointer leaves, with `tip("")`. The tip
+/// host keeps a pending request until something clears it, so a leave that sends nothing lets the tip show later
+/// over whatever the pointer reached next (audit #40).
+#[test]
+fn every_hover_tip_is_taken_back_on_leave() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let mut files = Vec::new();
+    slint_files(&root, &mut files);
+    let mut bad = Vec::new();
+    let mut seen = 0;
+    for f in &files {
+        let text = fs::read_to_string(f).unwrap_or_else(|e| panic!("read {}: {e}", f.display()));
+        let mut at = 0;
+        while let Some(i) = text[at..].find("changed has-hover =>") {
+            let start = at + i;
+            let block = block_at(&text, start);
+            if block.contains("tip(") {
+                seen += 1;
+                if !block.contains("tip(\"\"") {
+                    let line = text[..start].lines().count() + 1;
+                    bad.push(format!("{}:{line}", f.display()));
+                }
+            }
+            at = start + 1;
+        }
+    }
+    assert!(seen >= 13, "the scan found only {seen} hover tips");
+    assert!(
+        bad.is_empty(),
+        "a hover tip never cleared on leave: {bad:#?}"
+    );
+}

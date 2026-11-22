@@ -987,6 +987,7 @@ mod tests {
                 },
             ],
             active: 0,
+            hidden: Vec::new(),
         }
     }
 
@@ -1135,6 +1136,7 @@ mod tests {
         done.settle(&Restored {
             tabs: vec![],
             active: 0,
+            hidden: Vec::new(),
         });
         assert_eq!(view_of(&done, 1000, 1.0, "").front_kind, 2);
         let mut s = three();
