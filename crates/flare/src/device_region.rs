@@ -447,17 +447,40 @@ impl Drop for RegionFrames {
 // ---- the frame thread -----------------------------------------------------------------------------------------
 
 /// The zero-copy import: the region as a GPU buffer, and what must outlive it.
+///
+/// Dropping it is the only way an import goes, on every path (a release, a new wgpu device, a refused first copy):
+/// the buffer goes, then the frame thread waits until the device the import was made on is idle, then the heap goes.
+/// The wait is on the import's own device, not the renderer's current one: after a device change, copies submitted on
+/// the old device may still read the region, and the mapping must not go before they end.
 struct Imported {
-    buffer: wgpu::Buffer,
+    /// Always Some until the drop.
+    buffer: Option<wgpu::Buffer>,
+    /// The device and queue the buffer was made on.
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    /// Held only so it outlives the buffer placed on it (it goes last, after the wait).
     #[cfg(windows)]
-    heap: windows::Win32::Graphics::Direct3D12::ID3D12Heap,
+    _heap: windows::Win32::Graphics::Direct3D12::ID3D12Heap,
+}
+
+impl Drop for Imported {
+    fn drop(&mut self) {
+        drop(self.buffer.take());
+        self.queue.submit([]);
+        // The frame thread may wait: the copies that read the region finish first (no UI thread here).
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        // The heap (Windows) goes after this, with the struct's other fields.
+    }
 }
 
 /// A mapped region and, once tried, its import on one wgpu device.
+///
+/// `import` is declared before `map`, so a dropped `Mapped` lets go of the import (and waits for the GPU) before it
+/// unmaps the view.
 struct Mapped {
     path: PathBuf,
-    map: memmap2::MmapMut,
     import: Option<Imported>,
+    map: memmap2::MmapMut,
     /// The wgpu device generation the import (or its refusal) belongs to.
     gpu: u64,
     refused: bool,
@@ -549,26 +572,14 @@ impl Worker {
 
     /// Lets go of a device's region: the buffer, then (once the GPU is idle) the heap, then the view.
     fn release(&mut self, t: &Target) {
-        let Some(m) = self.regions.remove(t) else {
+        let Some(mut m) = self.regions.remove(t) else {
             return;
         };
-        if let Some(imp) = m.import {
-            let Imported {
-                buffer,
-                #[cfg(windows)]
-                heap,
-            } = imp;
-            drop(buffer);
-            if let Some(g) = self.gpu() {
-                g.queue.submit([]);
-                // The frame thread may wait: the copies that read the region finish first (no UI thread here).
-                let _ = g.device.poll(wgpu::PollType::wait_indefinitely());
-            }
-            #[cfg(windows)]
-            drop(heap);
-        }
-        drop(m.map);
-        log::debug!("device frames: {t}: let go of {}", m.path.display());
+        // The import first (it waits for its own device), then the view.
+        drop(m.import.take());
+        let path = std::mem::take(&mut m.path);
+        drop(m);
+        log::debug!("device frames: {t}: let go of {}", path.display());
     }
 
     /// The region of `f`, mapped (again if its file changed).
@@ -726,7 +737,7 @@ impl Worker {
             let tried = if no_import {
                 Err("the zero-copy import is turned off (test)".to_string())
             } else {
-                import(&gpu.device, m.map.as_mut_ptr(), m.map.len() as u64)
+                import(gpu, m.map.as_mut_ptr(), m.map.len() as u64)
             };
             match tried {
                 Ok(i) => m.import = Some(i),
@@ -737,7 +748,9 @@ impl Worker {
                 }
             }
         }
-        let Some(imp) = &m.import else { return false };
+        let Some(buffer) = m.import.as_ref().and_then(|i| i.buffer.as_ref()) else {
+            return false;
+        };
         // The first copy from a new import runs in an error scope: a refusal falls back to the upload.
         let scope = first.then(|| gpu.device.push_error_scope(wgpu::ErrorFilter::Validation));
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -747,7 +760,7 @@ impl Worker {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: imp.buffer.as_entire_binding(),
+                    resource: buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -956,7 +969,8 @@ fn cpu_copy(shared: &Mutex<Shared>, m: &mut Mapped, f: &RegionFrame) {
 
 /// The zero-copy import (Windows, D3D12): a heap opened on the mapped view, and a buffer placed on it.
 #[cfg(windows)]
-fn import(device: &wgpu::Device, base: *mut u8, size: u64) -> Result<Imported, String> {
+fn import(gpu: &Gpu, base: *mut u8, size: u64) -> Result<Imported, String> {
+    let device = &gpu.device;
     use windows::Win32::Graphics::Direct3D12::{
         D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
         D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_FLAG_NONE,
@@ -1032,12 +1046,18 @@ fn import(device: &wgpu::Device, base: *mut u8, size: u64) -> Result<Imported, S
             },
         )
     };
-    Ok(Imported { buffer, heap })
+    Ok(Imported {
+        buffer: Some(buffer),
+        device: gpu.device.clone(),
+        queue: gpu.queue.clone(),
+        _heap: heap,
+    })
 }
 
 /// The zero-copy import (macOS, Metal): a no-copy buffer on the mapping (unified memory).
 #[cfg(target_os = "macos")]
-fn import(device: &wgpu::Device, base: *mut u8, size: u64) -> Result<Imported, String> {
+fn import(gpu: &Gpu, base: *mut u8, size: u64) -> Result<Imported, String> {
+    let device = &gpu.device;
     use objc2_metal::{MTLDevice, MTLResourceOptions};
     let ptr =
         std::ptr::NonNull::new(base.cast::<std::ffi::c_void>()).ok_or("no region to import")?;
@@ -1074,11 +1094,15 @@ fn import(device: &wgpu::Device, base: *mut u8, size: u64) -> Result<Imported, S
             },
         )
     };
-    Ok(Imported { buffer })
+    Ok(Imported {
+        buffer: Some(buffer),
+        device: gpu.device.clone(),
+        queue: gpu.queue.clone(),
+    })
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn import(_device: &wgpu::Device, _base: *mut u8, _size: u64) -> Result<Imported, String> {
+fn import(_gpu: &Gpu, _base: *mut u8, _size: u64) -> Result<Imported, String> {
     Err("no zero-copy import on this system".into())
 }
 
@@ -1424,6 +1448,44 @@ mod tests {
         f.show(Some(target()));
         sink(r.frame(1));
         f.sync();
+        f.release(&target());
+        f.sync();
+        std::fs::remove_file(&r.path).expect("the region file goes once it is let go");
+    }
+
+    /// PR A7 review: a new wgpu device (the renderer made again) drops the import made on the old one. That drop waits
+    /// on the old device, not the current one, so the old copies end before the view can go; frames copy on the new
+    /// device from a fresh import, and a release then lets the file go.
+    #[test]
+    fn a_new_gpu_device_lets_go_of_the_old_import_first() {
+        let Ok((device, queue, _)) = flare_render::gpu::headless_device() else {
+            eprintln!("skipping: no wgpu adapter");
+            return;
+        };
+        let Ok((device2, queue2, _)) = flare_render::gpu::headless_device() else {
+            return;
+        };
+        let r = TestRegion::new(64, 32);
+        r.write(64, 32, 1);
+        let kept = Rc::new(RefCell::new(Vec::new()));
+        let mut f = frames_keeping(&kept);
+        f.attach_gpu(&device, &queue);
+        let sink = f.sink();
+        f.show(Some(target()));
+        sink(r.frame(1));
+        f.sync();
+        assert!(f.frame_image(0).is_some());
+        // The renderer's device changes, a frame comes at once (both in one batch on the frame thread), and then the
+        // old device is gone.
+        f.attach_gpu(&device2, &queue2);
+        r.write(64, 32, 2);
+        sink(r.frame(2));
+        f.sync();
+        drop((device, queue));
+        let path = f.path();
+        assert!(f.frame_image(16).is_some(), "a frame on the new device");
+        assert_eq!(f.path(), path, "the same route on the new device");
+        check(&device2, &queue2, kept.borrow().last().unwrap(), 2);
         f.release(&target());
         f.sync();
         std::fs::remove_file(&r.path).expect("the region file goes once it is let go");
