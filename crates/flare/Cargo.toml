@@ -22,6 +22,8 @@ flare-surfaces = { path = "../flare-surfaces" }
 flare-device = { path = "../flare-device" }
 # The Android device panel's frame region, mapped by the frame thread and handed to the GPU (Android plan PR A4).
 memmap2.workspace = true
+# device_install's `.apk` check, its zip's central directory only (Android plan PR A5); flare-mods links it already.
+zip.workspace = true
 flare-mods = { path = "../flare-mods" }
 flare-convo = { path = "../flare-convo" }
 flare-web = { path = "../flare-web" }
@@ -89,7 +91,6 @@ flare-mcp = { path = "../flare-mcp" }
 # The in-memory wire pair, for the serve bridge's loopback tests (serve_remote.rs).
 flare-ctl = { path = "../flare-ctl", features = ["testing"] }
 tempfile.workspace = true
-zip.workspace = true
 sha2.workspace = true
 
 # The UI thread's own CPU time for the hold tests (ui_tests/term.rs).

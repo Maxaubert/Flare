@@ -150,24 +150,26 @@ pub enum Method {
     /// `machines.json`, a folder there and an optional Claude session to resume. The agent's (owner decision: no
     /// prompt) and the `flare open --on` command's. The opened tab takes no typing from either (rule 299).
     OpenRemoteSession,
-    /// The devices this Mac can run (device panel, issue #248, PR 5), under `device`: the agent's only (rule 1322).
+    /// The devices this computer can run (device panel, issue #248, PR 5; Android emulators since Android plan PR A5),
+    /// under `device`: the agent's only (rule 1322). Each with its `kind` ("iPhone", "iPad", "Android").
     DeviceList,
     /// Boots a device headless and shows it in the caller's own tab's panel; answers once it is booted.
     DeviceBoot,
     /// Shuts down the device in the caller's panel, only one Flare booted, and closes the panel.
     DeviceShutdown,
-    /// The device's picture (PNG at point size) and its filtered UI tree with refs.
+    /// The device's picture (PNG at point size, dp size on Android: rule 1367), its filtered UI tree with refs and
+    /// its own buttons.
     DeviceLook,
     /// The UI tree only.
     DeviceUi,
     DeviceTap,
     DeviceSwipe,
     DeviceType,
-    /// A hardware button or one key.
+    /// A hardware button or one key. Each source has its own buttons; another's is `unavailable` (rule 1371).
     DevicePress,
-    /// Launches (or brings to front) an installed app.
+    /// Launches (or brings to front) an installed app: a bundle id, or an Android package name.
     DeviceLaunch,
-    /// Installs a simulator `.app` from the tab's folder or DerivedData.
+    /// Installs a simulator `.app` from the tab's folder or DerivedData, or an Android `.apk` from the tab's folder.
     DeviceInstall,
     /// Booted or not, live or still and why, frames a second, the last takeover.
     DeviceState,

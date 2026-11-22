@@ -217,14 +217,14 @@ release build went from about 9 minutes from scratch to about 5. Batch several f
 
 ### Which scenarios run on a Mac
 
-73 of the table's scenarios run on the macOS runner: spawn, hookSmoke, cwdLabel, indicator, attention, agentHooks,
+75 of the table's scenarios run on the macOS runner: spawn, hookSmoke, cwdLabel, indicator, attention, agentHooks,
 agentDiag, theme, newTabFolder, caretHold, mouseReport, clickCaret, selectionEdit, findKey, scrollbar, paste,
 tabDragFirst, tabWidth, tabLooks, tabSwitch, indicatorStyles, verticalTabs, windowColoursSave, tooltips, manyTabs,
 backgroundWork, agentKeys, cogToggle, accentAsk, titleBar, settingsPage, restore, handoff, quitManyShells, lastTab,
 powerlineGlyphs, markerLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
 reviewKeys, dropAndMenu, helpPanel, options, diagLog, settingsLook, settingsSearch, settingsKeys, themeEditorLive,
 themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, seeThrough, themeCards, edges, accent,
-exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, deviceAgent, mcpDevice, ctlChannel,
+exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, deviceAgent, mcpDevice, deviceAgentAndroid, mcpDeviceAndroid, ctlChannel,
 mcpRoundTrip, convoPanels, questionToast.
 
 Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
@@ -519,8 +519,15 @@ names the fake, `device.boot` shows it live in the tab's own panel, `device.look
 tap by ref lands at the element's middle in device points (a stale ref is `not_found`), typing and `home` reach the
 fake, a long press is ended `interrupted` by `DeviceUserInput` (the takeover, rule 1320) with the dot gone, `panel.open`
 kind device is refused naming `device_boot`, and `device.shutdown` closes the panel (the agent booted it). `mcpDevice`
-runs the built `flare-mcp` over stdio: the instructions name the device tools, `tools/list` has 36 built-in tools, the
-look answers text then a PNG with the device content between its markers, a tap by ref, `device_state`. The probe
+runs the built `flare-mcp` over stdio: the instructions name the device tools, `tools/list` has 37 built-in tools, the
+look answers text then a PNG with the device content between its markers, a tap by ref, `device_state`. Both also press
+the device's own button (`lock`) and check that the other kind's (`back`) answers `unavailable` and sends nothing
+(rule 1371), and that the look is in the device's unit with its buttons listed.
+
+`deviceAgentAndroid` and `mcpDeviceAndroid` (Android plan PR A5, same file, Windows and Mac): the same two runs with
+`FLARE_E2E_DEVICE=android`, which makes the app's fake the Android one (`FakeSource::android()`: `emu/Flare_Pixel`,
+411 x 914 dp, Android roles). The look is 411 x 914 and says "device points (Android dp)" (rule 1367), `back` reaches
+the fake and `shake` answers `unavailable` (rule 1371). The probe
 `device.state` gains `agent`: the running `jobs` (`{tab, op}`), the tab the `indicators` belong to, and what the window
 draws of them (`dot` `{x, y, alpha, ripples}`, `glow`, `badge`, `trail`).
 

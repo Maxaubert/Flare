@@ -3,11 +3,15 @@
 //! DerivedData (rule 1322), and a tab a remote viewer follows here is answered `unavailable` with nothing posted
 //! (rule 1323). What only the window knows (which device the tab's panel shows, who booted it, the person's takeover)
 //! is decided by the device controller (`device_agent.rs`).
+//!
+//! Android plan PR A5: the same calls take Android's values. `device.install` takes an `.apk` file from the tab's
+//! folder only (a zip with `AndroidManifest.xml`), `device.launch` a package name, `device.press` the buttons of
+//! either source (the controller refuses another source's, rule 1371).
 
 use std::path::{Path, PathBuf};
 
 use flare_device::job::{At, DeviceOp, Direction, Fail, Press, SwipeTo};
-use flare_device::source::Button;
+use flare_device::source::{Button, SourceKind};
 use flare_device::target::Target;
 
 use super::*;
@@ -23,10 +27,13 @@ pub const DEVICE_WAIT: Duration = Duration::from_secs(50);
 pub const TYPE_MAX: usize = 2_000;
 /// The longest device name `device.boot` takes.
 const NAME_MAX: usize = 100;
-/// The longest bundle id `device.launch` takes.
+/// The longest bundle id or package name `device.launch` takes.
 const BUNDLE_MAX: usize = 255;
 /// The longest path `device.install` takes, in bytes.
 const PATH_MAX: usize = 4096;
+
+/// What a device call answers where the tools are not offered.
+const UNAVAILABLE_WORDS: &str = "the device panel is not available in this Flare: it needs a Flare window and either Xcode on a Mac with Apple silicon or an Android emulator set up in the device panel";
 
 fn bad(m: impl Into<String>) -> CtlError {
     CtlError::new(code::BAD_PARAMS, m)
@@ -99,13 +106,30 @@ fn at(params: &Value) -> Result<Option<At>, CtlError> {
     }
 }
 
-/// A bundle id: letters, digits, dots, dashes and underscores.
+/// A bundle id or an Android package name: letters, digits, dots, dashes and underscores (the controller holds an
+/// Android device's to `emu::package_ok`).
 fn bundle_id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= BUNDLE_MAX
         && s.contains('.')
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+/// The buttons `device.press` takes, per source (rule 1371): what a bad button's answer says.
+pub fn buttons_words() -> String {
+    let names = |k: SourceKind| {
+        k.buttons()
+            .iter()
+            .map(|b| b.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "a button of the device: a simulator has {}; an Android emulator has {}",
+        names(SourceKind::Sim),
+        names(SourceKind::Emu)
+    )
 }
 
 /// The `device.*` call's params as the controller takes them. Every unknown key is `bad_params`.
@@ -142,7 +166,7 @@ pub fn device_op(method: Method, params: &Value) -> Result<AgentReq, CtlError> {
                     flare_device::target::parse(t)
                         .or_else(|| Target::sim(t))
                         .ok_or_else(|| {
-                            bad("target is a device of device_list, such as sim/<udid>")
+                            bad("target is a device of device_list, such as sim/<udid> or emu/<avd>")
                         })?,
                 ),
             };
@@ -227,9 +251,10 @@ pub fn device_op(method: Method, params: &Value) -> Result<AgentReq, CtlError> {
         Method::DevicePress => {
             only_fields(params, &["button", "key"], name)?;
             let press = match (str_param(params, "button")?, str_param(params, "key")?) {
-                (Some(b), None) => Press::Button(Button::parse(b).ok_or_else(|| {
-                    bad("button is home, lock, volume_up, volume_down, shake, rotate_left or rotate_right")
-                })?),
+                (Some(b), None) => Press::Button(
+                    Button::parse(b)
+                        .ok_or_else(|| bad(format!("button is {}", buttons_words())))?,
+                ),
                 (None, Some(k)) => {
                     if flare_device::keymap::named(k).is_none() {
                         return Err(bad(
@@ -247,7 +272,7 @@ pub fn device_op(method: Method, params: &Value) -> Result<AgentReq, CtlError> {
             let app = str_param(params, "app")?
                 .filter(|a| bundle_id(a))
                 .ok_or_else(|| {
-                    bad("app is an installed app's bundle id, such as com.apple.Preferences")
+                    bad("app is an installed app's bundle id (such as com.apple.Preferences) or Android package name (such as com.android.settings)")
                 })?;
             AgentReq::Launch {
                 app: app.to_string(),
@@ -257,7 +282,9 @@ pub fn device_op(method: Method, params: &Value) -> Result<AgentReq, CtlError> {
             only_fields(params, &["path"], name)?;
             let path = str_param(params, "path")?
                 .filter(|p| !p.trim().is_empty() && p.len() <= PATH_MAX && !p.contains('\0'))
-                .ok_or_else(|| bad("path is an .app folder of a simulator build"))?;
+                .ok_or_else(|| {
+                    bad("path is an .app folder of a simulator build or an Android .apk file")
+                })?;
             AgentReq::Install {
                 path: PathBuf::from(path),
             }
@@ -279,9 +306,42 @@ pub fn derived_data(home: &Path) -> PathBuf {
         .join("DerivedData")
 }
 
+/// Whether `path` names an Android app (an `.apk`), so the device that installs it must be an emulator.
+pub fn is_apk(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("apk"))
+}
+
+/// `\\?\C:\x` as `C:\x`: what `canonicalize` gives on Windows, written the way adb and every tool reads it. Any other
+/// form is kept.
+fn plain(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => p,
+    }
+}
+
+/// An `.apk` is an Android app: a zip with `AndroidManifest.xml` (only its central directory is read).
+fn apk_ok(real: &Path) -> Result<(), CtlError> {
+    let f = std::fs::File::open(real) // sync-ok: the call's worker
+        .map_err(|_| CtlError::new(code::NOT_FOUND, "the .apk file cannot be read"))?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|_| {
+        bad("that .apk is not an Android app (it is not a zip); build the app's .apk")
+    })?;
+    if zip.by_name("AndroidManifest.xml").is_err() {
+        return Err(bad(
+            "that .apk has no AndroidManifest.xml, so it is not an Android app; build the app's .apk",
+        ));
+    }
+    Ok(())
+}
+
 /// `device.install`'s path, checked (rule 1322): resolved from the tab's folder when relative, its symlinks resolved
-/// BEFORE the place is checked (so a link in the tab's folder to an app elsewhere is refused), inside the tab's folder
-/// or DerivedData, an `.app` folder whose `Info.plist` names `iPhoneSimulator`. BLOCKING (the disk): the call's thread.
+/// BEFORE the place is checked (so a link in the tab's folder to an app elsewhere is refused). An iOS app is an `.app`
+/// folder whose `Info.plist` names `iPhoneSimulator`, inside the tab's folder or DerivedData. An Android app (Android
+/// plan PR A5) is an `.apk` file inside the tab's folder only, a zip with `AndroidManifest.xml`. The controller then
+/// holds the kind to the panel's device (`device_agent.rs`). BLOCKING (the disk): the call's thread.
 pub fn install_ok(path: &Path, tab_dir: &Path, derived: &Path) -> Result<PathBuf, CtlError> {
     let named = if path.is_absolute() {
         path.to_path_buf()
@@ -290,11 +350,25 @@ pub fn install_ok(path: &Path, tab_dir: &Path, derived: &Path) -> Result<PathBuf
     };
     // sync-ok: the control channel's worker thread, a few stats
     let real = std::fs::canonicalize(&named)
-        .map_err(|_| CtlError::new(code::NOT_FOUND, "no such .app folder"))?;
+        .map_err(|_| CtlError::new(code::NOT_FOUND, "no such .app folder or .apk file"))?;
     let inside = |root: &Path| {
         std::fs::canonicalize(root) // sync-ok: the call's worker
             .is_ok_and(|r| real.starts_with(&r))
     };
+    if is_apk(&real) {
+        if !inside(tab_dir) {
+            return Err(CtlError::new(
+                Fail::Forbidden.code(),
+                "device_install installs an .apk from this tab's folder only",
+            ));
+        }
+        let file = real.is_file(); // sync-ok: the call's worker
+        if !file {
+            return Err(bad("path is an Android .apk file"));
+        }
+        apk_ok(&real)?;
+        return Ok(plain(real));
+    }
     if !(inside(tab_dir) || inside(derived)) {
         return Err(CtlError::new(
             Fail::Forbidden.code(),
@@ -340,10 +414,7 @@ impl AppDispatcher {
             return Err(CtlError::new(code::UNAVAILABLE, REMOTE_WORDS));
         }
         if !self.device.load(Ordering::SeqCst) {
-            return Err(CtlError::new(
-                code::UNAVAILABLE,
-                "the device panel is not available in this Flare: it needs a Mac with Apple silicon, Xcode and a Flare window",
-            ));
+            return Err(CtlError::new(code::UNAVAILABLE, UNAVAILABLE_WORDS));
         }
         let boot = matches!(op, AgentReq::Boot { .. });
         let deadline = Instant::now() + if boot { DEVICE_BOOT_WAIT } else { DEVICE_WAIT };

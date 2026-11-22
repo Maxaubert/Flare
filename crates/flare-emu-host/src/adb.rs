@@ -1,5 +1,6 @@
 //! adb for what gRPC cannot do: install an `.apk` and launch an app by its package name (spec "UI tree and agent
-//! helper"). The path checks (inside the tab's folder, symlinks resolved) stay on Flare's side (Android plan PR A5);
+//! helper"). The path checks (an `.apk` file inside the tab's folder, symlinks resolved, a zip with a manifest) are on
+//! Flare's side (`ctl_device::install_ok`, Android plan PR A5);
 //! here a package name must be one Android takes, so nothing reaches the device's shell but a checked name.
 
 use std::path::Path;
@@ -15,17 +16,8 @@ type Failed = (Fail, String);
 const INSTALL_LIMIT: Duration = Duration::from_secs(180);
 const LAUNCH_LIMIT: Duration = Duration::from_secs(30);
 
-/// Whether `s` is an Android package name: two or more dot-separated parts, each a letter then letters, digits or
-/// `_`, at most 255 bytes. Nothing else reaches `adb shell`.
-pub fn package_ok(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('.').collect();
-    s.len() <= 255
-        && parts.len() >= 2
-        && parts.iter().all(|p| {
-            p.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-                && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
-}
+/// Whether `s` is an Android package name (the check Flare's side makes too). Nothing else reaches `adb shell`.
+pub use flare_device::emu::package_ok;
 
 /// The launcher activity in `cmd package resolve-activity --brief` output: its last line, `pkg/.Activity`, None when
 /// the package has none.

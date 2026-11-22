@@ -5831,7 +5831,14 @@ shown yet, and `Starter` takes a `SourceSetup` (`Xcode` or `AndroidSdk`). Held b
 `an_emu_target_round_trips_and_bad_avd_names_are_refused` (`target.rs`), `the_emu_hosts_lines_round_trip` (`wire.rs`),
 `android_classes_map_to_the_tree_roles` and `an_android_tree_filters_like_an_ios_one` (`tree.rs`),
 `the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`) and
-`android_setup_states_say_the_specs_lines` (`device_ctl.rs`). Source: Max, 2026-11-22.
+`android_setup_states_say_the_specs_lines` (`device_ctl.rs`). Android plan PR A5 puts the agent on it: the same twelve
+`device_*` tools, listed where Android's emulator is at the floor with a device (`DeviceCtl::agent_offered`); each call
+held to its own device's source (an Android setup state answers `unavailable` with the panel's line, and only the
+person sets it up); `device_launch` takes a package name (`emu::package_ok`) and `device_install` an `.apk` from the
+tab's folder only, a zip with `AndroidManifest.xml` (rule 1322's place check, symlinks resolved first; never
+DerivedData), each refused for the other kind's device. Held too by `the_tools_take_both_kinds_of_device` (`flare-mcp`,
+no platform in a name or key), `the_agent_drives_an_android_device_once_its_emulator_is_ready` and
+`device_install_takes_an_apk_from_the_tab_folder_only`. Source: Max, 2026-11-22.
 
 1361. **Flare never ships, mirrors or changes the emulator or a system image, and never writes into the person's own
 SDK. No Java, no `sdkmanager`, no `avdmanager`. Floors: emulator 37.2.13 on Windows, 37.3.10 on macOS.** Spec
@@ -5945,8 +5952,13 @@ Max, 2026-11-22.
 `Screen.size_pt` is in the agent's unit and `Screen.scale` is pixels per unit (`Screen::from_dpi`: 1080 x 2400 at 420
 dpi is 411.4 x 914.3 dp, scale 2.625). The panel's letterbox, the swipe path, the tree's frames and the agent's taps
 stay in dp, as they stay in points for iOS; `geom::dp_to_px` and `px_to_dp` are for the emu host alone. Android plan
-PR A1 holds the model; PR A5 the tool side. Held by `dp_map_to_pixels_in_every_orientation` (`geom.rs`) and
-`an_android_screen_is_in_dp` (`source.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations").
+PR A1 holds the model; PR A5 the tool side: `device_look`, `device_ui` and `device_state` answer the screen in dp
+(`screen_pt`, never pixels), the look's text says "device points (Android dp)" for an `emu/` device, and the tool
+descriptions say a device point is a point on an iPhone and a dp on Android. Held by
+`dp_map_to_pixels_in_every_orientation` (`geom.rs`), `an_android_screen_is_in_dp` (`source.rs`),
+`the_agent_drives_an_android_device_once_its_emulator_is_ready` (`device_ctl.rs`, a 411 x 914 look),
+`an_android_device_is_listed_and_looked_at_in_dp` (`flare-mcp` `device.rs`) and the e2e `deviceAgentAndroid` and
+`mcpDeviceAndroid`. Source: Max, 2026-11-22 (spec approved, "all recommendations").
 
 1368. **Typing never touches the computer's clipboard: HID keys, then the agent helper's set-text, then the device's
 own clipboard and paste.** Spec 2026-11-22, builder's call 8. `emu::keys::text_steps` types keymap text as USB HID keys
@@ -6006,7 +6018,12 @@ offered since device panel PR 5); the emulator has Home, Back, Recents, Power, V
 (the panel's Lock button sends Power on Android, Android plan PR A4). The agent's press of a button the device lacks
 answers `unavailable` with the buttons it has, before anything is sent (`device_agent.rs`, `agent_act`); a panel row
 naming one does nothing (`DeviceCtl::act`); the fake ignores one, and the sim host answers `unavailable` for
-Android's. Android plan PR A5 adds the tool side (descriptions and the schema per source). Held by
+Android's. Android plan PR A5 adds the tool side: `device_press`'s schema takes both sources' buttons (its enum has
+all ten) and its description names each source's list, `device.look`, `device.ui` and `device.state` answer the
+device's own `buttons` and the look's text lists them, and a name neither source has is `bad_params` naming both lists
+(`ctl_device::buttons_words`). `flare_mcp::SIM_BUTTONS` and `EMU_BUTTONS` are held to `SourceKind::buttons()`. Held by
 `each_source_lists_its_own_buttons` (`source.rs`), `another_sources_button_is_refused_unavailable`
-(`ui_tests/device_agent.rs`) and `the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`).
-Source: Max, 2026-11-22.
+(`ui_tests/device_agent.rs`), `the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`),
+`device_press_names_each_sources_own_buttons` (`ctl_app.rs`), `the_tools_take_both_kinds_of_device` (`flare-mcp`),
+`the_agent_drives_an_android_device_once_its_emulator_is_ready` (`device_ctl.rs`) and the e2e `deviceAgent`,
+`mcpDevice`, `deviceAgentAndroid` and `mcpDeviceAndroid`. Source: Max, 2026-11-22.

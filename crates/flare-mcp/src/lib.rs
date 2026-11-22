@@ -19,6 +19,9 @@ mod browser;
 mod device;
 pub mod hook;
 
+/// The buttons `device_press` names per kind of device (Flare's tests hold them to its own lists, rule 1371).
+pub use device::{EMU_BUTTONS, SIM_BUTTONS};
+
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -3246,7 +3249,8 @@ app", "loaded": true}))),
 
     #[test]
     fn device_tools_are_listed_only_when_flare_has_them() {
-        // No Flare, a Flare on Windows or with no Xcode (its hello lists no device.look): the list stays at 24.
+        // No Flare, or a Flare with neither Xcode nor Android's emulator ready (its hello lists no device.look): the
+        // list stays at 25.
         for caps in [
             None,
             Some(vec!["hello".to_string(), "browser.look".to_string()]),
@@ -3296,7 +3300,7 @@ app", "loaded": true}))),
             i["result"]["instructions"]
                 .as_str()
                 .unwrap()
-                .contains("device_* tools show and drive a phone simulator in the same panel; the user watches and can take over.")
+                .contains("device_* tools show and drive a phone simulator or emulator in the same panel; the user watches and can take over.")
         );
         let c = handle_message(
             &req(

@@ -3205,6 +3205,47 @@ Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/su
   Shake. Frames are copied on the GPU (rule 1364): zero copy on DX12 and Metal, an upload or a CPU copy as fallbacks.
 - **Quit**: the emulators Flare booted are asked to shut down (the setting `flare.device.shutdown_on_quit`), detached.
 - **The agent**: unchanged in this PR. The `device_*` tools for Android come with A5.
+
+## Device panel: Android, PR A5: the agent drives Android too, 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`
+(PR A5). Claude in a tab can boot, look at and use an Android emulator in that tab's device panel with the same twelve
+`device_*` tools as an iPhone simulator. No tool name or schema key names a platform (rule 1360).
+
+- **Where the tools are listed.** Flare's `hello` lists `device.*` where any source is ready: Xcode on a Mac with Apple
+  silicon, or an Android emulator at the floor with at least one device (Windows x64, or a Mac), in a Flare that shows
+  a window. A finished Android setup lists them at once (`device.changed`, then `notifications/tools/list_changed`).
+  **Tool counts** (25 built-in tools, plus 12 device tools where listed):
+
+  | Computer | Tools |
+  |---|---|
+  | Windows x64, Android set up with a device ("Flare Pixel") | 37 |
+  | Windows x64, Android not set up yet | 25 |
+  | Windows on Arm | 25 |
+  | Mac with Apple silicon and Xcode, or with an Android SDK and a device | 37 |
+  | Mac with Apple silicon, neither | 25 |
+  | Intel Mac | 25 |
+  | No Flare running, or a Flare started hidden | 25 |
+
+- **Each call is held to its own device's source.** An iPhone's calls wait for Xcode, an Android device's for Android's
+  setup. Before Android is set up, a call answers `unavailable` with the panel's own line ("Android devices need
+  Google's Android emulator...", the licence, the download, "Android needs Windows Hypervisor Platform...") and says
+  only the user can do it: the agent never accepts the licence or starts a download.
+- **Android's values.** `device_list` gives `emu/<avd>` targets with kind `Android`. `device_look` is in dp (its PNG
+  at dp size, "device points (Android dp)", rule 1367) and lists the device's own buttons. `device_press` takes either
+  kind's buttons in its schema; a device answers `unavailable` for a button it lacks (Android has Back, Recents and
+  Power, no Lock or Shake; rule 1371). `device_launch` takes a package name (`com.android.settings`). `device_install`
+  takes an `.apk` file from the tab's folder only (never DerivedData), symlinks resolved, and only a zip holding
+  `AndroidManifest.xml`; an `.app` for an Android device, or an `.apk` for an iPhone, is refused.
+- **`/device`.** The Claude plugin's command now says "a phone simulator or emulator" and names Flare Pixel.
+- **Tests.** `device_ctl::tests::the_agent_drives_an_android_device_once_its_emulator_is_ready`,
+  `an_iphone_refuses_an_apk_and_keeps_its_own_buttons`, `ctl_app::tests::device_install_takes_an_apk_from_the_tab_folder_only`,
+  `device_press_names_each_sources_own_buttons`, and in `flare-mcp` `the_tools_take_both_kinds_of_device` and
+  `an_android_device_is_listed_and_looked_at_in_dp`. The e2e `deviceAgentAndroid` and `mcpDeviceAndroid` run the agent
+  scenarios on the Android fake (`FLARE_E2E_DEVICE=android`) on the Windows and Mac jobs. The opt-in
+  `device_agent::tests::a_real_emulator_answers_the_agent_tools` (`FLARE_DEVICE_REAL=1`, by hand) drives a real
+  headless emulator made for the run.
+
 ## Device panel: Android, PR A6: the emu host and the agent jar ship (not yet started), 2026-11-22
 
 Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`

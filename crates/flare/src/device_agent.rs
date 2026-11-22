@@ -12,6 +12,13 @@
 //! The person's press, key or scroll in the panel ends a running input call with `interrupted` (rule 1320), lets go of
 //! what it held down and hides the indicators at once. A cancel (rule 229) ends it at once too. Every answer goes back
 //! on the call's own reply channel; nothing here blocks.
+//!
+//! Android plan PR A5: the same calls drive an Android emulator (rule 1360). A call is held to the readiness of its
+//! own device's source: an iPhone's to Xcode, an Android device's to Android's setup, whose states answer
+//! `unavailable` with the panel's own line (the agent never starts the setup). The tools are offered once Android's
+//! emulator is at the floor with a device (`agent_offered`). An install's kind must match the device's (`.apk` for an
+//! emulator), a launch on Android takes a package name, and the look and the state list the device's own buttons
+//! (rule 1371). Coordinates are dp on Android, as the emu host gives them (rule 1367).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -56,7 +63,8 @@ pub enum AgentReq {
     Launch {
         app: String,
     },
-    /// An `.app` folder, its symlinks resolved and its place checked (the tab's folder or DerivedData).
+    /// An `.app` folder (iOS) or an `.apk` file (Android), its symlinks resolved and its place checked (the tab's
+    /// folder, or DerivedData for an `.app`).
     Install {
         path: PathBuf,
     },
@@ -194,6 +202,17 @@ fn source_err(e: flare_device::source::SourceError) -> CtlError {
     fail(e.fail, e.message)
 }
 
+/// The buttons `device_press` takes for this device (rule 1371).
+fn buttons_json(t: &Target) -> Value {
+    json!(
+        t.source()
+            .buttons()
+            .iter()
+            .map(|b| b.name())
+            .collect::<Vec<_>>()
+    )
+}
+
 fn device_json(d: &DeviceInfo) -> Value {
     json!({
         "target": d.target.name(),
@@ -230,7 +249,16 @@ impl DeviceCtl {
         // The real source starts with a call too (an agent may boot before any panel is open).
         self.ensure_source();
         self.drain();
-        if let Err(e) = self.xcode_ready() {
+        // Held to its own device's source: a boot by target to that target's, the list (and a boot by name) to any
+        // source being ready, every other call to the tab's device's.
+        let kind = match &call.req {
+            AgentReq::List | AgentReq::Boot { target: None, .. } => None,
+            AgentReq::Boot {
+                target: Some(t), ..
+            } => Some(t.source()),
+            _ => self.target_of(&call.tab).map(|t| t.source()),
+        };
+        if let Err(e) = self.agent_ready(kind) {
             send(&call.reply, Err(e));
             return;
         }
@@ -254,6 +282,17 @@ impl DeviceCtl {
                 let Some(t) = self.live_target(&call) else {
                     return;
                 };
+                // An Android app is opened by its package name, and nothing else reaches the device's shell.
+                if t.source() == SourceKind::Emu && !flare_device::emu::package_ok(&app) {
+                    send(
+                        &call.reply,
+                        Err(CtlError::new(
+                            code::BAD_PARAMS,
+                            "this tab's device is an Android emulator: app is a package name, such as com.android.settings",
+                        )),
+                    );
+                    return;
+                }
                 if let Some(id) = self.source().map(|s| s.launch(&t, &app)) {
                     self.pending.insert(
                         id,
@@ -269,6 +308,23 @@ impl DeviceCtl {
                 let Some(t) = self.live_target(&call) else {
                     return;
                 };
+                // The app's kind must be the device's: an `.apk` for an emulator, an `.app` for a simulator.
+                let apk = path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("apk"));
+                let wrong = match (t.source(), apk) {
+                    (SourceKind::Emu, false) => Some(
+                        "this tab's device is an Android emulator: device_install takes an .apk file",
+                    ),
+                    (SourceKind::Sim, true) => Some(
+                        "this tab's device is an iPhone simulator: device_install takes the .app folder of a simulator build",
+                    ),
+                    _ => None,
+                };
+                if let Some(why) = wrong {
+                    send(&call.reply, Err(CtlError::new(code::BAD_PARAMS, why)));
+                    return;
+                }
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -287,11 +343,21 @@ impl DeviceCtl {
         }
     }
 
-    /// The agent's device tools work here: the fake source (`--e2e`), or the real one where the Xcode pick found an
-    /// Xcode (macOS on Apple silicon). The window adds "and it shows" (`sync_device_gate`). Android's tools come with
-    /// Android plan PR A5, so a Windows PC, whose panel is offered for Android setup, lists none yet.
+    /// The agent's device tools work here: the fake source (`--e2e`), the real one where the Xcode pick found an Xcode
+    /// (macOS on Apple silicon), or Android once its emulator is at the floor with at least one device (spec "The
+    /// agent", Android plan PR A5; Windows x64 or a Mac). The window adds "and it shows" (`sync_device_gate`), and a
+    /// change (setup just finished) is published as `device.changed`.
     pub fn agent_offered(&self) -> bool {
-        self.fake().is_some() || self.ios_offered()
+        self.fake().is_some() || self.ios_offered() || self.android_agent_offered()
+    }
+
+    /// Android's half of [`DeviceCtl::agent_offered`]: an SDK whose emulator is at the floor with a device to boot.
+    fn android_agent_offered(&self) -> bool {
+        self.android_offered()
+            && self
+                .real
+                .as_ref()
+                .is_some_and(|r| matches!(r.sdk, Some(AndroidSdk::Ready { avds }) if avds > 0))
     }
 
     /// Where "animation effects on" is read (tests pass their own).
@@ -305,24 +371,50 @@ impl DeviceCtl {
         std::mem::take(&mut self.agent.effects)
     }
 
-    /// Xcode can run a simulator here, or why not.
-    fn xcode_ready(&self) -> Result<(), CtlError> {
-        if self.real.as_ref().is_some_and(|r| r.xcode.is_none()) {
-            return Err(fail(
+    /// The source of `kind` can run a device here (None: any source), or why not: the panel's own setup state (spec
+    /// "Versions and failure modes": the tools answer `unavailable` with the same line). Only the person sets a source
+    /// up: the agent cannot accept Google's licence or start a download.
+    fn agent_ready(&self, kind: Option<SourceKind>) -> Result<(), CtlError> {
+        match self.gate(kind) {
+            None => Ok(()),
+            Some(Setup::Reading) => Err(fail(
                 Fail::Busy,
-                "Flare is still looking for Xcode; try again in a moment",
-            ));
-        }
-        match self.xcode {
-            Xcode::Missing => Err(fail(
+                "Flare is still looking for its devices; try again in a moment",
+            )),
+            Some(Setup::NoXcode) => Err(fail(
                 Fail::Unavailable,
                 "the device panel needs Xcode, which is not installed",
             )),
-            Xcode::NotSetUp => Err(fail(
+            Some(Setup::NotSetUp) => Err(fail(
                 Fail::Unavailable,
                 "Xcode is not set up yet: the user must open Xcode once to finish its setup",
             )),
-            Xcode::Ready => Ok(()),
+            Some(s) => Err(fail(
+                Fail::Unavailable,
+                format!(
+                    "{}: only the user can do this, in the device panel beside this tab",
+                    s.view(false).line.trim_end_matches('.')
+                ),
+            )),
+        }
+    }
+
+    /// What the agent is told when there is no device to boot.
+    fn no_device_words(&self) -> &'static str {
+        let (ios, android) = self
+            .real
+            .as_ref()
+            .map_or((true, false), |r| (r.ios, r.android));
+        match (ios, android) {
+            (false, true) => {
+                "there is no Android device yet; the user sets one up in the device panel"
+            }
+            (true, true) => {
+                "there is no device yet; the user adds an iPhone simulator in Xcode > Settings > Components or sets up Android in the device panel"
+            }
+            _ => {
+                "Xcode has no iPhone simulator yet; the user adds one in Xcode > Settings > Components"
+            }
         }
     }
 
@@ -390,7 +482,7 @@ impl DeviceCtl {
                     &call.reply,
                     Err(fail(
                         Fail::Unavailable,
-                        "the device in this tab's panel is not on this Mac any more",
+                        "the device in this tab's panel is not on this computer any more",
                     )),
                 );
                 None
@@ -418,13 +510,18 @@ impl DeviceCtl {
         };
         let Some(d) = found.cloned() else {
             let what = if devices.is_empty() {
-                "Xcode has no iPhone simulator yet; the user adds one in Xcode > Settings > Components".to_string()
+                self.no_device_words()
             } else {
-                "no such device on this Mac; device_list lists them".to_string()
+                "no such device on this computer; device_list lists them"
             };
             send(&call.reply, Err(fail(Fail::NotFound, what)));
             return;
         };
+        // A device picked by name is held to its own source's setup too.
+        if let Err(e) = self.agent_ready(Some(d.target.source())) {
+            send(&call.reply, Err(e));
+            return;
+        }
         // The device shows in the tab's own panel (rule 1322), whether or not it is booted yet.
         self.agent.effects.push(Effect::SetTarget {
             tab: call.tab.clone(),
@@ -656,6 +753,7 @@ impl DeviceCtl {
             },
             "screen": screen.map(|s| json!({"w": s.w, "h": s.h})),
             "orientation": o,
+            "buttons": buttons_json(&look.target),
         });
         match &look.png {
             Some(png) => {
@@ -965,8 +1063,10 @@ impl DeviceCtl {
                     send(
                         &reply,
                         Ok(json!({
+                            "target": target.name(),
                             "screen": screen.map(|s| json!({"w": s.w, "h": s.h})),
                             "orientation": o,
+                            "buttons": buttons_json(&target),
                             "tree": list,
                             "left_out": left_out,
                         })),
@@ -1136,6 +1236,7 @@ impl DeviceCtl {
             "driven_here": dev.is_none_or(|d| d.driver.as_deref().is_none_or(|x| x == tab)),
             "screen": screen.map(|s| json!({"w": s.w, "h": s.h})),
             "orientation": o,
+            "buttons": target.as_ref().map(buttons_json),
             "fps": (fps * 10.0).round() / 10.0,
             "took_over_last": self.agent.took_over.contains(tab),
             "running": self.agent.jobs.get(tab).map(|j| j.job.op()),

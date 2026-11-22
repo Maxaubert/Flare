@@ -106,6 +106,19 @@ impl Places {
     }
 }
 
+/// Whether `s` is an Android package name: two or more dot-separated parts, each a letter then letters, digits or
+/// `_`, at most 255 bytes. Flare's side checks `device_launch`'s app with it (Android plan PR A5), and the emu host
+/// again before anything reaches `adb shell`.
+pub fn package_ok(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    s.len() <= 255
+        && parts.len() >= 2
+        && parts.iter().all(|p| {
+            p.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
 /// `key=value` lines (the emulator's `.ini` and `.properties` files): trimmed, blank lines and `#` comments skipped, a
 /// line without `=` skipped. Later keys win.
 pub fn parse_ini(text: &str) -> std::collections::BTreeMap<String, String> {

@@ -16,6 +16,10 @@
 //! the panel. `mcpDevice` drives the same through the built `flare-mcp` over stdio, as Claude Code would: 36 tools,
 //! the look as text then a PNG with the device content between its markers, a tap by ref.
 //!
+//! Android plan PR A5 adds `deviceAgentAndroid` and `mcpDeviceAndroid`: the same two runs on the Android fake
+//! (`FLARE_E2E_DEVICE=android`, `emu/Flare_Pixel`, 411 x 914 dp), plus each kind's own buttons (rule 1371: Back
+//! works on Android, Shake answers `unavailable`; the reverse on the iPhone) and the look in dp (rule 1367).
+//!
 //! Nothing here touches the user's windows or a simulator: the app is the built exe, offscreen, in its own world.
 
 use std::time::Duration;
@@ -189,17 +193,61 @@ fn run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 /// How long a device call may take here (the fake answers at once; the agent's glide and settle are under a second).
 const CALL: Duration = Duration::from_secs(20);
 
-fn launch_alpha(ctx: &mut Ctx) -> Result<App, String> {
+/// Which fake the app runs: the iPhone (the default) or the Android one (Android plan PR A5).
+struct Kind {
+    /// `FLARE_E2E_DEVICE`'s value, if any.
+    env: Option<&'static str>,
+    target: &'static str,
+    /// The screen in the agent's unit (points, dp).
+    pt: (f64, f64),
+    /// A button of its own that the other kind lacks, and one of the other kind's.
+    own: &'static str,
+    other: &'static str,
+    /// What the look's text says of the unit.
+    unit: &'static str,
+}
+
+const IPHONE: Kind = Kind {
+    env: None,
+    target: FAKE,
+    pt: PT,
+    own: "lock",
+    other: "back",
+    unit: "device points, portrait",
+};
+
+const ANDROID: Kind = Kind {
+    env: Some("android"),
+    target: "emu/Flare_Pixel",
+    pt: (411.0, 914.0),
+    own: "back",
+    other: "shake",
+    unit: "device points (Android dp), portrait",
+};
+
+fn launch_alpha(ctx: &mut Ctx, kind: &Kind) -> Result<App, String> {
     let alpha = ctx.ensure_world().alpha.clone();
     ctx.launch(Launch {
         folders: vec![alpha],
+        env: kind
+            .env
+            .map(|v| vec![("FLARE_E2E_DEVICE".to_string(), v.to_string())])
+            .unwrap_or_default(),
         ..Launch::default()
     })
 }
 
 pub fn device_agent(ctx: &mut Ctx) -> Result<(), String> {
-    let mut app = launch_alpha(ctx)?;
-    let r = agent_run(ctx, &mut app);
+    device_agent_on(ctx, &IPHONE)
+}
+
+pub fn device_agent_android(ctx: &mut Ctx) -> Result<(), String> {
+    device_agent_on(ctx, &ANDROID)
+}
+
+fn device_agent_on(ctx: &mut Ctx, kind: &Kind) -> Result<(), String> {
+    let mut app = launch_alpha(ctx, kind)?;
+    let r = agent_run(ctx, &mut app, kind);
     app.close();
     r
 }
@@ -209,7 +257,7 @@ fn touches_since(app: &mut App, from: usize) -> Vec<(String, f64, f64)> {
     touches(&state(app)).into_iter().skip(from).collect()
 }
 
-fn agent_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
+fn agent_run(ctx: &mut Ctx, app: &mut App, kind: &Kind) -> Result<(), String> {
     app.session.call(&Request::Resize {
         w: 1200.0,
         h: 800.0,
@@ -251,14 +299,14 @@ fn agent_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     ctx.ok(
         list["devices"]
             .as_array()
-            .is_some_and(|d| d.iter().any(|d| d["target"] == FAKE)),
+            .is_some_and(|d| d.iter().any(|d| d["target"] == kind.target)),
         format!("device.list names the fake ({list})"),
     );
     let boot = c.call(Method::DeviceBoot, json!({}), CALL);
     ctx.ok(
         boot.as_ref()
-            .is_ok_and(|v| v["target"] == FAKE && v["booted"] == true),
-        format!("device.boot boots the newest iPhone and answers once booted ({boot:?})"),
+            .is_ok_and(|v| v["target"] == kind.target && v["booted"] == true),
+        format!("device.boot boots the fake and answers once booted ({boot:?})"),
     );
     let live = ctx.until("the panel to be live", 8_000, &mut || {
         let s = state(app);
@@ -282,6 +330,18 @@ fn agent_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
                 .is_some_and(|d| !d.is_empty())
             && tap_me["ref"].as_str().is_some_and(|r| r.starts_with('d')),
         format!("device.look gives a PNG and the tree with refs ({tap_me})"),
+    );
+    // In the device's own unit (dp on Android, rule 1367), with its own buttons (rule 1371).
+    ctx.ok(
+        num(&look["screen"]["w"]) == kind.pt.0
+            && num(&look["screen"]["h"]) == kind.pt.1
+            && look["buttons"].as_array().is_some_and(|b| {
+                b.iter().any(|b| b == kind.own) && !b.iter().any(|b| b == kind.other)
+            }),
+        format!(
+            "device.look is {} x {} with the device's own buttons ({} {})",
+            look["screen"]["w"], look["screen"]["h"], look["screen"], look["buttons"]
+        ),
     );
 
     // ---- a tap by ref lands at the element's middle, in device points ----
@@ -325,6 +385,26 @@ fn agent_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         .as_array()
         .is_some_and(|a| a.iter().any(|i| i["button"] == "home"));
     ctx.ok(r.is_ok() && home, "device.press home reaches the device");
+    let r = c.call(Method::DevicePress, json!({"button": kind.own}), CALL);
+    let own = state(app)["inputs"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|i| i["button"] == kind.own));
+    ctx.ok(
+        r.is_ok() && own,
+        format!("device.press {} reaches the device ({r:?})", kind.own),
+    );
+    let r = c.call(Method::DevicePress, json!({"button": kind.other}), CALL);
+    let sent = state(app)["inputs"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|i| i["button"] == kind.other));
+    ctx.ok(
+        code_of(&r) == "unavailable" && !sent,
+        format!(
+            "device.press {} (the other kind's) is unavailable and sends nothing ({})",
+            kind.other,
+            code_of(&r)
+        ),
+    );
 
     // ---- the person takes over a long press: the call ends `interrupted` ----
     let (pipe2, token2) = (pipe.clone(), token.clone());
@@ -378,6 +458,14 @@ fn agent_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 }
 
 pub fn mcp_device(ctx: &mut Ctx) -> Result<(), String> {
+    mcp_device_on(ctx, &IPHONE)
+}
+
+pub fn mcp_device_android(ctx: &mut Ctx) -> Result<(), String> {
+    mcp_device_on(ctx, &ANDROID)
+}
+
+fn mcp_device_on(ctx: &mut Ctx, kind: &Kind) -> Result<(), String> {
     let exe = ctx
         .exe
         .parent()
@@ -393,13 +481,13 @@ pub fn mcp_device(ctx: &mut Ctx) -> Result<(), String> {
         );
         return Ok(());
     }
-    let mut app = launch_alpha(ctx)?;
-    let r = mcp_run(ctx, &mut app, &exe);
+    let mut app = launch_alpha(ctx, kind)?;
+    let r = mcp_run(ctx, &mut app, &exe, kind);
     app.close();
     r
 }
 
-fn mcp_run(ctx: &mut Ctx, app: &mut App, exe: &std::path::Path) -> Result<(), String> {
+fn mcp_run(ctx: &mut Ctx, app: &mut App, exe: &std::path::Path, kind: &Kind) -> Result<(), String> {
     app.session.call(&Request::Resize {
         w: 1200.0,
         h: 800.0,
@@ -460,6 +548,18 @@ fn mcp_run(ctx: &mut Ctx, app: &mut App, exe: &std::path::Path) -> Result<(), St
         text.contains("BEGIN DEVICE CONTENT")
             && text.lines().filter(|l| *l == "END DEVICE CONTENT").count() == 1,
         "the device's words sit between the device content markers",
+    );
+    ctx.ok(
+        text.contains(&format!(
+            "The screen is {:.0} x {:.0} {}",
+            kind.pt.0, kind.pt.1, kind.unit
+        )) && text.contains(&format!("Its buttons for device_press: home, {}", kind.own)),
+        format!("the look says the unit and the device's own buttons ({text})"),
+    );
+    let r = s.tool(8, "device_press", json!({"button": kind.other}))?;
+    ctx.ok(
+        is_error(&r) && text_of(&r).contains(&format!("no {} button", kind.other)),
+        format!("device_press {} is refused ({})", kind.other, text_of(&r)),
     );
     let tap_ref = text
         .lines()

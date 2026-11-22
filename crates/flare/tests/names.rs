@@ -693,6 +693,9 @@ const E2E_SEAMS: &[&str] = &[
     // and one remote tab is opened at start (remote_link.rs, appctl.rs; tools/e2e remoteViewer sets both).
     "FLARE_E2E_REMOTE_COMMAND",
     "FLARE_E2E_REMOTE_OPEN",
+    // Android plan PR A5: the device panel's fake is the Android one (appctl.rs; tools/e2e deviceAgentAndroid and
+    // mcpDeviceAndroid set it to `android`).
+    "FLARE_E2E_DEVICE",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

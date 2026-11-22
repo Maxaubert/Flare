@@ -605,6 +605,18 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 180,
     },
     Scenario {
+        name: "deviceAgentAndroid",
+        group: "panel",
+        run: device::device_agent_android,
+        limit_secs: 180,
+    },
+    Scenario {
+        name: "mcpDeviceAndroid",
+        group: "panel",
+        run: device::mcp_device_android,
+        limit_secs: 180,
+    },
+    Scenario {
         name: "panelSplitter",
         group: "panel",
         run: panel_split::panel_splitter,

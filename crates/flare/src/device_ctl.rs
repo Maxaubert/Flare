@@ -3261,7 +3261,7 @@ mod tests {
     fn an_android_device_boots_and_shuts_down_at_quit() {
         let (mut d, quits) = android_ctl(AndroidSdk::Ready { avds: 1 });
         assert!(d.menu_offered());
-        assert!(!d.agent_offered(), "Android's agent tools come with A5");
+        assert!(d.agent_offered(), "an emulator at the floor with a device");
         d.ensure_source();
         d.list();
         let t = Target::emu("Flare_Pixel").unwrap();
@@ -3283,6 +3283,215 @@ mod tests {
         assert_eq!(handed, ["Flare_Pixel"]);
         assert_eq!(*quits.borrow(), [vec!["Flare_Pixel".to_string()]]);
         assert!(d.booted.devices.is_empty());
+    }
+
+    type AgentRx = std::sync::mpsc::Receiver<Result<serde_json::Value, flare_ctl::CtlError>>;
+
+    /// One agent call from tab `t1`.
+    fn agent_call(d: &mut DeviceCtl, req: AgentReq) -> AgentRx {
+        let (tx, rx) = std::sync::mpsc::channel();
+        d.start_agent(AgentCall {
+            tab: "t1".into(),
+            req,
+            reply: tx,
+            cancel: flare_ctl::CancelFlag::default(),
+            label: "Claude".into(),
+        });
+        rx
+    }
+
+    /// The call's answer, the agent's tick run on `clock` until it comes (at most 4 s).
+    fn agent_answer(
+        d: &mut DeviceCtl,
+        clock: &std::cell::Cell<u64>,
+        rx: &AgentRx,
+    ) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        for _ in 0..250 {
+            if let Ok(a) = rx.try_recv() {
+                return a;
+            }
+            clock.set(clock.get() + 16);
+            d.agent_tick();
+        }
+        panic!("no answer within 4 s");
+    }
+
+    /// Android plan PR A5 (spec "The agent"): the tools are offered once Android's emulator is at the floor with a
+    /// device, and each setup state before that answers `unavailable` with the panel's own line; the agent never starts
+    /// setup. Then the same calls list, boot, look (in dp, with the device's own buttons), press Back, refuse Shake
+    /// (rule 1371), hold a launch to a package name and an install to an `.apk`.
+    #[test]
+    fn the_agent_drives_an_android_device_once_its_emulator_is_ready() {
+        use flare_device::job::{DeviceOp, Press};
+        use flare_device::source::Button;
+        for sdk in [
+            AndroidSdk::Missing,
+            AndroidSdk::TooOld,
+            AndroidSdk::Ready { avds: 0 },
+        ] {
+            let (mut d, _) = android_ctl(sdk);
+            assert!(!d.agent_offered(), "{sdk:?}");
+            let e = agent_call(&mut d, AgentReq::List)
+                .try_recv()
+                .expect("answered at once")
+                .unwrap_err();
+            assert_eq!(e.code, "unavailable", "{sdk:?}");
+            assert!(
+                e.message.contains("Google's Android emulator")
+                    && e.message.contains("only the user can do this"),
+                "{}",
+                e.message
+            );
+            assert_eq!(d.flow, Flow::Idle, "the agent never starts setup");
+        }
+        // The licence on screen: the same line, nothing accepted.
+        let (mut d, _) = android_ctl(AndroidSdk::Ready { avds: 1 });
+        d.flow = Flow::Licence {
+            text: "terms".into(),
+            hashes: vec!["h".into()],
+            download_mb: 2500,
+        };
+        let e = agent_call(&mut d, AgentReq::List)
+            .try_recv()
+            .unwrap()
+            .unwrap_err();
+        assert!(e.message.starts_with("Google's licence"), "{}", e.message);
+
+        let clock = Rc::new(std::cell::Cell::new(1_000u64));
+        let c = Rc::clone(&clock);
+        let mut d = DeviceCtl::new(post(), Rc::new(move || c.get()), None);
+        d.install_real(android_starter(FakeSource::android()), None, recorder().1);
+        d.set_ios(false);
+        d.install_android(Rc::new(|_: &[String]| {}));
+        d.on_xcode(XcodeAnswer {
+            xcode: None,
+            android: Some(AndroidSdk::Ready { avds: 1 }),
+            booted: Booted::default(),
+        });
+        assert!(d.agent_offered());
+        let rx = agent_call(&mut d, AgentReq::List);
+        let list = agent_answer(&mut d, &clock, &rx).unwrap();
+        assert_eq!(list["devices"][0]["target"], "emu/Flare_Pixel", "{list}");
+        assert_eq!(list["devices"][0]["kind"], "Android");
+        let boot = agent_call(
+            &mut d,
+            AgentReq::Boot {
+                target: None,
+                name: Some("flare pixel".into()),
+            },
+        );
+        let v = agent_answer(&mut d, &clock, &boot).unwrap();
+        assert_eq!(v["target"], "emu/Flare_Pixel");
+        assert!(
+            d.take_effects().contains(&Effect::SetTarget {
+                tab: "t1".into(),
+                target: "emu/Flare_Pixel".into()
+            }),
+            "shown in the tab's own panel"
+        );
+        show_tab(&mut d, "t1", "emu/Flare_Pixel");
+        let look = agent_call(&mut d, AgentReq::Look { tree: true });
+        let v = agent_answer(&mut d, &clock, &look).unwrap();
+        assert_eq!(
+            v["screen"],
+            serde_json::json!({"w": 411.0, "h": 914.0}),
+            "dp"
+        );
+        assert_eq!(
+            v["buttons"],
+            serde_json::json!([
+                "home",
+                "back",
+                "recents",
+                "power",
+                "volume_up",
+                "volume_down",
+                "rotate_left",
+                "rotate_right"
+            ])
+        );
+        assert!(
+            v["tree"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|e| e["label"] == "Tap me")),
+            "{v}"
+        );
+        let press = |b| AgentReq::Act(DeviceOp::Press(Press::Button(b)));
+        let back = agent_call(&mut d, press(Button::Back));
+        assert!(
+            agent_answer(&mut d, &clock, &back).is_ok(),
+            "Back is Android's"
+        );
+        let e = agent_call(&mut d, press(Button::Shake))
+            .try_recv()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(e.code, "unavailable");
+        assert!(e.message.contains("no shake button") && e.message.contains("back, recents"));
+        // A launch takes a package name; an install an .apk.
+        let e = agent_call(
+            &mut d,
+            AgentReq::Launch {
+                app: "com.example.my-app".into(),
+            },
+        )
+        .try_recv()
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::BAD_PARAMS, "{}", e.message);
+        let launch = agent_call(
+            &mut d,
+            AgentReq::Launch {
+                app: "com.android.settings".into(),
+            },
+        );
+        assert!(agent_answer(&mut d, &clock, &launch).is_ok());
+        let e = agent_call(
+            &mut d,
+            AgentReq::Install {
+                path: PathBuf::from("/p/Demo.app"),
+            },
+        )
+        .try_recv()
+        .unwrap()
+        .unwrap_err();
+        assert!(e.message.contains(".apk"), "{}", e.message);
+        let install = agent_call(
+            &mut d,
+            AgentReq::Install {
+                path: PathBuf::from("/p/app-debug.apk"),
+            },
+        );
+        let v = agent_answer(&mut d, &clock, &install).unwrap();
+        assert_eq!(v["installed"], "app-debug.apk");
+    }
+
+    /// An iPhone simulator's device is held to Xcode only: an Android setup state on the same Mac never blocks it, and
+    /// an `.apk` is refused for it.
+    #[test]
+    fn an_iphone_refuses_an_apk_and_keeps_its_own_buttons() {
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), Some(FakeSource::default()));
+        d.list();
+        let t = Target::sim("00000000-0000-4000-8000-000000000001").unwrap();
+        d.boot(&t);
+        d.drain();
+        show_tab(&mut d, "t1", &t.name());
+        let state = agent_call(&mut d, AgentReq::State)
+            .try_recv()
+            .unwrap()
+            .unwrap();
+        assert_eq!(state["buttons"][1], "lock", "{state}");
+        let e = agent_call(
+            &mut d,
+            AgentReq::Install {
+                path: PathBuf::from("/p/app-debug.apk"),
+            },
+        )
+        .try_recv()
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::BAD_PARAMS);
+        assert!(e.message.contains("iPhone simulator"), "{}", e.message);
     }
 
     /// The spec's "Input": an Android panel has the iOS panel's buttons (Lock sends Power) and its own menu buttons
