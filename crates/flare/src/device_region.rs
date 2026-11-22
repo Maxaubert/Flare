@@ -487,6 +487,7 @@ impl Worker {
 
     fn run(mut self, rx: &Receiver<Msg>) {
         while let Ok(first) = rx.recv() {
+            // sync-ok: the frame thread waits for its next record
             // The newest record per device wins: older ones still waiting are dropped (counted).
             let mut frames: HashMap<Target, RegionFrame> = HashMap::new();
             let mut msgs = vec![first];
