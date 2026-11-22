@@ -31,7 +31,7 @@ use crate::appctl::{Post, UiMsg};
 use crate::host_os::HostKey;
 use crate::machines::{
     FLARE_CANDIDATES, FileMachines, Incoming, Machine, MachinesPort, failure_line, incoming_file,
-    incoming_json, machine_id, os_of_hello, parse_incoming, probe_kinds, saved_kind,
+    incoming_json, load_incoming, machine_id, os_of_hello, parse_incoming, probe_kinds, saved_kind,
 };
 use crate::remote_link::LinkError;
 use crate::settings_ctl::SettingsMsg;
@@ -45,7 +45,14 @@ pub struct HelloFacts {
 
 /// The page's disk and links. BLOCKING, every call: a worker's.
 pub trait MachinesIo: Send + Sync {
+    /// The machines to show or use. A broken file shows what can be read of it.
     fn list(&self) -> Vec<Machine>;
+    /// Audit #3: the machines for a read that is saved back. A file that cannot be read, or that holds an entry Flare
+    /// leaves out, is the line that says so (no file is an empty list), so a save never wipes what it holds.
+    fn load(&self) -> Result<Vec<Machine>, String> {
+        Ok(self.list())
+    }
+    /// Saves the whole list. The real one refuses to write over a file [`MachinesIo::load`] refuses (audit #3).
     fn save(&self, list: &[Machine]) -> Result<(), String>;
     /// The plain hosts of `~/.ssh/config`.
     fn ssh_hosts(&self) -> Vec<String>;
@@ -60,8 +67,17 @@ pub trait MachinesIo: Send + Sync {
     fn list_in(&self) -> Vec<Incoming> {
         Vec::new()
     }
+    /// Audit #3: [`MachinesIo::load`] for the computers paired to reach this one.
+    fn load_in(&self) -> Result<Vec<Incoming>, String> {
+        Ok(self.list_in())
+    }
     fn save_in(&self, _list: &[Incoming]) -> Result<(), String> {
         Ok(())
+    }
+    /// Empties the list when Computer sharing turns off. Its clean up removes every key Flare added by its tag, so
+    /// this one write may replace a file that cannot be read (audit #3).
+    fn clear_in(&self) -> Result<(), String> {
+        self.save_in(&[])
     }
     /// The systems found for the SSH hosts before (rule 1278), by host. None by default.
     fn known_os(&self) -> HashMap<HostKey, MachineOs> {
@@ -112,7 +128,13 @@ impl MachinesIo for RealMachinesIo {
         self.file.list()
     }
 
+    fn load(&self) -> Result<Vec<Machine>, String> {
+        self.file.load()
+    }
+
     fn save(&self, list: &[Machine]) -> Result<(), String> {
+        // Never over a file that could not be read whole (audit #3): the user's hand edit stays to be fixed.
+        self.file.load()?;
         self.file
             .save(list)
             .map_err(|e| format!("machines.json could not be saved: {e}"))
@@ -120,12 +142,23 @@ impl MachinesIo for RealMachinesIo {
 
     fn list_in(&self) -> Vec<Incoming> {
         std::fs::read_to_string(&self.in_file) // sync-ok: a worker's call
-            .map(|raw| parse_incoming(&raw))
+            .map(|raw| parse_incoming(raw.strip_prefix('\u{feff}').unwrap_or(&raw)))
             .unwrap_or_default()
     }
 
+    fn load_in(&self) -> Result<Vec<Incoming>, String> {
+        load_incoming(&self.in_file)
+    }
+
     fn save_in(&self, list: &[Incoming]) -> Result<(), String> {
+        // Never over a file that could not be read whole (audit #3): it is the record of the keys added.
+        load_incoming(&self.in_file)?;
         flare_settings::atomic::write_atomic(&self.in_file, &incoming_json(list))
+            .map_err(|e| format!("machines_in.json could not be saved: {e}"))
+    }
+
+    fn clear_in(&self) -> Result<(), String> {
+        flare_settings::atomic::write_atomic(&self.in_file, &incoming_json(&[]))
             .map_err(|e| format!("machines_in.json could not be saved: {e}"))
     }
 
@@ -226,6 +259,9 @@ pub enum MachinesMsg {
         incoming: Vec<Incoming>,
         hosts: Vec<SshHost>,
         known_os: HashMap<HostKey, MachineOs>,
+        /// Audit #3: why `machines.json` or `machines_in.json` cannot be saved over (a hand edit that broke it), shown
+        /// as a notice. The lists show what could be read.
+        problem: Option<String>,
     },
     /// One SSH host's system was looked up (rule 1278): what was found, None when nothing answered.
     HostOs { key: HostKey, os: Option<MachineOs> },
@@ -240,8 +276,8 @@ pub enum MachinesMsg {
     },
     /// The add form's check and save: the new list, or the form's red line.
     Added(Result<(Vec<Machine>, String), String>),
-    /// A machine was removed: the new list.
-    Removed(Vec<Machine>),
+    /// A machine was removed: the new list, or the line that says why it stays (audit #43).
+    Removed(Result<Vec<Machine>, String>),
     /// The Computer sharing switch's worker (machine pairing PR 2).
     Sharing(crate::sharing::SharingMsg),
 }
@@ -454,7 +490,7 @@ impl MachinesPage {
             let (io, drain) = (Arc::clone(&self.io), self.pairing.drain());
             worker("flare-machines-save", move || {
                 drain();
-                if let Err(e) = io.save_in(&[]) {
+                if let Err(e) = io.clear_in() {
                     log::warn!("{e}");
                 }
             });
@@ -515,7 +551,7 @@ impl MachinesPage {
                 .hosts
                 .iter()
                 .map(|h| SshHost {
-                    os: self.host_os.get(&crate::host_os::key_of(h)).copied(),
+                    os: self.os_of_host(h),
                     ..h.clone()
                 })
                 .collect(),
@@ -546,6 +582,7 @@ impl MachinesPage {
         worker("flare-machines-read", move || {
             let machines = io.list();
             let incoming = io.list_in();
+            let problem = io.load().err().or_else(|| io.load_in().err());
             let hosts = io.named_ssh_hosts();
             let known_os = io.known_os();
             Self::say(
@@ -555,9 +592,59 @@ impl MachinesPage {
                     incoming,
                     hosts,
                     known_os,
+                    problem,
                 },
             );
         });
+    }
+
+    /// The system Flare learnt by connecting to the computer an SSH host reaches (rule 1300; Max, 2026-11-18: the
+    /// logo should come by itself once the computer is connected): a linked machine's `kind`, which its own
+    /// `remote.hello` or the pairing said, for the host it names or one that reaches the same computer; else a computer
+    /// that reaches this one, by the address it paired from. None while no link said it.
+    fn os_learnt(&self, h: &SshHost) -> Option<MachineOs> {
+        use flare_settings::page::machines::same_host;
+        self.machines
+            .iter()
+            .filter(|m| m.kind.is_some())
+            .find(|m| m.ssh == h.alias || same_host(m.target(), &h.host_name))
+            .map(|m| m.kind)
+            .or_else(|| {
+                self.incoming
+                    .iter()
+                    .filter(|m| m.kind.is_some())
+                    .find(|m| same_host(&m.address, &h.host_name))
+                    .map(|m| m.kind)
+            })
+            .and_then(os_of)
+    }
+
+    /// The logo an SSH host draws in the drop-down: what a link said (rule 1300), else what its greeting or `uname`
+    /// said (rule 1278), else none.
+    fn os_of_host(&self, h: &SshHost) -> Option<MachineOs> {
+        self.os_learnt(h)
+            .or_else(|| self.host_os.get(&crate::host_os::key_of(h)).copied())
+    }
+
+    /// Keeps what a link said about an SSH host's computer in `host_os.json` (rule 1300), on a worker, so the logo
+    /// stays after the machine is removed. True when something new was learnt.
+    fn keep_learnt_os(&mut self) -> bool {
+        let learnt: Vec<(HostKey, MachineOs)> = self
+            .hosts
+            .iter()
+            .filter_map(|h| {
+                let os = self.os_learnt(h)?;
+                let key = crate::host_os::key_of(h);
+                (self.host_os.get(&key) != Some(&os)).then_some((key, os))
+            })
+            .collect();
+        if learnt.is_empty() {
+            return false;
+        }
+        self.host_os.extend(learnt.iter().cloned());
+        let io = Arc::clone(&self.io);
+        worker("flare-machines-os-keep", move || io.remember_os(&learnt));
+        true
     }
 
     /// The system found for a saved machine's SSH host (rule 1278): the host it names, else one that reaches the same
@@ -711,12 +798,11 @@ impl MachinesPage {
                 let admin = gone.admin.unwrap_or_else(|| {
                     flare_settings::machine_prefs::admin_keys(&prefs) || os.windows_admin()
                 });
-                let answer = crate::sharing::remove_key(&*os, &gone.key, admin).and_then(|()| {
-                    let list: Vec<Incoming> = io
-                        .list_in()
-                        .into_iter()
-                        .filter(|m| m.id != gone.id)
-                        .collect();
+                // The list is read before the key goes (audit #3): a file that cannot be read is never saved over,
+                // and the key stays with its record.
+                let answer = io.load_in().and_then(|all| {
+                    crate::sharing::remove_key(&*os, &gone.key, admin)?;
+                    let list: Vec<Incoming> = all.into_iter().filter(|m| m.id != gone.id).collect();
                     io.save_in(&list).map(|()| list)
                 });
                 Self::say(&post, MachinesMsg::RemovedIn(answer));
@@ -726,14 +812,16 @@ impl MachinesPage {
         let (io, post) = (Arc::clone(&self.io), Arc::clone(&self.post));
         let id = id.to_string();
         worker("flare-machines-save", move || {
-            let list: Vec<Machine> = io.list().into_iter().filter(|m| m.id != id).collect();
-            match io.save(&list) {
-                Ok(()) => {
-                    post(UiMsg::Machines(list.clone()));
-                    Self::say(&post, MachinesMsg::Removed(list));
-                }
+            // Audit #3 and #43: a file that cannot be read is never saved over, and a failed save is shown.
+            let answer = io.load().and_then(|all| {
+                let list: Vec<Machine> = all.into_iter().filter(|m| m.id != id).collect();
+                io.save(&list).map(|()| list)
+            });
+            match &answer {
+                Ok(list) => post(UiMsg::Machines(list.clone())),
                 Err(e) => log::warn!("{e}"),
             }
+            Self::say(&post, MachinesMsg::Removed(answer));
         });
     }
 
@@ -745,6 +833,11 @@ impl MachinesPage {
             ..AddForm::default()
         };
         self.pairing.browse(true);
+        // A host that answered nothing (off, or a VPN not up yet) is looked at again each time the dialog opens, so its
+        // logo comes once it can be reached (rule 1300); one with a system is not.
+        let (finding, found) = (&self.finding, &self.host_os);
+        self.looked
+            .retain(|k| finding.contains(k) || found.contains_key(k));
         self.find_host_os();
     }
 
@@ -874,7 +967,8 @@ impl MachinesPage {
             };
             match io.probe(&probe) {
                 Ok(facts) => {
-                    let mut list = io.list();
+                    // Audit #3: a file that cannot be read is the dialog's line, never saved over.
+                    let mut list = io.load()?;
                     let taken: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
                     let id = machine_id(name, &taken);
                     list.push(Machine {
@@ -903,16 +997,26 @@ impl MachinesPage {
         ))
     }
 
-    /// A worker's answer. True when the page should be drawn again.
+    /// A worker's answer. True when the page should be drawn again. A linked machine's system that a link said is
+    /// kept for its SSH host after each (rule 1300).
     pub fn on_msg(&mut self, m: MachinesMsg) -> bool {
+        let redraw = self.take_msg(m);
+        self.keep_learnt_os() || redraw
+    }
+
+    fn take_msg(&mut self, m: MachinesMsg) -> bool {
         match m {
             MachinesMsg::Loaded {
                 machines,
                 incoming,
                 hosts,
                 known_os,
+                problem,
             } => {
                 self.loading = false;
+                if let Some(line) = problem {
+                    self.sharing.notice(line);
+                }
                 self.machines = machines;
                 self.incoming = incoming;
                 self.hosts = hosts;
@@ -966,9 +1070,12 @@ impl MachinesPage {
                 self.add.busy = false;
                 self.add.error = Some(line);
             }
-            MachinesMsg::Removed(list) => {
+            MachinesMsg::Removed(Ok(list)) => {
                 self.checks.retain(|id, _| list.iter().any(|m| &m.id == id));
                 self.machines = list;
+            }
+            MachinesMsg::Removed(Err(line)) => {
+                self.sharing.notice(line);
             }
             MachinesMsg::RemovedIn(Ok(list)) => self.incoming = list,
             MachinesMsg::RemovedIn(Err(line)) => {
@@ -1066,13 +1173,45 @@ pub(crate) mod fake {
         /// The systems kept (the cache), and the hosts looked up, in order.
         pub known: Mutex<HashMap<HostKey, MachineOs>>,
         pub os_asked: Mutex<Vec<String>>,
+        /// Audit #3: the files cannot be read whole (a hand edit broke them): this line, and no save lands.
+        pub broken: Mutex<Option<String>>,
+        /// Audit #43: every save fails with this line (a locked file, a full disk).
+        pub save_fails: Mutex<Option<String>>,
+        /// The saves that landed, of both lists.
+        pub saves: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeIo {
+        fn may_save(&self) -> Result<(), String> {
+            if let Some(e) = self.broken.lock().unwrap().clone() {
+                return Err(e);
+            }
+            if let Some(e) = self.save_fails.lock().unwrap().clone() {
+                return Err(e);
+            }
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     impl MachinesIo for FakeIo {
         fn list(&self) -> Vec<Machine> {
             self.list.lock().unwrap().clone()
         }
+        fn load(&self) -> Result<Vec<Machine>, String> {
+            match self.broken.lock().unwrap().clone() {
+                Some(e) => Err(e),
+                None => Ok(self.list()),
+            }
+        }
+        fn load_in(&self) -> Result<Vec<Incoming>, String> {
+            match self.broken.lock().unwrap().clone() {
+                Some(e) => Err(e),
+                None => Ok(self.list_in()),
+            }
+        }
         fn save(&self, list: &[Machine]) -> Result<(), String> {
+            self.may_save()?;
             *self.list.lock().unwrap() = list.to_vec();
             Ok(())
         }
@@ -1106,7 +1245,12 @@ pub(crate) mod fake {
             self.incoming.lock().unwrap().clone()
         }
         fn save_in(&self, list: &[Incoming]) -> Result<(), String> {
+            self.may_save()?;
             *self.incoming.lock().unwrap() = list.to_vec();
+            Ok(())
+        }
+        fn clear_in(&self) -> Result<(), String> {
+            self.incoming.lock().unwrap().clear();
             Ok(())
         }
         fn known_os(&self) -> HashMap<HostKey, MachineOs> {
@@ -1213,9 +1357,16 @@ mod tests {
         r.page.page_shown();
         r.settle();
         let info = r.page.info();
+        // Rule 1300: the linked Mac's host wears the system its hello said.
         assert_eq!(
             info.ssh_hosts,
-            [SshHost::plain("mini"), SshHost::plain("studio")]
+            [
+                SshHost {
+                    os: Some(MachineOs::Mac),
+                    ..SshHost::plain("mini")
+                },
+                SshHost::plain("studio")
+            ]
         );
         assert_eq!(info.machines.len(), 1);
         assert_eq!(info.machines[0].status, LinkStatus::Linked);
@@ -1445,7 +1596,7 @@ mod tests {
         use flare_settings::page::machines::TYPE_ADDRESS;
         let mut io = FakeIo::default();
         io.answers.insert(
-            ("192.168.0.139".into(), "flare".into()),
+            ("192.0.2.139".into(), "flare".into()),
             facts("0.4.2", Some(Os::Mac)),
         );
         let mut r = Rig::new(io);
@@ -1456,29 +1607,29 @@ mod tests {
         assert!(!r.page.info().add.can_add());
         r.page.set_pick(TYPE_ADDRESS);
         assert!(r.page.info().add.typing() && !r.page.info().add.can_add());
-        r.page.set_address("192.168.0.139:2222");
+        r.page.set_address("192.0.2.139:2222");
         r.page.set_user("max");
         assert!(r.page.info().add.can_add());
         r.page.submit();
         r.settle();
         let saved = r.io.list();
         assert_eq!(saved.len(), 1, "{:?}", r.page.info().add.error);
-        assert_eq!(saved[0].host.as_deref(), Some("192.168.0.139"));
-        assert_eq!(saved[0].ssh, "192.168.0.139");
+        assert_eq!(saved[0].host.as_deref(), Some("192.0.2.139"));
+        assert_eq!(saved[0].ssh, "192.0.2.139");
         assert_eq!(saved[0].user.as_deref(), Some("max"));
         assert_eq!(saved[0].port, Some(2222));
-        assert_eq!(saved[0].name, "192.168.0.139");
-        assert_eq!(r.page.info().machines[0].address, "192.168.0.139");
+        assert_eq!(saved[0].name, "192.0.2.139");
+        assert_eq!(r.page.info().machines[0].address, "192.0.2.139");
         assert!(!r.page.info().add.open, "the dialog closes");
         // The same address again is refused before any check.
         let probes = r.io.probes.lock().unwrap().len();
         r.page.open_form();
         r.page.set_pick(TYPE_ADDRESS);
-        r.page.set_address("max@192.168.0.139:2222");
+        r.page.set_address("max@192.0.2.139:2222");
         r.page.submit();
         assert_eq!(
             r.page.info().add.error.as_deref(),
-            Some("192.168.0.139 is linked already, as 192.168.0.139.")
+            Some("192.0.2.139 is linked already, as 192.0.2.139.")
         );
         assert_eq!(r.io.probes.lock().unwrap().len(), probes);
     }
@@ -1681,6 +1832,130 @@ mod tests {
         assert!(r.page.info().machines.is_empty());
     }
 
+    /// Runs `remove(id)` and waits for its worker's answer (a notice, or the row gone).
+    fn remove_and_wait(r: &mut Rig, id: &str) -> Vec<Vec<Machine>> {
+        r.page.remove(id);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut lists = Vec::new();
+        while r.page.sharing.ask().is_none()
+            && r.page.machines().iter().any(|m| m.id == id)
+            && std::time::Instant::now() < deadline
+        {
+            lists.extend(r.settle());
+            std::thread::sleep(std::time::Duration::from_millis(5)); // sync-ok: a test waits for its worker
+        }
+        lists
+    }
+
+    fn notice(r: &Rig) -> Option<String> {
+        match r.page.sharing.ask() {
+            Some(crate::sharing::SharingAsk::Notice(line)) => Some(line.clone()),
+            _ => None,
+        }
+    }
+
+    /// Audit #43: a Remove whose save fails says so in a notice; the row stays and the window hears no new list.
+    #[test]
+    fn a_remove_that_cannot_save_shows_a_notice_and_keeps_the_row() {
+        let io = FakeIo::default();
+        *io.list.lock().unwrap() = vec![mac()];
+        *io.save_fails.lock().unwrap() = Some("machines.json could not be saved: locked".into());
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        let lists = remove_and_wait(&mut r, "mac-mini");
+        assert_eq!(
+            notice(&r).as_deref(),
+            Some("machines.json could not be saved: locked")
+        );
+        assert!(lists.is_empty(), "the window keeps its list");
+        assert_eq!(r.page.machines(), [mac()]);
+        assert_eq!(r.io.list(), [mac()]);
+    }
+
+    /// Audit #3, on the disk: the real saves refuse to write over a file that cannot be read whole and leave its bytes
+    /// as they were; with no file (a first run) both save. Turning sharing off may still empty machines_in.json.
+    #[test]
+    fn the_real_saves_never_write_over_a_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let io = RealMachinesIo::new(dir.path(), dir.path().to_path_buf(), Some(Vec::new()));
+        let (path, inp) = (
+            crate::machines::machines_file(dir.path()),
+            incoming_file(dir.path()),
+        );
+        let incoming = Incoming {
+            id: "mini".into(),
+            name: "Mini".into(),
+            key: "AAAA".into(),
+            ..Default::default()
+        };
+        // A first run: no files.
+        io.save(&[mac()]).unwrap();
+        io.save_in(std::slice::from_ref(&incoming)).unwrap();
+        assert_eq!(io.load(), Ok(vec![mac()]));
+        assert_eq!(io.load_in(), Ok(vec![incoming.clone()]));
+        // A hand edit with a trailing comma.
+        let broken = r#"{"machines":[{"id":"a","ssh":"a"},]}"#;
+        std::fs::write(&path, broken).unwrap();
+        std::fs::write(&inp, broken).unwrap();
+        assert!(io.load().is_err() && io.load_in().is_err());
+        assert!(
+            io.save(&[])
+                .unwrap_err()
+                .starts_with("machines.json was not changed")
+        );
+        assert!(
+            io.save_in(&[])
+                .unwrap_err()
+                .starts_with("machines_in.json was not changed")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        assert_eq!(std::fs::read_to_string(&inp).unwrap(), broken);
+        io.clear_in().unwrap();
+        assert_eq!(io.load_in(), Ok(Vec::new()));
+    }
+
+    /// Audit #3: a machines.json that cannot be read whole is never saved over. The page says so when it is shown;
+    /// Remove and Add save nothing and say why.
+    #[test]
+    fn a_broken_machines_file_is_never_saved_over() {
+        let mut io = FakeIo {
+            hosts: vec!["studio".into()],
+            ..FakeIo::default()
+        };
+        io.answers.insert(
+            ("studio".into(), "flare".into()),
+            facts("0.2.0", Some(Os::Mac)),
+        );
+        *io.list.get_mut().unwrap() = vec![mac()];
+        let why = "machines.json was not changed: it is not valid JSON. Fix the file or move it away, then try again.";
+        *io.broken.get_mut().unwrap() = Some(why.into());
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        assert_eq!(notice(&r).as_deref(), Some(why), "shown with the page");
+        assert_eq!(r.page.machines(), [mac()], "what could be read shows");
+        r.page
+            .sharing
+            .button(flare_settings::page::machines::SHARING_PRIMARY);
+        assert!(notice(&r).is_none());
+        let lists = remove_and_wait(&mut r, "mac-mini");
+        assert_eq!(notice(&r).as_deref(), Some(why));
+        assert!(lists.is_empty());
+        assert_eq!(r.page.machines(), [mac()]);
+        r.page.open_form();
+        r.page.set_pick("studio");
+        r.page.submit();
+        let lists = r.settle();
+        assert!(lists.is_empty());
+        assert_eq!(r.page.info().add.error.as_deref(), Some(why));
+        assert_eq!(
+            r.io.saves.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing was saved"
+        );
+    }
+
     /// Rule 1278 (Max, 2026-11-17: "id like it to show either the windows, linux or mac icon automatically depending
     /// on the device"): the system kept from before shows at once; opening the dialog looks each SSH host up once a
     /// visit, and what is found shows on its row and is kept; a host that answers nothing keeps what it had, or shows
@@ -1688,10 +1963,10 @@ mod tests {
     #[test]
     fn the_dialog_finds_each_ssh_hosts_system_and_keeps_it() {
         let mut io = FakeIo {
-            hosts: vec!["evo-x2".into(), "pi".into(), "nas".into(), "old".into()],
+            hosts: vec!["home-pc".into(), "pi".into(), "nas".into(), "old".into()],
             ..FakeIo::default()
         };
-        io.os_answers.insert("evo-x2".into(), MachineOs::Pc);
+        io.os_answers.insert("home-pc".into(), MachineOs::Pc);
         io.os_answers.insert("pi".into(), MachineOs::Linux);
         // Found on an earlier visit; nothing answers now (a VPN in the way).
         io.known
@@ -1724,7 +1999,7 @@ mod tests {
         assert_eq!(
             systems(&r),
             [
-                ("evo-x2".to_string(), None),
+                ("home-pc".to_string(), None),
                 ("pi".into(), None),
                 ("nas".into(), None),
                 ("old".into(), Some(MachineOs::Mac)),
@@ -1735,7 +2010,7 @@ mod tests {
         assert_eq!(
             systems(&r),
             [
-                ("evo-x2".to_string(), Some(MachineOs::Pc)),
+                ("home-pc".to_string(), Some(MachineOs::Pc)),
                 ("pi".into(), Some(MachineOs::Linux)),
                 ("nas".into(), None),
                 ("old".into(), Some(MachineOs::Mac)),
@@ -1743,7 +2018,7 @@ mod tests {
         );
         let mut asked = r.io.os_asked.lock().unwrap().clone();
         asked.sort();
-        assert_eq!(asked, ["evo-x2", "nas", "old", "pi"]);
+        assert_eq!(asked, ["home-pc", "nas", "old", "pi"]);
         // The saved machine draws its host's logo; its kind is left as it was.
         let info = r.page.info();
         assert_eq!(info.machines[0].os, Some(MachineOs::Linux));
@@ -1760,14 +2035,125 @@ mod tests {
                 .get(&("pi".to_string(), "pi".to_string())),
             Some(&MachineOs::Linux)
         );
-        // Opened again in the same visit: no host is looked up twice.
+        // Opened again in the same visit: a host with a system is not looked up twice; the one that answered nothing
+        // is asked again (rule 1300), so it gets its logo once it can be reached.
         r.page.cancel_form();
         r.page.open_form();
         r.settle();
-        assert_eq!(r.io.os_asked.lock().unwrap().len(), 4);
+        assert_eq!(r.io.os_asked.lock().unwrap()[4..], ["nas"]);
         // A new visit looks them up again, in the background.
         r.page.page_shown();
         r.settle();
-        assert_eq!(r.io.os_asked.lock().unwrap().len(), 8);
+        assert_eq!(r.io.os_asked.lock().unwrap().len(), 9);
+    }
+
+    /// Rule 1300 (Max, 2026-11-18: "only the Mac has an icon in the machine picker, home-pc doesn't have one. It should
+    /// have a Windows icon, and that should be automatic if possible; otherwise don't show any icon, but only after
+    /// it's connected"). home-pc is off when the dialog first looks, so it has no logo; a host that answered nothing is
+    /// asked again when the dialog opens again. Once a link said a computer's system (a machine added or paired, by
+    /// the host it names or the same address; a computer that reaches this one), its SSH host wears that logo, and it
+    /// is kept in the cache. What a greeting said never becomes a machine's `kind`.
+    #[test]
+    fn an_ssh_host_wears_the_system_its_link_said_once_connected() {
+        let mut io = FakeIo::default();
+        *io.named.get_mut().unwrap() = vec![
+            SshHost {
+                alias: "mac".into(),
+                host_name: "192.0.2.120".into(),
+                ..SshHost::default()
+            },
+            SshHost {
+                alias: "home-pc".into(),
+                host_name: "198.51.100.52".into(),
+                ..SshHost::default()
+            },
+            SshHost {
+                alias: "desk".into(),
+                host_name: "Desk.local".into(),
+                ..SshHost::default()
+            },
+        ];
+        // The Mac paired by its address (machines.json has no alias for it); only the Mac's greeting says nothing.
+        *io.list.get_mut().unwrap() = vec![Machine {
+            id: "office-mac-mini".into(),
+            name: "Office-Mac-Mini".into(),
+            kind: Some(Os::Mac),
+            ssh: "192.0.2.120".into(),
+            host: Some("192.0.2.120".into()),
+            flare: "flare".into(),
+            ..Default::default()
+        }];
+        // home-pc's Stable install answers through cmd once it is up (rule 1207).
+        io.answers.insert(
+            ("home-pc".into(), FLARE_CANDIDATES[1].into()),
+            facts("0.3.0", Some(Os::Pc)),
+        );
+        let mut r = Rig::new(io);
+        let systems = |r: &Rig| -> Vec<(String, Option<MachineOs>)> {
+            r.page
+                .info()
+                .ssh_hosts
+                .into_iter()
+                .map(|h| (h.alias, h.os))
+                .collect()
+        };
+        r.page.page_shown();
+        r.settle();
+        r.page.open_form();
+        r.settle();
+        assert_eq!(
+            systems(&r),
+            [
+                ("mac".to_string(), Some(MachineOs::Mac)),
+                ("home-pc".into(), None),
+                ("desk".into(), None),
+            ],
+            "the paired Mac's word shows on its host; home-pc, off, has no logo"
+        );
+        // A computer that paired to reach this one, from Desk's address, said it is a PC.
+        r.io.incoming.lock().unwrap().push(Incoming {
+            id: "desk".into(),
+            name: "Desk".into(),
+            kind: Some(Os::Pc),
+            address: "desk.local.".into(),
+            key: "AAAA".into(),
+            ..Default::default()
+        });
+        // home-pc is connected: Add finds Flare there and its hello says it is a PC.
+        r.page.set_pick("home-pc");
+        r.page.submit();
+        r.settle();
+        r.page.page_shown();
+        r.settle();
+        assert_eq!(
+            systems(&r),
+            [
+                ("mac".to_string(), Some(MachineOs::Mac)),
+                ("home-pc".into(), Some(MachineOs::Pc)),
+                ("desk".into(), Some(MachineOs::Pc)),
+            ]
+        );
+        let evo = r
+            .page
+            .machines()
+            .iter()
+            .find(|m| m.ssh == "home-pc")
+            .cloned()
+            .expect("home-pc is linked");
+        assert_eq!(evo.kind, Some(Os::Pc), "its kind is what its hello said");
+        // Kept for the next time.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while r.io.known.lock().unwrap().len() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5)); // sync-ok: a test waits for its worker
+        }
+        let known = r.io.known.lock().unwrap().clone();
+        assert_eq!(
+            known.get(&("home-pc".to_string(), "198.51.100.52".to_string())),
+            Some(&MachineOs::Pc)
+        );
+        assert_eq!(
+            known.get(&("mac".to_string(), "192.0.2.120".to_string())),
+            Some(&MachineOs::Mac)
+        );
     }
 }

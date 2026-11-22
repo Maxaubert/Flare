@@ -994,3 +994,149 @@ fn a_press_on_the_flyout_does_not_dismiss_and_one_outside_both_does() {
     h.click(390.0, 290.0);
     assert_eq!(h.comp.get_menu_dismissed(), 1);
 }
+
+// ---- Audit 2026-11-18 (issue #273), findings 20 and 22: a flyout with no room on either side, and tall menus ----
+
+#[test]
+fn a_flyout_with_no_room_on_either_side_drops_below_its_row_and_never_covers_it() {
+    // Finding 20: in a 300 px window a 156 px panel and a 176 px flyout never fit side by side. The flyout used to
+    // clamp to x 8 and lie on its own parent row, under the pointer.
+    for scale in SCALES {
+        let h = Harness::new(scale, 300, 300, || MenusPreview::new().unwrap());
+        open_menu(&h, flyout_rows(), 60.0, 40.0);
+        let _ = h.render();
+        let (px, py) = (h.comp.get_panel_x(), h.comp.get_panel_y());
+        let (rx, ry) = top_row(&h, scale, 0);
+        h.move_to(rx, ry);
+        h.advance(0);
+        let _ = h.render();
+        assert!(h.comp.get_fly_open(), "the flyout opens at {scale}");
+        let (fx, fy) = (h.comp.get_fly_x(), h.comp.get_fly_y());
+        let (fw, fh) = (h.comp.get_fly_w(), h.comp.get_fly_h());
+        assert_eq!(
+            (h.comp.get_panel_x(), h.comp.get_panel_y()),
+            (px, py),
+            "the panel stays put at {scale}"
+        );
+        let hr = hair(scale);
+        let row_foot = py + hr + 28.0;
+        assert!(
+            fy >= row_foot - 0.01,
+            "the flyout starts under its row at {scale}: {fy} for {row_foot}"
+        );
+        assert!(
+            !(rx >= fx && rx < fx + fw && ry >= fy && ry < fy + fh),
+            "the pointer on the parent row is not under the flyout at {scale}"
+        );
+        assert!(
+            fx >= 8.0 - 0.01 && fx + fw <= 300.0 - 8.0 + 0.01,
+            "inside the window at {scale}: {fx} + {fw}"
+        );
+        assert!(fy + fh <= 300.0 - 8.0 + 0.01, "above the foot at {scale}");
+        // Straight down from the row is the flyout's first row: it stays up and does not move.
+        let (cx, cy) = fly_row(&h, scale, 0);
+        h.move_to(cx, cy);
+        h.advance(0);
+        h.advance(600);
+        assert!(h.comp.get_fly_open(), "still up at {scale}");
+        assert_eq!(
+            (h.comp.get_fly_x(), h.comp.get_fly_y()),
+            (fx, fy),
+            "the flyout does not jump at {scale}"
+        );
+    }
+}
+
+#[test]
+fn a_flyout_with_no_room_on_either_side_goes_above_its_row_near_the_foot() {
+    let scale = 1.0;
+    let h = Harness::new(scale, 300, 300, || MenusPreview::new().unwrap());
+    // Near the foot with four children: the flyout has no room under row 0, so it hangs above it.
+    let mut rows = flyout_rows();
+    for n in 0..2 {
+        let mut c = row(&format!("More {n}"));
+        c.parent = 0;
+        rows.push(c);
+    }
+    open_menu(&h, rows, 60.0, 220.0);
+    let _ = h.render();
+    let py = h.comp.get_panel_y();
+    hover_row(&h, scale, 0);
+    let _ = h.render();
+    assert!(h.comp.get_fly_open());
+    let (fy, fh) = (h.comp.get_fly_y(), h.comp.get_fly_h());
+    assert!(
+        fy + fh <= py + hair(scale) + 0.01,
+        "it ends above the row: {fy} + {fh} for {py}"
+    );
+    assert!(fy >= 8.0 - 0.01);
+}
+
+/// `n` plain rows: a menu taller than the 300 px window.
+fn tall_rows(n: usize) -> Vec<MenuRow> {
+    (0..n).map(|i| row(&format!("Pin {i}"))).collect()
+}
+
+#[test]
+fn a_menu_taller_than_the_window_is_capped_and_scrolls_to_its_last_row() {
+    // Finding 22: the panel was as tall as its rows, so y went negative and the rows left the window.
+    for scale in SCALES {
+        let h = harness(scale);
+        open_menu(&h, tall_rows(40), 20.0, 20.0);
+        let _ = h.render();
+        let (py, ph) = (h.comp.get_panel_y(), h.comp.get_panel_h());
+        assert!(py >= 8.0 - 0.01, "top {py} at {scale}");
+        assert!(py + ph <= 300.0 - 8.0 + 0.01, "foot {} at {scale}", py + ph);
+        // The wheel brings the last row into view, and a click picks it.
+        let x = h.comp.get_panel_x() + 40.0;
+        h.wheel(x, py + 40.0, 0.0, -5000.0);
+        h.advance(0);
+        let _ = h.render();
+        h.click(x, py + ph - hair(scale) - 14.0);
+        assert_eq!(h.comp.get_picked_index(), 39, "the last row at {scale}");
+    }
+}
+
+#[test]
+fn a_tall_dropdown_stays_in_the_window() {
+    for scale in SCALES {
+        let h = harness(scale);
+        open_drop(&h, tall_rows(40), 292.0, 140.0, 174.0);
+        let (py, ph) = (h.comp.get_panel_y(), h.comp.get_panel_h());
+        assert!(
+            py >= 8.0 - 0.01 && py + ph <= 300.0 - 8.0 + 0.01,
+            "{py} + {ph} at {scale}"
+        );
+    }
+}
+
+#[test]
+fn a_flyout_taller_than_the_window_is_capped_and_scrolls() {
+    for scale in SCALES {
+        let h = harness(scale);
+        let mut rows = flyout_rows();
+        for n in 0..40 {
+            let mut c = row(&format!("Child {n}"));
+            c.parent = 0;
+            rows.push(c);
+        }
+        open_menu(&h, rows, 20.0, 20.0);
+        hover_row(&h, scale, 0);
+        let _ = h.render();
+        assert!(h.comp.get_fly_open());
+        let (fy, fh) = (h.comp.get_fly_y(), h.comp.get_fly_h());
+        assert!(
+            fy >= 8.0 - 0.01 && fy + fh <= 300.0 - 8.0 + 0.01,
+            "{fy} + {fh} at {scale}"
+        );
+        // Into the flyout, then the wheel: the last child (flat row 44) is picked.
+        let (cx, cy) = fly_row(&h, scale, 0);
+        h.move_to(cx, cy);
+        h.advance(0);
+        h.wheel(cx, cy, 0.0, -5000.0);
+        h.advance(0);
+        let _ = h.render();
+        h.click(cx, fy + fh - hair(scale) - 14.0);
+        assert_eq!(h.comp.get_picked_index(), 44, "the last child at {scale}");
+    }
+}

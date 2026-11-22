@@ -349,6 +349,39 @@ pub(crate) fn hwnd_of(app: &AppWindow) -> Option<isize> {
         .flatten()
 }
 
+/// The geometry of the frame about to be presented (rule 1324, the pulse watch).
+fn present_geom(app: &AppWindow) -> crate::pulse_watch::PresentGeom {
+    let win = app.window().size();
+    let tex = app.get_grid_image().size();
+    #[cfg(target_os = "macos")]
+    let layer = native_view_of(app)
+        .and_then(flare_win::metal_layer::geom)
+        .map(|l| crate::pulse_watch::LayerGeom {
+            drawable_w: l.drawable_w,
+            drawable_h: l.drawable_h,
+            bounds_w: l.bounds_w,
+            bounds_h: l.bounds_h,
+            scale: l.scale,
+            window_scale: l.window_scale,
+            opaque: l.opaque,
+            tagged: l.tagged,
+        });
+    #[cfg(not(target_os = "macos"))]
+    let layer = None;
+    crate::pulse_watch::PresentGeom {
+        win_w: win.width,
+        win_h: win.height,
+        box_x: app.get_grid_box_x_phx(),
+        box_y: app.get_grid_box_y_phx(),
+        box_w: app.get_grid_box_w_phx(),
+        box_h: app.get_grid_box_h_phx(),
+        tex_w: tex.width,
+        tex_h: tex.height,
+        frozen_w: app.get_grid_frozen_width() * app.window().scale_factor(),
+        layer,
+    }
+}
+
 /// The window's native handle for the window-level calls (park, material, chrome): the HWND on
 /// Windows, the content `NSView` on macOS (`flare_win::glass`, `chrome` and `window_park` take
 /// that). Everything that needs a real HWND keeps `hwnd_of`.
@@ -447,12 +480,13 @@ pub enum HandlePoll {
     GiveUp,
 }
 
-/// The debounced stores a run keeps: tabs, window, prefs and panels.
+/// The debounced stores a run keeps: tabs, window, prefs, panels and the plugins' hub (its plugins' own stores).
 type Stores = (
     Arc<TabsStore>,
     Arc<WindowStateStore>,
     PrefStore,
     Arc<flare_surfaces::store::PanelStore>,
+    Arc<flare_mods::Hub>,
 );
 
 /// Every debounced store written now: the logoff closure and the end of `run`.
@@ -461,11 +495,14 @@ fn flush_stores(
     window: &WindowStateStore,
     prefs: &PrefStore,
     panels: &flare_surfaces::store::PanelStore,
+    plugins: &flare_mods::storage::Storage,
 ) {
     window.flush();
     tabs.flush();
     prefs.flush();
     panels.flush();
+    // A plugin's last storage.set may still wait out its spacing on a writer the exit would end (rule 1328).
+    plugins.flush_all();
 }
 
 /// Pure: the decision of look number `polls` (counted from 0) given what `hwnd_of` answered.
@@ -915,6 +952,8 @@ pub fn run_window(
         // The frame trace (FLARE_TRACE_FRAME=1): when the render began and when the last one ended.
         let mut render_began: Option<std::time::Instant> = None;
         let mut last_ended: Option<std::time::Instant> = None;
+        // The presented frame's geometry, for a pulse from scaling or a half pixel (rule 1324).
+        let mut present_watch = crate::pulse_watch::PresentWatch::default();
         app.window()
             .set_rendering_notifier(move |state, api| match state {
                 RenderingState::RenderingSetup => {
@@ -965,6 +1004,9 @@ pub fn run_window(
                             app.window().request_redraw();
                         }
                     }
+                    let notes =
+                        present_watch.observe(present_geom(&app), std::time::Instant::now());
+                    crate::pulse_watch::log_present(&notes);
                 }
                 RenderingState::AfterRendering => {
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
@@ -1136,7 +1178,7 @@ pub fn run_window(
                 mgr.live_pids().into_iter().map(|(_, pid)| pid).collect()
             }));
         }
-        let argv: Vec<String> = std::env::args().collect();
+        let argv: Vec<String> = crate::startup::args();
         let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup, before any window
         let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup, before any window
         // The clipboard and the openers are the real ones; under --e2e in-memory stand-ins that never
@@ -1436,6 +1478,7 @@ pub fn run_window(
         }
         let plugin_limits = mods_hub.limits();
         let plugin_logs = mods_hub.logs_dir();
+        let plugins_hub = Arc::clone(&mods_hub);
         rc.borrow_mut().set_mods(mods_hub, mods_dispatcher);
         rc.borrow_mut().set_plugin_run_record(run_record);
         // Plugins phase 7: helpers need the channel (their pipe), and Install from file its picker.
@@ -1546,7 +1589,7 @@ pub fn run_window(
                     restart: crate::appctl::staged_glue::spawn_exe(),
                     watch: true,
                     user_data_dir: args.user_data_dir.clone(),
-                    argv: std::env::args().skip(1).collect(),
+                    argv: crate::startup::args_after_exe(),
                     e2e_dir: args.e2e.then(|| inst.profile.dir.clone()),
                 },
             );
@@ -1644,8 +1687,9 @@ pub fn run_window(
                 let window = Arc::clone(&window_store);
                 let prefs = prefs.clone();
                 let panels = Arc::clone(&panels_store);
+                let plugins = Arc::clone(&plugins_hub);
                 move || {
-                    flush_stores(&tabs, &window, &prefs, &panels);
+                    flush_stores(&tabs, &window, &prefs, &panels, plugins.storage());
                     // The log says so last, and is on the disk before the OS ends us.
                     crate::diag_ctl::session_end();
                 }
@@ -1674,7 +1718,7 @@ pub fn run_window(
             crate::start_menu_icon::for_run(&ship, &inst.profile.dir),
             crate::app_icon::sharer_for_run(&ship),
         ));
-        stores = Some((tabs_store, window_store, prefs, panels_store));
+        stores = Some((tabs_store, window_store, prefs, panels_store, plugins_hub));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each
         // tab's scrollback.
@@ -1874,7 +1918,7 @@ pub fn run_window(
     // the controller applies BEFORE the show. The window material needs a handle, so it joins after.
     let look_prefs = stores
         .as_ref()
-        .map_or_else(PrefStore::memory, |(_, _, p, _)| p.clone());
+        .map_or_else(PrefStore::memory, |(_, _, p, _, _)| p.clone());
     let look = {
         let ctl = LookCtl::new(
             &app,
@@ -2078,8 +2122,8 @@ pub fn run_window(
     {
         c.end();
     }
-    if let Some((tabs, window, prefs, panels)) = &stores {
-        flush_stores(tabs, window, prefs, panels);
+    if let Some((tabs, window, prefs, panels, plugins)) = &stores {
+        flush_stores(tabs, window, prefs, panels, plugins.storage());
     }
     // The mini-apps' folders go with the run (one a browser still holds is renamed aside and deleted
     // by the next start).
@@ -2654,8 +2698,15 @@ fn place_ime(
     // follow typing. The cursor's line is its text.
     #[cfg(target_os = "macos")]
     {
-        let line =
-            handle.with_emu_quiet(|e| e.row_text(held.line.clamp(0, i64::from(i32::MAX)) as i32));
+        // The column is a cell; the line skips wide spacers, so the caret's index is the char that cell holds
+        // (rule 1352).
+        let (line, col) = handle.with_emu_quiet(|e| {
+            let row = held.line.clamp(0, i64::from(i32::MAX)) as i32;
+            (
+                e.row_text(row),
+                e.row_char_index(row, held.x.max(0) as usize),
+            )
+        });
         let m = host.metrics();
         let to_i32 =
             |v: usize, by: u32| (v as i64 * i64::from(by)).clamp(0, i64::from(i32::MAX)) as i32;
@@ -2675,7 +2726,7 @@ fn place_ime(
                     h: to_i32(dims.1, m.cell_h),
                 },
                 line,
-                col: held.x.max(0) as usize,
+                col,
             }),
         );
     }
@@ -3160,8 +3211,41 @@ mod tests {
             ),
         }]);
         assert!(!file.exists(), "inside the debounce nothing is written yet");
-        flush_stores(&tabs, &window, &prefs, &panels);
+        let plugins = flare_mods::storage::Storage::new(dir.path().join("plugins-storage"));
+        flush_stores(&tabs, &window, &prefs, &panels, &plugins);
         assert!(file.exists());
+    }
+
+    #[test]
+    fn a_session_end_flushes_a_plugin_storage_set_that_waits_for_its_spacing() {
+        // Rule 1328: a plugin's storage.set that waits out its write spacing must be on the disk at quit and logoff.
+        let dir = tempfile::tempdir().unwrap();
+        let long = Duration::from_secs(60);
+        let tabs = TabsStore::new(dir.path().join("tabs.json"), long);
+        let window = WindowStateStore::new(dir.path().join("window.json"), long);
+        let prefs = PrefStore::memory();
+        let panels = flare_surfaces::store::PanelStore::new(dir.path().join("panels.json"), long);
+        let plugins = flare_mods::storage::Storage::new(dir.path().join("plugins-storage"))
+            .with_write_every(long);
+        // The first set is written at once; the next waits out the spacing.
+        plugins
+            .set("todo", Some("n"), serde_json::json!(1))
+            .unwrap();
+        let stored = plugins.file_of("todo");
+        let read = || std::fs::read_to_string(&stored).unwrap_or_default();
+        let t = std::time::Instant::now();
+        while read() != r#"{"n":1}"# {
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "the first write never landed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        plugins
+            .set("todo", Some("n"), serde_json::json!(2))
+            .unwrap();
+        flush_stores(&tabs, &window, &prefs, &panels, &plugins);
+        assert_eq!(read(), r#"{"n":2}"#);
     }
 
     #[test]

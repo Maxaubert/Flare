@@ -272,6 +272,51 @@ fn the_scripts_remove_only_what_they_made_and_never_lose_each_others_cleanup() {
     assert!(e2e.contains("\"$base\"/?*) ok=1"));
 }
 
+/// Rule 1342: under `set -o pipefail`, a program piped into `grep -q` dies of SIGPIPE (141) when grep quits at the
+/// match, and the match then reads as a failure (commit 14de4121 hit it in stage-install.sh). The Mac scripts read
+/// such output whole first: into a variable, or through `tee` into a file.
+#[test]
+fn no_mac_script_pipes_into_a_grep_that_quits_early() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/release/mac");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sh") {
+            continue;
+        }
+        seen += 1;
+        let rel = format!(
+            "tools/release/mac/{}",
+            path.file_name().unwrap().to_string_lossy()
+        );
+        for line in read(&rel).lines() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            let bytes = line.as_bytes();
+            for (i, _) in line.match_indices('|') {
+                // `||` is an or, not a pipe.
+                if bytes.get(i + 1) == Some(&b'|') || (i > 0 && bytes[i - 1] == b'|') {
+                    continue;
+                }
+                let after = line[i + 1..].trim_start();
+                let early = after.starts_with("grep ")
+                    && after
+                        .split_whitespace()
+                        .skip(1)
+                        .take_while(|w| w.starts_with('-'))
+                        .any(|w| !w.starts_with("--") && (w.contains('q') || w.contains('m')));
+                assert!(!early, "{rel}: {line}");
+            }
+        }
+    }
+    assert!(seen >= 5, "{seen}");
+    let pack = read("tools/release/mac/pack.sh");
+    assert!(pack.contains("gate=\"$(spctl -a -t exec -vvv \"$app\" 2>&1 || true)\""));
+    let lib = read("tools/release/mac/lib.sh");
+    assert!(lib.contains("grep -q \"source=Notarized Developer ID\" \"$OUT/spctl-dmg-app.txt\""));
+}
+
 #[test]
 fn the_pack_checks_each_programs_role_ad_hoc_too() {
     let pack = read("tools/release/mac/pack.sh");

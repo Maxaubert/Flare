@@ -160,7 +160,11 @@ export component StartScreen inherits Rectangle {
     property <length> nav-h: root.places.length > 0 ? 112px + root.places.length * 38px : 93px;
     // mark (84) + 16 + title (28) + 40 + nav
     property <length> block-h: 84px + 16px + 28px + 40px + root.nav-h;
-    property <length> block-top: Px.snap((root.height - root.foot-h - root.block-h) / 2);
+    // Never above the top (rule 1346): a window too short for the block keeps the mark and the title, and the nav
+    // scrolls in the room left above the footer.
+    property <length> block-top: Px.snap(max(0px, (root.height - root.foot-h - root.block-h) / 2));
+    out property <length> nav-view-h: nav.height;
+    out property <length> nav-scroll: -nav.content-y;
     // The entrance: 0 to 1 over 420 ms on the ease-out of PT's `.p-start-in`.
     property <float> t: root.shown ? 1 : 0;
     animate t { duration: Motion.d(420ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
@@ -194,11 +198,14 @@ export component StartScreen inherits Rectangle {
             vertical-alignment: center;
         }
 
-        nav := Rectangle {
+        nav := Flickable {
             x: Px.snap((root.width - root.nav-w) / 2);
             y: root.block-top + 168px;
             width: root.nav-w;
-            height: root.nav-h;
+            height: min(root.nav-h, max(0px, content.height - self.y));
+            content-width: self.width;
+            content-height: root.nav-h;
+            interactive: false;
 
             new-row := StartRow {
                 y: 0;
@@ -306,6 +313,8 @@ export component StartScreenPreview inherits Window {
     in property <string> settings-key;
     in property <bool> shown: true;
     out property <length> new-y: sc.new-y;
+    out property <length> nav-view-h: sc.nav-view-h;
+    out property <length> nav-scroll: sc.nav-scroll;
 
     callback new-terminal();
     callback place-picked(string);

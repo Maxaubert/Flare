@@ -55,6 +55,8 @@ export component SetSubtext inherits Rectangle {
         changed has-hover => {
             if (self.has-hover && root.cut) {
                 root.tip(root.text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else if !self.has-hover {
+                root.tip("", 0px, 0px, 0px, 0px);
             }
         }
     }
