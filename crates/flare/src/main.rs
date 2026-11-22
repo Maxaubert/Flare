@@ -17,6 +17,7 @@ mod clip_flow;
 mod config;
 mod convo_ctl;
 mod ctl_app;
+mod device_ctl;
 mod diag_ctl;
 mod dictation_ctl;
 mod dictation_page;

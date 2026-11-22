@@ -5396,11 +5396,56 @@ panel PR 1): `PanelKind::Device` is named `"device"`, native (Slint draws it, ki
 `flare_device::target`: `sim/` and a 36-character UUID (`8-4-4-4-12` hex), lower-cased; `simctl`'s upper case reads as
 the same device, only the lower-cased name is a stored target, and the limits of `flare_surfaces::state::clean_target`
 apply first. `flare_device::target::target_ok` checks the shape only (no file, no `simctl`, rule 34). An older Flare
-reads the unknown kind as nothing and never writes it back (rule 40). Second half (PR 4a): `is_built` turns true,
-`target_ok` in `panel_ctl.rs` gets a `Device` arm calling `flare_device::target::target_ok`, restore shows Boot and never
-boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
-`a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
-(`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+reads the unknown kind as nothing and never writes it back (rule 40). Second half (PR 4a): `is_built` is true and the
+Slint kind is 5; `target_ok` in `panel_ctl.rs` has a `Device` arm calling `flare_device::target::target_ok` (plus the
+fixed target `device`, a panel whose device is not chosen yet, which is never stored), and `PanelCtl::sync` skips the
+kind (the device controller, `device_ctl.rs`, owns its content). The kind is drawn only where a device source is
+offered (`PanelCtl::set_device_offered`: the fake under `--e2e` and in tests in PR 4a, the simulator from PR 4b);
+elsewhere a stored device panel is kept in the file and not shown, as an unbuilt kind. Restore shows the device with
+Boot ("<name> is shut down.") and never boots; the device list is read once a device panel exists, and a panel whose
+device the list no longer has is dropped then (never on a list that failed: the panel says why and offers Try again).
+Held by `device_round_trips_by_name`, `device_is_built_and_native` (`flare-surfaces/src/kind.rs`),
+`a_device_panel_round_trips_in_panels_json` (`store.rs`), `a_sim_target_round_trips_and_bad_udids_are_refused`
+(`flare-device/src/target.rs`), and `device_panels_are_persisted_and_restored`,
+`a_device_target_is_checked_by_shape_not_as_a_file`, `restore_shows_boot_and_never_boots` and
+`a_deleted_device_drops_the_panel_once_the_list_is_read` (`flare/src/panel_ctl.rs`). Source: Max, 2026-11-19.
+
+1318. **The device panel's setup states each say one line with at most one button; the panel is not offered where no
+device source exists.** Max, 2026-11-19 (issue #248, spec "Setup and first use"; mockup A of
+`docs/superpowers/specs/2026-11-19-device-panel-mockup.html`, picked by Claude under Max's delegation). Device panel PR 4a
+(`device_ctl::Setup`): no Xcode ("The device panel needs Xcode." [Get Xcode], the App Store page), Xcode not set up
+("Open Xcode once to finish its setup." [Open Xcode]), no runtime or device ("Xcode has no iPhone simulator yet. Add one
+in Xcode > Settings > Components." [Open Xcode]), the list being read (no button), choose a device (the list, iPhones
+first, newest first, a dot on the running ones; one click shows it and boots it), booting ("Starting <name>... <n> s",
+a still ring: nothing in the panel files animates, the seconds come from a 1 s timer that runs only while the front
+panel shows a boot), live (the picture, letterboxed, bare with the device's corner radius), still (the badge and "Live
+view unavailable: <why>. Showing a picture every half second."), shut down ("<name> was shut down." [Boot again], or
+"is shut down." [Boot] after a restore) and a failed request (its line, [Try again]). The header holds Home, Lock,
+Rotate left, Rotate right and More (Shake, Volume up and down, Choose device, Shut down) only while a device the tab
+drives is live; the CPU path wears a "slow" mark whose reason shows under it on hover. A second tab on a device another
+tab drives shows it view only ("Driven from "<tab>". View only here.", no buttons, its input goes nowhere); the driver
+lets go when its panel closes or shows another device. Not offered on Windows or Intel Macs, nor in a release build
+before PR 4b (only the fake source under `--e2e`). Held by `each_setup_state_shows_one_line_and_at_most_one_button`,
+`no_xcode_offers_get_xcode`, `still_mode_shows_the_badge_and_the_reason`, `the_cpu_path_shows_the_slow_mark`,
+`a_second_tab_on_the_same_device_is_view_only`, `kind_five_lays_out_like_the_web_panel_at_every_scale` and
+`the_picture_is_letterboxed_to_the_device_aspect` (`flare/src/ui_tests/device_panel.rs`), the `device_ctl.rs` unit tests,
+and the e2e `devicePanel`. Source: Max, 2026-11-19.
+
+1320. **The person's press, key or scroll in the device panel ends a running agent call with `interrupted`; not while the
+splitter is held.** Max, 2026-11-16 (issue #248, "Takeover"). Person half (device panel PR 4a): every press inside the
+screen, key and wheel over the panel first calls `DeviceCtl::person_input(tab)`, which ends the tab's running agent call
+with `Job::interrupted()` (PR 5 answers it and hides the indicators) and is skipped while the splitter is held. The
+person's input itself: a press inside the screen is a touch start in device points (the letterbox's bars and a right
+click are dropped), moves while held go at most every 16 ms (`MOVE_MS`), the release or the pointer leaving ends it
+(at the last point inside), Alt mirrors a second finger round the centre (a pinch); a wheel or trackpad turn is a short
+drag at the pointer (start, `WHEEL_STEPS` moves, end); a key goes as its HID usage with the US keymap, and text the
+keymap cannot type through the simulator's own pasteboard (rule 1314); a chord with Cmd or Ctrl stays the window's. The
+picture streams only while its tab is in front with the panel open and the window neither minimised nor occluded
+(occlusion is ignored under `--e2e`, rule 1117); otherwise it is paused, and it resumes with the current frame. Held by
+`a_click_becomes_touch_start_and_end_in_device_points`, `a_wheel_becomes_a_short_drag_at_the_pointer`,
+`points_outside_the_screen_are_dropped`, `holding_the_splitter_is_not_a_takeover` and
+`the_stream_pauses_when_the_tab_goes_behind_and_resumes_with_the_current_frame`
+(`flare/src/appctl/tests/device_input_tests.rs`), and the e2e `devicePanel`. Source: Max, 2026-11-16 and 2026-11-19.
 
 1350. **A transcript read that starts on a line boundary keeps that line.** Audit #46 (issue #306): `read_last_until`
 reads at most the last `READ_BYTES` and dropped everything up to the first line break when it started past byte 0. If

@@ -53,6 +53,8 @@ pub struct FakeSource {
     booting: Vec<(u64, Target, ReqId)>,
     fail_next: Option<SourceError>,
     broken: Option<String>,
+    /// Like the sim host: no `State` event of its own on a boot or a shutdown, only the answer.
+    no_state_events: bool,
 }
 
 /// The colour of frame `seq`: a different solid colour each frame, opaque.
@@ -133,6 +135,7 @@ impl FakeSource {
             booting: Vec::new(),
             fail_next: None,
             broken: None,
+            no_state_events: false,
         }
     }
 
@@ -229,10 +232,18 @@ impl FakeSource {
             d.state = state;
             d.booted_by_flare = by_flare && state != DeviceState::Shutdown;
         }
-        self.send(SourceEvent::State {
-            target: target.clone(),
-            state,
-        });
+        if !self.no_state_events {
+            self.send(SourceEvent::State {
+                target: target.clone(),
+                state,
+            });
+        }
+    }
+
+    /// Sends no `State` event on a boot or a shutdown, as the sim host does (a test of the answer alone).
+    pub fn without_state_events(mut self) -> Self {
+        self.no_state_events = true;
+        self
     }
 
     fn state_of(&self, target: &Target) -> Option<DeviceState> {

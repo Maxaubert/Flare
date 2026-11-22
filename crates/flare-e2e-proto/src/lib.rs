@@ -180,6 +180,15 @@ pub enum Request {
     WebZoom {
         factor: f64,
     },
+    /// The device panel (issue #248, PR 4a): opens it on the front tab, on `target` (`sim/<udid>`) or on the device
+    /// list, as the panel menu's Device entry will (PR 4b). Only under `--e2e`, where the source is the fake.
+    DeviceOpen {
+        #[serde(default)]
+        target: Option<String>,
+    },
+    /// The device panel: stands in for the person's press in the front device panel (takeover, rule 1320); an
+    /// agent call running there ends `interrupted`.
+    DeviceUserInput,
     /// Surfaces stage 7: stands in for the person's click on a notification (the e2e never clicks a real one):
     /// the window comes up and the tab it was about comes to the front.
     ToastClick {
@@ -441,6 +450,11 @@ mod tests {
             },
             Request::Quit { force: false },
             Request::ToastClick { tab: "t-3".into() },
+            Request::DeviceOpen {
+                target: Some("sim/00000000-0000-4000-8000-000000000001".into()),
+            },
+            Request::DeviceOpen { target: None },
+            Request::DeviceUserInput,
         ]
     }
 

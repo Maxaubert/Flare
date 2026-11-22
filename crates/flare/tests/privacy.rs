@@ -20,6 +20,8 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // A placeholder log link in the headless scene text (printed, never opened).
     ("flare/src/headless.rs", "Links"),
     ("flare/src/appctl.rs", "Links"),
+    // The device panel's Get Xcode: the App Store page, opened in the browser only on a click.
+    ("flare/src/device_ctl.rs", "Links"),
     // The e2e scenarios: address literals typed into a terminal, shown in a fixture row or offered by
     // the fake update feed. The harness never requests them (its only server is the loopback stand-in).
     ("e2e/src/scenarios/input_b.rs", "Links"),

@@ -2921,6 +2921,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                     log::info!("window occluded: {hidden}");
                     let minimised = is_minimised(window);
                     with_ctl(&mut |c| c.on_minimised(minimised));
+                    with_ctl(&mut |c| c.on_occluded(*hidden));
                 }
                 EventResult::Propagate
             }

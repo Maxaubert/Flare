@@ -1,7 +1,7 @@
 //! The kinds of panel. `image`, `text`, `web` and `changes` are built; the rest are named now so the
 //! store can keep them and later stages only add a viewer. `device` (a phone simulator, issue #248, rule 1316) is
-//! named and stored but not built until the device panel's PR 4a: a build without its viewer must never hand a
-//! `sim/<udid>` target to the file preview.
+//! built since the device panel's PR 4a; the app still treats it as unbuilt where it offers no device source (a
+//! release build before PR 4b, Windows), so a `sim/<udid>` target never reaches the file preview.
 
 /// The longest mod id (a folder name under the plugins folder).
 const MOD_ID_MAX: usize = 64;
@@ -57,12 +57,16 @@ impl PanelKind {
     }
 
     /// True for the kinds this build can draw. A stored panel of another kind is kept in the file
-    /// but not shown until a later stage builds its viewer. `Device` stays false until its viewer lands (device
-    /// panel PR 4a), so restore and `show` never check a `sim/<udid>` target as a file.
+    /// but not shown until a later stage builds its viewer. `Device` is built (device panel PR 4a); its target is
+    /// checked by its shape alone (`flare_device::target::target_ok`), never as a file.
     pub fn is_built(&self) -> bool {
         matches!(
             self,
-            PanelKind::Image | PanelKind::Text | PanelKind::Web | PanelKind::Changes
+            PanelKind::Image
+                | PanelKind::Text
+                | PanelKind::Web
+                | PanelKind::Changes
+                | PanelKind::Device
         )
     }
 
@@ -167,9 +171,9 @@ mod tests {
     }
 
     #[test]
-    fn device_is_not_built_yet() {
-        // Kept in the file, not shown, until the device panel's PR 4a builds its viewer (rule 1316).
-        assert!(!PanelKind::Device.is_built());
+    fn device_is_built_and_native() {
+        // Built since the device panel's PR 4a (rule 1316).
+        assert!(PanelKind::Device.is_built());
         assert!(
             PanelKind::Device.is_native(),
             "drawn by Slint, not web content"

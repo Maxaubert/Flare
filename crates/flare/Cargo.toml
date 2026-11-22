@@ -18,6 +18,8 @@ flare-agent = { path = "../flare-agent" }
 flare-diag = { path = "../flare-diag" }
 flare-help = { path = "../flare-help" }
 flare-surfaces = { path = "../flare-surfaces" }
+# The device panel (issue #248): the pure model and the fake source (PR 4a); the simulator source in PR 4b.
+flare-device = { path = "../flare-device" }
 flare-mods = { path = "../flare-mods" }
 flare-convo = { path = "../flare-convo" }
 flare-web = { path = "../flare-web" }
