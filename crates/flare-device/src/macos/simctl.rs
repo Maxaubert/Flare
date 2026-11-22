@@ -361,7 +361,15 @@ fn os_name(runtime: &str) -> Option<String> {
     if os != "iOS" {
         return None;
     }
-    Some(format!("iOS {}", version.replace('-', ".")))
+    // Only the version's numbers: a runtime made for one model adds it (`iOS-27-2-iPhone19-4`).
+    let parts: Vec<&str> = version
+        .split('-')
+        .take_while(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("iOS {}", parts.join(".")))
 }
 
 /// A simulator made for one test (`FLARE_DEVICE_REAL=1` only), booted, shut down and deleted when dropped. Never one
@@ -413,6 +421,21 @@ impl Drop for TestDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_os_is_the_runtime_version_without_a_model_suffix() {
+        let rt = "com.apple.CoreSimulator.SimRuntime.";
+        assert_eq!(
+            os_name(&format!("{rt}iOS-27-2")).as_deref(),
+            Some("iOS 27.2")
+        );
+        assert_eq!(
+            os_name(&format!("{rt}iOS-27-2-iPhone19-4")).as_deref(),
+            Some("iOS 27.2")
+        );
+        assert_eq!(os_name(&format!("{rt}watchOS-27-2")), None);
+        assert_eq!(os_name(&format!("{rt}iOS-beta")), None);
+    }
 
     #[test]
     fn the_device_list_is_read_phones_first_newest_first() {

@@ -1026,6 +1026,18 @@ impl DeviceCtl {
         self.drain();
     }
 
+    /// A boot or a shutdown answered: the device reads its new state at once, and the list is read again.
+    fn settled(&mut self, t: &Target, state: DeviceState) {
+        if let Some(d) = self
+            .devices
+            .as_mut()
+            .and_then(|l| l.iter_mut().find(|d| &d.target == t))
+        {
+            d.state = state;
+        }
+        self.list();
+    }
+
     fn state_of(&self, t: &Target) -> Option<DeviceState> {
         self.devices
             .as_ref()?
@@ -1195,14 +1207,16 @@ impl DeviceCtl {
                                 {
                                     x.booted_by_flare = true;
                                 }
+                                // The sim host answers a boot and sends no state of its own (the fake does): the
+                                // device reads booted now, so the panel attaches, and the list is read again.
+                                self.settled(&t, DeviceState::Booted);
                             }
                         }
                     }
-                    (Pending::Shutdown(t), r) => {
-                        if let Err(e) = r {
-                            self.fail(&t, e.message);
-                        }
-                    }
+                    (Pending::Shutdown(t), r) => match r {
+                        Err(e) => self.fail(&t, e.message),
+                        Ok(_) => self.settled(&t, DeviceState::Shutdown),
+                    },
                 }
             }
             SourceEvent::Frames { target, screen, .. } => {
@@ -2072,6 +2086,37 @@ mod tests {
             s.borrow_mut().push((dir.to_path_buf(), udids.to_vec()));
         });
         (spawned, spawn)
+    }
+
+    /// Max, 2026-11-22: "i click a device then click boot but nothing happens". The sim host answers a boot and
+    /// sends no state event of its own; the device must still read booted, so the panel attaches.
+    #[test]
+    fn a_boot_answered_without_a_state_event_reads_booted() {
+        let b = "00000000-0000-4000-8000-00000000000b";
+        let fake = FakeSource::new(vec![
+            flare_device::fake::iphone(b, "iPhone B", DeviceState::Shutdown).unwrap(),
+        ])
+        .without_state_events();
+        let (_spawned, spawn) = recorder();
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        d.install_real(starter_of(fake), None, spawn);
+        d.on_xcode(XcodeAnswer {
+            xcode: Some(found_xcode()),
+            booted: Booted::default(),
+        });
+        d.ensure_source();
+        d.list();
+        let tb = Target::sim(b).unwrap();
+        assert_eq!(d.state_of(&tb), Some(DeviceState::Shutdown));
+        d.boot(&tb);
+        d.drain();
+        assert_eq!(d.state_of(&tb), Some(DeviceState::Booted));
+        // The More menu's Shut down, as `act("shutdown")` sends it.
+        if let Some(id) = d.source().map(|s| s.shutdown(&tb)) {
+            d.pending.insert(id, Pending::Shutdown(tb.clone()));
+        }
+        d.drain();
+        assert_eq!(d.state_of(&tb), Some(DeviceState::Shutdown));
     }
 
     #[test]
