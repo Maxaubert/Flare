@@ -1234,6 +1234,8 @@ research `research/flare/2026-11-19-ios-simulator-input.md` (spikes S1 to S6).
   (`flare_device::geom::to_portrait_ratio`). The panel maps Slint logical points to device points through the letterbox,
   so neither the Mac's backing scale nor the device's scale enters it. Whether the digitizer wants landscape points
   turned back to portrait (idb says yes) is settled by PR 3's landscape `--input-bench` before rotation ships.
+  Settled 2026-11-19 (PR 3): yes. Taps sent in interface points of rot90 and rot270 and turned back with
+  `to_portrait_ratio` landed 20 of 20 within 0.17 pt in the touch probe app's own coordinates.
 - 2026-11-19, device PR 1: `PanelKind::Device` is named and stored now but `is_built` stays false until PR 4a, so a
   build of PR 1 to 3 never hands a `sim/<udid>` target to the file preview (rule 1316).
 - 2026-11-19, device PR 1: the dot and glow reuse `flare_surfaces::agent_cursor::{AgentCursor, AgentBorder}` as they
@@ -1245,3 +1247,70 @@ research `research/flare/2026-11-19-ios-simulator-input.md` (spikes S1 to S6).
 - 2026-11-19, device PR 1: the US keymap is ported from idb's `Keymap.swift` (MIT, notice in `keymap.rs` and
   `THIRD-PARTY-NOTICES.md`), plus `\n` as Return and `\t` as Tab. Text with any character the keymap lacks is pasted
   whole through the simulator's own pasteboard, so its order is kept (rule 1314, PR 3).
+- 2026-11-19, device PR 2: the sim host sends private messages through `objc_msgSend` cast to each method's C
+  signature (`macos::guarded::send!`), not `objc2::msg_send!`. Why: in a debug build `msg_send!` checks the receiver's
+  class for the method and panics when it is missing, and CoreSimulator's `ROCKRemoteProxy` objects only forward the
+  screen methods. Every send still goes through `guarded` (selector check, exception catch).
+- 2026-11-19, device PR 2: blocks handed to CoreSimulator carry their type encoding (`RcBlock::with_encoding`). Why:
+  the proxy forwards a block over XPC and refused one without it ("Block is missing signature field"), found by the
+  first bench run.
+- 2026-11-19, device PR 2: each ring gets a fresh `device` number (the `device` of `frames` and of every record), so a
+  slot-done record (which carries no ring id) always names its ring, even while an old ring waits for its last slots.
+- 2026-11-19, device PR 2: Flare's reader keeps the newest frame record per ring (`client::Mailbox`) and wakes the UI
+  once until it takes it; a record it replaces gets its slot-done at once (Flare skipped it). The UI's `Frame` event is
+  a wake: PR 4b reads the newest with `SimSource::take_frame`.
+- 2026-11-19, device PR 2: the sim host serves only frames, the device list and `simctl` (boot, shutdown, launch,
+  install); touch, keys, buttons, text, snapshots and the UI tree answer `unavailable` until PR 3. The rotation is
+  `rot0` in `frames` until PR 3 reads `displayinfo`.
+- 2026-11-19, device PR 2: `objc2` gets its `exception` feature (for `objc2::exception::catch`), which adds the small
+  `objc2-exception-helper` crate (MIT/Apache/Zlib, compiled C from `cc`, already in the build). macOS only; the app's
+  own `msg_send!` calls do not change (`catch-all` stays off).
+- 2026-11-19, device PR 2: the probe app (`tools/device-probe/`) builds with `xcrun swiftc` for the simulator's SDK, a
+  checked-in `Info.plist` and an ad-hoc signature, with no Xcode project and no xcodegen (neither the CI runner nor a
+  fresh Mac has xcodegen). Tests and the bench only, never shipped.
+- 2026-11-19, device PR 3: input is the sim host's own DTUHID code (decision 2a, no AXe), legacy Indigo below
+  CoreSimulator 1155.4, picked once per boot. Why: spike S1 passed the gate (tap p50 15.1 to 17.5 ms, 300 of 300
+  landed within 0.17 pt, 300 of 300 characters), and PR 3's `--input-bench new` through the real input worker gave the
+  same on 2026-11-19: tap p50 14.4 ms (p99 37.0, max 52.4), 100 of 100 within 0.16 pt, 20 of 20 swipes with 317 of 318
+  moves, 100 of 100 characters (p50 31.8 ms), a pinch seen as two touches, and a cold connect of 1.0 s after a fresh
+  boot.
+- 2026-11-19, device PR 3: one input worker per device runs touches, keys, buttons, text and rotations strictly in
+  order. Why: a `device_type` with `submit` pastes text and then presses Return 20 ms later (PR 1's job); only one
+  ordered queue keeps the Return after the paste without the job waiting for the paste's answer.
+- 2026-11-19, device PR 3: rotation is a Purple GSEvent 50 to `PurpleWorkspacePort`, and the panel follows the
+  interface's orientation from CoreDevice `displayinfo` (read at attach, after a rotate until it changes, and on the
+  screen's properties callback). The sim host remembers where it turned the device, so Rotate works from a portrait-only
+  app too (the device turns, the interface stays `rot0`).
+- 2026-11-19, device PR 3: the snapshot (`device_look`) reads the framebuffer itself, shrinks it to point size with a
+  box pass on the GPU (Display P3 to sRGB, averaged in linear light), turns it to the interface's orientation on the
+  CPU and encodes the PNG with the `png` crate, not ImageIO. Why: the `png` crate is already the client's decoder, and
+  ImageIO would add a framework binding for one call. The PNG crosses the control channel as base64 in the answer's
+  JSON (`wire::png_result`).
+- 2026-11-19, device PR 3: the UI tree's bridge-token delegate is an Objective-C class defined in Rust
+  (`objc2::define_class!`, `FlareSimHostAXBridge`); a token is the device's udid. An empty first answer after a boot
+  is asked again up to three times, 700 ms apart (measured: the first request took 3.1 to 3.3 s and came back empty
+  once in three runs; the next one answered with Settings' 16 elements, 28 to 78 ms warm).
+- 2026-11-19, device PR 3: two PR 2 bugs found by the real runs and fixed here: `simctl io screenshot` writes `-` as a
+  file named `-` (Xcode 27), so still mode got no pictures and left a file in the sim host's folder (now a temp file,
+  read and removed); and `simctl` errors kept only their first line, so booting a device that was booted already
+  failed ("Unable to boot device in current state: Booted" is on the second line).
+- 2026-11-19, device PR 3: the touch probe app (`tools/device-probe/TouchProbe-App.swift`, moved in from spike S1)
+  draws its barcode band as wide as the short side and centred, so in landscape it stays clear of the Dynamic Island,
+  which hid a block at the band's end in the first landscape run.
+- 2026-11-20, device PR 4a: the header is mockup A (`docs/superpowers/specs/2026-11-19-device-panel-mockup.html`):
+  Home, Lock, Rotate left, Rotate right and More as the panel's own header buttons, left of the close, the way the text
+  panel shows its wrap button. Picked by Claude under Max's delegation over B (a pill floating over the picture, which
+  hides the screen the agent's indicators are drawn on) and C (a rail that takes width from an already narrow picture).
+- 2026-11-20, device PR 4a: the device kind is drawn only where a source is offered (`PanelCtl::set_device_offered`):
+  the fake under `--e2e` and in tests now, the simulator from PR 4b. Why: PR 4a ships alone, so a release build must
+  show nothing new, and a `panels.json` with a device panel must stay in the file there (rule 1316).
+- 2026-11-20, device PR 4a: a device panel with no device chosen has the fixed target `device` (the list), like
+  Changes' fixed target; it is never stored. The picking of a row sets the panel's target to `sim/<udid>`.
+- 2026-11-20, device PR 4a: the CPU path turns the portrait picture to the interface's orientation in Rust when it
+  copies it into the `SharedPixelBuffer` (the copy is made anyway), so Slint shows an upright image and the letterbox
+  needs only the oriented point size. PR 4b's GPU path turns it when it draws.
+- 2026-11-20, device PR 4a: one driver per device: the first tab whose open panel shows it; another tab shows it view
+  only. The driver lets go when its panel closes or shows another device, so the next tab that shows it drives it.
+- 2026-11-20, device PR 4a: the booting line's seconds come from a 1 s `timer_registry` timer (`device.boot`) that runs
+  only while the front panel shows a boot; the ring beside it is still. Why: the panel files run no animation or timer of
+  their own (`the_panel_files_use_no_animation_and_no_timer`).

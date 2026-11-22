@@ -5287,7 +5287,106 @@ alone (Dvorak), and only a key named outside ASCII falls back to its physical co
 ## Device panel (2026-11-19)
 
 Spec `docs/superpowers/specs/2026-11-19-device-panel-design.md`, plan `docs/superpowers/plans/2026-11-19-device-panel.md`
-(issue #248). Rules 1310 to 1322 are this feature's; each lands with the PR that builds it.
+(issue #248). Rules 1310 to 1322 and 1325 are this feature's; each lands with the PR that builds it.
+
+1310. **Flare ships its own private-API code for the simulator, only in `flare-sim-host`; Flare's own process never
+loads CoreSimulator or SimulatorKit.** Max, 2026-11-19 (issue #248, decision 1; reverses the 2026-11-16 "no private-API
+code of our own"). The sim host (`crates/flare-device/src/bin/flare_sim_host.rs`, code in `flare-device/src/macos/`)
+dlopens CoreSimulator from `/Library/Developer/PrivateFrameworks` and SimulatorKit from the chosen Xcode
+(`SharedFrameworks`, else the Xcode 26 `PrivateFrameworks` path; `load.rs`), reads both `CFBundleVersion`s and says
+them in its `hello`. Every class, protocol and selector it uses is listed in `load::USED` and checked before use
+(`--self-test`, and at every start: a missing one is `broken`, "<symbol> missing in CoreSimulator <version>"). Every
+private call goes through `macos::guarded`: `respondsToSelector:` first, `objc2::exception::catch` around the call, a
+5 s limit on a call that answers by callback (`answered`), plain `objc_msgSend` sends cast to the method's C signature
+(never `msg_send!`, whose debug check refuses a method a proxy only forwards, and never KVC, which throws on a
+`ROCKRemoteProxy`). Blocks handed to CoreSimulator carry their type encoding (`RcBlock::with_encoding`): without it the
+proxy refuses them ("Block is missing signature field", found by the PR 2 bench). The `flare-sim-host` bin builds on
+Windows as a stub that says "macOS only" and exits 2. Held by `a_missing_selector_is_broken_with_its_name_not_a_crash`,
+`an_objc_exception_is_caught` (`guarded.rs`), `self_test_finds_every_class_and_selector` (`load.rs`, skipped with the
+reason without an Xcode) and `the_device_list_is_read_phones_first_newest_first` (`simctl.rs`). Source: Max,
+2026-11-19.
+
+1311. **The device picture reaches Flare with no CPU copy, at most 60 frames a second, and a ring slot is never
+rewritten while Flare holds it.** Max, 2026-11-17 and 2026-11-19 (issue #248). Sim host half (device panel PR 2): per
+attached device the sim host makes a ring of `RING_SLOTS` (3) `'RGBA'` IOSurfaces wrapped as `MTLTexture`s (storage
+Shared, `ShaderRead | RenderTarget`), reads `framebufferSurface` at once (the surfaces callback does not fire on attach)
+and registers the screen callbacks on its own serial queue. Each frame callback bumps the "changed" count (sent even
+while paused), passes `cap::FrameCap` (15 ms spacing, newest wins, a lone frame never waits), takes a free slot and
+fills it with one render pass that reads the BGRA framebuffer, forces A to 255 and converts Display P3 to sRGB in linear
+light (spike S6), then sends `(device, slot, seq, t_us)`. With no free slot the frame is dropped and counted. A new
+screen size makes a new ring with a new `device` number (so a slot-done record always names its ring); the old ring is
+freed only once Flare has said every one of its slots is done (`ring::RingSet`). The rings' surfaces and the records go
+over the mach channel (`rendezvous.rs`): Flare checks in `com.flare.terminal.simhost.<pid>.<n>`, the sim host's first
+message carries a send right to its own port, and both sides check the audit-token pid of every message and
+`mach_msg_destroy` a refused one. Flare's half (wrapping the ring as wgpu textures, freeing a slot only from
+`on_submitted_work_done`) is PR 4b. Held by `an_old_ring_is_freed_only_after_every_slot_is_done`,
+`the_pass_writes_opaque_srgb_from_a_p3_bgra_framebuffer` (`ring.rs`), `ports_from_another_pid_are_refused`
+(`rendezvous.rs`), `frame_records_keep_only_the_newest_per_device` (`client.rs`) and the `cap.rs` tests; the
+`flare-sim-host --bench` numbers are in PR 2. Source: Max, 2026-11-19.
+
+1312. **The sim host is guarded and restarted at most 3 times in 5 minutes; then the panel shows still pictures.
+Flare never crashes or freezes with it.** Max, 2026-11-19 (issue #248). Sim host half (device panel PR 2):
+`client::SimSource` starts `flare-sim-host` with `flare_proc::guard::guard_command` (stdin, stdout and stderr only, no
+`pre_exec` of its own, `DEVELOPER_DIR` set to the chosen Xcode, the rendezvous name and `<profile>/logs/sim-host.log` in
+argv), so it dies with Flare (rules 1053, 1054). A sim host that ends by itself is started again and every open panel
+reattached, at most `MAX_RESTARTS` (3) times in `RESTART_WINDOW` (5 minutes); requests in flight answer `retry`. The
+fourth end, a `broken` line, a `hello` with another protocol or an Xcode under the floor (`client::check_hello`), or a
+mach channel that cannot be set up is still mode for the session: one `Broken(why)` event, a `simctl io screenshot`
+loop per attached panel at most 3 a second (`STILL_SPACING`), input and the UI tree answering `unavailable` with the
+reason, `snapshot` answering the latest still, and list, boot, shutdown, launch and install going to `simctl`. Nothing
+of it runs on the caller's thread (rule 34; `flare-device/tests/sync_calls.rs`). Flare's half (the still badge and line
+in the panel) is PR 4b. Held by `the_sim_host_is_restarted_three_times_then_broken`,
+`a_broken_sim_host_falls_back_to_still_pictures_at_three_fps_at_most`, `a_protocol_mismatch_in_hello_is_refused` and
+`the_sim_host_gets_developer_dir_and_no_extra_descriptors` (`client.rs`, a fake sim host run by the test binary).
+Source: Max, 2026-11-19.
+
+1313. **Input is DTUHID from CoreSimulator 1155.4 and legacy Indigo below it, never both in one boot; one connection per
+device, held for the session; points are device points in the current orientation and only the sim host turns them
+into portrait ratios.** Max, 2026-11-19 (issue #248, decision 2a after spike S1). Device panel PR 3: the sim host picks
+the path once per boot from the loaded CoreSimulator's version (`macos::indigo::PathLock`; a failing DTUHID never falls
+back to Indigo) and runs one input worker per attached device (`macos::input`), which does touches, keys, buttons, text
+and rotations strictly in order. DTUHID (`macos::dtuhid`, `macos::xpc`): `-[SimDevice lookup:error:]` for
+`com.apple.coredevice.feature.remote.hid.digitizer`, `xpc_endpoint_create_mach_port_4sim` and
+`xpc_connection_enable_sim2host_4sim` found with `dlsym`, then a liveness barrier (a key-up of usage 0 marked
+`isBarrier`, a reply within 4 s, five tries 4 s apart, then 200 ms) before the first event. Every event is sent, then
+its send barrier is waited for, never a reply. Every integer is a `uint64`; key and button `state` is 1 down, 2 up,
+never 0; buttons are Consumer page usages (home 0x40, lock 0x30, volume 0xE9 and 0xEA); a second finger rides as
+`pointTwo`. Until the connection answers the panel hears `input: connecting`, and input waits up to 20 s
+(`client::INPUT_WAIT`, spike S1 saw 11.6 s after a cold boot), then is dropped with a log line and text answers
+`retry`. An interruption forgets the contacts (the gesture is lost), sends `input: lost` and connects once again;
+failing that, `input: broken` with the reason. A sim host started again after a crash (`--restarted`) ends any finger
+the old one left down. Points arrive in device points of the current orientation and `geom::to_portrait_ratio` turns
+them into the portrait ratios the digitizer takes: the digitizer stays portrait (idb), confirmed 2026-11-19 by
+`--input-bench` taps in rot90 and rot270 (20 of 20 within 0.17 pt). Rotation: a Purple GSEvent 50 to
+`PurpleWorkspacePort` turns the device, CoreDevice `displayinfo` reads the interface's orientation
+(`macos::orient`), which goes in each ring's screen facts and as an `orientation` event when it changes. Held by
+`a_tap_is_start_then_end_with_portrait_ratios`, `integers_are_sent_as_uint64_and_state_zero_is_never_sent`,
+`buttons_use_consumer_page_usages` (`dtuhid.rs`), `no_liveness_reply_after_five_tries_is_broken_input` (`xpc.rs`),
+`indigo_is_never_used_after_dtuhid_in_one_boot` (`indigo.rs`),
+`touches_wait_up_to_twenty_seconds_for_the_connection_then_drop` (`client.rs`) and
+`rotation_turns_a_quarter_and_writes_the_purple_event` (`orient.rs`); the `--input-bench` numbers are in PR 3.
+Source: Max, 2026-11-19.
+
+1314. **Typing never touches the Mac's clipboard.** Max, 2026-11-16 (issue #248, builder's call 8). Device panel PR 3:
+text whose every character has a key in the US keymap goes as HID key usages (shift included); any other text goes
+whole through the simulator's own pasteboard (`xcrun simctl pbcopy <udid>`, `Simctl::pbcopy`) and Cmd-V
+(`client::text_steps`), in order with the keys around it (the input worker runs everything in order, so a paste is in
+the field before the Return after it). Nothing in `flare-device` names `NSPasteboard`, `/usr/bin/pbcopy` or
+`pbpaste`. Held by `non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs` (`client.rs`, a source scan
+and a fake sim host). Source: Max, 2026-11-16.
+
+1315. **UI-tree text is untrusted.** Max, 2026-11-19 (issue #248). Sim host half (device panel PR 3): the sim host
+reads the tree of the app in front with `AXPTranslator` (`macos::ax`) through a bridge-token delegate of its own: a
+token per attached device, whose block sends each translator request with
+`-[SimDevice sendAccessibilityRequestAsync:completionQueue:completionHandler:]` and waits at most 5 s. One request is
+in flight at a time (`ax::Serial`, at most 8 waiting, more answer `busy`), the walk is bounded (depth 50, 1500
+elements, 15 s) and answers `{role, label, value, frame, enabled, children}` in device points of the current
+orientation. The sim host sends one request right after attach to warm the tree (the first after a boot takes about
+3.3 s and can come back empty, so an empty answer is asked again up to three times, 700 ms apart). It never calls
+`AXIsProcessTrusted`, which asks TCC about Flare (spike S4). A missing framework or selector (`load::USED_AX`) leaves
+the sim host running with `ax: false` in its hello. Flare's half (cleaning, the page-content fence, the filter and the
+300 refs, `tree.rs`) is PR 5. Held by `one_request_is_in_flight_at_a_time` and, on a simulator made for the test
+(`FLARE_DEVICE_REAL=1`), `the_ui_tree_of_settings_has_its_labelled_rows` (`ax.rs`). Source: Max, 2026-11-19.
 
 1316. **A device panel is kind `device`, target `sim/<udid>`, kept in `panels.json`; a build without its viewer keeps it
 and never shows it.** Max, 2026-11-16 and 2026-11-19 (issue #248, decisions 5 and 12 of the spec). First half (device
@@ -5297,11 +5396,56 @@ panel PR 1): `PanelKind::Device` is named `"device"`, native (Slint draws it, ki
 `flare_device::target`: `sim/` and a 36-character UUID (`8-4-4-4-12` hex), lower-cased; `simctl`'s upper case reads as
 the same device, only the lower-cased name is a stored target, and the limits of `flare_surfaces::state::clean_target`
 apply first. `flare_device::target::target_ok` checks the shape only (no file, no `simctl`, rule 34). An older Flare
-reads the unknown kind as nothing and never writes it back (rule 40). Second half (PR 4a): `is_built` turns true,
-`target_ok` in `panel_ctl.rs` gets a `Device` arm calling `flare_device::target::target_ok`, restore shows Boot and never
-boots. Held by `device_round_trips_by_name`, `device_is_not_built_yet` (`flare-surfaces/src/kind.rs`),
-`a_device_panel_round_trips_in_panels_json` (`store.rs`) and `a_sim_target_round_trips_and_bad_udids_are_refused`
-(`flare-device/src/target.rs`). Source: Max, 2026-11-19.
+reads the unknown kind as nothing and never writes it back (rule 40). Second half (PR 4a): `is_built` is true and the
+Slint kind is 5; `target_ok` in `panel_ctl.rs` has a `Device` arm calling `flare_device::target::target_ok` (plus the
+fixed target `device`, a panel whose device is not chosen yet, which is never stored), and `PanelCtl::sync` skips the
+kind (the device controller, `device_ctl.rs`, owns its content). The kind is drawn only where a device source is
+offered (`PanelCtl::set_device_offered`: the fake under `--e2e` and in tests in PR 4a, the simulator from PR 4b);
+elsewhere a stored device panel is kept in the file and not shown, as an unbuilt kind. Restore shows the device with
+Boot ("<name> is shut down.") and never boots; the device list is read once a device panel exists, and a panel whose
+device the list no longer has is dropped then (never on a list that failed: the panel says why and offers Try again).
+Held by `device_round_trips_by_name`, `device_is_built_and_native` (`flare-surfaces/src/kind.rs`),
+`a_device_panel_round_trips_in_panels_json` (`store.rs`), `a_sim_target_round_trips_and_bad_udids_are_refused`
+(`flare-device/src/target.rs`), and `device_panels_are_persisted_and_restored`,
+`a_device_target_is_checked_by_shape_not_as_a_file`, `restore_shows_boot_and_never_boots` and
+`a_deleted_device_drops_the_panel_once_the_list_is_read` (`flare/src/panel_ctl.rs`). Source: Max, 2026-11-19.
+
+1318. **The device panel's setup states each say one line with at most one button; the panel is not offered where no
+device source exists.** Max, 2026-11-19 (issue #248, spec "Setup and first use"; mockup A of
+`docs/superpowers/specs/2026-11-19-device-panel-mockup.html`, picked by Claude under Max's delegation). Device panel PR 4a
+(`device_ctl::Setup`): no Xcode ("The device panel needs Xcode." [Get Xcode], the App Store page), Xcode not set up
+("Open Xcode once to finish its setup." [Open Xcode]), no runtime or device ("Xcode has no iPhone simulator yet. Add one
+in Xcode > Settings > Components." [Open Xcode]), the list being read (no button), choose a device (the list, iPhones
+first, newest first, a dot on the running ones; one click shows it and boots it), booting ("Starting <name>... <n> s",
+a still ring: nothing in the panel files animates, the seconds come from a 1 s timer that runs only while the front
+panel shows a boot), live (the picture, letterboxed, bare with the device's corner radius), still (the badge and "Live
+view unavailable: <why>. Showing a picture every half second."), shut down ("<name> was shut down." [Boot again], or
+"is shut down." [Boot] after a restore) and a failed request (its line, [Try again]). The header holds Home, Lock,
+Rotate left, Rotate right and More (Shake, Volume up and down, Choose device, Shut down) only while a device the tab
+drives is live; the CPU path wears a "slow" mark whose reason shows under it on hover. A second tab on a device another
+tab drives shows it view only ("Driven from "<tab>". View only here.", no buttons, its input goes nowhere); the driver
+lets go when its panel closes or shows another device. Not offered on Windows or Intel Macs, nor in a release build
+before PR 4b (only the fake source under `--e2e`). Held by `each_setup_state_shows_one_line_and_at_most_one_button`,
+`no_xcode_offers_get_xcode`, `still_mode_shows_the_badge_and_the_reason`, `the_cpu_path_shows_the_slow_mark`,
+`a_second_tab_on_the_same_device_is_view_only`, `kind_five_lays_out_like_the_web_panel_at_every_scale` and
+`the_picture_is_letterboxed_to_the_device_aspect` (`flare/src/ui_tests/device_panel.rs`), the `device_ctl.rs` unit tests,
+and the e2e `devicePanel`. Source: Max, 2026-11-19.
+
+1320. **The person's press, key or scroll in the device panel ends a running agent call with `interrupted`; not while the
+splitter is held.** Max, 2026-11-16 (issue #248, "Takeover"). Person half (device panel PR 4a): every press inside the
+screen, key and wheel over the panel first calls `DeviceCtl::person_input(tab)`, which ends the tab's running agent call
+with `Job::interrupted()` (PR 5 answers it and hides the indicators) and is skipped while the splitter is held. The
+person's input itself: a press inside the screen is a touch start in device points (the letterbox's bars and a right
+click are dropped), moves while held go at most every 16 ms (`MOVE_MS`), the release or the pointer leaving ends it
+(at the last point inside), Alt mirrors a second finger round the centre (a pinch); a wheel or trackpad turn is a short
+drag at the pointer (start, `WHEEL_STEPS` moves, end); a key goes as its HID usage with the US keymap, and text the
+keymap cannot type through the simulator's own pasteboard (rule 1314); a chord with Cmd or Ctrl stays the window's. The
+picture streams only while its tab is in front with the panel open and the window neither minimised nor occluded
+(occlusion is ignored under `--e2e`, rule 1117); otherwise it is paused, and it resumes with the current frame. Held by
+`a_click_becomes_touch_start_and_end_in_device_points`, `a_wheel_becomes_a_short_drag_at_the_pointer`,
+`points_outside_the_screen_are_dropped`, `holding_the_splitter_is_not_a_takeover` and
+`the_stream_pauses_when_the_tab_goes_behind_and_resumes_with_the_current_frame`
+(`flare/src/appctl/tests/device_input_tests.rs`), and the e2e `devicePanel`. Source: Max, 2026-11-16 and 2026-11-19.
 
 1350. **A transcript read that starts on a line boundary keeps that line.** Audit #46 (issue #306): `read_last_until`
 reads at most the last `READ_BYTES` and dropped everything up to the first line break when it started past byte 0. If
@@ -5340,6 +5484,22 @@ ask `link_under` in `term_ui.rs`, which finds no link off the cells. Held by
 `close_background_keeping` closes only a page it still knows, so the hidden view stayed while a panel or another
 plugin kept the browser up. It now calls `close_view` there, as `on_bar_event` does with `close_bar`. Held by
 `a_background_page_that_crashes_or_fails_its_load_has_its_view_closed` (`appctl/tests/mods_tests.rs`).
+1356. **The Mac stage script stages only a Developer ID build for the installed copy.** On 2026-11-20 an agent staged
+an ad hoc build, Max installed it, and Screen Recording (TCC) stopped working: an ad hoc identity is the build's own
+cdhash, so every ad hoc install is a new app to TCC, while a Developer ID build keeps the grants. Now
+`tools/release/mac/stage-install.sh` signs with `FLARE_MAC_SIGN_IDENTITY`, or else the login Keychain's
+"Developer ID Application" identity (`security find-identity -v -p codesigning`, read only; team `WV7BY8CUM8` first
+when there are several). With none, it refuses before building; a built or `FLARE_STAGE_APP` bundle that `codesign -dv`
+does not show as Developer ID (Authority line and a set `TeamIdentifier`, its output read whole first, rule 1342) is
+refused before anything is written, so the old stage stays. A Developer ID main signature is not enough: the bundle
+must also pass `codesign --verify --deep --strict` (nothing changed after signing), and every helper app and framework
+in `Contents/Frameworks` must be Developer ID signed by the same team, so a partly signed bundle is refused too.
+`FLARE_STAGE_ALLOW_ADHOC=1` lets an ad hoc stage through
+(tests and CI, which have no Keychain identity). The tests never sign: the build path runs against a fake checkout and
+fake `security` and `codesign`. Held by `the_mac_stage_script_refuses_a_bundle_that_is_not_developer_id_signed`,
+`the_mac_stage_script_signs_with_the_keychains_developer_id_and_prefers_the_owners_team` and
+`the_mac_stage_script_refuses_to_build_ad_hoc_unless_allowed` and
+`the_mac_stage_script_refuses_a_partly_signed_or_broken_developer_id_bundle` (`crates/flare-update/tests/stage_script.rs`).
 1344. **The dictation pick card never leaves the top of a short screen.** Audit #18 (issue #306): a pick face is
 196 + 48 per row + 30 per group tall, and `bounds_for` put it 16 px above the work area's foot with no floor, so 9 rows
 on a short screen pushed the title and the heard words off the top or onto the monitor above. `bounds_for`
@@ -5499,3 +5659,33 @@ menu is unchanged. Native: `menus_ui::{plus_menu_rows, folder_rows, machine_rows
 `each_linked_machine_is_one_row_under_choose_with_its_logo_and_name` (`menus_ui.rs`),
 `a_remote_tabs_folder_joins_the_remote_recents_but_not_the_plus_menu` (`ui_tests/term.rs`) and the e2e `remoteUi` (the
 machine's row is second). Source: Max, 2026-11-21.
+
+1325. **The device panel runs code only from an Xcode in `/Applications` (or the one `xcode-select` names) that Apple
+signed, and checks CoreSimulator and SimulatorKit before it dlopens them.** Security review of the device panel stack,
+2026-11-20 (finding HIGH, untrusted code loading): the Xcode pick used `mdfind` for any app with Xcode's identifier and
+took the newest, so an `Xcode.app` left in Downloads could have its SimulatorKit loaded by `flare-sim-host`.
+`flare_device::xcode::find` now looks at the `xcode-select -p` app and the top-level `/Applications/Xcode*.app` only (no
+Spotlight, no `~/Applications`), and `pick` ignores any other path however new its version (`in_applications`). Every
+candidate passes `xcode::verify`: the app against `codesign::XCODE` (Xcode's own designated requirement with `anchor
+apple`, since a Mac App Store Xcode is `anchor apple generic` with the App Store leaf) with
+`kSecCSDoNotValidateResources`, and its SimulatorKit against `anchor apple` in full with `kSecCSCheckNestedCode`; one
+that fails is skipped with a log line, and none left is the panel's no-Xcode state. `macos::load::load` checks the app,
+SimulatorKit and CoreSimulator the same way before any dlopen, since `DEVELOPER_DIR` can name any folder when the sim
+host is run by hand; a failure is the load error ("<path> is not signed by Apple (...)"). The checks use the Security
+framework (`SecStaticCodeCreateWithPath`, `SecRequirementCreateWithString`, `SecStaticCodeCheckValidity`) in
+`flare-device/src/macos/codesign.rs`, on the Xcode pick's worker or at the sim host's start, never the UI thread
+(rule 34). Measured 2026-11-20 on Xcode 27.2: about 13 ms for the app (210 ms with the `simctl` seal check below), 2 ms for SimulatorKit, 12 ms for CoreSimulator; a
+full resource check of Xcode.app takes about 8 s, so it is not done; instead the one file Flare runs from the bundle,
+`Contents/Developer/usr/bin/simctl` (a shell script in Xcode 27 that execs CoreSimulator's `simctl`), is checked byte for
+byte against the app's resource seal (`SecCodeValidateFileResource`, `codesign::XCODE_RUN`), and `verify` checks
+CoreSimulator too. `xcrun simctl` also loads the Xcode's `libxcrun.dylib` and searches its toolchains before
+`usr/bin`, and runs the Xcode's `xcodebuild`, so `verify` checks `libxcrun.dylib` and `usr/bin/xcodebuild` against `anchor
+apple` in full and refuses an Xcode where `xcrun -f
+simctl` resolves to any other file (when `xcrun -f` fails, Xcode still needs its first launch and nothing runs). The
+sim host's `load` runs the same `xcode::verify`. Every path is resolved (`canonicalize`) before it is checked and used, so `/Applications/Xcode-beta.app` symlinked to a user
+folder is dropped (`xcode::resolve_in`) and no symlink can be swapped between the check and the dlopen. Held by
+`a_symlinked_xcode_that_leaves_applications_is_dropped`, `a_planted_simctl_is_refused`,
+`pick_ignores_xcodes_outside_applications`,
+`find_takes_this_macs_signed_xcode` (`xcode.rs`, skipped without an Xcode), `a_fake_unsigned_xcode_is_refused`,
+`the_real_xcode_and_its_frameworks_pass` (`codesign.rs`, skipped without an Xcode) and
+`an_unsigned_xcode_is_never_loaded` (`load.rs`). Source: security review, 2026-11-20.

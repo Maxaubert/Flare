@@ -50,6 +50,8 @@ if [ "${FLARE_SKIP_BUILD:-0}" != 1 ]; then
   (cd "$ROOT" && cargo build --release --locked -p flare-mcp)
   (cd "$ROOT" && cargo build --release --locked -p flare-cef --bin flare-cef-helper --bin flare-mac-app)
   (cd "$ROOT" && cargo build --release --locked -p flare-dictation --bin flare-parakeet-host)
+  # The device panel's sim host (issue #248, rule 1310): a tool beside the app, nothing starts it before PR 4b.
+  (cd "$ROOT" && cargo build --release --locked -p flare-device --bin flare-sim-host)
 fi
 
 # The speech engine (rule 1138): whisper-server and parakeet-cli with Metal, built from the one pinned whisper.cpp

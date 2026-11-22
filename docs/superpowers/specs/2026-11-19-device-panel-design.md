@@ -471,8 +471,10 @@ All drawn by Slint over the picture, from `flare-device/src/indicator.rs` (pure 
 Panel states, each one line plus at most one button, in the panel body:
 1. **Not a Mac / Intel Mac**: the device panel is not offered (no menu entry, no tools in `capabilities()`).
 2. **No Xcode.app**: "The device panel needs Xcode." [Get Xcode] opens the App Store page. Flare picks the Xcode on a
-   worker, in order: `xcode-select -p` when it points inside an `.app`; else the newest `/Applications/Xcode*.app`
-   (Launch Services lookup of `com.apple.dt.Xcode`). Command Line Tools alone count as no Xcode. The chosen path is
+   worker, in order: `xcode-select -p` when it points inside an `.app`; else the newest top-level
+   `/Applications/Xcode*.app`, nothing else (no Spotlight lookup, rule 1325). A candidate whose app or SimulatorKit is
+   not signed by Apple is skipped with a log line; none left is this state. Command Line Tools alone count as no
+   Xcode. The chosen path is
    logged and shown in `device_state`; Flare never runs `xcode-select -s` (it needs admin).
 3. **Xcode not set up** (`simctl` says the licence is not accepted or first launch is needed): "Open Xcode once to
    finish its setup." [Open Xcode].
@@ -713,3 +715,23 @@ Max runs these himself on a staged build. Claude never starts the staged Flare o
 6. Quit Flare with the device booted: it shuts down (setting on). Start Flare: the panel shows the device with Boot.
 7. Kill `flare-sim-host` from Activity Monitor three times: the panel comes back each time; the fourth time it
    shows the still badge and line, and Flare keeps working.
+
+## Update, Max (delegated to Claude), 2026-11-20 (after the mockups)
+
+Mockups: `docs/superpowers/specs/2026-11-19-device-panel-mockup.html` (header variants A, B and C, the More menu,
+landscape with the slow mark, view only, every setup state, the still badge and line, and the Settings row). Max delegated
+the pick on 2026-11-19; Claude picked:
+- **Header A, "In the header":** Home, Lock, Rotate left, Rotate right and More are the panel's own header buttons, left
+  of a hairline and the close, shown only while a device the tab drives is live. The title is the device's name and the
+  sub its system ("iOS 27.2"). B (a pill over the picture) was refused because it hides part of the screen the agent's
+  indicators are drawn on; C (a rail) because it takes width from an already narrow picture.
+- **More** holds Shake, Volume up, Volume down, then Choose device and Shut down.
+- **Slow mark:** the word "slow" in the warning colour with a hairline border, left of the buttons; its reason shows under
+  it while the pointer rests on it.
+- **Still badge:** a small pill "Still" with a warning dot at the picture's top left, the still line along the bottom.
+- **Setup states:** one line centred in the body and at most one outlined button under it; booting adds a still accent
+  ring (the panel files run no animation) and the seconds in the line; the device list is a bordered list of 34 px rows,
+  a dot on the running ones, the system on the right.
+- **View only:** the picture with a bottom line "Driven from "<tab>". View only here." and no header buttons.
+- **Settings row** (PR 4b): section "Device panel" at the end of the Agents page, one switch "Shut down simulators Flare
+  started when Flare quits" with the hint "A simulator you started yourself is never shut down."

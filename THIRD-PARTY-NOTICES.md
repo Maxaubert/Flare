@@ -8816,9 +8816,16 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 - The Antigravity arch (agy tab icon): the pixel "A" of the Antigravity CLI's own start banner, drawn here as 32 cells on a 10 x 8 grid in the banner's ten rainbow colours (#15aabf to #4c6ef5). The artwork belongs to Google, shown only to name Antigravity. Drawn for Flare after agy 1.4.7's banner (owner pick G1, 2026-10-26).
 - The motions of these three icons (hop, blink, turn, fade, breath, the arch's flowing colours) are Flare's own drawing of its mocks (`docs/surfaces/agent-motion-mock.html`, `agy-motion-mock.html`): the blink fills Clawd's two eye cells in Clawd's own colour, and the flow cycles through the arch's own colours. No artwork is added.
 
+## macOS-only crates
+
+The list above is generated for the Windows build. The macOS build also uses these crates (each under Zlib OR
+Apache-2.0 OR MIT; Flare takes them under the MIT licence, text above): `objc2-metal` 0.3.2, `objc2-io-surface` 0.3.2
+and `objc2-exception-helper` 0.1.1 (the device panel's sim host, `flare-sim-host`), by Mads Marquart
+(https://github.com/madsmtm/objc2).
+
 ## Ported code
 
-- The device panel's US keymap (`crates/flare-device/src/keymap.rs`) is ported from idb, `Tools/SimScope/SimScope/Keymap.swift` (https://github.com/facebook/idb), under the MIT licence:
+- The device panel's US keymap (`crates/flare-device/src/keymap.rs`) is ported from idb, `Tools/SimScope/SimScope/Keymap.swift` (https://github.com/facebook/idb), under the MIT licence below. So are its input messages (`crates/flare-device/src/macos/dtuhid.rs`, from `FBSimulatorControl/HID/DTUHIDModels.swift`, `SimulatorDigitizerHIDTransport.swift` and `SimulatorHIDButtonIdentity.swift`) and its legacy Indigo input (`crates/flare-device/src/macos/indigo.rs`, from `FBSimulatorControl/HID/SimulatorIndigoHID.swift`, `SimulatorIndigoHIDClient.swift` and `PrivateHeaders/SimulatorApp/Indigo.h`):
 
 ```text
 MIT License

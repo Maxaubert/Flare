@@ -31,7 +31,7 @@ import { SetNotice } from "settings/notice.slint";
 import { PluginSheet } from "settings/plugin_sheet.slint";
 import { HotkeySheet } from "settings/hotkey_sheet.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
-import { PanelSlot } from "panel.slint";
+import { PanelSlot, DeviceRow } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
 import { RemoteConvoLine, RemoteConvoView } from "remote_convo.slint";
 import { PreviewChip } from "devchip.slint";
@@ -55,6 +55,7 @@ export { DialogPreview } from "dialog.slint";
 export { RemoteFolderPreview } from "remote_folder.slint";
 export { TabRow, StripGeom, Place, MenuRow, OverflowRow, PluginRow, PluginButton, RemoteFolderRow, RemoteCrumb } from "types.slint";
 export { ConvoFileRow, ConvoDiffRow, ConvoInk } from "convo.slint";
+export { DeviceRow } from "panel.slint";
 export { RemoteConvoLine } from "remote_convo.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
@@ -563,6 +564,48 @@ export component AppWindow inherits Window {
     callback panel-web-stop();
     callback panel-web-submit(string);
     callback panel-web-download();
+    // The device panel (kind 5, issue 248): pushed by `device_ctl.rs`. See `PanelSlot` for each.
+    in property <image> panel-device-frame;
+    in property <bool> panel-device-has-frame;
+    in property <float> panel-device-pt-w;
+    in property <float> panel-device-pt-h;
+    in property <float> panel-device-radius-pt;
+    in property <int> panel-device-state;
+    in property <string> panel-device-line;
+    in property <string> panel-device-button;
+    in property <[DeviceRow]> panel-device-rows;
+    in property <string> panel-device-still;
+    in property <string> panel-device-slow;
+    in property <string> panel-device-foot;
+    in property <bool> panel-device-controls;
+    callback panel-device-pointer(int, length, length, int, int);
+    callback panel-device-wheel(length, length, length, length, int);
+    callback panel-device-key(bool, string, int, bool);
+    callback panel-device-act(string);
+    callback panel-device-setup();
+    callback panel-device-pick(int);
+    public function focus-device() { panel-slot.focus-device(); }
+    out property <bool> panel-device-focused: panel-slot.device-focused;
+    out property <bool> panel-device-menu-shown: panel-slot.device-menu-shown;
+    out property <length> panel-device-x: panel-slot.device-x;
+    out property <length> panel-device-y: panel-slot.device-y;
+    out property <length> panel-device-w: panel-slot.device-w;
+    out property <length> panel-device-h: panel-slot.device-h;
+    out property <length> panel-device-pic-x: panel-slot.device-pic-x;
+    out property <length> panel-device-pic-y: panel-slot.device-pic-y;
+    out property <length> panel-device-pic-w: panel-slot.device-pic-w;
+    out property <length> panel-device-pic-h: panel-slot.device-pic-h;
+    out property <length> panel-device-button-x: panel-slot.device-button-x;
+    out property <length> panel-device-button-y: panel-slot.device-button-y;
+    out property <length> panel-device-button-w: panel-slot.device-button-w;
+    out property <length> panel-device-button-h: panel-slot.device-button-h;
+    out property <bool> panel-device-button-shown: panel-slot.device-button-shown;
+    out property <bool> panel-device-slow-shown: panel-slot.device-slow-shown;
+    out property <bool> panel-device-still-shown: panel-slot.device-still-shown;
+    out property <bool> panel-device-controls-shown: panel-slot.device-controls-shown;
+    out property <length> panel-device-home-x: panel-slot.device-home-x;
+    out property <length> panel-device-rotate-x: panel-slot.device-rotate-x;
+    out property <length> panel-device-head-y: panel-slot.device-head-y;
     // The page moved or resized in the window (a layout change, a splitter drag, a new scale): the
     // browser window follows. And an overlay opened or closed: the browser window hides or shows.
     callback panel-web-moved();
@@ -1445,6 +1488,25 @@ export component AppWindow inherits Window {
                         convo-selected: root.panel-convo-selected;
                         convo-select(p) => { root.panel-convo-select(p); }
                         convo-open(p) => { root.panel-convo-open(p); }
+                        device-frame: root.panel-device-frame;
+                        device-has-frame: root.panel-device-has-frame;
+                        device-pt-w: root.panel-device-pt-w;
+                        device-pt-h: root.panel-device-pt-h;
+                        device-radius-pt: root.panel-device-radius-pt;
+                        device-state: root.panel-device-state;
+                        device-line: root.panel-device-line;
+                        device-button: root.panel-device-button;
+                        device-rows: root.panel-device-rows;
+                        device-still: root.panel-device-still;
+                        device-slow: root.panel-device-slow;
+                        device-foot: root.panel-device-foot;
+                        device-controls: root.panel-device-controls;
+                        device-pointer(k, x, y, b, m) => { root.panel-device-pointer(k, x, y, b, m); }
+                        device-wheel(x, y, dx, dy, m) => { root.panel-device-wheel(x, y, dx, dy, m); }
+                        device-key(d, t, m, r) => { root.panel-device-key(d, t, m, r); }
+                        device-act(a) => { root.panel-device-act(a); }
+                        device-setup => { root.panel-device-setup(); }
+                        device-pick(i) => { root.panel-device-pick(i); }
                         web-url: root.panel-web-url;
                         web-app: root.panel-web-app;
                         web-loading: root.panel-web-loading;

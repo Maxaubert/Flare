@@ -10,6 +10,9 @@
 //!                                               as "<executable> Helper (X).app")
 //!   MacOS/flare-mcp                             the MCP server, found beside the app (`flare_agent::plugin`)
 //!   MacOS/flare-parakeet-host                   the resident Parakeet host (dictation; loads the engine's libraries)
+//!   MacOS/flare-sim-host                        the device panel's sim host (issue #248, rule 1310): the only process
+//!                                               that loads CoreSimulator and SimulatorKit; a tool like the two above
+//!                                               (hardened runtime, no entitlements)
 //!   Frameworks/Chromium Embedded Framework.framework
 //!   Frameworks/whisper                          the speech engine, code only (rule 1138): whisper-server,
 //!                                               parakeet-cli and their libraries (`tools/build-whisper-macos.sh`)
@@ -36,6 +39,13 @@ pub const APP_NAME: &str = "Flare";
 /// stands for Flare everywhere. It is permanent: the keychain items, the microphone grant and the notification
 /// settings are keyed on it.
 pub const BUNDLE_ID: &str = "com.flare.terminal";
+
+/// The device panel's sim host, `flare_win::names::SIM_HOST_EXE` (the app starts it from beside its executable).
+pub const SIM_HOST_EXE: &str = "flare-sim-host";
+
+/// The other programs in `Contents/MacOS`, from the release bin dir: each signed as a tool (`Role::Tool`, identifier
+/// `com.flare.terminal.<name>`, hardened runtime, no entitlements). `UpdateMac` joins them when vpk packs the app.
+pub const TOOLS: [&str; 3] = ["flare-mcp", "flare-parakeet-host", SIM_HOST_EXE];
 
 /// The oldest macOS Flare runs on (the port's target, spec decision "Targets").
 pub const MIN_MACOS: &str = "15.0";
@@ -411,8 +421,10 @@ pub fn engine_code(engine: &Path, out: &Path) -> Result<PathBuf, String> {
 pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
     let main_exe = need(i.bin_dir.join("flare"))?;
     let helper = need(i.bin_dir.join("flare-cef-helper"))?;
-    let mcp = need(i.bin_dir.join("flare-mcp"))?;
-    let host = need(i.bin_dir.join("flare-parakeet-host"))?;
+    let tools = TOOLS
+        .iter()
+        .map(|t| need(i.bin_dir.join(t)))
+        .collect::<Result<Vec<_>, _>>()?;
     let engine_license = need(i.engine_dir.join(ENGINE_LICENSE))?;
     let plugin = need(i.root.join("crates/flare-agent/claude-plugin"))?;
     need(plugin.join("hooks/hooks.json"))?;
@@ -437,7 +449,7 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
         extras: Extras {
             icon: Some(&icns),
             icon_catalog: None,
-            executables: vec![&mcp, &host],
+            executables: tools.iter().map(PathBuf::as_path).collect(),
             resources: vec![
                 (&plugin, "claude-plugin"),
                 (&license, "LICENSE"),
@@ -696,6 +708,49 @@ mod tests {
         let names = include_str!("../../../flare-win/src/names.rs");
         assert!(names.contains(&format!("pub const AUMID: &str = \"{BUNDLE_ID}\";")));
         assert_eq!(MIN_MACOS, "15.0");
+    }
+
+    /// Device panel PR 6 (issue #248): the release bundle carries `flare-sim-host` in `Contents/MacOS` as a tool,
+    /// under the name the app starts it by, built by make-app.sh and checked by pack.sh like the other tools.
+    #[test]
+    fn the_bundle_lists_the_sim_host_as_a_tool() {
+        assert!(TOOLS.contains(&SIM_HOST_EXE), "{TOOLS:?}");
+        assert!(TOOLS.contains(&"flare-mcp") && TOOLS.contains(&"flare-parakeet-host"));
+        let names = include_str!("../../../flare-win/src/names.rs");
+        assert!(
+            names.contains(&format!(
+                "pub const SIM_HOST_EXE: &str = \"{SIM_HOST_EXE}\";"
+            )),
+            "the app starts the sim host by another name"
+        );
+        let app = Path::new("/x/Flare.app");
+        for t in TOOLS {
+            assert_eq!(
+                bundle::role_of(app, &app.join("Contents/MacOS").join(t)),
+                crate::macos::sign::Role::Tool,
+                "{t}"
+            );
+        }
+        let make = include_str!("../../../../tools/release/mac/make-app.sh");
+        assert!(
+            make.contains("cargo build --release --locked -p flare-device --bin flare-sim-host"),
+            "make-app.sh builds the sim host"
+        );
+        let pack = include_str!("../../../../tools/release/mac/pack.sh");
+        let loop_line = pack
+            .lines()
+            .find(|l| l.trim_start().starts_with("for t in UpdateMac "))
+            .expect("pack.sh checks each tool");
+        for t in TOOLS {
+            assert!(
+                loop_line
+                    .split_whitespace()
+                    .any(|w| w.trim_end_matches(';') == t),
+                "{t}: {loop_line}"
+            );
+        }
+        let doc = include_str!("release.rs");
+        assert!(doc.contains("//!   MacOS/flare-sim-host "));
     }
 
     /// Rule 1230: the shipped Mac app icon is the original Flare icon, the 1024 px render tools/make-icon.py makes of

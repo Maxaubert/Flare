@@ -147,6 +147,21 @@ pub struct Screen {
     pub orientation: Orientation,
 }
 
+/// The device's input connection, for the panel's "Connecting touch..." line and the agent's `retry` (rule 1313).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "input", rename_all = "snake_case")]
+pub enum InputState {
+    /// Waiting for the simulator's input service (up to 20 s after a cold boot): touches wait, then drop.
+    Connecting,
+    /// Touches, keys and buttons go through.
+    Live,
+    /// The connection dropped and is being made again: what was in flight is lost (the agent's call fails with
+    /// `retry`).
+    Lost,
+    /// No input for this device (no liveness reply after five tries, or the private API is missing): one line why.
+    Broken { why: String },
+}
+
 /// A request's answer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Answer {
@@ -169,7 +184,7 @@ pub struct SourceError {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceEvent {
     /// A new ring of frames (attach or a new screen size): the ring's id and the screen. The sim host hands the
-    /// ring's surfaces over the mach channel (PR 2).
+    /// ring's surfaces over the mach channel; `SimSource::ring(ring)` gives them (the id is the records' `device`).
     Frames {
         target: Target,
         ring: u32,
@@ -202,6 +217,11 @@ pub enum SourceEvent {
     State {
         target: Target,
         state: DeviceState,
+    },
+    /// The input connection changed (connecting, live, lost, broken).
+    Input {
+        target: Target,
+        state: InputState,
     },
     Answer {
         id: ReqId,

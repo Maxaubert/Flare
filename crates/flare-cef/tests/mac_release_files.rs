@@ -322,7 +322,7 @@ fn the_pack_checks_each_programs_role_ad_hoc_too() {
     let pack = read("tools/release/mac/pack.sh");
     let check = &pack[pack.find("check_bundle() {").unwrap()..];
     for needed in [
-        "for t in UpdateMac flare-mcp flare-parakeet-host; do",
+        "for t in UpdateMac flare-mcp flare-parakeet-host flare-sim-host; do",
         "Identifier=$BUNDLE_ID.$t",
         "flags=[^ ]*runtime",
         "carries entitlements",
@@ -332,4 +332,29 @@ fn the_pack_checks_each_programs_role_ad_hoc_too() {
     }
     let ad_hoc_too = check.find("for t in UpdateMac").unwrap();
     assert!(ad_hoc_too < check.find("if [ \"$IDENTITY\" != - ]; then").unwrap());
+}
+
+/// Device panel PR 6 (issue #248): the sim host's self-test runs in the ci macos job and from the signed bundle the
+/// release workflow makes, before vpk packs it; both pass with the reason when the runner's Xcode cannot be tested.
+#[test]
+fn the_sim_host_self_test_runs_in_ci_and_from_the_signed_bundle() {
+    let ci = read(".github/workflows/ci.yml");
+    let mac = &ci[ci.find("\n  macos:").unwrap()..ci.find("\n  e2e-macos:").unwrap()];
+    assert!(mac.contains("cargo run --locked -p flare-device --bin flare-sim-host -- --self-test"));
+    let wf = read(WF);
+    let step = wf
+        .find("target/mac-release/Flare.app/Contents/MacOS/flare-sim-host --self-test")
+        .expect("the release workflow runs the bundle's sim host");
+    assert!(
+        step > wf
+            .find("FLARE_SKIP_BUILD=1 FLARE_NOTARIZE=0 bash tools/release/mac/make-app.sh")
+            .unwrap()
+    );
+    assert!(step < wf.find("bash tools/release/mac/pack.sh").unwrap());
+    for text in [mac, &wf[step..]] {
+        assert!(text.contains("::notice::flare-sim-host --self-test skipped"));
+        // A failing self-test still prints its JSON (what is missing) before it fails the step.
+        assert!(text.contains("--self-test)\" || rc=$?"));
+        assert!(text.contains("exit \"$rc\""));
+    }
 }
