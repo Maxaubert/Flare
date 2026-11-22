@@ -586,6 +586,7 @@ mod cross_page_tests {
                 .iter()
                 .copied()
                 .filter(|id| !DICTATION_OPTIONS.iter().any(|d| d.id == *id))
+                .filter(|id| agents::row_drawn_on_this_os(id))
                 .collect();
             assert_eq!(unique, expected);
         });

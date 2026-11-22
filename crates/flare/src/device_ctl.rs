@@ -2213,9 +2213,16 @@ mod tests {
         assert!(spawned.borrow().is_empty());
 
         // The real spawn never waits for its child: a command that takes 5 s returns at once.
+        #[cfg(unix)]
         let mut slow = std::process::Command::new("/bin/sleep");
-        slow.arg("5")
-            .stdin(std::process::Stdio::null())
+        #[cfg(unix)]
+        slow.arg("5");
+        // Windows has no /bin/sleep: ping waits about a second per echo.
+        #[cfg(windows)]
+        let mut slow = std::process::Command::new("ping");
+        #[cfg(windows)]
+        slow.args(["-n", "6", "127.0.0.1"]);
+        slow.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let t0 = std::time::Instant::now();

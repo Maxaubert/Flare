@@ -409,7 +409,11 @@ mod tests {
     #[test]
     fn the_index_orders_every_row_once_core_and_own() {
         let ids: Vec<String> = index_all().into_iter().map(|e| e.id).collect();
-        let order: Vec<String> = ROW_ORDER.iter().map(|id| id.to_string()).collect();
+        let order: Vec<String> = ROW_ORDER
+            .iter()
+            .filter(|id| crate::page::agents::row_drawn_on_this_os(id))
+            .map(|id| id.to_string())
+            .collect();
         assert_eq!(ids, order);
     }
 
@@ -426,6 +430,7 @@ mod tests {
         let expect: Vec<String> = ROW_ORDER
             .iter()
             .filter(|id| **id != "dictation-gpu")
+            .filter(|id| crate::page::agents::row_drawn_on_this_os(id))
             .map(|id| id.to_string())
             .collect();
         assert_eq!(ids, expect);

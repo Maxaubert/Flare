@@ -125,6 +125,11 @@ pub const fn device_section_drawn() -> bool {
     cfg!(target_os = "macos")
 }
 
+/// Whether a row of the tables is drawn on this OS: every row but the Device panel's off macOS.
+pub fn row_drawn_on_this_os(id: &str) -> bool {
+    id != "device-shutdown" || device_section_drawn()
+}
+
 /// The Device panel section: the switch for shutting down at quit the simulators Flare booted.
 fn device_section(env: &PageEnv<'_>) -> SectionModel {
     section(

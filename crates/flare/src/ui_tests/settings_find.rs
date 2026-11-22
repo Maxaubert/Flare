@@ -531,6 +531,7 @@ fn the_page_shows_the_tables_and_nothing_else() {
     let mut want: Vec<String> = ROW_ORDER
         .iter()
         .filter(|id| !matches!(**id, "dictation-model" | "dictation-gpu"))
+        .filter(|id| flare_settings::page::agents::row_drawn_on_this_os(id))
         .map(|id| id.to_string())
         .collect();
     want.sort();
