@@ -1314,3 +1314,26 @@ research `research/flare/2026-11-19-ios-simulator-input.md` (spikes S1 to S6).
 - 2026-11-20, device PR 4a: the booting line's seconds come from a 1 s `timer_registry` timer (`device.boot`) that runs
   only while the front panel shows a boot; the ring beside it is still. Why: the panel files run no animation or timer of
   their own (`the_panel_files_use_no_animation_and_no_timer`).
+- 2026-11-20, device PR 4b: the ring's picture stays portrait and Slint turns it (`panel-device-turn`,
+  `transform-rotation` on the picture's `Image`, its size swapped for a quarter turn). Why: the ring is the framebuffer's
+  shape (spike S5) and the slot itself is the image, so turning it in Rust would be the CPU copy rule 1311 forbids. A CPU
+  picture (the fake source, still mode) is still turned in Rust and comes with a turn of 0.
+- 2026-11-20, device PR 4b: the sim host's events wake the UI thread through `SimConfig::on_event` with a gate of the
+  controller's own (one `UiMsg::Device(Wake)` queued at most), and a wake that brought only ring frames asks for a
+  redraw, not `AppCtl::refresh`. Why: a refresh per frame at 60 a second would cost more than the 4 ms budget; the
+  notifier takes the newest frame in `BeforeRendering` anyway.
+- 2026-11-20, device PR 4b: the device kind is offered on macOS on Apple silicon from the start (restore keeps a stored
+  panel and shows "Looking for devices..." until the Xcode pick answers), while the tab menu's "Device panel" entry
+  shows only once the pick found an Xcode (`menu_entry_offered`, the plan's test name). Why: a stored panel must show
+  "The device panel needs Xcode." after Xcode was removed, but a Mac with no Xcode gets no entry that only says so.
+- 2026-11-20, device PR 4b: the sim host starts with the first device panel and stops two minutes after the last
+  (`IDLE_MS`, a one-shot `device.idle` timer). Its frame half (`SimFrames`, an `Arc` of the source's shared state) goes
+  to `DeviceFrames`, so a GPU work-done callback can free a slot from wherever wgpu runs it.
+- 2026-11-20, device PR 4b: the shutdown at quit is one detached `/bin/sh` looping `xcrun simctl shutdown <udid>`
+  (`simctl shutdown` takes one device or `all`, and `all` would shut down the person's own). Not guarded, so it
+  outlives Flare; a thread reaps it while Flare runs on. `booted.json` drops an entry when its device is seen shut down
+  or is gone; `simctl list` has no boot time, so "booted again by someone else" is not detected (the spec's second
+  reason) and such a device is still shut down at the next quit.
+- 2026-11-20, device PR 4b: the plan's rule 1317 is 1323: open PR #293 took 1317 first.
+- 2026-11-20, device PR 4b: the Settings row's hint is "Simulators you started yourself are never shut down." (the
+  mockup's "A simulator you started yourself is never shut down." is nine words; the copy rules allow eight).

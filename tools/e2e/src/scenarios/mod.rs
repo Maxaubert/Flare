@@ -39,6 +39,7 @@ pub mod closeask;
 pub mod convo;
 pub mod ctl;
 pub mod device;
+pub mod device_real;
 pub mod diag;
 #[cfg(windows)]
 pub mod dictation;
@@ -759,6 +760,7 @@ pub const ALL: &[Scenario] = &[
 /// isualTour is the visual comparison capture (audit 2026-10-20); it takes half an hour and writes pictures.
 /// quitStress (#63) holds many busy shells quit through the normal path, round after round; it reports each exit code.
 /// `webBotChecks` opens public pages on the network to measure what a bot check sees of the web panel (#146).
+/// `deviceReal` boots a simulator made for the run on a Mac with Xcode (device panel PR 4b, #248).
 pub const OPT_IN: &[Scenario] = &[
     Scenario {
         name: "visualTour",
@@ -777,5 +779,11 @@ pub const OPT_IN: &[Scenario] = &[
         group: "web",
         run: bot_checks::web_bot_checks,
         limit_secs: 600,
+    },
+    Scenario {
+        name: "deviceReal",
+        group: "panel",
+        run: device_real::device_real,
+        limit_secs: 900,
     },
 ];

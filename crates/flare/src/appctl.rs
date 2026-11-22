@@ -5626,6 +5626,8 @@ impl AppCtl {
         // while the window and the COM apartment are still up, so no callback lands during the teardown.
         self.mods_shutdown();
         self.web.close_all();
+        // The sim host goes, and the simulators Flare booted are shut down, detached (rule 1319).
+        self.device_quit();
         self.downloads.drain();
         self.app_asks.drain();
         (self.deps.hide)();

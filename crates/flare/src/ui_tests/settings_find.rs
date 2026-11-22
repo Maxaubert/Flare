@@ -225,8 +225,11 @@ fn index_ids() -> Vec<String> {
 #[test]
 fn the_index_has_31_rows_on_this_pc() {
     let n = index_ids().len();
+    // The device panel's shutdown row is drawn on macOS only (rule 1319).
+    let device = usize::from(flare_settings::page::agents::device_section_drawn());
     assert_eq!(
-        n, 49,
+        n,
+        49 + device,
         "the 39 rows of the other pages (no Mark colours with Ring, Computer sharing, Add a machine, the app icon and the two caret rows among them) and the 9 dictation rows"
     );
     assert!(n >= 30, "PT's own gate says at least 30");
@@ -528,6 +531,7 @@ fn the_page_shows_the_tables_and_nothing_else() {
     let mut want: Vec<String> = ROW_ORDER
         .iter()
         .filter(|id| !matches!(**id, "dictation-model" | "dictation-gpu"))
+        .filter(|id| flare_settings::page::agents::row_drawn_on_this_os(id))
         .map(|id| id.to_string())
         .collect();
     want.sort();

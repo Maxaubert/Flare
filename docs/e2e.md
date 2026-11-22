@@ -155,7 +155,7 @@ The same harness and scenario table drive the Mac build, on GitHub's macOS runne
 unit tests run (`cargo nextest run -p flare-e2e`).
 
 ```bash
-cargo build --release -p flare -p flare-mcp -p flare-e2e
+cargo build --release -p flare -p flare-mcp -p flare-device -p flare-e2e   # flare-device: the sim host for deviceReal
 TMPDIR=/tmp target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep   # what CI runs
 target/release/flare-e2e --list      # a gated scenario says so, with its reason
 ```
@@ -508,4 +508,18 @@ here, not from pixels, since a Mac e2e window may count as occluded, rule 1117),
 `devices`, `inputs` (every input the fake was given, touches in device points), the window's `kind`, `title`, `line`,
 `button`, `button_shown`, `slow`, `still`, `foot`, `controls`, `has_frame`, and the rects `box`, `picture` and
 `button_rect` in css px.
+PR 4b adds `menu` (the tab menu's Device panel entry shows), `path` (`none`, `gpu`, `cpu`: how the ring's frames reach
+the screen), `ring_frames` (ring frames the notifier drew), `ring_showing`, `slots_held` (ring slots Flare holds now),
+`refused` (why the GPU import was refused), `hello` (the sim host's facts), `booted_by_flare` (the udids in
+`booted.json`) and `turn` (the picture's turn in degrees).
+
+`tools/e2e/src/scenarios/device_real.rs`: `deviceReal` (device panel PR 4b), **opt-in** (`scenarios::OPT_IN`: only a
+filter word that is its whole name runs it), on a Mac with Apple silicon, Xcode and an iOS runtime (the GitHub macOS
+runner: `gh workflow run ci --ref <branch> -f e2e_only=true -f e2e_filter='deviceReal'`). It makes its own simulator
+(`simctl create`) and deletes it at the end, starts the app with `FLARE_DEVICE_REAL=1` (so `--e2e` takes the real
+source instead of the fake; the sim host must sit next to the app, which `-p flare-device` in the build does), opens
+the panel on it, checks it shows Boot and the simulator stays shut down (rule 1323), presses Boot, waits for the boot
+and the ring's first frame (`has_frame`; the GPU path and no slow mark when the parked window drew one), checks Flare
+recorded the boot, clicks the picture, quits the app and waits for the simulator to be shut down (rule 1319). Where the
+runner has no iOS runtime (open check 6) it says so and skips the rest.
 

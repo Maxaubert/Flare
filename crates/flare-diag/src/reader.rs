@@ -26,6 +26,9 @@ pub struct Opts {
     pub agent: bool,
     /// The web panel's lines (`web-*`): refusals, pop-ups, failed loads, the browser's failures.
     pub web: bool,
+    /// The device panel's lines (`device-*`: the sim host's facts, the frame path, still mode), then the end of
+    /// `sim-host.log` (device panel PR 4b).
+    pub device: bool,
     /// One tab's lines (`--agent --tab t3`).
     pub tab: Option<String>,
     /// Print the usage.
@@ -45,6 +48,7 @@ impl Default for Opts {
             n: 20,
             agent: false,
             web: false,
+            device: false,
             tab: None,
             help: false,
             utc: false,
@@ -87,6 +91,7 @@ pub fn parse_args(argv: &[String]) -> Result<Opts, String> {
             }
             "--agent" => o.agent = true,
             "--web" => o.web = true,
+            "--device" => o.device = true,
             "--tab" => o.tab = Some(take(&mut it, a)?),
             "--help" | "-h" => o.help = true,
             "--utc" => o.utc = true,
@@ -378,6 +383,7 @@ cargo diag: the newest problems in Flare's diagnostics log (diag.jsonl), each wi
   cargo diag -- --agent             the agent indicator's timeline (hooks, titles, marks, why)
   cargo diag -- --agent --tab t3    one tab's
   cargo diag -- --web               the web panel's lines (refused, pop-ups, failed loads, the browser's failures)
+  cargo diag -- --device            the device panel's lines (the sim host, the frame path), then sim-host.log's end
   cargo diag -- --dir <folder>      any folder holding a diag.jsonl
   cargo diag -- --profile <folder>  a profile folder (its logs folder is read)
   cargo diag -- --n 50              how many problems (default 20)
@@ -412,6 +418,7 @@ const PROBLEMS: &[&str] = &[
     "web-process",
     "web-load-failed",
     "web-cert",
+    "device-still",
 ];
 /// The agent indicator's records (not problems, the context for one).
 const AGENT: &[&str] = &[
@@ -553,6 +560,58 @@ fn is_web(l: &Line) -> bool {
 
 fn in_web_timeline(l: &Line) -> bool {
     is_web(l) || matches!(kind_of(l).as_str(), "session" | "quit" | "mark")
+}
+
+fn is_device(l: &Line) -> bool {
+    kind_of(l).starts_with("device-")
+}
+
+fn in_device_timeline(l: &Line) -> bool {
+    is_device(l) || matches!(kind_of(l).as_str(), "session" | "quit" | "mark")
+}
+
+/// The sim host's own log beside `diag.jsonl` (rotating, 1 MB x 3).
+pub const SIM_HOST_LOG: &str = "sim-host.log";
+
+/// The last `n` lines of `<dir>/sim-host.log`, or None when there is none. BLOCKING (a file read): the reader tool.
+pub fn sim_host_tail(dir: &Path, n: usize) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(SIM_HOST_LOG)).ok()?; // sync-ok: the reader tool, not the app
+    let lines: Vec<&str> = text.lines().collect();
+    let from = lines.len().saturating_sub(n);
+    Some(lines[from..].join("\n"))
+}
+
+/// A device panel line, said briefly.
+fn device_summary(raw: &Map<String, Value>) -> String {
+    let g = |k: &str| or(raw.get(k), "?");
+    match show(raw.get("k")).as_str() {
+        "device-hello" => format!(
+            "sim host {}: Xcode {}, CoreSimulator {}, SimulatorKit {}, input {}, UI tree {}",
+            g("version"),
+            g("xcode"),
+            g("coresim"),
+            g("simkit"),
+            g("input"),
+            g("ax")
+        ),
+        "device-path" => {
+            let why = raw
+                .get("why")
+                .filter(|w| truthy(Some(w)))
+                .map(|w| format!(": {}", show(Some(w))))
+                .unwrap_or_default();
+            format!("frames by {}{why}", g("route"))
+        }
+        "device-still" => format!("still pictures for the session: {}", g("why")),
+        _ => {
+            let rest: Map<String, Value> = raw
+                .iter()
+                .filter(|(k, _)| !matches!(k.as_str(), "t" | "up" | "src" | "k"))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            json(&Value::Object(rest))
+        }
+    }
 }
 
 fn in_agent_timeline(l: &Line) -> bool {
@@ -768,6 +827,7 @@ fn summary(raw: &Map<String, Value>) -> String {
             or(raw.get("cwd"), "?")
         ),
         k if k.starts_with("web-") => web_summary(raw),
+        k if k.starts_with("device-") => device_summary(raw),
         "agent-poll-failing" => format!(
             "the agent poll's process query failed {} times in a row: tabs show no agent marks",
             or(raw.get("fails"), "3")
@@ -860,7 +920,7 @@ pub fn render(o: &Opts, dir_label: &str, lines: &[Line], now_ms: i64, tz: &dyn T
         (Some(tab), Some(id)) => show(Some(id)) == *tab,
     };
 
-    if o.all || o.agent || o.web {
+    if o.all || o.agent || o.web || o.device {
         // A tab's capped flood: how many lines before this one were not written.
         let shown: Vec<&Line> = kept
             .iter()
@@ -869,6 +929,7 @@ pub fn render(o: &Opts, dir_label: &str, lines: &[Line], now_ms: i64, tz: &dyn T
                 let kind_ok = match &o.kinds {
                     Some(kinds) => kinds.contains(&kind_of(x)),
                     None if o.web => in_web_timeline(x),
+                    None if o.device => in_device_timeline(x),
                     None => !o.agent || in_agent_timeline(x),
                 };
                 kind_ok && of_tab(x)
@@ -879,6 +940,9 @@ pub fn render(o: &Opts, dir_label: &str, lines: &[Line], now_ms: i64, tz: &dyn T
         }
         if o.web && !shown.iter().any(|x| is_web(x)) {
             out.push_str("No web panel lines here.\n\n");
+        }
+        if o.device && !shown.iter().any(|x| is_device(x)) {
+            out.push_str("No device panel lines here.\n\n");
         }
         for l in shown {
             let dropped = match l.raw.get("dropped") {
@@ -1002,6 +1066,15 @@ pub fn cli_main() -> i32 {
         render(&o, &label, &lines, now_ms(), &WinLocal)
     };
     print!("{}", sanitize_for_terminal(&text));
+    if o.device {
+        match sim_host_tail(&dir, 40) {
+            Some(tail) => print!(
+                "\n{SIM_HOST_LOG} (last 40 lines):\n{}\n",
+                sanitize_for_terminal(&tail)
+            ),
+            None => println!("\nNo {SIM_HOST_LOG} here."),
+        }
+    }
     0
 }
 
@@ -1223,6 +1296,54 @@ mod tests {
         assert!(!out.contains("No stalls, errors or slow calls."), "{out}");
         let agent = render(&opts(&["--agent"]), "d", &lines, 0, &Utc);
         assert!(agent.contains("agent-poll-failing"), "{agent}");
+    }
+
+    /// Device panel PR 4b: still mode is a problem; the sim host's facts and the frame path show under `--device`,
+    /// and the reader prints the end of `sim-host.log` beside it.
+    #[test]
+    fn the_device_panels_still_mode_is_a_problem_and_its_facts_show_under_device() {
+        let lines = vec![
+            line(
+                "2026-11-20T09:00:01.000Z",
+                r#"{"src":"app","k":"device-hello","version":"0.9.0","xcode":"27.2","coresim":"1174.21","simkit":"1174.2","input":"dtuhid","ax":true}"#,
+            ),
+            line(
+                "2026-11-20T09:00:02.000Z",
+                r#"{"src":"app","k":"device-path","route":"cpu","why":"Slint refused the texture"}"#,
+            ),
+            line(
+                "2026-11-20T09:00:03.000Z",
+                r#"{"src":"app","k":"device-still","why":"the sim host stopped four times in five minutes"}"#,
+            ),
+        ];
+        let out = render(&opts(&[]), "d", &lines, 0, &Utc);
+        assert!(
+            out.contains("still pictures for the session: the sim host stopped four times"),
+            "{out}"
+        );
+        assert!(!out.contains("device-hello"), "facts are no problem: {out}");
+        let dev = render(&opts(&["--device"]), "d", &lines, 0, &Utc);
+        assert!(
+            dev.contains("sim host 0.9.0: Xcode 27.2, CoreSimulator 1174.21, SimulatorKit 1174.2, input dtuhid, UI tree true"),
+            "{dev}"
+        );
+        assert!(
+            dev.contains("frames by cpu: Slint refused the texture"),
+            "{dev}"
+        );
+        let other = vec![line(
+            "2026-11-20T09:00:01.000Z",
+            r#"{"src":"main","k":"main-lag","ms":300}"#,
+        )];
+        let none = render(&opts(&["--device"]), "d", &other, 0, &Utc);
+        assert!(none.contains("No device panel lines here."), "{none}");
+        // The sim host's own log: its last lines.
+        let dir = std::env::temp_dir().join(format!("flare-diag-sim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(sim_host_tail(&dir, 2), None);
+        std::fs::write(dir.join(SIM_HOST_LOG), "a\nb\nc\n").unwrap();
+        assert_eq!(sim_host_tail(&dir, 2).as_deref(), Some("b\nc"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Rule 247: a failed load, a failed browser process and a certificate error are problems; the rest of the web

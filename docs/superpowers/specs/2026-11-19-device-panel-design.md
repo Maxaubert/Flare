@@ -735,3 +735,15 @@ the pick on 2026-11-19; Claude picked:
 - **View only:** the picture with a bottom line "Driven from "<tab>". View only here." and no header buttons.
 - **Settings row** (PR 4b): section "Device panel" at the end of the Agents page, one switch "Shut down simulators Flare
   started when Flare quits" with the hint "A simulator you started yourself is never shut down."
+
+## Update, Claude (device panel PR 4b), 2026-11-20
+
+- **The panel menu entry** is a "Device panel" row in the tab menu (right-click a tab): Flare has no separate panel menu
+  in the tab header. It shows for a local shell tab on macOS on Apple silicon once the Xcode pick found an Xcode; never
+  for a remote tab.
+- **The Settings row's hint** reads "Simulators you started yourself are never shut down." (the mockup's wording is nine
+  words; the settings copy rules allow eight).
+- **Rule numbers:** open PR #293 took 1317, so this spec's rule 1317 (never Simulator.app, headless, no boot on its own)
+  is 1323.
+- **booted.json** drops an entry when its device is seen shut down or is gone. `simctl list` gives no boot time, so a
+  device someone else booted again after Flare's boot is not told apart and is still shut down at the next quit.
