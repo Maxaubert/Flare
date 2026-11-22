@@ -5877,8 +5877,10 @@ Platform is turned on only by the `turn_on_hypervisor` step, `dism` elevated wit
 `a_real_setup_from_google`. Source: Max, 2026-11-22. PR A7 (Max: no mockup, reuse the existing UI): Android is offered
 on a Mac on Apple silicon before it is set up, and the device chooser there lists the devices and one more row in the
 same style, "Android: set up (about 2.5 GB from Google)", which runs the same setup states as on Windows (the plan,
-Google's licence with [Cancel], the download); once set up, the chooser has [Update Android emulator] (the same plan;
-nothing happens when the emulator is current). Which rows show is `device_ctl::chooser_rows`, a pure function. Held by
+Google's licence with [Cancel], the download); once set up in Flare's own SDK folder, the chooser has [Update Android emulator]
+(the same plan; nothing to fetch when it is current; not offered on the person's own SDK, since setup fills only
+Flare's folder). On a Mac the emu host starts only once Android has an SDK there or its setup runs, so an
+iPhone-only Mac never starts it. Which rows show is `device_ctl::chooser_rows`, a pure function. Held by
 `the_chooser_offers_android_setup_on_a_mac_and_an_update_once_set_up`, `a_mac_sets_android_up_from_the_chooser_row`
 (`device_ctl.rs`) and `a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence` (ui_tests).
 
@@ -5933,7 +5935,8 @@ Android frames come turned, so Slint does not turn them again. `device.state` re
 `without_a_gpu_the_region_is_copied_by_the_cpu` (`device_region.rs`, headless on both OSes' own GPU API) and
 `an_android_frame_record_counts_as_a_change` (`device_ctl.rs`). Source: Max, 2026-11-22. PR A7 adds the spec's
 fallbacks in the emu host (`host.rs`): when MMAP is refused, or gives no usable frame for 2 s while the display is on
-(no frame, or a region the emulator never wrote: every alpha sample is 0), the pixels come in the gRPC messages and
+(no frame, or a region the emulator never wrote: 16 sample pixels marked before the stream opens still hold the
+mark), the pixels come in the gRPC messages and
 the emu host writes them into the same region, at most 30 a second, with the slow mark and its reason
 (`FrameMode::Slow`); when that fails too, a `getScreenshot` at most 3 times a second, written the same way, with the
 still badge and its reason (`FrameMode::Still`). A 0x0 frame means the display is off: the last picture stays,

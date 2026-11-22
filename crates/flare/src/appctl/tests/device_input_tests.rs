@@ -256,3 +256,58 @@ fn the_stream_pauses_when_the_tab_goes_behind_and_resumes_with_the_current_frame
     f.ctl.borrow_mut().refresh();
     assert_eq!(pauses(&f).last(), Some(&true));
 }
+
+/// Android PR A7: the same window events on the Android fake (`emu/Flare_Pixel`, 411 x 914 dp): a click is a touch
+/// start and end in dp, a letter its HID key, and the panel's own Back reaches the device.
+#[test]
+fn an_android_device_takes_clicks_in_dp_and_keys() {
+    let f = fx_with(Opts {
+        saved: vec![("C:\\a", None)],
+        ..Opts::default()
+    });
+    f.start_restore_and_wait();
+    let a = f.ctl.borrow().model().state.tabs[0].id.clone();
+    f.ctl
+        .borrow_mut()
+        .device_mut()
+        .use_fake(flare_device::fake::FakeSource::android());
+    f.h.comp.invoke_overflow_picked(a.clone().into());
+    assert!(f.ctl.borrow_mut().device_open(&a, Some("emu/Flare_Pixel")));
+    f.h.advance(0);
+    assert_eq!(f.h.comp.get_panel_device_button().as_str(), "Boot");
+    f.h.comp.invoke_panel_device_setup();
+    f.h.advance(0);
+    assert!(f.h.comp.get_panel_device_has_frame(), "live");
+    assert!(f.h.comp.get_panel_device_android());
+    let (x, y, w, h) = pic(&f);
+    f.h.click(x + w / 4.0, y + h / 3.0);
+    let t = touches(&f);
+    assert_eq!(t.len(), 2, "{t:?}");
+    assert_eq!((t[0].phase, t[1].phase), (Phase::Start, Phase::End));
+    for touch in &t {
+        assert!((touch.x - 411.0 / 4.0).abs() < 1.0, "{touch:?}");
+        assert!((touch.y - 914.0 / 3.0).abs() < 1.0, "{touch:?}");
+    }
+    f.h.key_text("a");
+    let back = f.ctl.borrow_mut().device_mut().act("back");
+    assert!(back.is_empty(), "{back:?}");
+    let ins: Vec<String> = f
+        .ctl
+        .borrow_mut()
+        .device_mut()
+        .fake()
+        .unwrap()
+        .inputs()
+        .iter()
+        .filter_map(|r| match r {
+            Recorded::Key(t, k) if t.name() == "emu/Flare_Pixel" => {
+                Some(format!("key {} {}", k.usage, k.down))
+            }
+            Recorded::Button(t, b) if t.name() == "emu/Flare_Pixel" => {
+                Some(format!("button {}", b.name()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ins, ["key 4 true", "key 4 false", "button back"], "{ins:?}");
+}

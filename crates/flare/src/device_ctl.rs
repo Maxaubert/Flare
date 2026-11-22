@@ -672,7 +672,8 @@ impl Setup {
 pub enum ChooserRow {
     /// A Mac with no Android emulator set up: Android's setup, the same states as on Windows.
     SetUpAndroid,
-    /// Android's emulator is set up: look for a newer one (the same setup states; nothing when it is current).
+    /// Android's emulator is set up in Flare's own folder: look for a newer one (the same setup states; the plan finds
+    /// nothing to fetch when it is current).
     UpdateAndroid,
 }
 
@@ -686,14 +687,21 @@ impl ChooserRow {
 }
 
 /// The chooser's rows after the devices: Android's setup on a Mac (`ios`) whose Android emulator is not set up yet,
-/// and its update once it is. On Windows the panel itself shows Android's setup states before any list.
-pub fn chooser_rows(ios: bool, android: bool, android_gate: Option<&Setup>) -> Vec<ChooserRow> {
+/// and its update once it is and runs from Flare's own SDK folder (`own_sdk`: setup only ever fills that folder, so on
+/// the person's own SDK an update would plan a whole new install). On Windows the panel itself shows Android's setup
+/// states before any list.
+pub fn chooser_rows(
+    ios: bool,
+    android: bool,
+    android_gate: Option<&Setup>,
+    own_sdk: bool,
+) -> Vec<ChooserRow> {
     if !android {
         return Vec::new();
     }
     match android_gate {
         Some(Setup::SdkMissing) if ios => vec![ChooserRow::SetUpAndroid],
-        None => vec![ChooserRow::UpdateAndroid],
+        None if own_sdk => vec![ChooserRow::UpdateAndroid],
         _ => Vec::new(),
     }
 }
@@ -1151,7 +1159,14 @@ impl DeviceCtl {
         let Some(r) = &self.real else {
             return Vec::new();
         };
-        chooser_rows(r.ios, self.android_offered(), self.android_gate().as_ref())
+        // An update fills Flare's own SDK folder only, so it is offered only while Android runs from it.
+        let own = self.emu_fact("sdk_own").as_deref() == Some("true");
+        chooser_rows(
+            r.ios,
+            self.android_offered(),
+            self.android_gate().as_ref(),
+            own,
+        )
     }
 
     /// The tab menu's Device panel entry: the fake source (`--e2e`), or a real one this computer can run.
@@ -1204,7 +1219,14 @@ impl DeviceCtl {
         if matches!(self.src, Some(Src::Fake(_) | Src::Other(_))) {
             return;
         }
-        let want_emu = self.android_offered();
+        // On a Mac the emu host starts only once Android has an SDK there, or its setup runs (the chooser's row, PR
+        // A7): an iPhone-only Mac never starts it.
+        let want_emu = self.android_offered()
+            && self.real.as_ref().is_some_and(|r| {
+                !r.ios
+                    || matches!(r.sdk, Some(AndroidSdk::Ready { .. } | AndroidSdk::TooOld))
+                    || self.flow != Flow::Idle
+            });
         let Some(real) = self.real.as_mut() else {
             return;
         };
@@ -1311,6 +1333,12 @@ impl DeviceCtl {
             Some(Src::Fake(f)) => Some(f),
             _ => None,
         }
+    }
+
+    /// Tests: the fake source becomes `fake` (the app's input tests on the Android fake, Android PR A7).
+    #[cfg(test)]
+    pub fn use_fake(&mut self, fake: FakeSource) {
+        self.src = Some(Src::Fake(Box::new(fake)));
     }
 
     #[allow(dead_code)] // tests drive the fake
@@ -2733,6 +2761,9 @@ impl DeviceCtl {
         {
             match row {
                 ChooserRow::SetUpAndroid | ChooserRow::UpdateAndroid => {
+                    // The emu host does the setup: started now if it is not running (a Mac with no SDK yet).
+                    self.flow = Flow::Planning;
+                    self.ensure_source();
                     self.setup_step(SetupStep::Plan, SetupReq::Plan, Flow::Planning);
                 }
             }
@@ -2884,7 +2915,15 @@ impl DeviceCtl {
         let (copied, dropped, p50, p99) = fr.region_stats();
         let region =
             json!({"copied": copied, "dropped": dropped, "copy_ms_p50": p50, "copy_ms_p99": p99});
+        // The shown device's own buttons (rule 1371) and its frame mode (Android PR A7).
+        let buttons: Vec<&str> = target
+            .as_ref()
+            .map(|t| t.source().buttons().iter().map(|b| b.name()).collect())
+            .unwrap_or_default();
+        let mode = dev.map(|d| format!("{:?}", d.mode).to_lowercase());
         json!({
+            "buttons": buttons,
+            "frame_mode": mode,
             "offered": self.offered(),
             "menu": self.menu_offered(),
             "path": fr.path().name(),
@@ -4198,20 +4237,34 @@ mod tests {
     #[test]
     fn the_chooser_offers_android_setup_on_a_mac_and_an_update_once_set_up() {
         assert_eq!(
-            chooser_rows(true, true, Some(&Setup::SdkMissing)),
+            chooser_rows(true, true, Some(&Setup::SdkMissing), false),
             [ChooserRow::SetUpAndroid]
         );
         assert_eq!(
             ChooserRow::SetUpAndroid.label(),
             "Android: set up (about 2.5 GB from Google)"
         );
-        assert_eq!(chooser_rows(false, true, Some(&Setup::SdkMissing)), []);
-        assert_eq!(chooser_rows(true, true, None), [ChooserRow::UpdateAndroid]);
-        assert_eq!(chooser_rows(false, true, None), [ChooserRow::UpdateAndroid]);
-        assert_eq!(ChooserRow::UpdateAndroid.label(), "Update Android emulator");
-        assert_eq!(chooser_rows(true, false, None), [], "no Android here");
         assert_eq!(
-            chooser_rows(true, true, Some(&Setup::Reading)),
+            chooser_rows(false, true, Some(&Setup::SdkMissing), false),
+            []
+        );
+        assert_eq!(
+            chooser_rows(true, true, None, true),
+            [ChooserRow::UpdateAndroid]
+        );
+        assert_eq!(
+            chooser_rows(false, true, None, true),
+            [ChooserRow::UpdateAndroid]
+        );
+        assert_eq!(
+            chooser_rows(true, true, None, false),
+            [],
+            "the person's own SDK: an update would install a second one"
+        );
+        assert_eq!(ChooserRow::UpdateAndroid.label(), "Update Android emulator");
+        assert_eq!(chooser_rows(true, false, None, true), [], "no Android here");
+        assert_eq!(
+            chooser_rows(true, true, Some(&Setup::Reading), true),
             [],
             "setup runs"
         );
@@ -4222,8 +4275,28 @@ mod tests {
     /// list comes back with [Update Android emulator].
     #[test]
     fn a_mac_sets_android_up_from_the_chooser_row() {
-        let (mut d, _) = android_ctl(AndroidSdk::Missing);
+        // The sim host's place taken by the iPhone fake, the emu host's by the Android one.
+        let mut iphone = Some(FakeSource::default());
+        let mut android = Some(FakeSource::android());
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        d.install_real(
+            Box::new(move |s| match s {
+                SourceSetup::Xcode(_) => Some(Started {
+                    source: Box::new(iphone.take()?),
+                    #[cfg(target_os = "macos")]
+                    ring: None,
+                }),
+                SourceSetup::Android => Some(Started {
+                    source: Box::new(android.take()?),
+                    #[cfg(target_os = "macos")]
+                    ring: None,
+                }),
+            }),
+            None,
+            recorder().1,
+        );
         d.set_ios(true);
+        d.install_android(Rc::new(|_: &[String]| {}));
         d.on_xcode(XcodeAnswer {
             xcode: Some(found_xcode()),
             android: Some(AndroidSdk::Missing),
@@ -4231,6 +4304,13 @@ mod tests {
         });
         d.xcode = Xcode::Ready;
         d.ensure_source();
+        let Some(Src::Real(m)) = &d.src else {
+            panic!("the real sources")
+        };
+        assert!(
+            m.has(SourceKind::Sim) && !m.has(SourceKind::Emu),
+            "an iPhone-only Mac starts no emu host"
+        );
         d.list();
         show_tab(&mut d, "t1", CHOOSE);
         assert_eq!(d.setup_of("t1"), Some(Setup::Choose));
@@ -4248,6 +4328,8 @@ mod tests {
         d.setup_clicked(); // Accept and set up
         assert_eq!(d.flow, Flow::Idle);
         assert_eq!(d.setup_of("t1"), Some(Setup::Choose));
+        // Set up into Flare's own folder (the setup's answer says so): the chooser offers its update.
+        d.emu_facts.insert("sdk_own".into(), "true".into());
         assert_eq!(d.chooser_rows(), [ChooserRow::UpdateAndroid]);
         // A row past the end does nothing.
         assert!(d.pick(n + 5).is_empty());

@@ -3280,7 +3280,8 @@ Follow-ups to A1 to A6 (PR #339).
 - **Android setup on a Mac.** A Mac on Apple silicon offers Android before it is set up. Its device chooser lists the
   devices and one more row in the same style, "Android: set up (about 2.5 GB from Google)". The row leads to the same
   states as on Windows: Google's licence with [Accept and set up] and [Cancel], then the download. Once Android is set
-  up, the chooser has an [Update Android emulator] row on both OSes (the same plan; nothing happens when it is current).
+  up in Flare's own folder, the chooser has an [Update Android emulator] row on both OSes (the same plan; nothing to
+  fetch when it is current). On the person's own SDK the row is not offered.
   No mockup: Max chose to reuse the existing row.
 - **An emulator started without access.** One started outside Flare without a gRPC token shows "This emulator was
   started without access for other apps. Start it from Flare." and no button (spec state 6).

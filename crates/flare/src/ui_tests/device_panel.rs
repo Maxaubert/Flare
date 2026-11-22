@@ -662,7 +662,9 @@ fn a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence() {
     let mut panels = PanelCtl::new(Arc::clone(&post));
     panels.set_device_offered(true);
     let mut dev = DeviceCtl::new(post, Rc::new(|| 0), None);
+    // The sim host's place taken by the iPhone fake, the emu host's by the Android one.
     let mut fake = Some(FakeSource::android());
+    let mut iphone = Some(FakeSource::default());
     dev.install_real(
         Box::new(move |s: &SourceSetup| match s {
             SourceSetup::Android => Some(Started {
@@ -670,7 +672,11 @@ fn a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence() {
                 #[cfg(target_os = "macos")]
                 ring: None,
             }),
-            SourceSetup::Xcode(_) => None,
+            SourceSetup::Xcode(_) => Some(Started {
+                source: Box::new(iphone.take()?),
+                #[cfg(target_os = "macos")]
+                ring: None,
+            }),
         }),
         None,
         Rc::new(|_: &std::path::Path, _: &[String]| {}),

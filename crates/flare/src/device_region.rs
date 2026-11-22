@@ -1564,6 +1564,23 @@ mod tests {
             .count();
         eprintln!("{}x{}, {lit} lit pixels", last.width(), last.height());
         assert!(lit > 1000, "the picture is the device's screen, not black");
+        // Android PR A7: a still screen opened again (a hide and a show with no swipe) gives its first frame at once, so
+        // the shared memory stays the path: no fallback line in the emu host's log.
+        src.pause(&t, true);
+        std::thread::sleep(Duration::from_secs(1));
+        src.pause(&t, false);
+        std::thread::sleep(Duration::from_secs(4));
+        let log = std::fs::read_to_string(logs.path().join("emu-host.log")).unwrap_or_default();
+        let fell: Vec<&str> = log.lines().filter(|l| l.contains("fall back")).collect();
+        eprintln!(
+            "emu host: {} streams opened on the shared memory, fallbacks {fell:?}",
+            log.matches("frames streaming (the shared memory)").count()
+        );
+        assert!(
+            log.matches("frames streaming (the shared memory)").count() >= 2,
+            "{log}"
+        );
+        assert!(fell.is_empty(), "{fell:?}");
         let region = src.region_path(&t).expect("a region");
         src.detach(&t);
         f.release(&t);

@@ -1551,17 +1551,36 @@ fn awake(host: &Host, d: &Device, via: Via) {
     };
     tell_mode(host, d, via.mode(), why);
 }
-/// BLOCKING: reads the region's alpha samples from the file (a fresh read, so what the emulator wrote is seen).
+/// The pixel written at the sample points before MMAP opens: a frame the emulator writes replaces at least one.
+const MARK: [u8; 4] = [0x5a, 0xa5, 0x3c, 0xc3];
+
+/// The byte offsets of the 16 pixels sampled across a frame of `n` pixels (the same for every rotation, `w * h`).
+fn samples(n: u64) -> impl Iterator<Item = u64> {
+    (0..16u64).map(move |i| n.saturating_sub(1) * i / 15 * 4)
+}
+
+/// BLOCKING: puts [`MARK`] at the sample points of a frame of `n` pixels, before the MMAP stream opens, so a region
+/// the emulator never writes is told from one it wrote (whatever its pixels, alpha included).
+fn mark_region(path: &std::path::Path, n: u64) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+    for at in samples(n) {
+        f.seek(SeekFrom::Start(at))?;
+        f.write_all(&MARK)?;
+    }
+    Ok(())
+}
+
+/// BLOCKING: whether the emulator wrote a frame of `w` x `h` into the region since [`mark_region`]: a sample point no
+/// longer holds the mark (a fresh read, so what the emulator wrote is seen).
 fn region_written_at(path: &std::path::Path, w: u32, h: u32) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
     };
-    let n = u64::from(w) * u64::from(h);
-    (0..16u64).any(|i| {
-        let px = n.saturating_sub(1) * i / 15;
+    samples(u64::from(w) * u64::from(h)).any(|at| {
         let mut b = [0u8; 4];
-        f.seek(SeekFrom::Start(px * 4)).is_ok() && f.read_exact(&mut b).is_ok() && b[3] != 0
+        f.seek(SeekFrom::Start(at)).is_ok() && f.read_exact(&mut b).is_ok() && b != MARK
     })
 }
 
@@ -1652,6 +1671,21 @@ async fn stream(host: Arc<Host>, d: Arc<Device>, url: &str, bytes: u64, via: Via
         }),
         ..Default::default()
     };
+    if via == Via::Mmap
+        && let Some(p) = path.clone()
+    {
+        // The sample points get the mark, so the first frame shows whether the emulator really writes the region.
+        let n = (d.portrait.w * d.portrait.h) as u64;
+        if let Err(e) = tokio::task::spawn_blocking(move || mark_region(&p, n))
+            .await
+            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+        {
+            host.log.line(&format!(
+                "{}: the region could not be marked: {e}",
+                d.target
+            ));
+        }
+    }
     let mut s = match d.client.clone().stream_screenshot(fmt).await {
         Ok(r) => r.into_inner(),
         Err(e) => {
@@ -1971,15 +2005,20 @@ mod tests {
     }
 
     /// The slow and still paths write a frame into the region as the emulator would (rows top-down, RGBA), and only
-    /// a frame that fits; the MMAP check sees a region nobody wrote (all zero) apart from one the emulator wrote
-    /// (opaque alpha).
+    /// a frame that fits; the MMAP check tells a region nobody wrote since the mark from one the emulator wrote.
     #[test]
     fn frames_are_written_into_the_region_and_a_blank_region_is_seen() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("1-1.rgba");
         let bytes = 64 * 1024;
         std::fs::write(&p, vec![0u8; bytes]).unwrap();
-        assert!(!region_written_at(&p, 100, 100), "never written");
+        mark_region(&p, 100 * 100).unwrap();
+        assert!(
+            !region_written_at(&p, 100, 100),
+            "never written since the mark"
+        );
+        // A frame of the same pixel count in another rotation samples the same points.
+        assert!(!region_written_at(&p, 50, 200));
         let mut px = vec![0u8; 100 * 100 * 4];
         for (i, c) in px.chunks_mut(4).enumerate() {
             c.copy_from_slice(&[(i % 251) as u8, 1, 2, 255]);
@@ -1988,6 +2027,9 @@ mod tests {
         let got = std::fs::read(&p).unwrap();
         assert_eq!(&got[..px.len()], &px[..]);
         assert_eq!(got.len(), bytes, "the region keeps its size");
+        assert!(region_written_at(&p, 100, 100));
+        // A black, fully transparent frame counts as written too: only the mark says "not written".
+        write_region(&p, bytes as u64, &vec![0u8; 100 * 100 * 4], 100, 100).unwrap();
         assert!(region_written_at(&p, 100, 100));
         // Too big for the region, or fewer pixels than the size says: refused, nothing written.
         assert!(write_region(&p, bytes as u64, &px, 200, 200).is_err());
