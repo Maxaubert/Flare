@@ -379,7 +379,63 @@ impl FakeSource {
     }
 }
 
+/// The fake's Android setup licence and its hash (what `start` must carry).
+pub const FAKE_LICENCE: &str = "Terms and Conditions\n\nThis is the Android Software Development Kit License Agreement (fake).";
+pub const FAKE_LICENCE_HASH: &str = "fake-licence-hash";
+
+impl FakeSource {
+    /// Android setup as the emu host answers it (PR A2b): a plan with one licence and 2538 MB to download, a start
+    /// that needs that licence's hash and says its progress once, a cancel, the hypervisor's restart.
+    fn fake_setup(
+        &mut self,
+        id: ReqId,
+        step: crate::wire::SetupStep,
+    ) -> Result<Answer, SourceError> {
+        use crate::wire::{SetupEvent, SetupStep};
+        use serde_json::json;
+        Ok(Answer::Value(match step {
+            SetupStep::Plan => json!({
+                "needed": true,
+                "licences": [{"id": "android-sdk-license", "text": FAKE_LICENCE, "hash": FAKE_LICENCE_HASH}],
+                "download_mb": 2538,
+                "disk_mb": 8000,
+                "enough_space": true,
+            }),
+            SetupStep::Start { accepted } => {
+                if accepted != [FAKE_LICENCE_HASH] {
+                    return Err(SourceError {
+                        fail: Fail::Unavailable,
+                        message: "the licence changed: read it again".into(),
+                    });
+                }
+                let _ = id;
+                self.send(SourceEvent::Setup(SetupEvent::Download {
+                    package: "emulator".into(),
+                    done_mb: 1269,
+                    total_mb: 2538,
+                }));
+                json!({"installed": ["emulator", "platform-tools"], "device": FAKE_AVD, "facts": {"sdk": "ready"}})
+            }
+            SetupStep::Cancel => serde_json::Value::Null,
+            SetupStep::Accel => json!({"accel": "whpx", "usable": true}),
+            SetupStep::TurnOnHypervisor => json!({"restart": true}),
+        }))
+    }
+}
+
 impl DeviceSource for FakeSource {
+    fn setup(&mut self, step: crate::wire::SetupStep) -> Option<ReqId> {
+        // Only the Android fake sets anything up.
+        if !self
+            .devices
+            .iter()
+            .any(|d| d.target.source() == crate::source::SourceKind::Emu)
+        {
+            return None;
+        }
+        Some(self.request(|s, id| Some(s.fake_setup(id, step))))
+    }
+
     fn list(&mut self) -> ReqId {
         self.request(|s, _| Some(Ok(Answer::Devices(s.devices.clone()))))
     }

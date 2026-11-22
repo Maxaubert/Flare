@@ -29,6 +29,7 @@ mod grpc;
 mod host;
 mod hyperv;
 mod log;
+mod quit;
 mod run;
 mod selftest;
 mod setup;
@@ -63,6 +64,16 @@ fn run_main() -> i32 {
         let (out, ok) = selftest::run();
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         return if ok { 0 } else { 1 };
+    }
+    if let Some(i) = args.iter().position(|a| a == "--shutdown") {
+        // Flare's quit (rule 1366): only AVD names, each checked as a target is.
+        let avds: Vec<String> = args[i + 1..]
+            .iter()
+            .filter(|a| flare_device::target::Target::emu(a).is_some())
+            .cloned()
+            .collect();
+        quit::run(&avds);
+        return 0;
     }
     if let Some(serial) = value("--agent") {
         return match agent::check(&serial, value("--text").as_deref()) {

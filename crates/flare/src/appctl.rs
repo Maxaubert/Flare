@@ -1715,6 +1715,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_device_act, |c, a: SharedString| c
             .device_act(&a));
         bind!(app, rc, on_panel_device_setup, |c| c.device_setup());
+        bind!(app, rc, on_panel_device_cancel, |c| c.device_cancel());
         bind!(app, rc, on_panel_device_pick, |c, i: i32| c.device_pick(i));
     }
 

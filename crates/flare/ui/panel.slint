@@ -778,6 +778,12 @@ export component PanelSlot inherits Rectangle {
     in property <int> device-state;
     in property <string> device-line;
     in property <string> device-button;
+    // The licence screen (Android setup, spec "Setup", 2): a second button, [Cancel], and Google's licence text under
+    // the line, in a box that scrolls.
+    in property <bool> device-has-cancel;
+    in property <string> device-detail;
+    // An Android device is on show: its More menu has Back and Recents instead of Shake (rule 1371).
+    in property <bool> device-android;
     in property <[DeviceRow]> device-rows;
     // Still pictures: the line under the badge ("" while live). The slow mark: why the view is slow ("" none).
     in property <string> device-still;
@@ -814,6 +820,7 @@ export component PanelSlot inherits Rectangle {
     callback device-act(string);
     // The setup state's one button (Get Xcode, Open Xcode, Boot, Boot again).
     callback device-setup();
+    callback device-cancel();
     callback device-pick(int);
     property <bool> device-menu-open: false;
     out property <bool> device-menu-shown: root.open && root.kind == 5 && root.device-menu-open;
@@ -1501,8 +1508,35 @@ export component PanelSlot inherits Rectangle {
                         font-size: 12.5px;
                         color: Theme.dim;
                     }
+                    // Google's licence text (Android setup, spec "Setup", 2): read before anything is downloaded.
+                    if root.device-detail != "": Rectangle {
+                        height: Px.snap(min(220px, root.height * 0.45));
+                        border-radius: Theme.radius-button;
+                        border-width: Px.hair();
+                        border-color: Theme.divider;
+                        clip: true;
+                        accessible-role: text;
+                        accessible-label: root.device-detail;
+                        licence-flick := Flickable {
+                            x: Px.snap(8px);
+                            y: Px.snap(6px);
+                            width: parent.width - Px.snap(16px);
+                            height: parent.height - Px.snap(12px);
+                            content-width: self.width;
+                            content-height: licence-text.preferred-height;
+                            licence-text := Text {
+                                width: licence-flick.width;
+                                wrap: word-wrap;
+                                text: root.device-detail;
+                                font-family: Theme.font-ui;
+                                font-size: 11px;
+                                color: Theme.dim;
+                            }
+                        }
+                    }
                     HorizontalLayout {
                         alignment: center;
+                        spacing: Px.snap(8px);
                         height: root.device-button != "" ? Px.snap(28px) : 0px;
                         device-setup-btn := Rectangle {
                             width: root.device-button != "" ? Px.snap(setup-text.preferred-width + 28px) : 0px;
@@ -1526,6 +1560,31 @@ export component PanelSlot inherits Rectangle {
                             }
                             setup-ta := TouchArea {
                                 clicked => { root.device-setup(); }
+                            }
+                        }
+                        // The licence's second button: back out, nothing downloaded.
+                        if root.device-has-cancel: Rectangle {
+                            width: Px.snap(cancel-text.preferred-width + 28px);
+                            height: Px.snap(28px);
+                            border-radius: Theme.radius-button;
+                            background: cancel-ta.has-hover ? Theme.hover : transparent;
+                            border-width: Px.hair();
+                            border-color: Theme.divider;
+                            accessible-role: button;
+                            accessible-label: "Cancel";
+                            accessible-action-default => { root.device-cancel(); }
+                            cancel-text := Text {
+                                width: parent.width;
+                                height: parent.height;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                text: "Cancel";
+                                font-family: Theme.font-ui;
+                                font-size: 12px;
+                                color: Theme.text;
+                            }
+                            cancel-ta := TouchArea {
+                                clicked => { root.device-cancel(); }
                             }
                         }
                     }
@@ -1700,7 +1759,15 @@ export component PanelSlot inherits Rectangle {
             menu-col := VerticalLayout {
                 padding-top: Px.snap(4px);
                 padding-bottom: Px.snap(4px);
-                for item in [
+                // Each source's own buttons (rule 1371): Android has Back and Recents, iOS Shake.
+                for item in root.device-android ? [
+                    { act: "back", text: "Back" },
+                    { act: "recents", text: "Recents" },
+                    { act: "volume_up", text: "Volume up" },
+                    { act: "volume_down", text: "Volume down" },
+                    { act: "choose", text: "Choose device" },
+                    { act: "shutdown", text: "Shut down" },
+                ] : [
                     { act: "shake", text: "Shake" },
                     { act: "volume_up", text: "Volume up" },
                     { act: "volume_down", text: "Volume down" },

@@ -139,6 +139,8 @@ enum Kind {
     Done,
     Png,
     Tree,
+    /// Setup's answers, as they come.
+    Value,
 }
 
 #[derive(Clone, Debug)]
@@ -342,6 +344,7 @@ impl Shared {
                         Answer::Devices(list)
                     }
                     Some(Kind::Done) => Answer::Done,
+                    Some(Kind::Value) => Answer::Value(result),
                     Some(Kind::Png) => match crate::wire::png_of(&result) {
                         Some(p) => Answer::Png(p),
                         None => {
@@ -429,8 +432,8 @@ impl Shared {
                 });
             }
             HostLine::Broken { why } => self.go_broken(why),
-            // Android setup's progress and a first boot's "Preparing" (PR A2b): shown by the panel from PR A4.
-            HostLine::Setup { event } => log::debug!("emu host setup: {event:?}"),
+            // Android setup's progress and a first boot's "Preparing" (PR A2b), shown by the panel.
+            HostLine::Setup { event } => self.event(SourceEvent::Setup(event)),
         }
     }
 }
@@ -581,7 +584,11 @@ pub fn launch_emulator(
     target: &Target,
     cold: bool,
 ) -> Result<Child, String> {
-    let sdk = match sdk::find(places) {
+    let avd = avds::list(&avds::homes(places))
+        .into_iter()
+        .find(|a| a.name == target.id())
+        .ok_or_else(|| format!("No virtual device named {} on this computer.", target.id()))?;
+    let sdk = match sdk_for(places, avd.flare_own) {
         sdk::Found::Ready(s) => s,
         sdk::Found::TooOld(s) => {
             return Err(format!(
@@ -592,10 +599,6 @@ pub fn launch_emulator(
         }
         sdk::Found::Missing => return Err("no Android emulator on this computer".to_string()),
     };
-    let avd = avds::list(&avds::homes(places))
-        .into_iter()
-        .find(|a| a.name == target.id())
-        .ok_or_else(|| format!("No virtual device named {} on this computer.", target.id()))?;
     let running = places
         .discovery_dir()
         .map(|d| discovery::read_all(&d))
@@ -633,6 +636,20 @@ pub fn launch_emulator(
         args.join(" ")
     );
     Ok(child)
+}
+
+/// BLOCKING (reads two small files per folder): the SDK an AVD boots with. An AVD names its system image relative to
+/// `ANDROID_SDK_ROOT`, so Flare's own AVD ("Flare Pixel") boots with Flare's own SDK, where setup put its image, and the
+/// person's AVDs with the person's SDK (A2b deviation 5). When that side has no emulator, the usual search decides.
+pub fn sdk_for(places: &Places, flare_own: bool) -> sdk::Found {
+    let side: Vec<sdk::Candidate> = sdk::candidates(places)
+        .into_iter()
+        .filter(|c| c.flare_own == flare_own)
+        .collect();
+    match sdk::pick(&side, sdk::floor(), sdk::read_version) {
+        sdk::Found::Missing => sdk::find(places),
+        found => found,
+    }
 }
 
 /// Waits for an emulator Flare started (so it never lingers as a zombie on macOS). One that ends within
@@ -954,6 +971,10 @@ impl DeviceSource for EmuSource {
 
     fn hello(&self) -> Option<Hello> {
         lock(&self.sh.state).hello.clone()
+    }
+
+    fn setup(&mut self, step: crate::wire::SetupStep) -> Option<ReqId> {
+        Some(self.request(Request::Setup { step }, Kind::Value))
     }
 }
 

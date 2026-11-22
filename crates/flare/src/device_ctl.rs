@@ -40,12 +40,14 @@ use flare_device::source::{
     Answer, Button, DeviceInfo, DeviceSource, DeviceState, InputState, ReqId, Screen, SourceEvent,
     Touch,
 };
-use flare_device::source::{Key, Phase};
+use flare_device::source::{Key, Phase, SourceKind};
 use flare_device::target::{self, Target};
+use flare_device::wire::SetupStep;
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::appctl::Post;
 use crate::device_frames::{DeviceFrames, FramePath};
+use crate::device_sources::Multi;
 use crate::panel_ctl::PanelCtl;
 use crate::{AppWindow, DeviceRow};
 
@@ -54,6 +56,9 @@ pub const CHOOSE: &str = "device";
 
 /// The corner radius of an iPhone's screen in points (the picture is drawn bare with it, no bezel).
 pub const RADIUS_PT: f64 = 55.0;
+
+/// The corner radius of an Android device's picture in dp (the emulator's frames mask the display's own corners).
+pub const RADIUS_DP: f64 = 24.0;
 
 /// Moves of a held touch are sent at most this often (about once per displayed frame).
 pub const MOVE_MS: u64 = 16;
@@ -113,6 +118,8 @@ pub enum DeviceMsg {
 #[derive(Debug, Default)]
 pub struct XcodeAnswer {
     pub xcode: Option<flare_device::xcode::Xcode>,
+    /// The Android SDK search (where Android devices can run).
+    pub android: Option<AndroidSdk>,
     pub booted: Booted,
 }
 
@@ -130,29 +137,39 @@ pub enum Woken {
 /// list lives in `<profile>/device/booted.json`. An entry goes when its device is seen shut down or is gone.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Booted {
-    /// udid (lower case) and when Flare booted it (Unix ms).
+    /// The device's target name (`sim/<udid>` lower case, or `emu/<avd>`, rule 1366) and when Flare booted it (Unix
+    /// ms).
     pub devices: Vec<(String, u64)>,
 }
 
 impl Booted {
-    pub fn has(&self, udid: &str) -> bool {
-        self.devices.iter().any(|(u, _)| u == udid)
+    pub fn has(&self, target: &str) -> bool {
+        self.devices.iter().any(|(u, _)| u == target)
     }
 
-    /// Flare booted `udid` at `at_ms`. True when the list changed.
-    pub fn record(&mut self, udid: &str, at_ms: u64) -> bool {
-        if self.has(udid) {
+    /// Flare booted `target` (its name) at `at_ms`. True when the list changed.
+    pub fn record(&mut self, target: &str, at_ms: u64) -> bool {
+        if self.has(target) {
             return false;
         }
-        self.devices.push((udid.to_string(), at_ms));
+        self.devices.push((target.to_string(), at_ms));
         true
     }
 
-    /// `udid` is no longer Flare's to shut down. True when the list changed.
-    pub fn forget(&mut self, udid: &str) -> bool {
+    /// `target` is no longer Flare's to shut down. True when the list changed.
+    pub fn forget(&mut self, target: &str) -> bool {
         let n = self.devices.len();
-        self.devices.retain(|(u, _)| u != udid);
+        self.devices.retain(|(u, _)| u != target);
         n != self.devices.len()
+    }
+
+    /// The devices of one kind, as targets.
+    pub fn of(&self, kind: flare_device::source::SourceKind) -> Vec<Target> {
+        self.devices
+            .iter()
+            .filter_map(|(n, _)| target::parse(n))
+            .filter(|t| t.source() == kind)
+            .collect()
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
@@ -167,14 +184,17 @@ impl Booted {
         Booted::from_json(&v)
     }
 
-    /// `{"devices": [{"udid": "...", "booted_ms": 0}]}`; an entry that is not a device's is skipped.
+    /// `{"devices": [{"udid": "...", "booted_ms": 0}, {"target": "emu/<avd>", "booted_ms": 0}]}`: a simulator by its
+    /// udid (as since PR 4b), any device by its target; an entry that is not a device's is skipped.
     pub fn from_json(v: &serde_json::Value) -> Booted {
         let mut b = Booted::default();
         for d in v["devices"].as_array().into_iter().flatten() {
-            if let Some(u) = d["udid"].as_str()
-                && let Some(t) = Target::sim(u)
-            {
-                b.record(t.id(), d["booted_ms"].as_u64().unwrap_or(0));
+            let t = d["udid"]
+                .as_str()
+                .and_then(Target::sim)
+                .or_else(|| d["target"].as_str().and_then(target::parse));
+            if let Some(t) = t {
+                b.record(&t.name(), d["booted_ms"].as_u64().unwrap_or(0));
             }
         }
         b
@@ -185,7 +205,10 @@ impl Booted {
             "devices": self
                 .devices
                 .iter()
-                .map(|(u, t)| serde_json::json!({"udid": u, "booted_ms": t}))
+                .map(|(n, at)| match target::parse(n) {
+                    Some(Target::Sim { udid }) => serde_json::json!({"udid": udid, "booted_ms": at}),
+                    _ => serde_json::json!({"target": n, "booted_ms": at}),
+                })
                 .collect::<Vec<_>>(),
         })
     }
@@ -236,8 +259,34 @@ pub fn shutdown_command(developer_dir: &Path, udids: &[String]) -> std::process:
     c
 }
 
-/// Starts `cmd` and lets it go: never waited for (a thread reaps it, so no zombie is left while Flare runs on).
+/// This computer can run Android devices: Windows on x64, macOS on Apple silicon (the emulator's own platforms).
+pub const fn android_platform() -> bool {
+    cfg!(any(
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))
+}
+
+/// The detached shutdown of Android emulators at quit (rule 1366): `flare-emu-host --shutdown <avd>...` asks each one
+/// Flare booted for a clean shutdown and exits. Not guarded, so it outlives Flare; quit never waits for it.
+pub fn emu_shutdown_command(exe: &Path, avds: &[String]) -> std::process::Command {
+    let mut c = std::process::Command::new(exe); // sync-ok: builds the command; spawned detached
+    c.arg("--shutdown")
+        .args(avds)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    c
+}
+
+/// Starts `cmd` and lets it go: never waited for (a thread reaps it, so no zombie is left while Flare runs on). No
+/// console window on Windows (rule 1370).
 pub fn spawn_detached(mut cmd: std::process::Command) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(flare_proc::job::NO_WINDOW);
+    }
     match cmd.spawn() {
         // sync-ok: a spawn returns at once; the child is reaped on its own thread
         Ok(mut child) => {
@@ -260,45 +309,100 @@ pub struct Started {
     pub ring: Option<std::sync::Arc<dyn crate::device_frames::RingSource>>,
 }
 
-/// What a real source needs to start: the Xcode the pick chose (the sim host), or an Android SDK (the emu host,
-/// Android plan PR A2; not wired yet).
+/// What a real source needs to start: the Xcode the pick chose (the sim host), or nothing more (the emu host, which
+/// finds the Android SDK itself and can set one up, Android plan PR A4).
 #[derive(Clone, Debug)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install reads the Xcode
 pub enum SourceSetup {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    // only the macOS starter reads the Xcode
     Xcode(flare_device::xcode::Xcode),
-    #[allow(dead_code)] // the emu host is wired in Android plan PR A4
-    AndroidSdk(AndroidSdk),
+    Android,
 }
 
-/// An Android SDK the emu host can use: Flare's own (`android-sdk` in its data folder) or the person's, with an
-/// emulator at or above the floor (rule 1361).
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // the emu host is wired in Android plan PR A4
-pub struct AndroidSdk {
-    /// The SDK's root folder (`ANDROID_SDK_ROOT` for the emulators Flare starts).
-    pub root: PathBuf,
-    /// The emulator's version, `37.3.10`.
-    pub emulator_version: String,
+/// The Android SDK search's answer (a worker at startup; the emu host's setup answers it again): an emulator at or above
+/// the floor (rule 1361) with how many AVDs it can boot, one under the floor, or none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AndroidSdk {
+    Ready { avds: usize },
+    TooOld,
+    Missing,
 }
 
-/// Makes the real source for its setup: the sim host for an Xcode, later the emu host for an Android SDK. None when
-/// this build cannot start that source (it is logged, and the panel stays as it is).
+impl AndroidSdk {
+    /// BLOCKING (reads the SDK and AVD folders): a worker's.
+    pub fn find(places: &flare_device::emu::Places) -> AndroidSdk {
+        use flare_device::emu::{avds, sdk};
+        match sdk::find(places) {
+            sdk::Found::Ready(_) => AndroidSdk::Ready {
+                avds: avds::list(&avds::homes(places)).len(),
+            },
+            sdk::Found::TooOld(_) => AndroidSdk::TooOld,
+            sdk::Found::Missing => AndroidSdk::Missing,
+        }
+    }
+
+    /// From the emu host's facts (`sdk`: ready, too_old or missing), keeping the AVD count when it does not say.
+    pub fn from_fact(fact: &str, avds: usize) -> Option<AndroidSdk> {
+        Some(match fact {
+            "ready" => AndroidSdk::Ready { avds },
+            "too_old" => AndroidSdk::TooOld,
+            "missing" => AndroidSdk::Missing,
+            _ => return None,
+        })
+    }
+}
+
+/// Makes the real source for its setup: the sim host for an Xcode, the emu host for Android. None when this build
+/// cannot start that source (it is logged, and the panel stays as it is).
 pub type Starter = Box<dyn FnMut(&SourceSetup) -> Option<Started>>;
 
-/// Shuts devices down at quit, detached (tests record it).
+/// Shuts simulators down at quit, detached (tests record it).
 pub type ShutdownSpawn = Rc<dyn Fn(&Path, &[String])>;
 
-/// The real simulator's half of the controller (PR 4b).
+/// Shuts Android emulators down at quit, detached (`flare-emu-host --shutdown <avd>...`, rule 1366; tests record it).
+pub type EmuShutdown = Rc<dyn Fn(&[String])>;
+
+/// The real sources' half of the controller (PR 4b; Android plan PR A4).
 struct Real {
     starter: Starter,
+    /// iOS simulators can run here (macOS on Apple silicon).
+    ios: bool,
     /// The Xcode pick's answer: None while it runs.
     xcode: Option<Option<flare_device::xcode::Xcode>>,
-    /// The source runs (started by a device panel).
-    running: bool,
-    /// No device panel since then (ms on the clock): the sim host stops after `IDLE_MS`.
+    /// Android devices can run here.
+    android: bool,
+    /// The Android SDK search's answer: None while it runs.
+    sdk: Option<AndroidSdk>,
+    /// No device panel since then (ms on the clock): the hosts stop after `IDLE_MS`.
     idle_since: Option<u64>,
     booted_path: Option<PathBuf>,
     spawn: ShutdownSpawn,
+    emu_spawn: Option<EmuShutdown>,
+}
+
+/// Where Android setup stands (spec "Setup", states 1 to 4).
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Flow {
+    #[default]
+    Idle,
+    /// The plan is read (Google's package lists).
+    Planning,
+    /// Google's licences, shown before anything is downloaded; their hashes go with [Accept and set up].
+    Licence {
+        text: String,
+        hashes: Vec<String>,
+        download_mb: u64,
+    },
+    Downloading {
+        done_mb: u64,
+        total_mb: u64,
+    },
+    /// [Cancel] was pressed during the download: its answer ends it.
+    Cancelling,
+    Failed(String),
+    /// [Turn on] ran: Windows asks, then needs a restart.
+    TurningOn,
+    RestartNeeded,
 }
 
 /// Whether Xcode can run a simulator here (spec "Setup", states 2 and 3). The fake source says Ready.
@@ -336,33 +440,32 @@ pub enum Setup {
     Failed {
         why: String,
     },
-    // Android's setup (spec 2026-11-22 "Setup", states 1 to 4 and 6). Data and lines only: the panel shows them from
-    // Android plan PR A4.
+    // Android's setup (spec 2026-11-22 "Setup", states 1 to 4 and 6), shown from Android plan PR A4.
     /// No Android emulator here yet: Flare can download it from Google (state 1).
-    #[allow(dead_code)] // shown from Android plan PR A4
     SdkMissing,
     /// Google's licence, before anything is downloaded (state 2). `text` is the licence from Google's package list,
     /// shown in full under the line; `download_mb` the download's size.
-    #[allow(dead_code)] // shown from Android plan PR A4
     Licence {
         text: String,
         download_mb: u64,
     },
     /// The download runs (state 3).
-    #[allow(dead_code)] // shown from Android plan PR A4
     Downloading {
         done_mb: u64,
         total_mb: u64,
     },
     /// Windows Hypervisor Platform is off (state 4).
-    #[allow(dead_code)] // shown from Android plan PR A4
     NoHypervisor,
     /// It was turned on: Windows must restart (state 4, after [Turn on]).
-    #[allow(dead_code)] // shown from Android plan PR A4
     RestartNeeded,
     /// An emulator started outside Flare without a gRPC token: Flare cannot reach it (state 6).
-    #[allow(dead_code)] // shown from Android plan PR A4
+    #[allow(dead_code)]
+    // listed once the emu host reports such an emulator (Android plan PR A5)
     NoAccess,
+    /// A new Android device's first start: its apps are compiled once before Flare calls it ready (A2b).
+    Preparing {
+        name: String,
+    },
 }
 
 /// The button of a setup state.
@@ -482,6 +585,7 @@ impl Setup {
                     .into(),
                 None,
             ),
+            Setup::Preparing { name } => v(3, format!("Preparing {name}..."), None),
         }
     }
 
@@ -503,7 +607,37 @@ impl Setup {
             Setup::NoHypervisor => "no_hypervisor",
             Setup::RestartNeeded => "restart_needed",
             Setup::NoAccess => "no_access",
+            Setup::Preparing { .. } => "preparing",
         }
+    }
+}
+
+/// The setup plan's answer (`flare-emu-host`, A2b) as the panel's next state: Google's licences to accept, or a line
+/// why setup cannot run (not enough space), or nothing to fetch (Idle).
+fn plan_flow(v: &serde_json::Value) -> Flow {
+    if !v["needed"].as_bool().unwrap_or(true) {
+        return Flow::Idle;
+    }
+    if v["enough_space"].as_bool() == Some(false) {
+        return Flow::Failed(format!(
+            "Android setup needs about {} of free disk space.",
+            size_words(v["disk_mb"].as_u64().unwrap_or(0)).trim_start_matches("about ")
+        ));
+    }
+    let licences = v["licences"].as_array().cloned().unwrap_or_default();
+    let text = licences
+        .iter()
+        .filter_map(|l| l["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let hashes = licences
+        .iter()
+        .filter_map(|l| l["hash"].as_str().map(str::to_string))
+        .collect();
+    Flow::Licence {
+        text,
+        hashes,
+        download_mb: v["download_mb"].as_u64().unwrap_or(0),
     }
 }
 
@@ -541,6 +675,17 @@ enum Pending {
     Shutdown(Target),
     /// An agent call waits on it (PR 5).
     Agent(AgentWait),
+    /// A step of Android setup.
+    Setup(SetupReq),
+}
+
+/// Which step of Android setup a request is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SetupReq {
+    Plan,
+    Start,
+    Cancel,
+    TurnOn,
 }
 
 /// The newest CPU picture of a device not yet handed to Slint.
@@ -588,10 +733,12 @@ struct Press {
     pending: Option<(f64, f64)>,
 }
 
-/// The device source: the fake (`--e2e`, tests) or another (the simulator, PR 4b).
+/// The device source: the fake (`--e2e`, tests), another (tests), or the real ones (the simulator and the Android
+/// emulator behind one, `device_sources.rs`).
 enum Src {
     Fake(Box<FakeSource>),
     Other(Box<dyn DeviceSource>),
+    Real(Box<Multi>),
 }
 
 impl Src {
@@ -599,13 +746,16 @@ impl Src {
         match self {
             Src::Fake(f) => f.as_mut(),
             Src::Other(s) => s.as_mut(),
+            Src::Real(m) => m.as_mut(),
         }
     }
 
-    fn events(&self) -> &std::sync::mpsc::Receiver<SourceEvent> {
+    /// The next event, with the kind of the source that sent it (None: the one source there is).
+    fn next(&mut self) -> Option<(Option<SourceKind>, SourceEvent)> {
         match self {
-            Src::Fake(f) => f.events(),
-            Src::Other(s) => s.events(),
+            Src::Fake(f) => f.events().try_recv().ok().map(|e| (None, e)),
+            Src::Other(s) => s.events().try_recv().ok().map(|e| (None, e)),
+            Src::Real(m) => m.next(),
         }
     }
 
@@ -613,6 +763,7 @@ impl Src {
         match self {
             Src::Fake(f) => f.as_ref(),
             Src::Other(s) => s.as_ref(),
+            Src::Real(m) => m.as_ref(),
         }
     }
 }
@@ -650,8 +801,12 @@ pub struct DeviceCtl {
     splitting: bool,
     minimised: bool,
     occluded: bool,
-    /// The source cannot give live frames: the still line's reason (rule 1312).
-    broken: Option<String>,
+    /// A source cannot give live frames: the still line's reason (rule 1312), per kind (None: the one source there is).
+    broken: HashMap<Option<SourceKind>, String>,
+    /// Android setup (spec "Setup", states 1 to 4).
+    flow: Flow,
+    /// Android devices in their first start's compile ("Preparing").
+    preparing: HashSet<Target>,
     press: Option<Press>,
     pushed: Pushed,
     ticking: bool,
@@ -789,7 +944,9 @@ impl DeviceCtl {
             splitting: false,
             minimised: false,
             occluded: false,
-            broken: None,
+            broken: HashMap::new(),
+            flow: Flow::Idle,
+            preparing: HashSet::new(),
             press: None,
             pushed: Pushed::default(),
             ticking: false,
@@ -814,10 +971,11 @@ impl DeviceCtl {
         self.src = Some(Src::Other(source));
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
-    /// The real simulator (macOS on Apple silicon): `starter` makes the sim host when a device panel first needs it,
-    /// once the Xcode pick (`DeviceMsg::Xcode`) found an Xcode. `booted` is `<profile>/device/booted.json`; `spawn`
-    /// shuts devices down at quit, detached.
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))] // only the macOS and Windows installs use it
+    /// The real sources: `starter` makes the sim host (macOS on Apple silicon, once the Xcode pick found an Xcode)
+    /// and the emu host (where `android`) when a device panel first needs them. `booted` is
+    /// `<profile>/device/booted.json`; `spawn` shuts simulators down at quit, detached, and `emu_spawn` Android
+    /// emulators.
     pub fn install_real(
         &mut self,
         starter: Starter,
@@ -827,15 +985,35 @@ impl DeviceCtl {
         self.src = None;
         self.real = Some(Real {
             starter,
+            ios: real_platform(),
             xcode: None,
-            running: false,
+            android: false,
+            sdk: None,
             idle_since: None,
             booted_path,
             spawn,
+            emu_spawn: None,
         });
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install uses it
+    /// Android devices can run here (Windows; macOS on Apple silicon): the emu host is started with the first device
+    /// panel, `emu_spawn` shuts the emulators Flare booted down at quit.
+    pub fn install_android(&mut self, emu_spawn: EmuShutdown) {
+        if let Some(r) = self.real.as_mut() {
+            r.android = true;
+            r.emu_spawn = Some(emu_spawn);
+        }
+    }
+
+    /// Tests: iOS simulators can (or cannot) run here, whatever this computer is.
+    #[cfg(test)]
+    pub fn set_ios(&mut self, on: bool) {
+        if let Some(r) = self.real.as_mut() {
+            r.ios = on;
+        }
+    }
+
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))] // only the real installs use it
     /// The wake the source's threads call after each event: one `UiMsg::Device(Wake)` queued at most.
     pub fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
         let gate = Arc::clone(&self.wake_gate);
@@ -857,22 +1035,38 @@ impl DeviceCtl {
         self.src.is_some() || self.real.is_some()
     }
 
-    /// The tab menu's Device panel entry: the fake source (`--e2e`), or the real one where Xcode was found.
-    pub fn menu_offered(&self) -> bool {
-        if matches!(self.src, Some(Src::Fake(_))) {
-            return true;
-        }
-        let xcode = self.real.as_ref().and_then(|r| r.xcode.as_ref()).map(|x| {
+    /// iPhone simulators are offered: macOS on Apple silicon with an Xcode found.
+    fn ios_offered(&self) -> bool {
+        let Some(r) = &self.real else { return false };
+        let xcode = r.xcode.as_ref().map(|x| {
             if x.is_some() {
                 self.xcode
             } else {
                 Xcode::Missing
             }
         });
-        self.real.is_some() && menu_entry_offered(cfg!(target_os = "macos"), real_platform(), xcode)
+        r.ios && menu_entry_offered(cfg!(target_os = "macos"), real_platform(), xcode)
     }
 
-    /// The Xcode pick answered: the setup state follows, and the simulators booted in an earlier run are known.
+    /// Android devices are offered: on Windows always (Flare can set the emulator up, spec "Setup"), on the Mac once an
+    /// Android SDK is found (setting one up from the panel is Windows only in this version).
+    fn android_offered(&self) -> bool {
+        let Some(r) = &self.real else { return false };
+        r.android
+            && (cfg!(windows)
+                || matches!(r.sdk, Some(AndroidSdk::Ready { .. } | AndroidSdk::TooOld)))
+    }
+
+    /// The tab menu's Device panel entry: the fake source (`--e2e`), or a real one this computer can run.
+    pub fn menu_offered(&self) -> bool {
+        if matches!(self.src, Some(Src::Fake(_))) {
+            return true;
+        }
+        self.ios_offered() || self.android_offered()
+    }
+
+    /// The startup pick answered: the Xcode found (macOS), the Android SDK found, and the devices booted in an earlier
+    /// run (`booted.json`).
     pub fn on_xcode(&mut self, answer: XcodeAnswer) {
         let Some(real) = self.real.as_mut() else {
             return;
@@ -887,12 +1081,17 @@ impl DeviceCtl {
                 );
                 self.xcode = Xcode::Ready;
             }
-            None => {
+            None if real.ios => {
                 log::info!("device: no Xcode found: the device panel says it needs Xcode");
                 self.xcode = Xcode::Missing;
             }
+            None => self.xcode = Xcode::Missing,
         }
         real.xcode = Some(answer.xcode);
+        if let Some(sdk) = answer.android {
+            log::info!("device: Android SDK: {sdk:?}");
+            real.sdk = Some(sdk);
+        }
         for (u, at) in answer.booted.devices {
             self.booted.record(&u, at);
         }
@@ -903,36 +1102,55 @@ impl DeviceCtl {
         Some(self.real.as_ref()?.xcode.clone()??.app)
     }
 
-    /// Starts the real source if it is installed, found an Xcode and is not running.
+    /// Starts each real source that is installed, can run and is not running.
     fn ensure_source(&mut self) {
-        if self.src.is_some() {
+        if matches!(self.src, Some(Src::Fake(_) | Src::Other(_))) {
             return;
         }
+        let want_emu = self.android_offered();
         let Some(real) = self.real.as_mut() else {
             return;
         };
-        let Some(Some(xcode)) = real.xcode.clone() else {
+        let xcode = real.xcode.clone().flatten().filter(|_| real.ios);
+        let Src::Real(multi) = self.src.get_or_insert_with(|| Src::Real(Box::default())) else {
             return;
         };
-        let Some(started) = (real.starter)(&SourceSetup::Xcode(xcode)) else {
-            log::warn!("device: the sim host cannot start in this build");
-            return;
-        };
-        real.running = true;
+        if let Some(x) = xcode
+            && !multi.has(SourceKind::Sim)
+        {
+            match (real.starter)(&SourceSetup::Xcode(x)) {
+                Some(started) => {
+                    #[cfg(target_os = "macos")]
+                    self.frames.borrow_mut().set_source(started.ring);
+                    multi.set(SourceKind::Sim, Some(started.source));
+                    log::info!("device: the sim host is started");
+                }
+                None => log::warn!("device: the sim host cannot start in this build"),
+            }
+        }
+        if want_emu && !multi.has(SourceKind::Emu) {
+            match (real.starter)(&SourceSetup::Android) {
+                Some(started) => {
+                    multi.set(SourceKind::Emu, Some(started.source));
+                    log::info!("device: the emu host is started");
+                }
+                None => log::warn!("device: the emu host cannot start in this build"),
+            }
+        }
         real.idle_since = None;
-        #[cfg(target_os = "macos")]
-        self.frames.borrow_mut().set_source(started.ring);
-        self.src = Some(Src::Other(started.source));
-        log::info!("device: the sim host is started");
+        if multi.is_empty() {
+            self.src = None;
+        }
     }
 
-    /// No device panel for `IDLE_MS`: the sim host stops (it is told `quit`; the guard ends it either way).
+    /// No device panel for `IDLE_MS`: the hosts stop (each is told `quit`; its guard ends it either way).
     fn idle(&mut self, has_panels: bool) {
         let now = self.now();
+        let running = matches!(self.src, Some(Src::Real(_)));
         let Some(real) = self.real.as_mut() else {
             return;
         };
-        if has_panels || !real.running {
+        if has_panels || !running {
             real.idle_since = None;
             return;
         }
@@ -946,16 +1164,25 @@ impl DeviceCtl {
         if now.saturating_sub(since) < IDLE_MS {
             return;
         }
-        real.running = false;
         real.idle_since = None;
         self.stop_source();
-        log::info!("device: no device panel for two minutes: the sim host stops");
+        log::info!("device: no device panel for two minutes: the device hosts stop");
     }
 
-    /// Drops the running source (its `Drop` tells the sim host to quit) and what it held.
+    /// Drops the running sources (their `Drop` tells each host to quit) and what they held. The frame thread lets go
+    /// of every Android region first, so their files can go.
     fn stop_source(&mut self) {
         #[cfg(target_os = "macos")]
         self.frames.borrow_mut().set_source(None);
+        let emus: Vec<Target> = self
+            .devs
+            .keys()
+            .filter(|t| t.source() == SourceKind::Emu)
+            .cloned()
+            .collect();
+        for t in emus {
+            self.frames.borrow_mut().region().release(&t);
+        }
         self.src = None;
         self.hello_logged = false;
         self.pending.clear();
@@ -963,7 +1190,14 @@ impl DeviceCtl {
         self.devices = None;
         self.listing = false;
         self.relist_at = None;
-        self.broken = None;
+        self.broken.clear();
+        self.preparing.clear();
+        if matches!(
+            self.flow,
+            Flow::Planning | Flow::Downloading { .. } | Flow::Cancelling
+        ) {
+            self.flow = Flow::Idle;
+        }
     }
 
     /// The fake source, when it is the one in use (tests and the e2e probe).
@@ -1120,6 +1354,10 @@ impl DeviceCtl {
             .cloned()
             .collect();
         for t in gone {
+            // An Android region is let go by the frame thread before the emu host's client deletes its file.
+            if t.source() == SourceKind::Emu {
+                self.frames.borrow_mut().region().release(&t);
+            }
             if let Some(s) = self.source() {
                 s.detach(&t);
             }
@@ -1199,8 +1437,8 @@ impl DeviceCtl {
 
     /// Reads every event the source has (the fake answers at once; the simulator's threads wake the window).
     pub fn drain(&mut self) {
-        while let Some(ev) = self.src.as_ref().and_then(|s| s.events().try_recv().ok()) {
-            self.on_event(ev);
+        while let Some((kind, ev)) = self.src.as_mut().and_then(Src::next) {
+            self.on_event(kind, ev);
         }
         if !self.hello_logged
             && let Some(h) = self.src.as_ref().and_then(|s| s.get_ref().hello())
@@ -1264,10 +1502,10 @@ impl DeviceCtl {
         std::thread::spawn(move || b.save(&path));
     }
 
-    fn on_event(&mut self, ev: SourceEvent) {
+    fn on_event(&mut self, kind: Option<SourceKind>, ev: SourceEvent) {
         // Only a frame (or the changed count) leaves the panel as it is: the notifier draws it.
         let quiet = match &ev {
-            SourceEvent::Frame { target, .. } => self
+            SourceEvent::Frame { target, .. } | SourceEvent::Region { target, .. } => self
                 .devs
                 .get(target)
                 .is_some_and(|d| d.ring_frame || !d.attached),
@@ -1287,14 +1525,17 @@ impl DeviceCtl {
                         sort_devices(&mut d);
                         // Rule 1319: a device Flare booted stays Flare's until it is seen shut down or gone.
                         let mut forgot = false;
+                        // Only a kind whose source answered can say a device is gone.
                         for (u, _) in self.booted.devices.clone() {
-                            let seen = d.iter().find(|x| x.target.id() == u);
-                            if seen.is_none_or(|x| x.state == DeviceState::Shutdown) {
+                            let listed =
+                                target::parse(&u).is_some_and(|t| self.lists_kind(t.source()));
+                            let seen = d.iter().find(|x| x.target.name() == u);
+                            if listed && seen.is_none_or(|x| x.state == DeviceState::Shutdown) {
                                 forgot |= self.booted.forget(&u);
                             }
                         }
                         for x in &mut d {
-                            x.booted_by_flare = self.booted.has(x.target.id());
+                            x.booted_by_flare = self.booted.has(&x.target.name());
                         }
                         if forgot {
                             self.save_booted();
@@ -1355,6 +1596,7 @@ impl DeviceCtl {
                     (Pending::Agent(w), r) => self.on_agent_answer(w, r),
                     (Pending::Boot(t), r) => {
                         self.booting.remove(&t);
+                        self.preparing.remove(&t);
                         match r {
                             Err(e) => {
                                 self.agent_event(&AgentEvent::Booted(
@@ -1366,7 +1608,7 @@ impl DeviceCtl {
                             Ok(_) => {
                                 // Flare booted it: shut down at quit (rule 1319), also after a crash; only such a
                                 // device may the agent shut down (rule 1322). The file is the real source's.
-                                if self.booted.record(t.id(), unix_ms()) && self.real.is_some() {
+                                if self.booted.record(&t.name(), unix_ms()) && self.real.is_some() {
                                     self.save_booted();
                                 }
                                 self.agent_event(&AgentEvent::Booted(t.clone(), Ok(())));
@@ -1387,6 +1629,7 @@ impl DeviceCtl {
                         Err(e) => self.fail(&t, e.message),
                         Ok(_) => self.settled(&t, DeviceState::Shutdown),
                     },
+                    (Pending::Setup(step), r) => self.on_setup_answer(step, r),
                 }
             }
             SourceEvent::Frames { target, screen, .. } => {
@@ -1411,9 +1654,16 @@ impl DeviceCtl {
                     d.raw = Some(RawPicture { seq, size_px, rgba });
                 }
             }
-            // A frame in an Android device's region (rule 1363): the frame thread copies it into the ring from
-            // Android plan PR A4. No source sends it yet.
-            SourceEvent::Region { .. } => {}
+            // A frame in an Android device's region (rule 1364): the frame thread already copied it into the ring and
+            // woke the window; here the panel only learns that the device has a picture.
+            SourceEvent::Region { target, .. } => {
+                if let Some(d) = self.devs.get_mut(&target)
+                    && d.attached
+                {
+                    d.ring_frame = true;
+                }
+            }
+            SourceEvent::Setup(e) => self.on_setup_event(e),
             // A ring frame: the notifier takes the newest in its next render (`DeviceFrames`).
             SourceEvent::Frame { target, .. } => {
                 if let Some(d) = self.devs.get_mut(&target)
@@ -1438,6 +1688,7 @@ impl DeviceCtl {
                 match state {
                     DeviceState::Booted => {
                         self.booting.remove(&target);
+                        self.preparing.remove(&target);
                         // Booted by someone else meanwhile: a boot call waiting for it answers too.
                         self.agent_event(&AgentEvent::Booted(target.clone(), Ok(())));
                     }
@@ -1447,7 +1698,7 @@ impl DeviceCtl {
                     }
                     DeviceState::Shutdown | DeviceState::ShuttingDown => {
                         self.booting.remove(&target);
-                        if state == DeviceState::Shutdown && self.booted.forget(target.id()) {
+                        if state == DeviceState::Shutdown && self.booted.forget(&target.name()) {
                             self.save_booted();
                         }
                         if let Some(d) = self.devs.get_mut(&target) {
@@ -1481,7 +1732,7 @@ impl DeviceCtl {
                     0,
                 );
                 self.agent_event(&AgentEvent::Broken(why.clone()));
-                self.broken = Some(why);
+                self.broken.insert(kind, why);
             }
         }
     }
@@ -1498,14 +1749,8 @@ impl DeviceCtl {
     /// What the tab's device panel shows now.
     pub fn setup_of(&self, tab: &str) -> Option<Setup> {
         let t = self.tabs.get(tab)?;
-        // The Xcode pick has not answered yet.
-        if self.real.as_ref().is_some_and(|r| r.xcode.is_none()) {
-            return Some(Setup::Reading);
-        }
-        match self.xcode {
-            Xcode::Missing => return Some(Setup::NoXcode),
-            Xcode::NotSetUp => return Some(Setup::NotSetUp),
-            Xcode::Ready => {}
+        if let Some(gate) = self.gate(target::parse(&t.target).map(|t| t.source())) {
+            return Some(gate);
         }
         if let Some(why) = t.failed.as_ref().or(self.list_error.as_ref()) {
             return Some(Setup::Failed { why: why.clone() });
@@ -1527,6 +1772,9 @@ impl DeviceCtl {
             return Some(Setup::Reading);
         };
         let name = d.name.clone();
+        if self.preparing.contains(&target) {
+            return Some(Setup::Preparing { name });
+        }
         Some(match d.state {
             DeviceState::Booting => Setup::Booting {
                 secs: self
@@ -1543,6 +1791,100 @@ impl DeviceCtl {
         })
     }
 
+    /// The setup state that comes before any device of `kind` (None: the panel shows the device list), or None when
+    /// that kind is ready.
+    fn gate(&self, kind: Option<SourceKind>) -> Option<Setup> {
+        let Some(real) = &self.real else {
+            // The fake or a test's own source: the iOS states, as before.
+            return self.xcode_gate();
+        };
+        let ios = || {
+            if real.xcode.is_none() {
+                Some(Setup::Reading)
+            } else {
+                self.xcode_gate()
+            }
+        };
+        match kind {
+            Some(SourceKind::Sim) => ios(),
+            Some(SourceKind::Emu) => self.android_gate(),
+            // The list: one with both kinds on a Mac (iPhones first), Android only on Windows (spec "Setup", 5).
+            None if real.ios => match ios() {
+                Some(Setup::Reading) => Some(Setup::Reading),
+                Some(s) if !(self.android_offered() && self.android_gate().is_none()) => Some(s),
+                _ => None,
+            },
+            None if real.android => self.android_gate(),
+            None => ios(),
+        }
+    }
+
+    fn xcode_gate(&self) -> Option<Setup> {
+        match self.xcode {
+            Xcode::Missing => Some(Setup::NoXcode),
+            Xcode::NotSetUp => Some(Setup::NotSetUp),
+            Xcode::Ready => None,
+        }
+    }
+
+    /// Android's setup states (spec "Setup", states 1 to 4), or None once its emulator can run here.
+    fn android_gate(&self) -> Option<Setup> {
+        let real = self.real.as_ref()?;
+        match &self.flow {
+            Flow::Planning | Flow::Cancelling | Flow::TurningOn => return Some(Setup::Reading),
+            Flow::Licence {
+                text, download_mb, ..
+            } => {
+                return Some(Setup::Licence {
+                    text: text.clone(),
+                    download_mb: *download_mb,
+                });
+            }
+            Flow::Downloading { done_mb, total_mb } => {
+                return Some(Setup::Downloading {
+                    done_mb: *done_mb,
+                    total_mb: *total_mb,
+                });
+            }
+            Flow::Failed(why) => return Some(Setup::Failed { why: why.clone() }),
+            Flow::RestartNeeded => return Some(Setup::RestartNeeded),
+            Flow::Idle => {}
+        }
+        match real.sdk? {
+            AndroidSdk::Missing | AndroidSdk::TooOld => Some(Setup::SdkMissing),
+            AndroidSdk::Ready { .. }
+                if cfg!(windows) && self.emu_fact("accel_usable") == Some("false".into()) =>
+            {
+                Some(Setup::NoHypervisor)
+            }
+            AndroidSdk::Ready { .. } => None,
+        }
+    }
+
+    /// One of the emu host's facts (its `hello`), when it runs.
+    fn emu_fact(&self, key: &str) -> Option<String> {
+        let Some(Src::Real(m)) = &self.src else {
+            return None;
+        };
+        m.hello_of(SourceKind::Emu)?.facts.get(key).cloned()
+    }
+
+    /// The source of `kind` answers lists (a real source of another kind that is not running says nothing).
+    fn lists_kind(&self, kind: SourceKind) -> bool {
+        match &self.src {
+            Some(Src::Real(m)) => m.has(kind),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Why `t`'s source gives no live frames (rule 1312), if it does not.
+    fn broken_for(&self, t: Option<&Target>) -> Option<&String> {
+        self.broken
+            .get(&None)
+            .or_else(|| self.broken.get(&Some(t?.source())))
+    }
+
     /// The device the tab's panel shows, if it names one.
     fn target_of(&self, tab: &str) -> Option<Target> {
         target::parse(&self.tabs.get(tab)?.target)
@@ -1552,7 +1894,8 @@ impl DeviceCtl {
     fn drives(&self, tab: &str) -> Option<Target> {
         let t = self.target_of(tab)?;
         let d = self.devs.get(&t)?;
-        (d.driver.as_deref() == Some(tab) && d.attached && self.broken.is_none()).then_some(t)
+        (d.driver.as_deref() == Some(tab) && d.attached && self.broken_for(Some(&t)).is_none())
+            .then_some(t)
     }
 
     /// The screen of the shown device in points, in its current orientation.
@@ -1583,6 +1926,8 @@ impl DeviceCtl {
                 app.set_panel_device_still("".into());
                 app.set_panel_device_slow("".into());
                 app.set_panel_device_foot("".into());
+                app.set_panel_device_detail("".into());
+                app.set_panel_device_has_cancel(false);
             }
             self.frames.borrow_mut().show(None);
             self.push_indicators(app);
@@ -1596,13 +1941,17 @@ impl DeviceCtl {
         let mut pictured = false;
         let mut ring = None;
         let mut turn = 0;
+        let broken = self.broken_for(target.as_ref()).cloned();
         if let Some(t) = &target
             && let Some(d) = self.devs.get_mut(t)
         {
-            // The ring's frames: the notifier draws them; Slint turns the portrait picture (spike S5).
-            if d.ring_frame && d.attached && !d.paused && self.broken.is_none() {
+            // The ring's frames: the notifier draws them; Slint turns the simulator's portrait picture (spike S5). An
+            // Android frame comes turned already (a landscape frame is wider than high).
+            if d.ring_frame && d.attached && !d.paused && broken.is_none() {
                 ring = Some(t.clone());
-                turn = d.screen.map_or(0, |s| turn_degrees(s.orientation));
+                if t.source() == SourceKind::Sim {
+                    turn = d.screen.map_or(0, |s| turn_degrees(s.orientation));
+                }
             }
             if let Some(raw) = d.raw.take() {
                 let o = d.screen.map(|s| s.orientation).unwrap_or_default();
@@ -1645,6 +1994,19 @@ impl DeviceCtl {
         app.set_panel_device_state(view.state);
         app.set_panel_device_line(view.line.into());
         app.set_panel_device_button(view.button.map_or("", SetupButton::label).into());
+        // The licence screen's second button and Google's licence text under its line (spec "Setup", 2).
+        app.set_panel_device_has_cancel(view.cancel);
+        let detail = match &setup {
+            Setup::Licence { text, .. } => text.as_str(),
+            _ => "",
+        };
+        app.set_panel_device_detail(detail.into());
+        // An Android device's More menu has Back and Recents instead of Shake (rule 1371).
+        app.set_panel_device_android(
+            target
+                .as_ref()
+                .is_some_and(|t| t.source() == SourceKind::Emu),
+        );
         app.set_panel_device_has_frame(pictured);
         if !pictured {
             app.set_panel_device_frame(Image::default());
@@ -1653,7 +2015,11 @@ impl DeviceCtl {
         let pt = target.as_ref().and_then(|t| self.screen_pt(t));
         app.set_panel_device_pt_w(pt.map_or(0.0, |s| s.w as f32));
         app.set_panel_device_pt_h(pt.map_or(0.0, |s| s.h as f32));
-        app.set_panel_device_radius_pt(RADIUS_PT as f32);
+        let radius = match target.as_ref().map(Target::source) {
+            Some(SourceKind::Emu) => RADIUS_DP,
+            _ => RADIUS_PT,
+        };
+        app.set_panel_device_radius_pt(radius as f32);
         let rows: Vec<(String, String, bool)> = if view.state == 2 {
             self.devices
                 .iter()
@@ -1676,7 +2042,7 @@ impl DeviceCtl {
             self.pushed.rows = rows;
         }
         let live = view.state == 0;
-        let still = match (&self.broken, live) {
+        let still = match (&broken, live) {
             (Some(why), true) => {
                 format!("Live view unavailable: {why}. Showing a picture every half second.")
             }
@@ -1685,7 +2051,7 @@ impl DeviceCtl {
         app.set_panel_device_still(still.into());
         // The slow mark: a CPU picture (the fake source), or the ring's import refused. Never on the zero-copy path.
         let slow = live
-            && self.broken.is_none()
+            && broken.is_none()
             && match ring_path {
                 Some(p) => p == FramePath::Cpu,
                 None => true,
@@ -1961,6 +2327,12 @@ impl DeviceCtl {
                 let Some(t) = self.drives(&tab) else {
                     return Vec::new();
                 };
+                // The header's Lock button is Android's Power button (spec "Input": the iOS panel's buttons).
+                let b = if b == Button::Lock && t.source() == SourceKind::Emu {
+                    Button::Power
+                } else {
+                    b
+                };
                 // Rule 1371: a button this device does not have does nothing.
                 if !t.source().has(b) {
                     return Vec::new();
@@ -1995,6 +2367,9 @@ impl DeviceCtl {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.failed = None;
                 }
+                if matches!(self.flow, Flow::Failed(_)) {
+                    self.flow = Flow::Idle;
+                }
                 self.list_error = None;
                 if let Some(t) = self.target_of(&tab)
                     && let Some(d) = self.devs.get_mut(&t)
@@ -2003,17 +2378,142 @@ impl DeviceCtl {
                 }
                 self.list();
             }
-            // Android's setup buttons act from Android plan PR A2b and A4; no state shows them yet.
-            SetupButton::SetUp
-            | SetupButton::AcceptAndSetUp
-            | SetupButton::Cancel
-            | SetupButton::TurnOn => {
-                log::info!("device panel: {} is not wired yet", button.label());
-                return Vec::new();
+            // Android setup (rule 1361): nothing is downloaded before [Accept and set up].
+            SetupButton::SetUp => self.setup_step(SetupStep::Plan, SetupReq::Plan, Flow::Planning),
+            SetupButton::AcceptAndSetUp => {
+                if let Flow::Licence {
+                    hashes,
+                    download_mb,
+                    ..
+                } = self.flow.clone()
+                {
+                    self.setup_step(
+                        SetupStep::Start { accepted: hashes },
+                        SetupReq::Start,
+                        Flow::Downloading {
+                            done_mb: 0,
+                            total_mb: download_mb,
+                        },
+                    );
+                }
+            }
+            SetupButton::Cancel => self.setup_cancel(),
+            SetupButton::TurnOn => {
+                self.setup_step(
+                    SetupStep::TurnOnHypervisor,
+                    SetupReq::TurnOn,
+                    Flow::TurningOn,
+                );
             }
         }
         self.drain();
         Vec::new()
+    }
+
+    /// The licence screen's [Cancel] (the second button): back to "Set up", nothing downloaded.
+    pub fn cancel_clicked(&mut self) -> Vec<Effect> {
+        self.setup_cancel();
+        self.drain();
+        Vec::new()
+    }
+
+    /// Sends one step of Android setup to the emu host and moves the flow on; with no emu host it says why.
+    fn setup_step(&mut self, step: SetupStep, req: SetupReq, flow: Flow) {
+        match self.source().and_then(|s| s.setup(step)) {
+            Some(id) => {
+                self.pending.insert(id, Pending::Setup(req));
+                self.flow = flow;
+            }
+            None => {
+                self.flow =
+                    Flow::Failed("Android setup is not available in this Flare.".to_string());
+            }
+        }
+    }
+
+    /// [Cancel]: the licence goes away; a download stops (its answer ends it, nothing half-unpacked is left).
+    fn setup_cancel(&mut self) {
+        match self.flow {
+            Flow::Licence { .. } | Flow::Failed(_) => self.flow = Flow::Idle,
+            Flow::Downloading { .. } => {
+                if let Some(id) = self.source().and_then(|s| s.setup(SetupStep::Cancel)) {
+                    self.pending.insert(id, Pending::Setup(SetupReq::Cancel));
+                }
+                self.flow = Flow::Cancelling;
+            }
+            _ => {}
+        }
+    }
+
+    /// An answer to a step of Android setup.
+    fn on_setup_answer(
+        &mut self,
+        req: SetupReq,
+        r: Result<Answer, flare_device::source::SourceError>,
+    ) {
+        match (req, r) {
+            (SetupReq::Cancel, _) => {}
+            (SetupReq::Plan, Ok(Answer::Value(v))) => {
+                self.flow = plan_flow(&v);
+                if self.flow == Flow::Idle {
+                    // Nothing to fetch: the SDK is there after all.
+                    self.sdk_found(AndroidSdk::Ready { avds: 1 });
+                }
+            }
+            (SetupReq::Start, Ok(Answer::Value(v))) => {
+                let facts = &v["facts"];
+                log::info!("device: Android setup done: {v}");
+                let sdk = facts["sdk"]
+                    .as_str()
+                    .and_then(|f| AndroidSdk::from_fact(f, 1))
+                    .unwrap_or(AndroidSdk::Ready { avds: 1 });
+                self.flow = Flow::Idle;
+                self.sdk_found(sdk);
+            }
+            (SetupReq::TurnOn, Ok(Answer::Value(v))) => {
+                self.flow = if v["restart"].as_bool().unwrap_or(true) {
+                    Flow::RestartNeeded
+                } else {
+                    Flow::Idle
+                };
+            }
+            (SetupReq::Start, Err(e)) if e.fail == flare_device::job::Fail::Interrupted => {
+                self.flow = Flow::Idle;
+            }
+            (_, Err(e)) => {
+                log::warn!("device: Android setup: {}", e.message);
+                self.flow = Flow::Failed(e.message);
+            }
+            (_, Ok(_)) => self.flow = Flow::Idle,
+        }
+    }
+
+    /// The Android SDK is known again (after setup): the list is read again with it.
+    fn sdk_found(&mut self, sdk: AndroidSdk) {
+        if let Some(r) = self.real.as_mut() {
+            r.sdk = Some(sdk);
+        }
+        self.devices = None;
+        self.list_error = None;
+        self.list();
+    }
+
+    /// Android setup's progress, or a new device's first-boot compile.
+    fn on_setup_event(&mut self, e: flare_device::wire::SetupEvent) {
+        use flare_device::wire::SetupEvent as E;
+        match e {
+            E::Download {
+                done_mb, total_mb, ..
+            } => {
+                if matches!(self.flow, Flow::Downloading { .. } | Flow::Planning) {
+                    self.flow = Flow::Downloading { done_mb, total_mb };
+                }
+            }
+            E::Unpack { .. } => {}
+            E::Preparing { target } => {
+                self.preparing.insert(target);
+            }
+        }
     }
 
     /// Boots a device the person asked for (never on restore, never on its own: rule 1317's half here).
@@ -2072,7 +2572,9 @@ impl DeviceCtl {
         if !self.agent.effects.is_empty() {
             self.state_changed = true;
         }
-        let framed = std::mem::take(&mut self.new_frame);
+        // A ring frame (iOS), or a region frame the frame thread made ready (Android): a redraw draws it.
+        let region = self.frames.borrow_mut().region().take_new();
+        let framed = std::mem::take(&mut self.new_frame) || region;
         if std::mem::take(&mut self.state_changed) {
             Woken::Refresh
         } else if framed {
@@ -2086,35 +2588,61 @@ impl DeviceCtl {
 
     /// Quit (rule 1319): the sim host is told to quit, and with the setting on the simulators Flare booted are shut
     /// down by one detached `simctl shutdown` that quit never waits for. A device Flare did not boot is never shut
-    /// down. Returns the udids handed to it.
+    /// down. The Android emulators Flare booted are asked to shut down the same way (rule 1366): one detached
+    /// `flare-emu-host --shutdown <avd>...`. Returns the udids and AVD names handed over.
     pub fn quit(&mut self, shutdown_on: bool) -> Vec<String> {
         let Some(real) = self.real.as_ref() else {
             return Vec::new();
         };
         let dev_dir = real.xcode.clone().flatten().map(|x| x.developer_dir());
         let spawn = Rc::clone(&real.spawn);
+        let emu_spawn = real.emu_spawn.clone();
         let path = real.booted_path.clone();
         self.stop_source();
         if !shutdown_on {
             return Vec::new();
         }
-        let Some(dev_dir) = dev_dir else {
-            return Vec::new();
-        };
-        let udids: Vec<String> = self.booted.devices.iter().map(|(u, _)| u.clone()).collect();
-        if udids.is_empty() {
-            return udids;
+        let udids: Vec<String> = self
+            .booted
+            .of(SourceKind::Sim)
+            .iter()
+            .map(|t| t.id().to_string())
+            .collect();
+        let avds: Vec<String> = self
+            .booted
+            .of(SourceKind::Emu)
+            .iter()
+            .map(|t| t.id().to_string())
+            .collect();
+        let mut handed = Vec::new();
+        if let Some(dev_dir) = dev_dir
+            && !udids.is_empty()
+        {
+            log::info!(
+                "device: shutting down {} simulator(s) Flare booted",
+                udids.len()
+            );
+            spawn(&dev_dir, &udids);
+            handed.extend(udids);
         }
-        log::info!(
-            "device: shutting down {} simulator(s) Flare booted",
-            udids.len()
-        );
-        spawn(&dev_dir, &udids);
+        if let Some(emu_spawn) = emu_spawn
+            && !avds.is_empty()
+        {
+            log::info!(
+                "device: shutting down {} Android emulator(s) Flare booted",
+                avds.len()
+            );
+            emu_spawn(&avds);
+            handed.extend(avds);
+        }
+        if handed.is_empty() {
+            return handed;
+        }
         self.booted = Booted::default();
         if let Some(p) = path {
             self.booted.save(&p);
         }
-        udids
+        handed
     }
 
     // ---- the probe ------------------------------------------------------------------------------------
@@ -2144,6 +2672,9 @@ impl DeviceCtl {
             })
             .collect();
         let fr = self.frames.borrow();
+        let (copied, dropped, p50, p99) = fr.region_stats();
+        let region =
+            json!({"copied": copied, "dropped": dropped, "copy_ms_p50": p50, "copy_ms_p99": p99});
         json!({
             "offered": self.offered(),
             "menu": self.menu_offered(),
@@ -2156,6 +2687,7 @@ impl DeviceCtl {
                 .and_then(|s| s.get_ref().hello())
                 .and_then(|h| serde_json::to_value(h).ok()),
             "ring_frames": fr.frames(),
+            "region": region,
             "slots_held": fr.held(),
             "booted_by_flare": self.booted.devices.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>(),
             "tab": tab,
@@ -2374,7 +2906,9 @@ mod tests {
         let (_spawned, spawn) = recorder();
         let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
         d.install_real(starter_of(fake), None, spawn);
+        d.set_ios(true);
         d.on_xcode(XcodeAnswer {
+            android: None,
             xcode: Some(found_xcode()),
             booted: Booted::default(),
         });
@@ -2410,14 +2944,16 @@ mod tests {
         let (spawned, spawn) = recorder();
         let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
         d.install_real(starter_of(fake), None, spawn);
+        d.set_ios(true);
         assert!(
             d.offered(),
             "the kind is offered before the pick answers (restore keeps the panel)"
         );
         d.on_xcode(XcodeAnswer {
+            android: None,
             xcode: Some(found_xcode()),
             booted: Booted {
-                devices: vec![(c.into(), 1)],
+                devices: vec![(format!("sim/{c}"), 1)],
             },
         });
         d.ensure_source();
@@ -2456,7 +2992,9 @@ mod tests {
         let (spawned, spawn) = recorder();
         let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
         d.install_real(starter_of(fake), None, spawn);
+        d.set_ios(true);
         d.on_xcode(XcodeAnswer {
+            android: None,
             xcode: Some(found_xcode()),
             booted: Booted::default(),
         });
@@ -2507,8 +3045,11 @@ mod tests {
     #[test]
     fn booted_json_round_trips_and_skips_what_is_no_device() {
         let mut b = Booted::default();
-        assert!(b.record("00000000-0000-4000-8000-00000000000b", 7));
-        assert!(!b.record("00000000-0000-4000-8000-00000000000b", 8), "once");
+        assert!(b.record("sim/00000000-0000-4000-8000-00000000000b", 7));
+        assert!(
+            !b.record("sim/00000000-0000-4000-8000-00000000000b", 8),
+            "once"
+        );
         let v = b.to_json();
         assert_eq!(Booted::from_json(&v), b);
         let odd = serde_json::json!({"devices": [{"udid": "../etc"}, {"udid": 3}, {"udid": "00000000-0000-4000-8000-00000000000c"}]});
@@ -2517,7 +3058,7 @@ mod tests {
             Booted::from_json(&serde_json::json!("nonsense")),
             Booted::default()
         );
-        assert!(b.forget("00000000-0000-4000-8000-00000000000b"));
+        assert!(b.forget("sim/00000000-0000-4000-8000-00000000000b"));
         assert!(b.devices.is_empty());
     }
 
@@ -2588,8 +3129,10 @@ mod tests {
         let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
         assert!(!d.menu_offered());
         d.install_real(starter_of(FakeSource::default()), None, recorder().1);
+        d.set_ios(true);
         assert!(!d.menu_offered(), "before the pick answers");
         d.on_xcode(XcodeAnswer {
+            android: None,
             xcode: Some(found_xcode()),
             booted: Booted::default(),
         });
@@ -2600,6 +3143,7 @@ mod tests {
         );
         let mut none = DeviceCtl::new(post(), Rc::new(|| 0), None);
         none.install_real(starter_of(FakeSource::default()), None, recorder().1);
+        none.set_ios(true);
         none.on_xcode(XcodeAnswer::default());
         assert!(!none.menu_offered(), "no Xcode, no entry");
         assert_eq!(none.xcode, Xcode::Missing);
@@ -2645,5 +3189,210 @@ mod tests {
             names,
             ["iPhone 18 Pro", "iPhone 18", "iPhone 17", "iPad Pro"]
         );
+    }
+
+    /// The Android source's place taken by the Android fake: what `install_real` starts for Android.
+    fn android_starter(fake: FakeSource) -> Starter {
+        let mut fake = Some(fake);
+        Box::new(move |setup| match setup {
+            SourceSetup::Android => Some(Started {
+                source: Box::new(fake.take()?),
+                #[cfg(target_os = "macos")]
+                ring: None,
+            }),
+            SourceSetup::Xcode(_) => None,
+        })
+    }
+
+    type Quits = Rc<RefCell<Vec<Vec<String>>>>;
+
+    /// A controller with only the Android source (as on Windows), the SDK search answered with `sdk`.
+    fn android_ctl(sdk: AndroidSdk) -> (DeviceCtl, Quits) {
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        d.install_real(android_starter(FakeSource::android()), None, recorder().1);
+        d.set_ios(false);
+        let quits: Quits = Rc::default();
+        let q = Rc::clone(&quits);
+        d.install_android(Rc::new(move |avds: &[String]| {
+            q.borrow_mut().push(avds.to_vec());
+        }));
+        d.on_xcode(XcodeAnswer {
+            xcode: None,
+            android: Some(sdk),
+            booted: Booted::default(),
+        });
+        (d, quits)
+    }
+
+    /// The panel on `target` is the front one, shown in `tab`.
+    fn show_tab(d: &mut DeviceCtl, tab: &str, target: &str) {
+        d.tabs.insert(
+            tab.into(),
+            TabDev {
+                target: target.into(),
+                ..TabDev::default()
+            },
+        );
+        d.shown = Some(tab.into());
+    }
+
+    /// Rule 1360 and 1366: an Android device is listed, booted (and remembered as Flare's), and asked to shut down at
+    /// quit by AVD name, detached.
+    #[test]
+    fn an_android_device_boots_and_shuts_down_at_quit() {
+        let (mut d, quits) = android_ctl(AndroidSdk::Ready { avds: 1 });
+        assert!(d.menu_offered());
+        d.ensure_source();
+        d.list();
+        let t = Target::emu("Flare_Pixel").unwrap();
+        assert_eq!(d.state_of(&t), Some(DeviceState::Shutdown));
+        show_tab(&mut d, "t1", "emu/Flare_Pixel");
+        assert_eq!(
+            d.setup_of("t1"),
+            Some(Setup::ShutDown {
+                name: "Flare Pixel".into(),
+                again: false
+            })
+        );
+        d.boot(&t);
+        d.drain();
+        assert_eq!(d.state_of(&t), Some(DeviceState::Booted));
+        assert!(d.booted.has("emu/Flare_Pixel"), "{:?}", d.booted);
+        // Quit: one detached shutdown by AVD name, and the list is emptied.
+        let handed = d.quit(true);
+        assert_eq!(handed, ["Flare_Pixel"]);
+        assert_eq!(*quits.borrow(), [vec!["Flare_Pixel".to_string()]]);
+        assert!(d.booted.devices.is_empty());
+    }
+
+    /// The spec's "Input": an Android panel has the iOS panel's buttons (Lock sends Power) and its own menu buttons
+    /// (Back, Recents), never iOS's Shake (rule 1371).
+    #[test]
+    fn an_android_panel_sends_power_for_lock_and_never_shake() {
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), Some(FakeSource::android()));
+        d.list();
+        let t = Target::emu("Flare_Pixel").unwrap();
+        d.boot(&t);
+        d.drain();
+        show_tab(&mut d, "t1", "emu/Flare_Pixel");
+        if let Some(id) = d.source().map(|s| s.attach(&t)) {
+            d.pending.insert(id, Pending::Attach(t.clone()));
+        }
+        d.devs.entry(t.clone()).or_default().driver = Some("t1".into());
+        d.drain();
+        assert!(d.drives("t1").is_some());
+        for name in ["lock", "back", "recents", "home", "shake"] {
+            d.act(name);
+        }
+        let pressed: Vec<String> = d
+            .fake()
+            .unwrap()
+            .inputs()
+            .iter()
+            .filter_map(|r| match r {
+                flare_device::fake::Recorded::Button(_, b) => Some(b.name().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pressed,
+            ["power", "back", "recents", "home"],
+            "Shake is iOS only"
+        );
+    }
+
+    /// Spec "Setup", states 1 to 3 (rule 1361): [Set up] reads the plan and shows Google's licence with a second
+    /// button; [Cancel] backs out with nothing downloaded; [Accept and set up] carries the licence's hash, shows the
+    /// progress, and ends on the device list.
+    #[cfg(windows)]
+    #[test]
+    fn android_setup_shows_the_licence_then_downloads_then_lists() {
+        let (mut d, _) = android_ctl(AndroidSdk::Missing);
+        assert!(
+            d.menu_offered(),
+            "Windows offers Android before it is set up"
+        );
+        d.ensure_source();
+        show_tab(&mut d, "t1", CHOOSE);
+        assert_eq!(d.setup_of("t1"), Some(Setup::SdkMissing));
+        d.setup_clicked();
+        let Some(Setup::Licence { text, download_mb }) = d.setup_of("t1") else {
+            panic!("{:?}", d.setup_of("t1"))
+        };
+        assert_eq!(text, flare_device::fake::FAKE_LICENCE);
+        assert_eq!(download_mb, 2538);
+        assert!(d.setup_of("t1").unwrap().view(false).cancel);
+        d.cancel_clicked();
+        assert_eq!(
+            d.setup_of("t1"),
+            Some(Setup::SdkMissing),
+            "nothing downloaded"
+        );
+        d.setup_clicked();
+        d.setup_clicked();
+        // The fake said its progress, then answered: the SDK is ready and the list is read.
+        assert_eq!(d.flow, Flow::Idle);
+        assert_eq!(
+            d.real.as_ref().and_then(|r| r.sdk),
+            Some(AndroidSdk::Ready { avds: 1 })
+        );
+        assert_eq!(d.setup_of("t1"), Some(Setup::Choose));
+        // A licence that changed is refused: the panel says why and offers Try again.
+        d.flow = Flow::Licence {
+            text: "new".into(),
+            hashes: vec!["other".into()],
+            download_mb: 1,
+        };
+        d.setup_clicked();
+        assert!(matches!(d.setup_of("t1"), Some(Setup::Failed { .. })));
+        d.setup_clicked();
+        assert_eq!(d.flow, Flow::Idle);
+    }
+
+    /// The setup plan reads as the licence (all of them, with their hashes) or as a line about disk space.
+    #[test]
+    fn a_setup_plan_reads_as_the_licence_or_a_space_line() {
+        let v = serde_json::json!({
+            "needed": true,
+            "licences": [{"text": "A", "hash": "1"}, {"text": "B", "hash": "2"}],
+            "download_mb": 2600,
+            "enough_space": true,
+        });
+        assert_eq!(
+            plan_flow(&v),
+            Flow::Licence {
+                text: "A\n\nB".into(),
+                hashes: vec!["1".into(), "2".into()],
+                download_mb: 2600
+            }
+        );
+        let full = serde_json::json!({"needed": true, "enough_space": false, "disk_mb": 8000});
+        assert_eq!(
+            plan_flow(&full),
+            Flow::Failed("Android setup needs about 8.0 GB of free disk space.".into())
+        );
+        assert_eq!(plan_flow(&serde_json::json!({"needed": false})), Flow::Idle);
+    }
+
+    /// Rule 1366: `booted.json` holds both kinds; an old file's simulator entries still read.
+    #[test]
+    fn booted_json_holds_both_kinds() {
+        let mut b = Booted::default();
+        b.record("sim/00000000-0000-4000-8000-00000000000a", 1);
+        b.record("emu/Flare_Pixel", 2);
+        let back = Booted::from_json(&b.to_json());
+        assert_eq!(back, b);
+        assert_eq!(
+            back.of(SourceKind::Emu),
+            [Target::emu("Flare_Pixel").unwrap()]
+        );
+        let old = serde_json::json!({"devices": [{"udid": "00000000-0000-4000-8000-00000000000A", "booted_ms": 5}]});
+        assert!(Booted::from_json(&old).has("sim/00000000-0000-4000-8000-00000000000a"));
+        let cmd = emu_shutdown_command(Path::new("flare-emu-host"), &["Flare_Pixel".into()]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, ["--shutdown", "Flare_Pixel"]);
     }
 }

@@ -494,3 +494,88 @@ fn a_refresh_keeps_the_device_list_rows_under_the_pointer() {
         "the same rows model after a refresh"
     );
 }
+
+/// Android setup's licence screen (spec "Setup", 2; Android plan PR A4): its line, Google's licence text in a box
+/// under it, and two buttons, [Accept and set up] and [Cancel], each answering on its own.
+#[test]
+fn the_android_licence_shows_its_text_and_two_buttons() {
+    let s = Setup::Licence {
+        text: "Terms and Conditions\n\nThis is the Android Software Development Kit License Agreement.".into(),
+        download_mb: 2538,
+    };
+    let h = window(1.5);
+    let setups = Rc::new(Cell::new(0));
+    let cancels = Rc::new(Cell::new(0));
+    {
+        let setups = setups.clone();
+        h.comp
+            .on_panel_device_setup(move || setups.set(setups.get() + 1));
+        let cancels = cancels.clone();
+        h.comp
+            .on_panel_device_cancel(move || cancels.set(cancels.get() + 1));
+    }
+    show_setup(&h, &s);
+    let v = s.view(false);
+    h.comp.set_panel_device_has_cancel(v.cancel);
+    if let Setup::Licence { text, .. } = &s {
+        h.comp.set_panel_device_detail(text.as_str().into());
+    }
+    h.advance(0);
+    // The licence box moves the buttons down: a render lays it out before their place is read.
+    let _ = h.render();
+    assert!(h.comp.get_panel_device_button_shown());
+    let (bx, by, bw, bh) = (
+        h.comp.get_panel_device_button_x(),
+        h.comp.get_panel_device_button_y(),
+        h.comp.get_panel_device_button_w(),
+        h.comp.get_panel_device_button_h(),
+    );
+    h.click(bx + bw / 2.0, by + bh / 2.0);
+    assert_eq!((setups.get(), cancels.get()), (1, 0), "Accept and set up");
+    // [Cancel] sits to its right.
+    h.click(bx + bw + 8.0 + 20.0, by + bh / 2.0);
+    assert_eq!((setups.get(), cancels.get()), (1, 1), "Cancel");
+    // The licence text is drawn above the buttons: ink between the line and them.
+    let f = h.render();
+    let ink = f.count_where(
+        (h.comp.get_panel_device_x() * 1.5) as u32,
+        ((by - 200.0) * 1.5) as u32,
+        ((h.comp.get_panel_device_x() + h.comp.get_panel_device_w()) * 1.5) as u32,
+        ((by - 14.0) * 1.5) as u32,
+        |p| p[0] > 90 && p[1] > 90 && p[2] > 90,
+    );
+    assert!(ink > 20, "the licence text is drawn ({ink})");
+}
+
+/// An Android device's panel (rule 1371): the header keeps the iOS buttons, the menu says it is Android's (Back and
+/// Recents instead of Shake), and the picture's corners are an Android screen's.
+#[test]
+fn an_android_panel_marks_its_menu_as_androids() {
+    let mut r = Rig::new(FakeSource::android());
+    r.panels.show("t1", PanelKind::Device, "emu/Flare_Pixel");
+    r.front("t1");
+    r.dev.setup_clicked(); // Boot
+    r.front("t1");
+    let c = &r.h.comp;
+    assert!(c.get_panel_device_has_frame(), "live");
+    assert!(c.get_panel_device_android());
+    assert!(
+        c.get_panel_device_controls_shown(),
+        "Home, Lock and Rotate, as for iOS"
+    );
+    assert_eq!(
+        c.get_panel_device_radius_pt(),
+        crate::device_ctl::RADIUS_DP as f32
+    );
+    assert_eq!(c.get_panel_device_detail().as_str(), "");
+    // Lock sends Power.
+    r.dev.act("lock");
+    assert!(
+        r.dev
+            .fake()
+            .unwrap()
+            .inputs()
+            .iter()
+            .any(|i| matches!(i, Recorded::Button(_, b) if b.name() == "power"))
+    );
+}

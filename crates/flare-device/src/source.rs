@@ -250,6 +250,8 @@ pub enum Answer {
     /// A PNG at point size.
     Png(Vec<u8>),
     Tree(UiNode),
+    /// A step of Android setup answered with facts (the plan: sizes, licences, free space; emu host, PR A2b).
+    Value(serde_json::Value),
 }
 
 /// Why a request failed, in the channel's words, and one line for the person or the agent.
@@ -319,6 +321,8 @@ pub enum SourceEvent {
     },
     /// The source cannot go on (live view lost): one line why.
     Broken(String),
+    /// Android setup's progress, or a new device's first-boot compile (emu host, Android plan PR A2b).
+    Setup(crate::wire::SetupEvent),
 }
 
 /// A source of devices. See the module doc: nothing here blocks.
@@ -344,6 +348,12 @@ pub trait DeviceSource {
     fn events(&self) -> &Receiver<SourceEvent>;
     /// The sim host's facts (its `hello`), for the log and `device_state`; None for a source that has none.
     fn hello(&self) -> Option<crate::wire::Hello> {
+        None
+    }
+    /// One step of Android setup (rule 1361), answered as [`Answer::Value`] or [`Answer::Done`]; None for a source
+    /// that sets nothing up (the sim host, the iOS fake).
+    fn setup(&mut self, step: crate::wire::SetupStep) -> Option<ReqId> {
+        let _ = step;
         None
     }
 }

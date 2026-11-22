@@ -491,7 +491,7 @@ impl DeviceCtl {
             return;
         };
         // Rule 1322: only a device Flare booted (the person's own simulators are theirs).
-        if !self.booted.has(t.id()) {
+        if !self.booted.has(&t.name()) {
             send(
                 &call.reply,
                 Err(fail(
@@ -523,7 +523,7 @@ impl DeviceCtl {
             return;
         };
         let input = matches!(call.req, AgentReq::Act(_));
-        if input && let Some(why) = &self.broken {
+        if input && let Some(why) = self.broken_for(Some(&t)) {
             send(
                 &call.reply,
                 Err(fail(
@@ -982,7 +982,7 @@ impl DeviceCtl {
             }
             AgentWait::Shutdown { tab, reply, target } => match r {
                 Ok(_) => {
-                    if self.booted.forget(target.id()) {
+                    if self.booted.forget(&target.name()) {
                         self.save_booted();
                     }
                     self.agent.effects.push(Effect::Close(tab));
@@ -1128,9 +1128,9 @@ impl DeviceCtl {
             "name": info.map(|d| d.name.clone()),
             "os": info.map(|d| d.os.clone()),
             "booted": info.is_some_and(|d| d.state == DeviceState::Booted),
-            "booted_by_flare": target.as_ref().is_some_and(|t| self.booted.has(t.id())),
-            "live": dev.is_some_and(|d| d.attached) && self.broken.is_none(),
-            "still": self.broken,
+            "booted_by_flare": target.as_ref().is_some_and(|t| self.booted.has(&t.name())),
+            "live": dev.is_some_and(|d| d.attached) && self.broken_for(target.as_ref()).is_none(),
+            "still": self.broken_for(target.as_ref()),
             "input": dev.and_then(|d| d.input.clone()),
             "driven_here": dev.is_none_or(|d| d.driver.as_deref().is_none_or(|x| x == tab)),
             "screen": screen.map(|s| json!({"w": s.w, "h": s.h})),

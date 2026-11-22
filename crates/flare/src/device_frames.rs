@@ -78,6 +78,11 @@ impl DeviceFrames {
         self.sim.set_source(source);
     }
 
+    /// The Android frames' counters: copied, dropped, the copy's CPU time p50 and p99 in ms (`device.state`).
+    pub fn region_stats(&self) -> (u64, u64, f64, f64) {
+        self.region.stats()
+    }
+
     /// The Android frames (the emu host's sink, a detached device's release).
     pub fn region(&mut self) -> &mut RegionFrames {
         &mut self.region
