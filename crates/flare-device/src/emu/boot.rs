@@ -108,10 +108,18 @@ pub const WIN_NO_WINDOW: u32 = 0x0800_0000;
 pub const WIN_NEW_GROUP: u32 = 0x0000_0200;
 pub const WIN_BREAKAWAY: u32 = 0x0100_0000;
 
+/// adb's mDNS discovery off (rule 1370). An adb server with mDNS on binds UDP 5353 on every network (`0.0.0.0`), and
+/// Windows then shows its Firewall dialog the first time an `adb.exe` from a new folder (Flare's own SDK) does so (seen
+/// in A2b's real setup). With `ADB_MDNS=0` the server binds only its localhost port (checked 2026-11-22 with
+/// platform-tools 37.0.1: `0.0.0.0:5353` gone from the server's sockets). The emulator starts adb itself, so this goes
+/// on the emulator's command too; the emu host sets it on every adb it runs.
+pub const ADB_MDNS: (&str, &str) = ("ADB_MDNS", "0");
+
 /// The command that boots `avd` with [`args`] (checked, rule 1362), detached from whoever starts it: its own session
 /// (macOS) or process group outside any job (Windows), no window, stdin closed, its output into `log` (or nowhere).
 /// `ANDROID_SDK_ROOT` and `ANDROID_HOME` name the SDK and `ANDROID_AVD_HOME` the AVD's folder (Flare's own AVDs live
-/// outside the person's folder). `breakaway` false is the second try on Windows when the parent's job forbids it.
+/// outside the person's folder); [`ADB_MDNS`] keeps the adb it starts off the network. `breakaway` false is the second
+/// try on Windows when the parent's job forbids it.
 pub fn command(
     emulator: &std::path::Path,
     sdk_root: &std::path::Path,
@@ -127,6 +135,7 @@ pub fn command(
         .env("ANDROID_SDK_ROOT", sdk_root)
         .env("ANDROID_HOME", sdk_root)
         .env("ANDROID_AVD_HOME", avd_home)
+        .env(ADB_MDNS.0, ADB_MDNS.1)
         .stdin(Stdio::null());
     match log.and_then(|f| f.try_clone().ok().map(|g| (f, g))) {
         Some((out, err)) => {
@@ -206,6 +215,10 @@ mod tests {
             .collect();
         assert!(env.contains(&("ANDROID_AVD_HOME".into(), "/avds".into())));
         assert!(env.contains(&("ANDROID_SDK_ROOT".into(), "/sdk".into())));
+        assert!(
+            env.contains(&("ADB_MDNS".into(), "0".into())),
+            "rule 1370: the adb the emulator starts stays off the network"
+        );
         let mut bad = a.clone();
         bad.retain(|x| x != "-grpc-use-token");
         assert!(
