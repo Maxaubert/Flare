@@ -10,6 +10,12 @@
 //! `device` in a record is the small number the sim host gave the ring in its `frames` event: a fresh one per ring
 //! (attach, or a new screen size), so a slot-done record always names its ring while an old ring waits for its last
 //! slots. The ring's surfaces come over the mach channel with the same number (`macos::rendezvous`).
+//!
+//! The emu host (Android, rule 1360) speaks the same protocol: its `hello` says `host: "emu"` and its facts, and since
+//! the emulator writes each frame into a region Flare owns, a frame is one [`HostLine::Region`] line on its stdout
+//! (rule 1363); there is no mach channel.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -96,20 +102,46 @@ pub enum Request {
     Quit,
 }
 
-/// The sim host's facts, its first line.
+/// Which helper process speaks: the sim host (iOS) or the emu host (Android). Both use this protocol (rule 1360).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKind {
+    /// `flare-sim-host`. The default, so a sim host that does not say its kind still reads.
+    #[default]
+    Sim,
+    /// `flare-emu-host`.
+    Emu,
+}
+
+/// A helper's facts, its first line. The sim host fills the named fields; the emu host leaves them empty and says its
+/// own facts in `facts` (`sdk_path`, `emulator_version`, `adb_version`, `accel`, `agent_jar`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Hello {
     pub protocol: u32,
-    /// The sim host's own version (Flare's).
+    /// The helper's own version (Flare's).
     pub version: String,
-    /// The loaded CoreSimulator's and SimulatorKit's `CFBundleVersion`.
+    /// Which helper this is. Named `host` on the wire, since `kind` tags the line itself.
+    #[serde(default)]
+    pub host: HostKind,
+    /// The loaded CoreSimulator's and SimulatorKit's `CFBundleVersion` (sim host).
+    #[serde(default)]
     pub coresim_version: String,
+    #[serde(default)]
     pub simkit_version: String,
+    #[serde(default)]
     pub xcode_version: String,
+    #[serde(default)]
     pub xcode_path: String,
-    pub input_path: InputPath,
-    /// The UI tree (`AXPTranslator`) loaded.
+    /// The simulator's input path (sim host); None from the emu host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_path: Option<InputPath>,
+    /// The UI tree (`AXPTranslator`) loaded (sim host).
+    #[serde(default)]
     pub ax: bool,
+    /// Any other facts, by name, for the log and `device_state` (the emu host's). Never a secret: the emulator's
+    /// gRPC token is never in it (rule 1362).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub facts: BTreeMap<String, String>,
 }
 
 /// One line from the sim host.
@@ -138,6 +170,17 @@ pub enum HostLine {
     Orientation {
         target: Target,
         orientation: Orientation,
+    },
+    /// A frame is in the device's frame region (emu host, rule 1363): one small line per frame, at most 60 a second
+    /// (`cap::FrameCap`). `w` and `h` are the frame's pixels as the emulator wrote them, already turned by
+    /// `rotation`. Becomes [`crate::source::SourceEvent::Region`].
+    Region {
+        target: Target,
+        seq: u64,
+        t_us: u64,
+        w: u32,
+        h: u32,
+        rotation: Orientation,
     },
     State {
         target: Target,
@@ -396,12 +439,14 @@ mod tests {
         let hello = Hello {
             protocol: PROTOCOL,
             version: "0.1.0".into(),
+            host: HostKind::Sim,
             coresim_version: "1174.21".into(),
             simkit_version: "1005.14".into(),
             xcode_version: "27.2".into(),
             xcode_path: "/Applications/Xcode.app/Contents/Developer".into(),
-            input_path: InputPath::Dtuhid,
+            input_path: Some(InputPath::Dtuhid),
             ax: true,
+            facts: BTreeMap::new(),
         };
         let screen = Screen {
             size_px: Size::new(1206.0, 2622.0),
@@ -528,5 +573,101 @@ mod tests {
         bad[0] = 9;
         assert_eq!(Record::from_bytes(&bad), None, "unknown kind");
         assert_eq!(Record::from_bytes(&[1, 0]), None);
+    }
+
+    /// Rule 1360: the emu host speaks the same protocol, with its kind and facts in `hello` and a frame as one
+    /// `region` line.
+    #[test]
+    fn the_emu_hosts_lines_round_trip() {
+        let t = crate::target::parse("emu/Flare_Pixel").unwrap();
+        let hello = Hello {
+            protocol: PROTOCOL,
+            version: "0.1.0".into(),
+            host: HostKind::Emu,
+            coresim_version: String::new(),
+            simkit_version: String::new(),
+            xcode_version: String::new(),
+            xcode_path: String::new(),
+            input_path: None,
+            ax: false,
+            facts: [
+                (
+                    "sdk_path",
+                    "C:\\Users\\a\\AppData\\Local\\Flare\\android-sdk",
+                ),
+                ("emulator_version", "37.3.10"),
+                ("adb_version", "37.0.3"),
+                ("accel", "whpx"),
+                ("agent_jar", "1"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        };
+        let line = to_line(&HostLine::Hello(hello.clone()));
+        assert!(line.contains(r#""host":"emu""#), "{line}");
+        assert!(
+            !line.contains("input_path"),
+            "no simulator input path: {line}"
+        );
+        assert_eq!(
+            from_line::<HostLine>(&line),
+            Some(HostLine::Hello(hello.clone()))
+        );
+        // The emu host may leave out every simulator field.
+        let short = r#"{"kind":"hello","protocol":1,"version":"0.1.0","facts":{"emulator_version":"37.3.10"}}"#;
+        let Some(HostLine::Hello(h)) = from_line::<HostLine>(short) else {
+            panic!("{short}")
+        };
+        assert_eq!(h.host, HostKind::Sim, "no host is the sim host");
+        assert_eq!(h.facts["emulator_version"], "37.3.10");
+        assert!(h.xcode_version.is_empty() && h.input_path.is_none() && !h.ax);
+        // A sim host's hello from before this field still reads, as the sim host.
+        let old = r#"{"kind":"hello","protocol":1,"version":"0.1.0","coresim_version":"1174.21","simkit_version":"1005.14","xcode_version":"27.2","xcode_path":"/x","input_path":"dtuhid","ax":true}"#;
+        let Some(HostLine::Hello(h)) = from_line::<HostLine>(old) else {
+            panic!("{old}")
+        };
+        assert_eq!(
+            (h.host, h.input_path, h.facts.len()),
+            (HostKind::Sim, Some(InputPath::Dtuhid), 0)
+        );
+        // A frame record.
+        let region = HostLine::Region {
+            target: t.clone(),
+            seq: 901,
+            t_us: 15_016_000,
+            w: 2400,
+            h: 1080,
+            rotation: Orientation::Rot90,
+        };
+        let line = to_line(&region);
+        assert_eq!(
+            line,
+            r#"{"kind":"region","target":"emu/Flare_Pixel","seq":901,"t_us":15016000,"w":2400,"h":1080,"rotation":"rot90"}"#
+        );
+        assert_eq!(from_line::<HostLine>(&line), Some(region));
+        // Requests name an emulator like a simulator.
+        let c = Control {
+            id: 3,
+            req: Request::Button {
+                target: t.clone(),
+                button: Button::Back,
+            },
+        };
+        assert_eq!(
+            to_line(&c),
+            r#"{"id":3,"op":"button","target":"emu/Flare_Pixel","button":"back"}"#
+        );
+        assert_eq!(from_line::<Control>(&to_line(&c)), Some(c));
+        for bad in [
+            r#"{"kind":"region","target":"emu/../x","seq":1,"t_us":1,"w":1,"h":1,"rotation":"rot0"}"#,
+            r#"{"kind":"region","target":"emu/A","seq":1,"t_us":1,"w":-1,"h":1,"rotation":"rot0"}"#,
+            r#"{"kind":"region","target":"emu/A","seq":1,"t_us":1,"w":1,"h":1,"rotation":"rot45"}"#,
+            r#"{"kind":"region","target":"emu/A","seq":1,"t_us":1,"w":1,"h":1}"#,
+            r#"{"kind":"hello","protocol":1,"version":"x","host":"emu","facts":{"a":1}}"#,
+            r#"{"kind":"hello","protocol":1,"version":"x","host":"android"}"#,
+        ] {
+            assert_eq!(from_line::<HostLine>(bad), None, "{bad}");
+        }
     }
 }

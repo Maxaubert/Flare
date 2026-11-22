@@ -7409,7 +7409,7 @@ mod tests {
             (Method::DeviceSwipe, json!({"from": {"x": 1, "y": 2}})),
             (Method::DeviceSwipe, json!({"direction": "sideways"})),
             (Method::DeviceType, json!({})),
-            (Method::DevicePress, json!({"button": "power"})),
+            (Method::DevicePress, json!({"button": "menu"})),
             (
                 Method::DevicePress,
                 json!({"button": "home", "key": "return"}),

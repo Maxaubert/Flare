@@ -304,7 +304,12 @@ impl Indigo {
                 Button::Lock => (self.f.button)(SOURCE_LOCK, dir, TARGET_HARDWARE),
                 Button::VolumeUp => (self.f.hid)(TARGET_DIGITIZER, 0x0C, 0xE9, dir),
                 Button::VolumeDown => (self.f.hid)(TARGET_DIGITIZER, 0x0C, 0xEA, dir),
-                Button::Shake | Button::RotateLeft | Button::RotateRight => return true,
+                Button::Shake
+                | Button::RotateLeft
+                | Button::RotateRight
+                | Button::Back
+                | Button::Recents
+                | Button::Power => return true,
             }
         };
         self.deliver(m)

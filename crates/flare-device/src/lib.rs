@@ -19,6 +19,12 @@
 //! does not change. Rules held here: 1310 (private API only in the sim host), 1311 and 1312 (the sim host halves), 1313
 //! (input), 1314 (typing never touches the Mac's clipboard), 1315 (the sim host half of the UI tree), 1316 (the
 //! `sim/<udid>` target and the kind's shape check).
+//!
+//! Android is a second source behind the same panel kind, tools and agent job (plan
+//! `docs/superpowers/plans/2026-11-22-android-device.md`). PR A1 adds its pure model: `emu/<avd>` targets, each
+//! source's buttons ([`source::SourceKind`]), dp as the agent's unit ([`geom::dp_scale`]), Android classes as tree
+//! roles ([`tree::android_role`]), the emu host's `hello` and frame record ([`wire`]) and an Android fake
+//! ([`fake::FakeSource::android`]). Rules 1360, 1367 and 1371.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod cap;

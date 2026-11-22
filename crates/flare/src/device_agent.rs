@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use base64::Engine as _;
 use flare_ctl::{CancelFlag, CtlError, code};
 use flare_device::indicator::{IndicatorFrame, Indicators};
-use flare_device::job::{DeviceOp, Fail, Input, Job, JobError, Out, TAP_MS};
+use flare_device::job::{DeviceOp, Fail, Input, Job, JobError, Out, Press, TAP_MS};
 use flare_device::tree::{RefMap, UiNode, filter_tree};
 use serde_json::{Value, json};
 use slint::{ModelRc, VecModel};
@@ -491,7 +491,7 @@ impl DeviceCtl {
             return;
         };
         // Rule 1322: only a device Flare booted (the person's own simulators are theirs).
-        if !self.booted.has(t.udid()) {
+        if !self.booted.has(t.id()) {
             send(
                 &call.reply,
                 Err(fail(
@@ -688,6 +688,24 @@ impl DeviceCtl {
                 Err(fail(
                     Fail::Busy,
                     "another device call is still running in this tab; wait for it",
+                )),
+            );
+            return;
+        }
+        // Rule 1371: each source has its own buttons; another source's is refused before anything is sent.
+        if let DeviceOp::Press(Press::Button(b)) = &op
+            && !t.source().has(*b)
+        {
+            let names: Vec<&str> = t.source().buttons().iter().map(|b| b.name()).collect();
+            send(
+                &call.reply,
+                Err(fail(
+                    Fail::Unavailable,
+                    format!(
+                        "this device has no {} button; it has {}",
+                        b.name(),
+                        names.join(", ")
+                    ),
                 )),
             );
             return;
@@ -964,7 +982,7 @@ impl DeviceCtl {
             }
             AgentWait::Shutdown { tab, reply, target } => match r {
                 Ok(_) => {
-                    if self.booted.forget(target.udid()) {
+                    if self.booted.forget(target.id()) {
                         self.save_booted();
                     }
                     self.agent.effects.push(Effect::Close(tab));
@@ -1110,7 +1128,7 @@ impl DeviceCtl {
             "name": info.map(|d| d.name.clone()),
             "os": info.map(|d| d.os.clone()),
             "booted": info.is_some_and(|d| d.state == DeviceState::Booted),
-            "booted_by_flare": target.as_ref().is_some_and(|t| self.booted.has(t.udid())),
+            "booted_by_flare": target.as_ref().is_some_and(|t| self.booted.has(t.id())),
             "live": dev.is_some_and(|d| d.attached) && self.broken.is_none(),
             "still": self.broken,
             "input": dev.and_then(|d| d.input.clone()),

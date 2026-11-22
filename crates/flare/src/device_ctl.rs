@@ -174,7 +174,7 @@ impl Booted {
             if let Some(u) = d["udid"].as_str()
                 && let Some(t) = Target::sim(u)
             {
-                b.record(t.udid(), d["booted_ms"].as_u64().unwrap_or(0));
+                b.record(t.id(), d["booted_ms"].as_u64().unwrap_or(0));
             }
         }
         b
@@ -260,8 +260,30 @@ pub struct Started {
     pub ring: Option<std::sync::Arc<dyn crate::device_frames::RingSource>>,
 }
 
-/// Makes the real source (the sim host) for an Xcode.
-pub type Starter = Box<dyn FnMut(&flare_device::xcode::Xcode) -> Started>;
+/// What a real source needs to start: the Xcode the pick chose (the sim host), or an Android SDK (the emu host,
+/// Android plan PR A2; not wired yet).
+#[derive(Clone, Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS install reads the Xcode
+pub enum SourceSetup {
+    Xcode(flare_device::xcode::Xcode),
+    #[allow(dead_code)] // the emu host is wired in Android plan PR A4
+    AndroidSdk(AndroidSdk),
+}
+
+/// An Android SDK the emu host can use: Flare's own (`android-sdk` in its data folder) or the person's, with an
+/// emulator at or above the floor (rule 1361).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // the emu host is wired in Android plan PR A4
+pub struct AndroidSdk {
+    /// The SDK's root folder (`ANDROID_SDK_ROOT` for the emulators Flare starts).
+    pub root: PathBuf,
+    /// The emulator's version, `37.3.10`.
+    pub emulator_version: String,
+}
+
+/// Makes the real source for its setup: the sim host for an Xcode, later the emu host for an Android SDK. None when
+/// this build cannot start that source (it is logged, and the panel stays as it is).
+pub type Starter = Box<dyn FnMut(&SourceSetup) -> Option<Started>>;
 
 /// Shuts devices down at quit, detached (tests record it).
 pub type ShutdownSpawn = Rc<dyn Fn(&Path, &[String])>;
@@ -314,6 +336,33 @@ pub enum Setup {
     Failed {
         why: String,
     },
+    // Android's setup (spec 2026-11-22 "Setup", states 1 to 4 and 6). Data and lines only: the panel shows them from
+    // Android plan PR A4.
+    /// No Android emulator here yet: Flare can download it from Google (state 1).
+    #[allow(dead_code)] // shown from Android plan PR A4
+    SdkMissing,
+    /// Google's licence, before anything is downloaded (state 2). `text` is the licence from Google's package list,
+    /// shown in full under the line; `download_mb` the download's size.
+    #[allow(dead_code)] // shown from Android plan PR A4
+    Licence {
+        text: String,
+        download_mb: u64,
+    },
+    /// The download runs (state 3).
+    #[allow(dead_code)] // shown from Android plan PR A4
+    Downloading {
+        done_mb: u64,
+        total_mb: u64,
+    },
+    /// Windows Hypervisor Platform is off (state 4).
+    #[allow(dead_code)] // shown from Android plan PR A4
+    NoHypervisor,
+    /// It was turned on: Windows must restart (state 4, after [Turn on]).
+    #[allow(dead_code)] // shown from Android plan PR A4
+    RestartNeeded,
+    /// An emulator started outside Flare without a gRPC token: Flare cannot reach it (state 6).
+    #[allow(dead_code)] // shown from Android plan PR A4
+    NoAccess,
 }
 
 /// The button of a setup state.
@@ -324,6 +373,14 @@ pub enum SetupButton {
     Boot,
     BootAgain,
     TryAgain,
+    /// Android: shows Google's licence (nothing is downloaded yet).
+    SetUp,
+    /// Android: the person accepts Google's licence; the download starts.
+    AcceptAndSetUp,
+    /// Android: back out of the licence, or stop the download (nothing half-unpacked is left).
+    Cancel,
+    /// Android on Windows: turn on Windows Hypervisor Platform (Windows asks through its own UAC prompt).
+    TurnOn,
 }
 
 impl SetupButton {
@@ -334,17 +391,22 @@ impl SetupButton {
             SetupButton::Boot => "Boot",
             SetupButton::BootAgain => "Boot again",
             SetupButton::TryAgain => "Try again",
+            SetupButton::SetUp => "Set up",
+            SetupButton::AcceptAndSetUp => "Accept and set up",
+            SetupButton::Cancel => "Cancel",
+            SetupButton::TurnOn => "Turn on",
         }
     }
 }
 
 /// How a setup state is drawn: the Slint state (0 the picture, 1 a line, 2 the list, 3 booting), its line and its
-/// button.
+/// button. `cancel` is the second button only the licence and the download have ([Cancel], spec "Setup").
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetupView {
     pub state: i32,
     pub line: String,
     pub button: Option<SetupButton>,
+    pub cancel: bool,
 }
 
 impl Setup {
@@ -354,6 +416,7 @@ impl Setup {
             state,
             line,
             button,
+            cancel: false,
         };
         match self {
             Setup::NoXcode => v(
@@ -386,6 +449,39 @@ impl Setup {
                 v(1, format!("{name} is shut down."), Some(SetupButton::Boot))
             }
             Setup::Failed { why } => v(1, why.clone(), Some(SetupButton::TryAgain)),
+            Setup::SdkMissing => v(
+                1,
+                "Android devices need Google's Android emulator (about 2 GB, from Google).".into(),
+                Some(SetupButton::SetUp),
+            ),
+            Setup::Licence { download_mb, .. } => SetupView {
+                cancel: true,
+                ..v(
+                    1,
+                    format!(
+                        "Google's licence for the Android emulator. Setting up downloads {} from Google.",
+                        size_words(*download_mb)
+                    ),
+                    Some(SetupButton::AcceptAndSetUp),
+                )
+            },
+            Setup::Downloading { done_mb, total_mb } => v(
+                1,
+                format!("Downloading the Android emulator... {done_mb} of {total_mb} MB"),
+                Some(SetupButton::Cancel),
+            ),
+            Setup::NoHypervisor => v(
+                1,
+                "Android needs Windows Hypervisor Platform. Turning it on needs a restart.".into(),
+                Some(SetupButton::TurnOn),
+            ),
+            Setup::RestartNeeded => v(1, "Restart Windows to finish.".into(), None),
+            Setup::NoAccess => v(
+                1,
+                "This emulator was started without access for other apps. Start it from Flare."
+                    .into(),
+                None,
+            ),
         }
     }
 
@@ -401,7 +497,22 @@ impl Setup {
             Setup::Live { .. } => "live",
             Setup::ShutDown { .. } => "shut_down",
             Setup::Failed { .. } => "failed",
+            Setup::SdkMissing => "sdk_missing",
+            Setup::Licence { .. } => "licence",
+            Setup::Downloading { .. } => "downloading",
+            Setup::NoHypervisor => "no_hypervisor",
+            Setup::RestartNeeded => "restart_needed",
+            Setup::NoAccess => "no_access",
         }
+    }
+}
+
+/// A download's size for the person: "about 2.5 GB", or "about 400 MB" under a gigabyte.
+fn size_words(mb: u64) -> String {
+    if mb >= 1000 {
+        format!("about {:.1} GB", mb as f64 / 1000.0)
+    } else {
+        format!("about {mb} MB")
     }
 }
 
@@ -803,7 +914,10 @@ impl DeviceCtl {
         let Some(Some(xcode)) = real.xcode.clone() else {
             return;
         };
-        let started = (real.starter)(&xcode);
+        let Some(started) = (real.starter)(&SourceSetup::Xcode(xcode)) else {
+            log::warn!("device: the sim host cannot start in this build");
+            return;
+        };
         real.running = true;
         real.idle_since = None;
         #[cfg(target_os = "macos")]
@@ -1102,7 +1216,10 @@ impl DeviceCtl {
                     ("simkit", V::Str(h.simkit_version.clone())),
                     (
                         "input",
-                        V::Str(format!("{:?}", h.input_path).to_lowercase()),
+                        V::Str(
+                            h.input_path
+                                .map_or_else(String::new, |p| format!("{p:?}").to_lowercase()),
+                        ),
                     ),
                     ("ax", V::Bool(h.ax)),
                 ],
@@ -1171,13 +1288,13 @@ impl DeviceCtl {
                         // Rule 1319: a device Flare booted stays Flare's until it is seen shut down or gone.
                         let mut forgot = false;
                         for (u, _) in self.booted.devices.clone() {
-                            let seen = d.iter().find(|x| x.target.udid() == u);
+                            let seen = d.iter().find(|x| x.target.id() == u);
                             if seen.is_none_or(|x| x.state == DeviceState::Shutdown) {
                                 forgot |= self.booted.forget(&u);
                             }
                         }
                         for x in &mut d {
-                            x.booted_by_flare = self.booted.has(x.target.udid());
+                            x.booted_by_flare = self.booted.has(x.target.id());
                         }
                         if forgot {
                             self.save_booted();
@@ -1249,7 +1366,7 @@ impl DeviceCtl {
                             Ok(_) => {
                                 // Flare booted it: shut down at quit (rule 1319), also after a crash; only such a
                                 // device may the agent shut down (rule 1322). The file is the real source's.
-                                if self.booted.record(t.udid(), unix_ms()) && self.real.is_some() {
+                                if self.booted.record(t.id(), unix_ms()) && self.real.is_some() {
                                     self.save_booted();
                                 }
                                 self.agent_event(&AgentEvent::Booted(t.clone(), Ok(())));
@@ -1294,6 +1411,9 @@ impl DeviceCtl {
                     d.raw = Some(RawPicture { seq, size_px, rgba });
                 }
             }
+            // A frame in an Android device's region (rule 1363): the frame thread copies it into the ring from
+            // Android plan PR A4. No source sends it yet.
+            SourceEvent::Region { .. } => {}
             // A ring frame: the notifier takes the newest in its next render (`DeviceFrames`).
             SourceEvent::Frame { target, .. } => {
                 if let Some(d) = self.devs.get_mut(&target)
@@ -1327,7 +1447,7 @@ impl DeviceCtl {
                     }
                     DeviceState::Shutdown | DeviceState::ShuttingDown => {
                         self.booting.remove(&target);
-                        if state == DeviceState::Shutdown && self.booted.forget(target.udid()) {
+                        if state == DeviceState::Shutdown && self.booted.forget(target.id()) {
                             self.save_booted();
                         }
                         if let Some(d) = self.devs.get_mut(&target) {
@@ -1841,6 +1961,10 @@ impl DeviceCtl {
                 let Some(t) = self.drives(&tab) else {
                     return Vec::new();
                 };
+                // Rule 1371: a button this device does not have does nothing.
+                if !t.source().has(b) {
+                    return Vec::new();
+                }
                 self.person_input(&tab);
                 if let Some(s) = self.source() {
                     s.button(&t, b);
@@ -1878,6 +2002,14 @@ impl DeviceCtl {
                     d.attaching = false;
                 }
                 self.list();
+            }
+            // Android's setup buttons act from Android plan PR A2b and A4; no state shows them yet.
+            SetupButton::SetUp
+            | SetupButton::AcceptAndSetUp
+            | SetupButton::Cancel
+            | SetupButton::TurnOn => {
+                log::info!("device panel: {} is not wired yet", button.label());
+                return Vec::new();
             }
         }
         self.drain();
@@ -2072,11 +2204,33 @@ mod tests {
             Setup::Failed {
                 why: "the device is still booting".into(),
             },
+            Setup::SdkMissing,
+            Setup::Licence {
+                text: "Terms and Conditions\n\nThis is the Android SDK License Agreement".into(),
+                download_mb: 2_538,
+            },
+            Setup::Downloading {
+                done_mb: 120,
+                total_mb: 2_538,
+            },
+            Setup::NoHypervisor,
+            Setup::RestartNeeded,
+            Setup::NoAccess,
         ];
+        let mut names = HashSet::new();
         for s in all {
             let v = s.view(false);
             assert!(!v.line.is_empty(), "{s:?} says a line");
             assert!(!v.line.contains('\n'), "{s:?}: one line");
+            assert!(
+                names.insert(s.name()) || matches!(s, Setup::ShutDown { again: false, .. }),
+                "{s:?}: a name of its own"
+            );
+            assert_eq!(
+                v.cancel,
+                matches!(s, Setup::Licence { .. }),
+                "{s:?}: only the licence has a second button"
+            );
         }
         assert_eq!(
             Setup::NoXcode.view(false).button,
@@ -2092,6 +2246,59 @@ mod tests {
             "Starting iPhone 18 Pro... 12 s"
         );
         assert_eq!(Setup::Live { name: name() }.view(true).state, 0);
+    }
+
+    /// Android's setup states (spec 2026-11-22 "Setup", states 1 to 4 and 6): their lines and buttons, as data.
+    #[test]
+    fn android_setup_states_say_the_specs_lines() {
+        let v = Setup::SdkMissing.view(false);
+        assert_eq!(
+            v.line,
+            "Android devices need Google's Android emulator (about 2 GB, from Google)."
+        );
+        assert_eq!(v.button.map(SetupButton::label), Some("Set up"));
+        let v = Setup::Licence {
+            text: "licence".into(),
+            download_mb: 2_538,
+        }
+        .view(false);
+        assert_eq!(
+            v.line,
+            "Google's licence for the Android emulator. Setting up downloads about 2.5 GB from Google."
+        );
+        assert_eq!(v.button.map(SetupButton::label), Some("Accept and set up"));
+        assert!(v.cancel);
+        assert_eq!(SetupButton::Cancel.label(), "Cancel");
+        let v = Setup::Downloading {
+            done_mb: 120,
+            total_mb: 2_538,
+        }
+        .view(false);
+        assert_eq!(v.line, "Downloading the Android emulator... 120 of 2538 MB");
+        assert_eq!(v.button, Some(SetupButton::Cancel));
+        let v = Setup::NoHypervisor.view(false);
+        assert_eq!(
+            v.line,
+            "Android needs Windows Hypervisor Platform. Turning it on needs a restart."
+        );
+        assert_eq!(v.button.map(SetupButton::label), Some("Turn on"));
+        assert_eq!(
+            Setup::RestartNeeded.view(false),
+            SetupView {
+                state: 1,
+                line: "Restart Windows to finish.".into(),
+                button: None,
+                cancel: false
+            }
+        );
+        let v = Setup::NoAccess.view(false);
+        assert_eq!(
+            v.line,
+            "This emulator was started without access for other apps. Start it from Flare."
+        );
+        assert_eq!(v.button, None);
+        assert_eq!(size_words(421), "about 421 MB");
+        assert_eq!(size_words(1_000), "about 1.0 GB");
     }
 
     #[test]
@@ -2134,10 +2341,13 @@ mod tests {
     /// The real source's place taken by a fake (no sim host): what `install_real` starts.
     fn starter_of(fake: FakeSource) -> Starter {
         let mut fake = Some(fake);
-        Box::new(move |_| Started {
-            source: Box::new(fake.take().expect("started once")),
-            #[cfg(target_os = "macos")]
-            ring: None,
+        Box::new(move |setup| {
+            assert!(matches!(setup, SourceSetup::Xcode(_)), "{setup:?}");
+            Some(Started {
+                source: Box::new(fake.take().expect("started once")),
+                #[cfg(target_os = "macos")]
+                ring: None,
+            })
         })
     }
 

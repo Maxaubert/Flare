@@ -236,7 +236,7 @@ impl AppCtl {
 
         use flare_device::client::{SimConfig, SimSource};
 
-        use crate::device_ctl::{Booted, Started, Starter, XcodeAnswer, booted_file};
+        use crate::device_ctl::{Booted, SourceSetup, Started, Starter, XcodeAnswer, booted_file};
 
         if !crate::device_ctl::real_platform() {
             return;
@@ -250,15 +250,19 @@ impl AppCtl {
             .unwrap_or_default();
         let log = profile.join("logs").join("sim-host.log");
         let waker = self.device.waker();
-        let starter: Starter = Box::new(move |x| {
+        let starter: Starter = Box::new(move |setup| {
+            // The Android source is wired in Android plan PR A4.
+            let SourceSetup::Xcode(x) = setup else {
+                return None;
+            };
             let mut cfg = SimConfig::new(exe.clone(), x.developer_dir(), log.clone());
             cfg.on_event = Some(Arc::clone(&waker));
             let sim = SimSource::start(cfg);
             let ring: Arc<dyn crate::device_frames::RingSource> = Arc::new(sim.frames());
-            Started {
+            Some(Started {
                 source: Box::new(sim),
                 ring: Some(ring),
-            }
+            })
         });
         let booted = booted_file(profile);
         self.device.install_real(

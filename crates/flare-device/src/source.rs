@@ -1,10 +1,12 @@
 //! What a source of devices can do: list, boot, attach, show frames, take input, read the UI tree. Implementations
-//! are `SimSource` (talks to `flare-sim-host`, PR 2), [`crate::fake::FakeSource`] (tests and `--e2e`), and later an
-//! Android one.
+//! are `SimSource` (talks to `flare-sim-host`, PR 2), [`crate::fake::FakeSource`] (tests and `--e2e`), and the
+//! Android one, `EmuSource` (talks to `flare-emu-host`, Android plan PR A2). Every source sits behind the same panel
+//! kind, tools and agent job (rule 1360); [`SourceKind`] says which one a target belongs to.
 //!
 //! Every method returns at once (rule 34): what takes time answers later as a [`SourceEvent::Answer`] with the
 //! request's id, read from [`DeviceSource::events`] by the UI thread. Points are device points in the current
-//! orientation; the sim host alone converts them to the digitizer's portrait ratios (rule 1313).
+//! orientation (dp on Android, rule 1367); only the helper process converts them, the sim host to the digitizer's
+//! portrait ratios (rule 1313) and the emu host to pixels.
 
 use std::path::Path;
 use std::sync::mpsc::Receiver;
@@ -57,21 +59,31 @@ pub struct Key {
     pub down: bool,
 }
 
-/// A hardware button or gesture of the device. Each is one whole press.
+/// A hardware button or gesture of the device. Each is one whole press. Not every source has every button: each
+/// lists its own ([`SourceKind::buttons`]), and a press of another source's button is refused with `unavailable`
+/// (rule 1371).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Button {
     Home,
+    /// The iPhone's side button (lock).
     Lock,
     VolumeUp,
     VolumeDown,
+    /// The simulator's shake gesture.
     Shake,
     RotateLeft,
     RotateRight,
+    /// Android's Back.
+    Back,
+    /// Android's Recents (the app switcher).
+    Recents,
+    /// Android's power button (the panel's Lock button sends it on Android).
+    Power,
 }
 
 impl Button {
-    pub const ALL: [Button; 7] = [
+    pub const ALL: [Button; 10] = [
         Button::Home,
         Button::Lock,
         Button::VolumeUp,
@@ -79,6 +91,9 @@ impl Button {
         Button::Shake,
         Button::RotateLeft,
         Button::RotateRight,
+        Button::Back,
+        Button::Recents,
+        Button::Power,
     ];
 
     /// The name `device_press` takes.
@@ -91,11 +106,56 @@ impl Button {
             Button::Shake => "shake",
             Button::RotateLeft => "rotate_left",
             Button::RotateRight => "rotate_right",
+            Button::Back => "back",
+            Button::Recents => "recents",
+            Button::Power => "power",
         }
     }
 
     pub fn parse(s: &str) -> Option<Button> {
         Button::ALL.into_iter().find(|b| b.name() == s)
+    }
+}
+
+/// Which source shows a device (`Target::source`): the iOS simulator (`sim/`) or the Android emulator (`emu/`). Both
+/// sit behind the same panel kind, tools and agent job (rule 1360); only the buttons and the coordinate unit differ
+/// (points on iOS, dp on Android: [`Screen::scale`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SourceKind {
+    Sim,
+    Emu,
+}
+
+impl SourceKind {
+    /// The buttons this source's devices have, in the order `device_press` lists them (rule 1371). The panel's Lock
+    /// button sends [`Button::Power`] on Android; Shake and Lock are iOS only.
+    pub fn buttons(self) -> &'static [Button] {
+        match self {
+            SourceKind::Sim => &[
+                Button::Home,
+                Button::Lock,
+                Button::VolumeUp,
+                Button::VolumeDown,
+                Button::Shake,
+                Button::RotateLeft,
+                Button::RotateRight,
+            ],
+            SourceKind::Emu => &[
+                Button::Home,
+                Button::Back,
+                Button::Recents,
+                Button::Power,
+                Button::VolumeUp,
+                Button::VolumeDown,
+                Button::RotateLeft,
+                Button::RotateRight,
+            ],
+        }
+    }
+
+    /// Whether this source's devices have `b` (rule 1371).
+    pub fn has(self, b: Button) -> bool {
+        self.buttons().contains(&b)
     }
 }
 
@@ -137,14 +197,33 @@ pub struct DeviceInfo {
     pub booted_by_flare: bool,
 }
 
-/// What a device's screen is: its size in pixels (always portrait, the framebuffer never turns, spike S5), in
-/// points, its scale and the interface's orientation.
+/// What a device's screen is: its size in pixels and in the agent's units (both portrait), its scale and the
+/// interface's orientation.
+///
+/// The agent's unit is the point on iOS and the dp on Android (rule 1367): `size_pt` is in that unit and `scale` is
+/// pixels per unit (3 on an iPhone 18 Pro; dpi / 160 on Android, so 2.625 at 420 dpi). The simulator's framebuffer
+/// never turns (spike S5); the emulator sends its frames already turned, and its source gives the portrait size here
+/// with the turn in `orientation`, so both read the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Screen {
     pub size_px: Size,
     pub size_pt: Size,
     pub scale: f64,
     pub orientation: Orientation,
+}
+
+impl Screen {
+    /// An Android screen: its portrait size in pixels and its density. `size_pt` is in dp (pixels / (dpi / 160)),
+    /// the unit the agent sees (rule 1367). None for an empty size or a density that is not positive.
+    pub fn from_dpi(portrait_px: Size, dpi: f64, orientation: Orientation) -> Option<Screen> {
+        let scale = crate::geom::dp_scale(dpi)?;
+        (!portrait_px.is_empty()).then(|| Screen {
+            size_px: portrait_px,
+            size_pt: Size::new(portrait_px.w / scale, portrait_px.h / scale),
+            scale,
+            orientation,
+        })
+    }
 }
 
 /// The device's input connection, for the panel's "Connecting touch..." line and the agent's `retry` (rule 1313).
@@ -201,6 +280,17 @@ pub enum SourceEvent {
         slot: u8,
         seq: u64,
         t_us: u64,
+    },
+    /// A frame is in the device's frame region (Android, rule 1363): the emulator wrote it into the shared-memory
+    /// region Flare owns and maps, so only its facts travel. `size_px` is the frame as written, already turned by
+    /// `rotation` (unlike the simulator's portrait framebuffer). The region is single-buffered: the next frame
+    /// overwrites it about 16 ms later, so Flare copies it out on the GPU at once (rule 1364, PR A4).
+    Region {
+        target: Target,
+        seq: u64,
+        t_us: u64,
+        size_px: Size,
+        rotation: Orientation,
     },
     /// A frame as a CPU picture (the fake source, and the still mode's screenshots): RGBA, `size_px` big.
     Picture {
@@ -267,11 +357,85 @@ mod tests {
         for b in Button::ALL {
             assert_eq!(Button::parse(b.name()), Some(b));
         }
-        assert_eq!(Button::parse("power"), None);
+        assert_eq!(Button::parse("power"), Some(Button::Power));
+        assert_eq!(Button::parse("menu"), None);
+        assert_eq!(Button::parse("Back"), None, "names are lower case");
         assert_eq!(
             DeviceState::from_simctl("Shutting Down"),
             Some(DeviceState::ShuttingDown)
         );
         assert_eq!(DeviceState::from_simctl("Creating"), None);
+    }
+
+    /// Rule 1371: each source lists its own buttons, and every button belongs to at least one source.
+    #[test]
+    fn each_source_lists_its_own_buttons() {
+        let sim = SourceKind::Sim;
+        let emu = SourceKind::Emu;
+        for b in [Button::Shake, Button::Lock] {
+            assert!(sim.has(b) && !emu.has(b), "{b:?} is iOS only");
+        }
+        for b in [Button::Back, Button::Recents, Button::Power] {
+            assert!(emu.has(b) && !sim.has(b), "{b:?} is Android only");
+        }
+        for b in [
+            Button::Home,
+            Button::VolumeUp,
+            Button::VolumeDown,
+            Button::RotateLeft,
+            Button::RotateRight,
+        ] {
+            assert!(sim.has(b) && emu.has(b), "{b:?} is on both");
+        }
+        for b in Button::ALL {
+            assert!(sim.has(b) || emu.has(b), "{b:?} belongs to no source");
+        }
+        // No list names a button twice.
+        for k in [sim, emu] {
+            let l = k.buttons();
+            for (i, b) in l.iter().enumerate() {
+                assert!(!l[i + 1..].contains(b), "{k:?} lists {b:?} twice");
+            }
+        }
+        // The iOS list is the one `device_press` has offered since PR 5, in its order.
+        assert_eq!(
+            sim.buttons().iter().map(|b| b.name()).collect::<Vec<_>>(),
+            [
+                "home",
+                "lock",
+                "volume_up",
+                "volume_down",
+                "shake",
+                "rotate_left",
+                "rotate_right"
+            ]
+        );
+    }
+
+    /// Rule 1367: an Android screen's agent unit is the dp.
+    #[test]
+    fn an_android_screen_is_in_dp() {
+        // A Pixel 8: 1080 x 2400 at 420 dpi is 411.4 x 914.3 dp.
+        let s = Screen::from_dpi(Size::new(1080.0, 2400.0), 420.0, Orientation::Rot0).unwrap();
+        assert_eq!(s.scale, 2.625);
+        assert!((s.size_pt.w - 411.428_571).abs() < 1e-3, "{:?}", s.size_pt);
+        assert!((s.size_pt.h - 914.285_714).abs() < 1e-3, "{:?}", s.size_pt);
+        assert_eq!((s.size_pt.w.round(), s.size_pt.h.round()), (411.0, 914.0));
+        // 160 dpi is one pixel per dp.
+        let s = Screen::from_dpi(Size::new(320.0, 640.0), 160.0, Orientation::Rot90).unwrap();
+        assert_eq!((s.scale, s.size_pt), (1.0, Size::new(320.0, 640.0)));
+        assert_eq!(s.orientation, Orientation::Rot90);
+        for (px, dpi) in [
+            (Size::new(0.0, 2400.0), 420.0),
+            (Size::new(1080.0, 2400.0), 0.0),
+            (Size::new(1080.0, 2400.0), -1.0),
+            (Size::new(1080.0, 2400.0), f64::NAN),
+        ] {
+            assert_eq!(
+                Screen::from_dpi(px, dpi, Orientation::Rot0),
+                None,
+                "{px:?} {dpi}"
+            );
+        }
     }
 }

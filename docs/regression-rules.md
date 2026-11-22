@@ -5808,3 +5808,47 @@ folder is dropped (`xcode::resolve_in`) and no symlink can be swapped between th
 `find_takes_this_macs_signed_xcode` (`xcode.rs`, skipped without an Xcode), `a_fake_unsigned_xcode_is_refused`,
 `the_real_xcode_and_its_frameworks_pass` (`codesign.rs`, skipped without an Xcode) and
 `an_unsigned_xcode_is_never_loaded` (`load.rs`). Source: security review, 2026-11-20.
+
+## Device panel: Android (2026-11-22)
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`.
+Rules 1360 to 1371 are this feature's; each lands with the PR that builds it.
+
+1360. **Android is a second `DeviceSource` behind the same panel kind, tools and agent job. Its targets are `emu/<avd>`.
+No tool name, schema key or panel kind names a platform.** Max, 2026-11-22 ("how we'll build the android simulator, needs
+to work on both mac and pc"). Android plan PR A1 (the pure model, nothing wired): `flare_device::target::Target::Emu`
+reads `emu/<avd>`, where the AVD name is 1 to 64 of `A-Z a-z 0-9 . _ -`, not only dots, not starting with a dash (it
+would read as a flag on the emulator's command line), case kept. The adb serial is never part of a target (it changes
+per boot). `Target::id()` (was `udid()`) gives what the device's own tools take, and `Target::source()` which source
+shows it (`SourceKind::{Sim, Emu}`). The emu host speaks the sim host's protocol (`wire.rs`): its `hello` says `host:
+"emu"` and its facts in a `facts` map (the simulator fields are optional, so an old sim host still reads), and a frame
+is one `region` line (`HostLine::Region`, which becomes `SourceEvent::Region`). The emu host maps Android classes onto
+the tree model's roles (`tree::android_role`: `Button` and clickable views are buttons, `EditText` and editable nodes
+text fields, and so on), so `filter_tree` lists and numbers refs the same for both kinds. `FakeSource::android()` is a
+Pixel-sized fake with Android roles for the e2e scenarios. Setup states 1 to 4 and 6 of the spec are data and lines in
+`device_ctl::Setup` (`sdk_missing`, `licence`, `downloading`, `no_hypervisor`, `restart_needed`, `no_access`), not
+shown yet, and `Starter` takes a `SourceSetup` (`Xcode` or `AndroidSdk`). Held by
+`an_emu_target_round_trips_and_bad_avd_names_are_refused` (`target.rs`), `the_emu_hosts_lines_round_trip` (`wire.rs`),
+`android_classes_map_to_the_tree_roles` and `an_android_tree_filters_like_an_ios_one` (`tree.rs`),
+`the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`) and
+`android_setup_states_say_the_specs_lines` (`device_ctl.rs`). Source: Max, 2026-11-22.
+
+1367. **Agent coordinates for Android are dp (pixels / (dpi / 160)); only the emu host converts dp to pixels.
+`device_look`'s PNG is at dp size.** Spec 2026-11-22, builder's call 7. The dp is Android's match for the iOS point:
+`Screen.size_pt` is in the agent's unit and `Screen.scale` is pixels per unit (`Screen::from_dpi`: 1080 x 2400 at 420
+dpi is 411.4 x 914.3 dp, scale 2.625). The panel's letterbox, the swipe path, the tree's frames and the agent's taps
+stay in dp, as they stay in points for iOS; `geom::dp_to_px` and `px_to_dp` are for the emu host alone. Android plan
+PR A1 holds the model; PR A5 the tool side. Held by `dp_map_to_pixels_in_every_orientation` (`geom.rs`) and
+`an_android_screen_is_in_dp` (`source.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations").
+
+1371. **Each source lists its own buttons; a press of another source's button is refused with `unavailable`.** Spec
+2026-11-22, builder's call 9. `Button` gains `Back`, `Recents` and `Power`. `SourceKind::buttons()` lists each
+source's: the simulator has Home, Lock, Volume up and down, Shake and the two rotations (the list `device_press` has
+offered since device panel PR 5); the emulator has Home, Back, Recents, Power, Volume up and down and the two rotations
+(the panel's Lock button sends Power on Android, Android plan PR A4). The agent's press of a button the device lacks
+answers `unavailable` with the buttons it has, before anything is sent (`device_agent.rs`, `agent_act`); a panel row
+naming one does nothing (`DeviceCtl::act`); the fake ignores one, and the sim host answers `unavailable` for
+Android's. Android plan PR A5 adds the tool side (descriptions and the schema per source). Held by
+`each_source_lists_its_own_buttons` (`source.rs`), `another_sources_button_is_refused_unavailable`
+(`ui_tests/device_agent.rs`) and `the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`).
+Source: Max, 2026-11-22.

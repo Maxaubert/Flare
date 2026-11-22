@@ -122,7 +122,13 @@ pub fn consumer_usage(b: Button) -> Option<(u16, u16)> {
         Button::Lock => (CONSUMER_PAGE, 0x30),
         Button::VolumeUp => (CONSUMER_PAGE, 0xE9),
         Button::VolumeDown => (CONSUMER_PAGE, 0xEA),
-        Button::Shake | Button::RotateLeft | Button::RotateRight => return None,
+        // Shake and rotation have their own ways; Back, Recents and Power are Android's (rule 1371).
+        Button::Shake
+        | Button::RotateLeft
+        | Button::RotateRight
+        | Button::Back
+        | Button::Recents
+        | Button::Power => return None,
     })
 }
 
@@ -421,7 +427,14 @@ mod tests {
         assert_eq!(consumer_usage(Button::Lock), Some((0x0C, 0x30)));
         assert_eq!(consumer_usage(Button::VolumeUp), Some((0x0C, 0xE9)));
         assert_eq!(consumer_usage(Button::VolumeDown), Some((0x0C, 0xEA)));
-        for b in [Button::Shake, Button::RotateLeft, Button::RotateRight] {
+        for b in [
+            Button::Shake,
+            Button::RotateLeft,
+            Button::RotateRight,
+            Button::Back,
+            Button::Recents,
+            Button::Power,
+        ] {
             assert_eq!(consumer_usage(b), None, "{b:?} is not a HID button");
         }
         let m = button(CONSUMER_PAGE, 0xE9, true);

@@ -116,12 +116,14 @@ impl Loaded {
         Hello {
             protocol: PROTOCOL,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            host: crate::wire::HostKind::Sim,
             coresim_version: self.coresim_version.clone(),
             simkit_version: self.simkit_version.clone(),
             xcode_version: self.xcode_version.clone(),
             xcode_path: self.developer_dir.to_string_lossy().to_string(),
-            input_path: versions::input_path(&self.coresim_version),
+            input_path: Some(versions::input_path(&self.coresim_version)),
             ax: self.ax_loaded && ax_missing().is_empty(),
+            facts: Default::default(),
         }
     }
 

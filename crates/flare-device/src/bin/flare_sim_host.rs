@@ -423,7 +423,7 @@ mod mac {
             hello.coresim_version,
             hello.simkit_version,
             loaded.simkit_path.display(),
-            hello.input_path
+            loaded.input_path()
         ));
         let missing = load::self_test();
         if let Some(b) = missing.first() {
@@ -560,7 +560,7 @@ mod mac {
         if let Ok(mut o) = host.orientations.lock() {
             o.remove(target);
         }
-        ax::forget(target.udid());
+        ax::forget(target.id());
     }
 
     fn input_of(host: &Host, target: &Target) -> Option<Arc<Input>> {
@@ -830,7 +830,7 @@ mod mac {
                     None => host.err(id, Fail::Unavailable, "this Xcode has no UI tree"),
                     Some(a) => {
                         let job = AxJob {
-                            token: target.udid().to_string(),
+                            token: target.id().to_string(),
                             at,
                             reply: Some((id, Arc::downgrade(host))),
                         };
@@ -860,7 +860,7 @@ mod mac {
             }
         };
         // The interface's orientation before the first ring, so its screen facts carry it.
-        let o = match orient::read(device.ptr(), target.udid()) {
+        let o = match orient::read(device.ptr(), target.id()) {
             Ok(o) => o,
             Err(b) => {
                 host.log(&format!(
@@ -920,10 +920,10 @@ mod mac {
                     m.insert(target.clone(), orientation);
                 }
                 // The UI tree: the device's token, and one request now (the first after a boot takes about 3 s).
-                ax::register(target.udid(), &device);
+                ax::register(target.id(), &device);
                 if let Some(a) = &host.ax {
                     a.submit(AxJob {
-                        token: target.udid().to_string(),
+                        token: target.id().to_string(),
                         at: None,
                         reply: None,
                     });
