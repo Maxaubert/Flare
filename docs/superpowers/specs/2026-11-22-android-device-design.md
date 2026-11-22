@@ -23,7 +23,8 @@ Why: the same reason as iOS. An agent that builds an Android app works blind tod
 tab lets the person watch the app at full smoothness, use it, and take over.
 
 Words used here (in addition to the iOS spec's):
-- **Emulator**: Google's Android Emulator from the person's own Android SDK.
+- **Emulator**: Google's Android Emulator, which Flare downloads from Google into its own SDK folder (or the person's
+  own SDK, if they have one).
 - **AVD**: an Android Virtual Device, the emulator's saved device (name, image, size).
 - **Emu host**: `flare-emu-host`, a small helper program Flare ships and starts. It is the only code that talks to
   the emulator (gRPC) and to adb.
@@ -45,7 +46,7 @@ emu host is the same; only the last step (frames into the GPU) differs.
 | Flare's renderer | wgpu 30 on DX12 | wgpu 30 on Metal |
 | Region to GPU | spike S3 picks: D3D12 heap opened on the file mapping (no CPU copy) or `write_texture` (one CPU copy) | spike S3 picks: `newBufferWithBytesNoCopy` (no CPU copy) or `write_texture` |
 | Cold boot (spike, first boot) | 139 s | 23 s |
-| Touch to photon (spike, p50) | 7.6 ms | 61 ms (to explain in spike S2) |
+| Touch to photon, probe app drawing every frame (Step 0 S2, p50) | 51 ms | 45 ms |
 
 ## Goals
 
@@ -56,7 +57,8 @@ emu host is the same; only the last step (frames into the GPU) differs.
 - **No CPU copy of a frame in Flare** if spike S3 finds a working import on that OS; otherwise at most one copy,
   under 1.5 ms per frame at 1080x2400, measured, and a gate in the PR.
 - The person taps, drags, scrolls and types in the panel. A tap shows in the panel within **50 ms p50** of the mouse
-  press on both OSes (the PC already does 7.6 ms; spike S2 must bring the Mac under the gate or Max takes open
+  press on both OSes, measured with the probe app (Step 0 S2: PC 51 ms, Mac 45 ms; most of it is the guest's own
+  two-to-three-frame pipeline; the gate is checked again in Rust in PR A4, where Python's per-frame decode is gone; open
   decision 6).
 - The agent uses the same `device_*` tools as for iOS, with Android meanings (package names, `.apk` files, Back and
   Recents buttons). `device_look` with the UI tree answers within **150 ms p50** (the iOS spec's order of size).
@@ -70,9 +72,10 @@ emu host is the same; only the last step (frames into the GPU) differs.
 
 - Real Android phones over USB or Wi-Fi (the research names the route: scrcpy-style H.264 plus hardware decode; a
   later phase).
-- Shipping or downloading the emulator or system images for the person (Android SDK licence; see "Setup").
-  A one-click SDK setup through Google's own `sdkmanager` is a later step (open decision 4).
-- Creating AVDs in Flare. The person makes them in Android Studio's Device Manager.
+- Shipping the emulator or system images inside Flare's installer (Android SDK licence forbids redistribution).
+  Flare downloads them from Google on the person's machine instead (see "Setup").
+- Android Studio, Java or a separate SDK install. None is needed (Max, 2026-11-22: "we don't rely on things we
+  install manually").
 - Build, Gradle, logcat or test tools. The agent builds with Gradle in its shell.
 - Showing the device in a remote tab or on another machine.
 - Foldables' second screen, Wear, TV, Auto and XR images (the main display only, `display: 0`).
@@ -106,7 +109,9 @@ Facts, with the spike or report that holds them:
 4. **No GPU texture export** exists (no D3D handle, no IOSurface). A zero-copy GPU route would need a fork of
    gfxstream. Not done.
 5. **Input.** `streamInputEvent` is one long-lived client stream for touch (up to 10 contacts, lift with pressure
-   0), mouse, wheel and keys. Spike A2: touch to photon p50 7.6 ms on the PC, 61 ms on the Mac.
+   0), mouse, wheel and keys. Step 0 S2 with the probe app (an app drawing every frame): touch to photon p50 51 ms on
+   the PC, 45 ms on the Mac. (The first spike's 7.6 and 61 ms used the system pointer overlay, which is drawn
+   differently; do not use it as a measure.)
 6. **UI tree.** `uiautomator dump` takes 2.0 to 2.2 s (spike A4) and fails on animated screens. A shell-uid
    `app_process` helper holding one `UiAutomation` connection is the fast route (`input-and-tree.md`: 10 to 40 ms
    estimated; spike S4 measures it).
@@ -117,7 +122,8 @@ Facts, with the spike or report that holds them:
    `~/Library/Caches/TemporaryItems/avd/running` (macOS) with `grpc.port`, `grpc.token`, `port.serial`, `avd.name`,
    `emulator.version`.
 9. **Licence.** The emulator and system images come under the Android SDK licence, which forbids redistribution.
-   Flare uses the person's own SDK.
+   Flare never ships them; it downloads them from Google on the person's machine after the person accepts Google's
+   licence in Flare (see "Setup").
 10. **Versions.** Mac MMAP was broken before 37.2.12 (issue 537802959). 37.2.13 fixed a GLES memory leak. 37.3.10
     fixed App Nap lag on the Mac and E-core throttling on Windows. The next-gen emulator (QEMU 11+, preview) has no
     documented gRPC or MMAP support yet.
@@ -216,23 +222,56 @@ Facts, with the spike or report that holds them:
 - The emu host answers `hello {protocol, version, kind: "emu", sdk_path, emulator_version, adb_version,
   accel, agent_jar}` first.
 
-### Setup and discovery
+### Setup: Flare installs what it needs (Max, 2026-11-22)
 
-The emu host finds the SDK, in order: `ANDROID_HOME`, `ANDROID_SDK_ROOT`, then `%LOCALAPPDATA%\Android\Sdk` or
-`~/Library/Android/sdk`. It reads `emulator/source.properties` (`Pkg.Revision`), lists AVDs with
-`emulator -list-avds` plus each `config.ini` (name, image API, size, dpi), and reads the running ones from the
-discovery folder. On Windows it runs `emulator -accel-check` once per Flare session (on a worker) to see WHPX.
+Max's words: "it's important that when we do this we don't rely on things we install manually ... I assume we can
+package everything with Flare or as an install you can do". iOS needs Xcode (Apple allows no other way); Android
+needs nothing the person installs by hand.
+
+What Flare ships in its own installer: `flare-emu-host` and `flare-agent.jar` (Flare's own code). What Flare
+downloads from Google on the person's machine, after one click: the emulator, platform-tools (adb) and one system
+image. The licence forbids Flare from redistributing these, so they always come from Google's servers, never from
+Flare's.
+
+- **Flare's own SDK folder**: `%LOCALAPPDATA%\Flare\android-sdk` (Windows) or
+  `~/Library/Application Support/Flare/android-sdk` (macOS). If the person already has an SDK (`ANDROID_HOME`,
+  `ANDROID_SDK_ROOT`, `%LOCALAPPDATA%\Android\Sdk`, `~/Library/Android/sdk`) with an emulator at or above the floor,
+  Flare uses it and also lists its AVDs; it never changes or updates the person's own SDK.
+- **No Java, no `sdkmanager`.** The emu host reads Google's public package lists itself
+  (`https://dl.google.com/android/repository/repository2-3.xml` for `emulator` and `platform-tools`,
+  `.../sys-img/google_apis/sys-img2-3.xml` for images; checked 2026-11-22: plain zip URLs such as
+  `emulator-windows_x64-16916650.zip`, `emulator-darwin_aarch64-16916650.zip`, `x86_64-36_r07.zip`,
+  `arm64-v8a-36_r07.zip`, each with a size and SHA-1). It downloads on a worker, checks the checksum, unpacks into the
+  SDK folder with the `package.xml` the SDK expects, and records the accepted licence the way the SDK does
+  (`licenses/android-sdk-license` with the licence text's hash).
+- **Licence**: before the first download the panel shows Google's licence text, taken from the package list (the
+  `android-sdk-license` element), with [Accept and set up] and [Cancel]. Nothing is downloaded before that click.
+- **Size**: about 2 GB (system image about 1.5 GB, emulator about 350 MB, platform-tools about 15 MB). The panel shows
+  one progress bar with MB and a [Cancel]; a cancelled or broken download leaves nothing half-unpacked (unpack to a
+  temporary folder, then rename).
+- **The device**: Flare writes one AVD itself, "Flare Pixel" (an `avd` folder beside Flare's SDK folder,
+  `ANDROID_AVD_HOME` set for its emulators): a `config.ini` with the Pixel 8 screen (1080x2400, 420 dpi), 4 GB RAM,
+  4 cores. No `avdmanager`. The person can add more from the chooser ([New device]: phone sizes only in v1).
+- **Image choice**: the newest stable API `google_apis` image for the host CPU (x86_64 on Windows, arm64-v8a on
+  Apple silicon), not a Play Store image (those need a Google sign-in in the device and have more licence limits).
+- **Updates**: when the emulator in Flare's folder is below the floor, or Google lists a newer stable one, the
+  chooser shows [Update Android emulator] (one click, same download path). Flare never updates while a device runs.
+- **Windows hypervisor**: if `emulator -accel-check` says WHPX is off, the panel says "Android needs Windows
+  Hypervisor Platform. Turning it on needs a restart." [Turn on] runs
+  `dism /online /enable-feature /featurename:HypervisorPlatform /all /norestart` elevated, which shows Windows' own
+  UAC prompt (the person's click), then says "Restart Windows to finish." This is the only step outside Flare, and
+  only on PCs that do not have it yet.
+
+The emu host lists AVDs (Flare's own plus the person's), reads the running ones from the discovery folder, and on
+Windows runs `emulator -accel-check` once per Flare session (on a worker).
 
 Panel states (each one line, at most one button), in addition to the iOS spec's live, still and booting:
-1. **No Android SDK**: "The device panel needs the Android SDK." [Get Android Studio] opens
-   developer.android.com/studio.
-2. **Emulator too old**: "Update the Android Emulator to 37.2.13 or newer in Android Studio's SDK Manager." Floors:
-   37.2.13 on Windows, 37.3.10 on macOS (findings 10). [Open Android Studio]
-3. **No AVD**: "Make a virtual device in Android Studio's Device Manager first." [Open Android Studio]
-4. **No hypervisor (Windows)**: "Turn on Windows Hypervisor Platform in Windows Features, then restart." No button:
-   Flare never changes Windows features.
+1. **Not set up**: "Android devices need Google's Android emulator (about 2 GB, from Google)." [Set up]
+2. **Licence**: Google's licence text, [Accept and set up], [Cancel].
+3. **Downloading**: progress, MB, [Cancel].
+4. **No hypervisor (Windows)**: the line and [Turn on] above; then "Restart Windows to finish."
 5. **Choose a device**: one list with both kinds on a Mac (iPhones, then Android), Android only on Windows;
-   running ones marked.
+   running ones marked; [New device] and, when due, [Update Android emulator].
 6. **Started outside Flare without access**: the line in builder's call 13.
 
 ### Boot, attach, shut down
@@ -316,8 +355,9 @@ the AVD the panel shows "No virtual device named <avd> on this computer." with [
 
 | What happens | What Flare does |
 |---|---|
-| No SDK, old emulator, no AVD, no WHPX | Setup states 1 to 4; tools answer `unavailable` with the same line. |
-| Emulator below the floor but present | State 2. No attempt to stream (MMAP crashes old Mac emulators). |
+| Not set up, or no WHPX | Setup states 1 to 4; tools answer `unavailable` with the same line (the agent cannot accept the licence or start the download). |
+| Download fails or the checksum does not match | Nothing is unpacked; "The download failed: <why>." [Try again]. |
+| Emulator below the floor | [Update Android emulator]; a device on an old emulator is not streamed (MMAP crashes old Mac emulators). |
 | MMAP stream refused or writes nothing for 2 s while the guest is awake | Fallback: frames in the gRPC message, CPU path, "slow" mark; then still pictures if that fails too. Logged with the emulator version. |
 | Next-gen emulator engine without gRPC | Still pictures through `adb exec-out screencap -p` at most 2 fps, input through `adb shell input` with the still badge and the reason. |
 | Boot over 300 s | "Still starting..." and the agent call answers `busy`; the boot carries on. |
@@ -386,7 +426,7 @@ run (`avdmanager create avd -n flare-test-<n>`) and deleted after, never one of 
    `uiautomator dump`, which takes 2 s), or `uiautomator dump` only in v1 and the jar later.
 3. **Emulators started outside Flare**: attach and drive them when they allow it, never shut them down (recommended),
    or only show emulators Flare booted.
-4. **SDK setup**: v1 detects the SDK and points to Android Studio (recommended), or v1 also offers a one-click setup
+4. **SDK setup** (answered by Max later the same day: Flare installs everything itself): v1 detects the SDK and points to Android Studio, or v1 also offers a one-click setup
    that runs Google's `sdkmanager` (the person accepts Google's licence in Flare).
 5. **Crash cleanup**: `-idle-grpc-timeout 300` so an emulator Flare booted stops 5 minutes after Flare dies
    (recommended), or leave it running like the iOS simulators.
@@ -403,7 +443,7 @@ run (`avdmanager create avd -n flare-test-<n>`) and deleted after, never one of 
 | 1 | Helper process `flare-emu-host`. |
 | 2 | Agent helper jar in v1; `uiautomator dump` only as the fallback. |
 | 3 | Attach to emulators started outside Flare when they allow it; never shut them down. |
-| 4 | v1 detects the SDK and points to Android Studio; no one-click setup yet. |
+| 4 | **Changed by Max later on 2026-11-22**: Flare installs everything itself (its own SDK folder, downloads from Google after the licence click, no Java, its own AVD). See "Setup". |
 | 5 | `-idle-grpc-timeout 300` watchdog for emulators Flare booted. |
 | 6 | If S2 cannot fix it, the Mac ships at its measured touch latency with a note. |
 | 7 | Mockup step before PR A4. |
@@ -411,7 +451,8 @@ run (`avdmanager create avd -n flare-test-<n>`) and deleted after, never one of 
 
 ## Open checks for Max's by-hand test
 
-1. On the PC: open a device panel, choose an AVD. It boots with nothing else on screen.
+1. On a PC or Mac with no Android SDK: open a device panel, [Set up], accept the licence. It downloads, makes
+   "Flare Pixel" and boots it with nothing else on screen.
 2. Scroll Settings fast on the PC and on the Mac. It looks as smooth as Android Studio's emulator, with the right
    colours.
 3. Tap, drag, type (also æøå), Back, Home, Recents from the header.

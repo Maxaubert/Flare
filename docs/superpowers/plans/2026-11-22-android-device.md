@@ -9,6 +9,8 @@ One gating step (spikes, no PR), then six code PRs. Each builds and passes its o
 - Step 0 gates: S1 and S3 before A4 (the frame path), S2 before A4 merges (the Mac touch gate, open decision 6), S4
   before A3, S5 before A2 merges.
 - A1 (pure model) and A2 (emu host) ship alone; nothing is wired, users see no change.
+- A2b (Android setup: Flare downloads the emulator, platform-tools and an image from Google into its own SDK folder
+  after the licence click, and writes its own AVD; no Java) ships alone, unwired.
 - A3 (agent helper jar) ships alone.
 - A4 (Flare side: frames, panel, setup, menu entry) is the first visible change. Mockup first (open decision 7).
 - A5 (agent tools for Android, capabilities on Windows) ships after A4.
@@ -22,12 +24,15 @@ nothing on Max's screen. Results go into `research/flare/2026-11-22-android-emul
 
 | # | Question | Pass when |
 |---|---|---|
-| S1 | Probe app (frame barcode each vsync, `tools/android-agent/probe/`): does the MMAP stream deliver every guest frame at 60 on both machines while the probe animates (not `adb input`)? Are rows bottom-up? Does the `width` field scale with MMAP? Is a frame ever torn when read within 2 ms of its record? | 891 of 900 barcodes distinct over 15 s on both; tearing 0 when copied at once; Y order and scaling recorded. |
-| S2 | Why the Mac's touch to photon is 61 ms (PC 7.6 ms). Try `sendTouch` (unary) against `streamInputEvent`, `android_event` raw evdev, `-vsync-rate`, and a newer emulator (37.3.x or later). Measure with the probe app's touch time. | Mac p50 under 50 ms with one of them, or the cause found and open decision 6 taken. |
+| S1 | **Done 2026-11-22.** Probe app (barcode each vsync) with the MMAP stream, 15 s: PC 879/879 guest frames shown, 58.7 fps, interval p99 31 ms (Python decoding each frame in the reader), 0 torn; Mac 895/895, 59.7 fps, p99 21 ms, 0 torn. Rows are top-down (not bottom-up): no Y flip. The emulator's screenshot masks the display's rounded corners. `width` scaling with MMAP not yet checked (A2). | Passed (100% shown, 0 torn on both). |
+| S2 | **Done 2026-11-22.** Touch to photon with the probe app (flips a band on touch down), 40 touches: PC p50 51 ms, p90 73 ms; Mac p50 45 ms, p90 49 ms. The first spike's 61 ms on the Mac came from the system pointer overlay, not the input path. The gate is measured again in Rust in A4. | Mac passes; PC at the gate (51 vs 50 ms, Python reader). |
 | S3 | Zero-copy import. Windows: `OpenExistingHeapFromFileMapping` on the region's file mapping, a placed buffer, `copy_buffer_to_texture` through wgpu-hal DX12 on Flare's adapter. Mac: `newBufferWithBytesNoCopy` on the mapping, wrapped through wgpu-hal Metal. Against `write_texture` on both. | Per OS: the zero-copy route works and its GPU time p99 is under 1 ms at 1080x2400; else `write_texture` CPU time p99 under 1.5 ms. The faster working route is chosen. |
 | S4 | Agent helper prototype (`app_process` + `UiAutomation`, JSON over `adb forward`): tree time on Settings and a busy screen, on API 36 (Mac) and 37 (PC), plus `ACTION_SET_TEXT` with æøå and emoji on a View and a Compose field. | Tree p50 under 60 ms warm on both; set-text works on both field kinds or the clipboard fallback does. |
+| | **PC done 2026-11-22 (API 37)**: the helper needs `Looper.prepareMainLooper()` first. Settings tree 155 to 220 nodes, round trip p50 2.9 to 4.7 ms warm (first read 63 to 67 ms; `uiautomator dump` took 2.2 s); start 160 to 300 ms. `ACTION_SET_TEXT` put "blåbær ørret 😀" into Settings search in 21 ms (screenshot checked). A helper left running blocks a new one (the new one is killed), so the emu host stops an old helper first. Still to do: the Mac (API 36) and a Compose field. | PC passed. |
 | S5 | Token auth and discovery: boot with `-grpc-use-token`, read `grpc.token` from `pid_<pid>.ini` on both OSes, connect with the bearer header; plain `-grpc` refused by Flare's own check; attach to an emulator started by `emulator` alone (Studio's default flags) and see what its discovery file allows. `-idle-grpc-timeout 300` stops it after the client dies. | All four behave as the spec says. |
-| S6 | Quick Boot: second boot time on both machines with the AVD's own snapshot. | Recorded (no gate). |
+| | **Partly done 2026-11-22**: with `-grpc-use-token` a call without the header answers UNAUTHENTICATED; the discovery file holds `grpc.token`, `grpc.port`, `grpc.allowlist` on both OSes (Mac: `~/Library/Caches/TemporaryItems/avd/running`). Idle timeout and attaching to a Studio-started emulator still to check. | |
+| S6 | Quick Boot: second boot time on both machines with the AVD's own snapshot. So far: the first boot of a new AVD took 139 s on the PC (first-run setup in the guest); later cold boots took 19 s (PC) and 16 s (Mac). | Recorded (no gate). |
+| S7 | Flare-style setup without Java: on a clean folder, read `repository2-3.xml` and `sys-img2-3.xml`, download `emulator`, `platform-tools` and the newest stable `google_apis` image for the host CPU, check SHA-1, unpack with `package.xml`, write the licence hash and an AVD `config.ini` by hand, then boot it headless with `ANDROID_SDK_ROOT` and `ANDROID_AVD_HOME` pointing there. On both OSes. | It boots and streams like S1, with no Java and no `sdkmanager` on the path. |
 
 ## Rule numbers
 
@@ -38,7 +43,7 @@ section `## Device panel: Android (2026-11-22)`.
 | Rule | Says | PR |
 |---|---|---|
 | 1360 | Android is a second `DeviceSource` behind the same panel kind, tools and job. Targets are `emu/<avd>`. No tool name, schema key or panel kind names a platform. | A1 |
-| 1361 | Flare uses the person's own Android SDK; it never ships, mirrors or downloads the emulator or system images. Floors: emulator 37.2.13 on Windows, 37.3.10 on macOS; below them, a setup line and no stream. | A2 |
+| 1361 | Flare never ships or mirrors the emulator or system images; it downloads them from Google's own servers into its own SDK folder, only after the person accepts Google's licence in Flare, checks each SHA-1, and never changes the person's own SDK. No Java, no `sdkmanager`, no `avdmanager`. Floors: emulator 37.2.13 on Windows, 37.3.10 on macOS. | A2b |
 | 1362 | Flare starts emulators only with `-grpc-use-token` (never plain `-grpc`), `-no-window`, `-gpu host` and `-idle-grpc-timeout 300`; the token is never logged or shown to the agent. | A2 |
 | 1363 | Frames come through `streamScreenshot` with MMAP into a region Flare owns (a user-only file under the profile, deleted on detach and at start). Frame records travel on the emu host's stdout. | A2, A4 |
 | 1364 | Each frame is copied out of the single-buffered region on the GPU at once, off the UI thread, into the device ring; the UI thread only shows the newest finished slot. At most 60 a second; no frame queue. | A4 |
@@ -99,6 +104,23 @@ Files: `crates/flare-device/src/emu/` (new), `src/bin/flare_emu_host.rs`, `src/e
    Not wired.
 9. Tests: parsers with spike fixtures, the command line, the wire protocol, the self-test in CI on both OSes.
 10. Rules 1361, 1362, 1363, 1365, 1366, 1368, 1370.
+
+## PR A2b: Android setup (Flare installs what it needs)
+
+Files: `crates/flare-device/src/emu/setup.rs` (new), `emu/avd.rs` (new), `flare_emu_host.rs`.
+
+1. SDK folder per OS; reuse the person's SDK when it is at the floor; never write into it.
+2. Package lists from `dl.google.com` (HTTPS), pick `emulator`, `platform-tools` and the newest stable
+   `google_apis` image for the host CPU; licence text for the panel.
+3. Download on a worker with progress events and cancel; SHA-1 check; unpack to a temporary folder, then rename;
+   `package.xml` and `licenses/android-sdk-license` written as the SDK does.
+4. Write the "Flare Pixel" AVD (`config.ini` and its `.ini`) under Flare's `avd` folder; `ANDROID_AVD_HOME`
+   for Flare's emulators.
+5. Windows: `-accel-check`; the elevated `dism` command for [Turn on] (started only from the person's click).
+6. Update check (newer stable emulator, floor).
+7. Tests: package-list parsing with a saved copy of both XML files, checksum failure, cancel mid-download (nothing
+   left behind), AVD file contents; a real download only in S7 and the opt-in real scenario.
+8. Rule 1361.
 
 ## PR A3: `flare-agent.jar`
 
