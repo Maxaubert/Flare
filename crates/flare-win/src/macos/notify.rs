@@ -54,9 +54,11 @@ unsafe extern "C" {
 const ANSWER: Duration = Duration::from_secs(10);
 const PROMPT: Duration = Duration::from_secs(600);
 
-/// `UNAuthorizationOptionSound | UNAuthorizationOptionAlert`: a banner with Windows' default sound, no badge (the
-/// Dock badge is Flare's own, `dock.rs`).
-const ASK_FOR: usize = (1 << 1) | (1 << 2);
+/// `UNAuthorizationOptionBadge | Sound | Alert`: a banner with Windows' default sound, and the badge. The Dock badge
+/// is Flare's own (`dock.rs`), but once an app uses notifications macOS draws its Dock badge only while the app's
+/// "Badge app icon" setting is on, and that starts off unless the app asked for badges (Max, 2026-11-22: "the badge
+/// on mac has stopped showing").
+const ASK_FOR: usize = 1 | (1 << 1) | (1 << 2);
 /// `UNNotificationPresentationOptionSound | List | Banner`: shown while Flare is in front too, as Windows does.
 const PRESENT: usize = (1 << 1) | (1 << 3) | (1 << 4);
 /// The click on the notification itself (not a dismiss or an action of its own; Flare's have none).
@@ -365,9 +367,11 @@ mod tests {
         }
         assert_eq!(permission_of(-1), Permission::Denied);
         assert_eq!(REQUIREMENT.matches(crate::names::AUMID).count(), 2);
-        // A banner, the list and the sound, also while Flare is in front; no badge (the Dock badge is Flare's).
+        // A banner, the list and the sound, also while Flare is in front; a notification sets no badge of its own
+        // (the Dock badge is Flare's).
         assert_eq!(PRESENT, 0b11010);
-        assert_eq!(ASK_FOR & 1, 0);
+        // Asked with the badge, so macOS shows Flare's Dock badge (its "Badge app icon" setting starts on).
+        assert_eq!(ASK_FOR, 0b111);
     }
 
     #[test]
