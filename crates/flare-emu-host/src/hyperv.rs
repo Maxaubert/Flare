@@ -3,6 +3,9 @@
 //! `ShellExecuteExW` with the `runas` verb, so Windows shows its own UAC prompt and the person decides. Its console
 //! window is hidden (`SW_HIDE`). This is the only step of Android setup outside Flare.
 
+// Off Windows only `turn_on`'s refusal is used; the command and its outcome stay for the tests.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 /// The program, under the Windows folder.
 pub const DISM: &str = "System32\\dism.exe";
 /// Its arguments.
