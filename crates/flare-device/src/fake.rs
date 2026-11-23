@@ -55,6 +55,8 @@ pub struct FakeSource {
     broken: Option<String>,
     /// Like the sim host: no `State` event of its own on a boot or a shutdown, only the answer.
     no_state_events: bool,
+    /// The emulators Flare asked to keep alive (`keep`), in order.
+    kept: Vec<Target>,
 }
 
 /// The colour of frame `seq`: a different solid colour each frame, opaque.
@@ -74,6 +76,21 @@ pub fn iphone(udid: &str, name: &str, state: DeviceState) -> Option<DeviceInfo> 
         booted_by_flare: false,
     })
 }
+
+/// A fake Android emulator (Android 17, API 37) in `state`, by its AVD name.
+pub fn android(avd: &str, name: &str, state: DeviceState) -> Option<DeviceInfo> {
+    Some(DeviceInfo {
+        target: Target::emu(avd)?,
+        name: name.to_string(),
+        kind: "Android".to_string(),
+        os: "Android 17".to_string(),
+        state,
+        booted_by_flare: false,
+    })
+}
+
+/// The AVD of [`FakeSource::android`].
+pub const FAKE_AVD: &str = "Flare_Pixel";
 
 impl Default for FakeSource {
     fn default() -> Self {
@@ -134,9 +151,77 @@ impl FakeSource {
             boot_ms: 0,
             booting: Vec::new(),
             fail_next: None,
+            kept: Vec::new(),
             broken: None,
             no_state_events: false,
         }
+    }
+
+    /// A fake Android emulator, "Flare Pixel" (`emu/Flare_Pixel`), shut down: a Pixel 8's screen in dp (1080 x 2400
+    /// pixels at 420 dpi is 411 x 914 dp, rule 1367) with pictures at 1 pixel per dp, so a frame stays small, and a
+    /// tree whose roles come from Android classes (`tree::android_role`). The e2e scenarios run on it on Windows
+    /// and macOS alike.
+    pub fn android() -> Self {
+        let devices = android(FAKE_AVD, "Flare Pixel", DeviceState::Shutdown)
+            .into_iter()
+            .collect();
+        let mut f = Self::new(devices);
+        let dp = Size::new(411.0, 914.0);
+        f.screen = Screen {
+            size_px: dp,
+            size_pt: dp,
+            scale: 1.0,
+            orientation: Orientation::Rot0,
+        };
+        let frame = |x, y, w, h| Rect { x, y, w, h };
+        let node = |class: &str, clickable, editable, label: &str, f, children| UiNode {
+            role: crate::tree::android_role(crate::tree::AndroidNode {
+                class,
+                clickable,
+                editable,
+                ..Default::default()
+            })
+            .into(),
+            label: label.into(),
+            frame: f,
+            enabled: true,
+            children,
+            ..UiNode::default()
+        };
+        f.tree = node(
+            "android.widget.FrameLayout",
+            false,
+            false,
+            "",
+            frame(0.0, 0.0, dp.w, dp.h),
+            vec![
+                node(
+                    "android.widget.TextView",
+                    false,
+                    false,
+                    "Fake device",
+                    frame(16.0, 60.0, 200.0, 40.0),
+                    vec![],
+                ),
+                node(
+                    "android.widget.Button",
+                    true,
+                    false,
+                    "Tap me",
+                    frame(16.0, 120.0, 120.0, 48.0),
+                    vec![],
+                ),
+                node(
+                    "android.widget.EditText",
+                    true,
+                    true,
+                    "",
+                    frame(16.0, 190.0, 379.0, 56.0),
+                    vec![],
+                ),
+            ],
+        );
+        f
     }
 
     /// Every input so far, in order.
@@ -161,6 +246,11 @@ impl FakeSource {
     pub fn go_broken(&mut self, why: &str) {
         self.broken = Some(why.to_string());
         self.send(SourceEvent::Broken(why.to_string()));
+    }
+
+    /// Sends `e` as if the host had (tests: an Android emulator's frame mode, a change seen while paused).
+    pub fn emit(&self, e: SourceEvent) {
+        self.send(e);
     }
 
     /// The UI tree `ui_tree` answers.
@@ -241,6 +331,11 @@ impl FakeSource {
     }
 
     /// Sends no `State` event on a boot or a shutdown, as the sim host does (a test of the answer alone).
+    /// The emulators Flare asked to keep alive, in order.
+    pub fn kept(&self) -> &[Target] {
+        &self.kept
+    }
+
     pub fn without_state_events(mut self) -> Self {
         self.no_state_events = true;
         self
@@ -297,7 +392,67 @@ impl FakeSource {
     }
 }
 
+/// The fake's Android setup licence and its hash (what `start` must carry).
+pub const FAKE_LICENCE: &str = "Terms and Conditions\n\nThis is the Android Software Development Kit License Agreement (fake).";
+pub const FAKE_LICENCE_HASH: &str = "fake-licence-hash";
+
+impl FakeSource {
+    /// Android setup as the emu host answers it (PR A2b): a plan with one licence and 2538 MB to download, a start
+    /// that needs that licence's hash and says its progress once, a cancel, the hypervisor's restart.
+    fn fake_setup(
+        &mut self,
+        id: ReqId,
+        step: crate::wire::SetupStep,
+    ) -> Result<Answer, SourceError> {
+        use crate::wire::{SetupEvent, SetupStep};
+        use serde_json::json;
+        Ok(Answer::Value(match step {
+            SetupStep::Plan => json!({
+                "needed": true,
+                "licences": [{"id": "android-sdk-license", "text": FAKE_LICENCE, "hash": FAKE_LICENCE_HASH}],
+                "download_mb": 2538,
+                "disk_mb": 8000,
+                "enough_space": true,
+            }),
+            SetupStep::Start { accepted } => {
+                if accepted != [FAKE_LICENCE_HASH] {
+                    return Err(SourceError {
+                        fail: Fail::Unavailable,
+                        message: "the licence changed: read it again".into(),
+                    });
+                }
+                let _ = id;
+                self.send(SourceEvent::Setup(SetupEvent::Download {
+                    package: "emulator".into(),
+                    done_mb: 1269,
+                    total_mb: 2538,
+                }));
+                json!({"installed": ["emulator", "platform-tools"], "device": FAKE_AVD, "facts": {"sdk": "ready"}})
+            }
+            SetupStep::Cancel => serde_json::Value::Null,
+            SetupStep::Accel => json!({"accel": "whpx", "usable": true}),
+            SetupStep::TurnOnHypervisor => json!({"restart": true}),
+        }))
+    }
+}
+
 impl DeviceSource for FakeSource {
+    fn keep(&mut self, target: &Target) {
+        self.kept.push(target.clone());
+    }
+
+    fn setup(&mut self, step: crate::wire::SetupStep) -> Option<ReqId> {
+        // Only the Android fake sets anything up.
+        if !self
+            .devices
+            .iter()
+            .any(|d| d.target.source() == crate::source::SourceKind::Emu)
+        {
+            return None;
+        }
+        Some(self.request(|s, id| Some(s.fake_setup(id, step))))
+    }
+
     fn list(&mut self) -> ReqId {
         self.request(|s, _| Some(Ok(Answer::Devices(s.devices.clone()))))
     }
@@ -380,6 +535,11 @@ impl DeviceSource for FakeSource {
     }
 
     fn button(&mut self, target: &Target, button: Button) {
+        // Like a real host, a button the device does not have does nothing (rule 1371; the agent's call is refused
+        // before it gets here).
+        if !target.source().has(button) {
+            return;
+        }
         self.input(target, Recorded::Button(target.clone(), button));
     }
 
@@ -519,6 +679,89 @@ mod tests {
         f.shutdown(&t);
         f.touch(&t, touch);
         assert_eq!(f.inputs().len(), 5, "input after shutdown goes nowhere");
+    }
+
+    /// The Android preset: an `emu/` device with a dp screen, Android roles in its tree, and only its own buttons
+    /// (rules 1360, 1367, 1371).
+    #[test]
+    fn the_android_fake_boots_attaches_and_takes_only_its_own_buttons() {
+        let mut f = FakeSource::android();
+        let t = Target::emu(FAKE_AVD).unwrap();
+        f.list();
+        let ev = drain(&f);
+        let SourceEvent::Answer {
+            result: Ok(Answer::Devices(d)),
+            ..
+        } = &ev[0]
+        else {
+            panic!("{ev:?}")
+        };
+        assert_eq!(d.len(), 1);
+        assert_eq!(
+            (d[0].target.name().as_str(), d[0].name.as_str()),
+            ("emu/Flare_Pixel", "Flare Pixel")
+        );
+        f.boot(&t);
+        f.attach(&t);
+        let ev = drain(&f);
+        let screen = ev
+            .iter()
+            .find_map(|e| match e {
+                SourceEvent::Frames { screen, .. } => Some(*screen),
+                _ => None,
+            })
+            .expect("a screen");
+        assert_eq!(screen.size_pt, Size::new(411.0, 914.0), "a Pixel 8 in dp");
+        let picture = ev.iter().find_map(|e| match e {
+            SourceEvent::Picture { rgba, size_px, .. } => Some((rgba.len(), *size_px)),
+            _ => None,
+        });
+        assert_eq!(picture, Some((411 * 914 * 4, Size::new(411.0, 914.0))));
+        // Android's buttons go through; the simulator's are not this device's.
+        for b in [Button::Back, Button::Recents, Button::Power, Button::Home] {
+            f.button(&t, b);
+        }
+        f.button(&t, Button::Shake);
+        f.button(&t, Button::Lock);
+        assert_eq!(
+            f.inputs(),
+            &[
+                Recorded::Button(t.clone(), Button::Back),
+                Recorded::Button(t.clone(), Button::Recents),
+                Recorded::Button(t.clone(), Button::Power),
+                Recorded::Button(t.clone(), Button::Home),
+            ]
+        );
+        // And the other way: an iPhone has no Back.
+        let mut ios = FakeSource::default();
+        let it = target();
+        ios.boot(&it);
+        ios.attach(&it);
+        ios.button(&it, Button::Back);
+        ios.button(&it, Button::Shake);
+        assert_eq!(ios.inputs(), &[Recorded::Button(it, Button::Shake)]);
+        // The tree has Android roles, and the filter lists it like an iOS one.
+        f.ui_tree(&t);
+        let ev = drain(&f);
+        let Some(SourceEvent::Answer {
+            result: Ok(Answer::Tree(tree)),
+            ..
+        }) = ev.last()
+        else {
+            panic!("{ev:?}")
+        };
+        let l = crate::tree::filter_tree(tree, screen.size_pt);
+        assert_eq!(
+            l.refs
+                .iter()
+                .map(|r| (r.role.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("AXStaticText", "Fake device"),
+                ("AXButton", "Tap me"),
+                ("AXTextField", ""),
+            ]
+        );
     }
 
     #[test]

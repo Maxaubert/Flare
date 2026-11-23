@@ -187,8 +187,8 @@ impl Sim {
     pub fn device(&self, target: &Target) -> Result<Device, Broken> {
         autoreleasepool(|_| {
             let by_udid = get(ptr(&self.set), "devicesByUDID")?;
-            let uuid = NSUUID::from_string(&NSString::from_str(target.udid()))
-                .ok_or_else(|| Broken::nothing("NSUUID", target.udid()))?;
+            let uuid = NSUUID::from_string(&NSString::from_str(target.id()))
+                .ok_or_else(|| Broken::nothing("NSUUID", target.id()))?;
             let dev = guarded(
                 ptr(&by_udid),
                 "objectForKey:",
@@ -196,7 +196,7 @@ impl Sim {
             )?;
             // SAFETY: the device the dictionary holds (+0), retained here.
             let obj = unsafe { Retained::retain(dev) }.ok_or_else(|| {
-                Broken::nothing("devicesByUDID", format!("no device {}", target.udid()))
+                Broken::nothing("devicesByUDID", format!("no device {}", target.id()))
             })?;
             Ok(Device { obj })
         })
@@ -669,7 +669,7 @@ pub fn attach(sim: &Sim, target: &Target, opts: AttachOptions) -> Result<Attache
         ));
     }
     let (_px, scale) = dev.screen_facts()?;
-    let queue = DispatchQueue::new(&format!("com.flare.sim-host.{}", target.udid()), None);
+    let queue = DispatchQueue::new(&format!("com.flare.sim-host.{}", target.id()), None);
     let (screen, fb) = lcd_screen(&dev, &queue)?;
     let stream = Arc::new(Stream {
         target: target.clone(),

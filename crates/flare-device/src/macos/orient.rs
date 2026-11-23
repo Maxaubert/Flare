@@ -241,7 +241,7 @@ mod tests {
         let before = (send_refs(display), send_refs(purple));
         assert_eq!(before, (1, 1), "a lookup leaves the caller one reference");
         for _ in 0..10 {
-            read(dev.ptr(), d.target.udid()).expect("displayinfo");
+            read(dev.ptr(), d.target.id()).expect("displayinfo");
             rotate(dev.ptr(), Orientation::Rot0).expect("the Purple send");
         }
         assert_eq!((send_refs(display), send_refs(purple)), before);

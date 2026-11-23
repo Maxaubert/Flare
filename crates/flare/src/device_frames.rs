@@ -1,45 +1,47 @@
-//! DeviceFrames: the device panel's picture with no CPU copy (issue #248, device panel PR 4b, rule 1311).
+//! DeviceFrames: the device panel's picture with no CPU copy (issue #248, device panel PR 4b, rule 1311; Android plan
+//! PR A4, rule 1364).
 //!
-//! The sim host blits each simulator frame into one slot of an RGBA IOSurface ring and hands Flare a frame record
-//! (`flare_device::client::SimFrames`). Here each slot is wrapped once as a wgpu texture on wgpu's own `MTLDevice`
-//! (`wgpu::hal::metal::Device::texture_from_raw` + `create_texture_from_hal`, `Rgba8Unorm`, storage mode Shared,
-//! `TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC`), and the newest slot is shown as a Slint image in the render
-//! notifier's `BeforeRendering` (`frame_image`). A slot is never rewritten while Flare samples it: the slot shown
-//! before is handed back only from `Queue::on_submitted_work_done`, registered in `AfterRendering` (`after_render`),
-//! so it comes back one frame late.
-//!
-//! When the import is refused (a renderer with no wgpu device, `Image::try_from` failing), the CPU path takes over
-//! for the session: the slot is locked read-only (`IOSurfaceLock`), copied into a `SharedPixelBuffer` and freed at
-//! once, at most [`CPU_FPS`] a second, and the panel wears the "slow" mark (spec "Fallbacks", 1).
+//! Two kinds of frames reach the window here, both shown by the render notifier in `BeforeRendering`
+//! (`frame_image`) and handed back from `Queue::on_submitted_work_done` (`after_render`):
+//! - **The iOS simulator's ring** (macOS, `SimRing` below): the sim host blits each simulator frame into one slot of
+//!   an RGBA IOSurface ring and hands Flare a frame record (`flare_device::client::SimFrames`). Each slot is wrapped
+//!   once as a wgpu texture on wgpu's own `MTLDevice` (`wgpu::hal::metal::Device::texture_from_raw` +
+//!   `create_texture_from_hal`, `Rgba8Unorm`, storage mode Shared, `TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC`).
+//!   A slot is never rewritten while Flare samples it: the slot shown before is handed back one frame late. When the
+//!   import is refused (a renderer with no wgpu device, `Image::try_from` failing), the CPU path takes over for the
+//!   session: the slot is locked read-only (`IOSurfaceLock`), copied into a `SharedPixelBuffer` and freed at once, at
+//!   most [`CPU_FPS`] a second, and the panel wears the "slow" mark (spec "Fallbacks", 1). The picture stays portrait
+//!   (the framebuffer never turns, spike S5): Slint turns it by the interface's orientation (`panel-device-turn`).
+//! - **The Android emulator's region** (Windows and macOS, `crate::device_region`): the emulator writes each frame into
+//!   a region file Flare maps, and a frame thread copies it into a ring of textures on the GPU at once.
 //!
 //! The notifier reaches this object through a weak slot set at startup and borrows it with `try_borrow_mut` only; it
-//! never borrows the `AppCtl`. The picture stays portrait (the framebuffer never turns, spike S5): Slint turns it by
-//! the interface's orientation (`panel-device-turn`).
-//!
-//! Off macOS this is an empty stand-in with the same calls: the device panel's frames there are the fake source's CPU
-//! pictures (`--e2e`), which `DeviceCtl` hands to Slint itself.
+//! never borrows the `AppCtl`. The fake source's CPU pictures (`--e2e`) never come here: `DeviceCtl` hands them to
+//! Slint itself.
 
 use slint::Image;
 
+use flare_device::source::SourceKind;
 use flare_device::target::Target;
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // the ring is macOS only
+use crate::device_region::RegionFrames;
+
 /// The CPU path shows at most this many frames a second (spec "Fallbacks", 1: about 12 MB a frame).
 pub const CPU_FPS: u64 = 30;
 
 /// The CPU path's spacing between two copies, in ms.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // the ring is macOS only
 pub const CPU_SPACING_MS: u64 = 1000 / CPU_FPS;
 
 /// How the shown picture reached the screen (the probe, the slow mark, the log).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS ring takes a path
 pub enum FramePath {
     /// No ring frame shown yet.
     #[default]
     None,
-    /// Zero copy: the ring slot itself is the image.
+    /// Zero copy: the ring slot itself is the image (iOS), or the region was copied on the GPU (Android).
     Gpu,
+    /// Android: the region was uploaded by the CPU into the ring (`write_texture`, the zero-copy import refused).
+    Upload,
     /// The import was refused: each frame is copied by the CPU (the slow mark).
     Cpu,
 }
@@ -49,64 +51,142 @@ impl FramePath {
         match self {
             FramePath::None => "none",
             FramePath::Gpu => "gpu",
+            FramePath::Upload => "upload",
             FramePath::Cpu => "cpu",
         }
     }
 }
 
 #[cfg(target_os = "macos")]
-pub use mac::{DeviceFrames, RingSource};
+pub use mac::RingSource;
 
-#[cfg(not(target_os = "macos"))]
-pub use other::DeviceFrames;
+/// The device panel's frames: the iOS simulator's ring (macOS) and the Android region frames, routed by the kind of
+/// the device on show.
+#[derive(Default)]
+pub struct DeviceFrames {
+    #[cfg(target_os = "macos")]
+    sim: mac::SimRing,
+    region: RegionFrames,
+    /// The device on show is an Android one.
+    emu: bool,
+}
 
-#[cfg(not(target_os = "macos"))]
-mod other {
-    use super::*;
-
-    /// The stand-in off macOS: there is no ring, so there is never a frame to show.
-    /// A field keeps it from being a unit struct, so `DeviceFrames::default()` reads the same on every OS (clippy).
-    #[derive(Default)]
-    pub struct DeviceFrames {
-        _none: (),
+impl DeviceFrames {
+    /// The sim host's frame half, or none (the sim host stopped).
+    #[cfg(target_os = "macos")]
+    pub fn set_source(&mut self, source: Option<std::sync::Arc<dyn RingSource>>) {
+        self.sim.set_source(source);
     }
 
-    impl DeviceFrames {
-        pub fn show(&mut self, _target: Option<Target>) {}
+    /// The Android frames' counters: copied, dropped, the copy's CPU time p50 and p99 in ms (`device.state`).
+    pub fn region_stats(&self) -> (u64, u64, f64, f64) {
+        self.region.stats()
+    }
 
-        pub fn frame_image(&mut self, _now_ms: u64) -> Option<Image> {
+    /// The Android frames (the emu host's sink, a detached device's release).
+    pub fn region(&mut self) -> &mut RegionFrames {
+        &mut self.region
+    }
+
+    pub fn attach_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        #[cfg(target_os = "macos")]
+        self.sim.attach_gpu(device, queue);
+        self.region.attach_gpu(device, queue);
+    }
+
+    pub fn detach_gpu(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.sim.detach_gpu();
+        self.region.detach_gpu();
+    }
+
+    /// The device the window shows now (the front panel's, live), or None.
+    pub fn show(&mut self, target: Option<Target>) {
+        self.emu = target
+            .as_ref()
+            .is_some_and(|t| t.source() == SourceKind::Emu);
+        let (sim, emu) = if self.emu {
+            (None, target)
+        } else {
+            (target, None)
+        };
+        #[cfg(target_os = "macos")]
+        self.sim.show(sim);
+        #[cfg(not(target_os = "macos"))]
+        let _ = sim;
+        self.region.show(emu);
+    }
+
+    pub fn frame_image(&mut self, now_ms: u64) -> Option<Image> {
+        if self.emu {
+            return self.region.frame_image(now_ms);
+        }
+        #[cfg(target_os = "macos")]
+        return self.sim.frame_image(now_ms);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = now_ms;
             None
         }
+    }
 
-        pub fn after_render(&mut self) {}
+    pub fn after_render(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.sim.after_render();
+        self.region.after_render();
+    }
 
-        pub fn wants_redraw(&self) -> bool {
-            false
+    pub fn wants_redraw(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        if self.sim.wants_redraw() {
+            return true;
         }
+        self.region.wants_redraw()
+    }
 
-        pub fn attach_gpu(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
-
-        pub fn detach_gpu(&mut self) {}
-
-        pub fn path(&self) -> FramePath {
-            FramePath::None
+    pub fn path(&self) -> FramePath {
+        if self.emu {
+            return self.region.path();
         }
+        #[cfg(target_os = "macos")]
+        return self.sim.path();
+        #[cfg(not(target_os = "macos"))]
+        FramePath::None
+    }
 
-        pub fn showing(&self, _target: &Target) -> bool {
-            false
+    pub fn showing(&self, target: &Target) -> bool {
+        if target.source() == SourceKind::Emu {
+            return self.region.showing(target);
         }
+        #[cfg(target_os = "macos")]
+        return self.sim.showing(target);
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
 
-        pub fn frames(&self) -> u64 {
-            0
-        }
+    pub fn frames(&self) -> u64 {
+        #[cfg(target_os = "macos")]
+        return self.sim.frames() + self.region.frames();
+        #[cfg(not(target_os = "macos"))]
+        self.region.frames()
+    }
 
-        pub fn held(&self) -> usize {
-            0
-        }
+    pub fn held(&self) -> usize {
+        #[cfg(target_os = "macos")]
+        return self.sim.held() + self.region.held();
+        #[cfg(not(target_os = "macos"))]
+        self.region.held()
+    }
 
-        pub fn refused(&self) -> Option<&str> {
-            None
+    /// Why the shown kind's import was refused (the slow mark's or the upload's reason), if it was.
+    pub fn refused(&self) -> Option<String> {
+        if self.emu {
+            return self.region.refused();
         }
+        #[cfg(target_os = "macos")]
+        return self.sim.refused().map(str::to_string);
+        #[cfg(not(target_os = "macos"))]
+        None
     }
 }
 
@@ -185,7 +265,7 @@ mod mac {
         m.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub struct DeviceFrames {
+    pub struct SimRing {
         source: Option<Arc<dyn RingSource>>,
         gpu: Option<Gpu>,
         import: Import,
@@ -206,13 +286,13 @@ mod mac {
         frames: u64,
     }
 
-    impl Default for DeviceFrames {
+    impl Default for SimRing {
         fn default() -> Self {
             Self::new()
         }
     }
 
-    impl DeviceFrames {
+    impl SimRing {
         pub fn new() -> Self {
             Self {
                 source: None,
@@ -622,8 +702,8 @@ mod mac {
             Target::sim("00000000-0000-4000-8000-0000000000aa").expect("a udid")
         }
 
-        fn frames_on(ring: &Arc<TestRing>) -> DeviceFrames {
-            let mut f = DeviceFrames::new();
+        fn frames_on(ring: &Arc<TestRing>) -> SimRing {
+            let mut f = SimRing::new();
             f.set_source(Some(Arc::clone(ring) as Arc<dyn RingSource>));
             f.show(Some(target()));
             f
@@ -834,7 +914,7 @@ mod mac {
             let logs = tempfile::tempdir().unwrap();
             let mut src =
                 SimSource::start(SimConfig::new(exe, dev, logs.path().join("sim-host.log")));
-            let mut f = DeviceFrames::new();
+            let mut f = SimRing::new();
             f.attach_gpu(&device, &queue);
             f.set_source(Some(Arc::new(src.frames()) as Arc<dyn RingSource>));
             f.show(Some(target.clone()));

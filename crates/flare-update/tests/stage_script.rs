@@ -57,6 +57,7 @@ fn the_stage_script_writes_a_stage_the_app_accepts_and_a_second_replaces_it() {
         ("flare.exe", "exe one"),
         ("flare-mcp.exe", "mcp"),
         ("flare-parakeet-host.exe", "host"),
+        ("flare-emu-host.exe", "emu"),
     ] {
         std::fs::write(bin.join(f), body).unwrap();
     }
@@ -70,6 +71,20 @@ fn the_stage_script_writes_a_stage_the_app_accepts_and_a_second_replaces_it() {
     let m = staged::check(&layout).expect("the app accepts the stage");
     assert!(m.files.contains_key("FlareStable.exe"));
     assert!(m.files.contains_key("flare-mcp.exe"));
+    // Android plan PR A6: the emu host and, beside it, the checked-in agent helper jar, as pack.ps1 ships them.
+    assert!(m.files.contains_key("flare-emu-host.exe"));
+    assert_eq!(
+        std::fs::read(root.join("staged").join("flare-agent.jar")).unwrap(),
+        std::fs::read(
+            repo_root()
+                .join("crates")
+                .join("flare-device")
+                .join("assets")
+                .join("flare-agent.jar")
+        )
+        .unwrap()
+    );
+    assert!(m.files.contains_key("flare-agent.jar"));
     assert!(m.files.contains_key("LICENSE"));
     assert!(m.files.keys().any(|k| k.starts_with("claude-plugin/")));
     for f in ["conpty.dll", "OpenConsole.exe"] {

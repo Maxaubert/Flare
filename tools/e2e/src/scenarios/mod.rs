@@ -593,6 +593,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 120,
     },
     Scenario {
+        name: "devicePanelAndroid",
+        group: "panel",
+        run: device::device_panel_android,
+        limit_secs: 120,
+    },
+    Scenario {
         name: "deviceAgent",
         group: "panel",
         run: device::device_agent,
@@ -602,6 +608,18 @@ pub const ALL: &[Scenario] = &[
         name: "mcpDevice",
         group: "panel",
         run: device::mcp_device,
+        limit_secs: 180,
+    },
+    Scenario {
+        name: "deviceAgentAndroid",
+        group: "panel",
+        run: device::device_agent_android,
+        limit_secs: 180,
+    },
+    Scenario {
+        name: "mcpDeviceAndroid",
+        group: "panel",
+        run: device::mcp_device_android,
         limit_secs: 180,
     },
     Scenario {

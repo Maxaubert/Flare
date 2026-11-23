@@ -37,6 +37,16 @@ pub const PARAKEET_HOST_EXE: &str = "flare-parakeet-host";
 /// The device panel's sim host (issue #248), beside the app's executable (`Contents/MacOS` on macOS). It is macOS
 /// only; on Windows the name is never started.
 pub const SIM_HOST_EXE: &str = "flare-sim-host";
+/// The Android device panel's emu host (Android plan PR A2), beside the app's executable (`current\` on Windows,
+/// `Contents/MacOS` on macOS). In the package and the bundle since PR A6; nothing starts it before PR A4.
+#[cfg(windows)]
+pub const EMU_HOST_EXE: &str = "flare-emu-host.exe";
+/// The Android device panel's emu host (macOS: no extension).
+#[cfg(not(windows))]
+pub const EMU_HOST_EXE: &str = "flare-emu-host";
+/// The Android agent helper (Android plan PR A3, rule 1369): beside the emu host on Windows, in `Contents/Resources`
+/// on macOS. The emu host looks there (`flare_emu_host::agent::candidates`) and takes it only with the expected hash.
+pub const AGENT_JAR: &str = "flare-agent.jar";
 /// The engine folder beside the executable.
 pub const ENGINE_FOLDER: &str = "whisper";
 /// Env seam (read only through `e2e::global().env`): a WAV played as the microphone.
@@ -144,6 +154,8 @@ mod tests {
             COPY_NAME_DEV,
             PARAKEET_HOST_EXE,
             SIM_HOST_EXE,
+            EMU_HOST_EXE,
+            AGENT_JAR,
             ENGINE_FOLDER,
             SEAM_MIC,
             SEAM_NVIDIA,

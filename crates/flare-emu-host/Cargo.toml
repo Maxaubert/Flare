@@ -1,0 +1,52 @@
+[package]
+name = "flare-emu-host"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+
+# The Android device panel's helper (Android plan PR A2): `flare-emu-host`, the only process that talks to the
+# Android emulator (gRPC) and to adb. A crate of its own so the gRPC stack (tonic, prost, tokio) never enters
+# flare.exe or flare-device: Flare's side of it (`EmuSource`) and every pure part live in flare-device.
+[dependencies]
+flare-device = { path = "../flare-device" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+# The gRPC client for the emulator's `EmulatorController` (the code in src/gen, made by tools/emu-proto-gen from
+# the vendored proto; no protoc and no build script). tonic 0.14.9 (2026-10-29) is the newest at least two weeks
+# old on 2026-11-22; prost 0.14.4 (2026-06-07) likewise (0.14.5 and 0.14.6 are under two weeks old).
+tonic = { version = "=0.14.9", default-features = false, features = ["codegen", "channel"] }
+tonic-prost = { version = "=0.14.9", default-features = false }
+prost = { version = "=0.14.4", default-features = false, features = ["std", "derive"] }
+# One small runtime for the client's streams: the version already in the lockfile.
+tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std"] }
+# The held input stream's sender as a request stream (tonic uses the same crate). 0.1.19 is from 2026-07-22.
+tokio-stream = { version = "=0.1.19", default-features = false }
+# The emu host's guard and its children's flags (rule 1053).
+flare-proc = { path = "../flare-proc" }
+# Android setup (Android plan PR A2b, rule 1361): the HTTPS download from dl.google.com (the ureq Flare already uses for
+# dictation and plugins), each file's SHA-1, and the unzip (the zip crate the GPU pack uses).
+ureq.workspace = true
+sha1_smol.workspace = true
+zip.workspace = true
+# The agent helper jar's SHA-256, checked before it is pushed (Android plan PR A3, rule 1369).
+sha2.workspace = true
+# The agent helper's start nonce, 128 bits from the OS (the getrandom Flare already uses).
+getrandom.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[[bin]]
+name = "flare-emu-host"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

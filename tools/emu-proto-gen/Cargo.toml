@@ -1,0 +1,20 @@
+[package]
+name = "emu-proto-gen"
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Flare-Proprietary"
+publish = false
+
+# Regenerates crates/flare-emu-host/src/gen/android.emulation.control.rs from the vendored
+# crates/flare-emu-host/proto/emulator_controller.proto (Android plan PR A2). A workspace of its own, so its
+# build-only crates (protox, the code generator) never enter Flare's lockfile or CI: no protoc and no
+# build script anywhere in the app. Run it by hand after the proto changes:
+#   cargo run --manifest-path tools/emu-proto-gen/Cargo.toml
+[workspace]
+
+[dependencies]
+# A pure-Rust protobuf compiler (no protoc on the PC or the runners). 0.10.0 is from 2026-10-07.
+protox = "=0.10.0"
+# tonic's code generator for prost messages and the client stubs, the version flare-emu-host uses (2026-10-29).
+tonic-prost-build = "=0.14.9"
+sha2 = "=0.10.9"

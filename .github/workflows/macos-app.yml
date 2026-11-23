@@ -234,6 +234,21 @@ jobs:
           if grep -q '"skipped": "' <<<"$out"; then echo "::notice::flare-sim-host --self-test skipped: $(grep '"skipped"' <<<"$out")"; fi
           exit "$rc"
 
+      # The Android device panel's emu host as the bundle ships it (Android plan PR A6: a tool, hardened runtime, no
+      # entitlements). A release build has no repository copy of the agent helper jar, so this proves it finds
+      # Contents/Resources/flare-agent.jar with the hash it expects (rule 1369). What the runner has (SDK, hypervisor) is
+      # reported, never a failure.
+      - name: Emu host self-test, from the signed bundle
+        if: steps.gate.outputs.go == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          out="$(target/mac-release/Flare.app/Contents/MacOS/flare-emu-host --self-test)" || rc=$?
+          printf '%s\n' "$out"
+          if grep -q '"skipped": "' <<<"$out"; then echo "::notice::flare-emu-host --self-test skipped: $(grep '"skipped"' <<<"$out")"; fi
+          exit "$rc"
+
       - name: Pack for Velopack, sign by role, notarize, staple, check, DMG
         if: steps.gate.outputs.go == 'true'
         shell: bash

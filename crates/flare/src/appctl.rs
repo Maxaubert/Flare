@@ -1079,10 +1079,19 @@ impl AppCtl {
         let convo = ConvoCtl::new(Arc::clone(&deps.post));
         let web = WebCtl::new(Arc::clone(&deps.post));
         // The device panel (PR 4a): the fake source under `--e2e` and in tests only, so a release shows nothing new.
+        // `FLARE_E2E_DEVICE=android` makes it the Android fake (Android plan PR A5: the e2e's Android variants).
         let device = DeviceCtl::new(
             Arc::clone(&deps.post),
             Rc::clone(&deps.clock),
-            deps.e2e.then(flare_device::fake::FakeSource::default),
+            deps.e2e.then(|| {
+                match crate::e2e::global()
+                    .env(&["FLARE_E2E", "_DEVICE"].concat())
+                    .as_deref()
+                {
+                    Some("android") => flare_device::fake::FakeSource::android(),
+                    _ => flare_device::fake::FakeSource::default(),
+                }
+            }),
         );
         panels.set_device_offered(device.offered());
         Self::push_rainbow(app, &marks);
@@ -1715,6 +1724,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_device_act, |c, a: SharedString| c
             .device_act(&a));
         bind!(app, rc, on_panel_device_setup, |c| c.device_setup());
+        bind!(app, rc, on_panel_device_cancel, |c| c.device_cancel());
         bind!(app, rc, on_panel_device_pick, |c, i: i32| c.device_pick(i));
     }
 

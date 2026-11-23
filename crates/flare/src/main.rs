@@ -19,6 +19,8 @@ mod convo_ctl;
 mod ctl_app;
 mod device_ctl;
 mod device_frames;
+mod device_region;
+mod device_sources;
 mod diag_ctl;
 mod dictation_ctl;
 mod dictation_page;

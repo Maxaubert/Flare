@@ -6,9 +6,13 @@ license.workspace = true
 publish = false
 
 # The process table and process-group signals off Windows (macOS: libproc, sysctl, kqueue). On
-# Windows the crate is empty: the Win32 process code stays in flare-term and flare-win (rule 227).
+# Windows the crate holds only `job`, a helper's kill-on-close guard (rule 1053; Android plan PR A2);
+# the rest of the Win32 process code stays in flare-term and flare-win (rule 227).
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [lints]
 workspace = true

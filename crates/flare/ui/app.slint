@@ -575,9 +575,13 @@ export component AppWindow inherits Window {
     in property <int> panel-device-state;
     in property <string> panel-device-line;
     in property <string> panel-device-button;
+    in property <bool> panel-device-has-cancel;
+    in property <string> panel-device-detail;
+    in property <bool> panel-device-android;
     in property <[DeviceRow]> panel-device-rows;
     in property <string> panel-device-still;
     in property <string> panel-device-slow;
+    in property <bool> panel-device-dim;
     in property <string> panel-device-foot;
     in property <bool> panel-device-controls;
     // The agent's touch indicators (rule 1321, device panel PR 5). See `PanelSlot`.
@@ -599,6 +603,7 @@ export component AppWindow inherits Window {
     callback panel-device-key(bool, string, int, bool);
     callback panel-device-act(string);
     callback panel-device-setup();
+    callback panel-device-cancel();
     callback panel-device-pick(int);
     public function focus-device() { panel-slot.focus-device(); }
     out property <bool> panel-device-focused: panel-slot.device-focused;
@@ -1513,9 +1518,13 @@ export component AppWindow inherits Window {
                         device-state: root.panel-device-state;
                         device-line: root.panel-device-line;
                         device-button: root.panel-device-button;
+                        device-has-cancel: root.panel-device-has-cancel;
+                        device-detail: root.panel-device-detail;
+                        device-android: root.panel-device-android;
                         device-rows: root.panel-device-rows;
                         device-still: root.panel-device-still;
                         device-slow: root.panel-device-slow;
+                        device-dim: root.panel-device-dim;
                         device-foot: root.panel-device-foot;
                         device-controls: root.panel-device-controls;
                         device-dot: root.panel-device-dot;
@@ -1533,6 +1542,7 @@ export component AppWindow inherits Window {
                         device-key(d, t, m, r) => { root.panel-device-key(d, t, m, r); }
                         device-act(a) => { root.panel-device-act(a); }
                         device-setup => { root.panel-device-setup(); }
+                        device-cancel => { root.panel-device-cancel(); }
                         device-pick(i) => { root.panel-device-pick(i); }
                         web-url: root.panel-web-url;
                         web-app: root.panel-web-app;

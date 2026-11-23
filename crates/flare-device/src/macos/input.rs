@@ -81,7 +81,7 @@ impl Input {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let st = Arc::clone(&stop);
-        let name = format!("input-{}", s.target.udid());
+        let name = format!("input-{}", s.target.id());
         let _ = std::thread::Builder::new()
             .name(name)
             .spawn(move || Worker::new(s, st).run(rx));
@@ -362,6 +362,11 @@ impl Worker {
                 .shake(&self.s.target)
                 .map_err(|e| (Fail::Unavailable, e.message)),
             Button::RotateLeft | Button::RotateRight => self.rotate(b == Button::RotateLeft),
+            // Android's buttons (rule 1371): Flare refuses them before they get here.
+            Button::Back | Button::Recents | Button::Power => Err((
+                Fail::Unavailable,
+                format!("the simulator has no {} button", b.name()),
+            )),
             _ => {
                 let ok = match &self.transport {
                     Some(Transport::Dtuhid(..)) => {
@@ -384,7 +389,7 @@ impl Worker {
         orient::rotate(dev, to).map_err(|b| (Fail::Unavailable, b.to_string()))?;
         self.device_o = to;
         let before = *self.s.orientation.lock().unwrap_or_else(|p| p.into_inner());
-        let udid = self.s.target.udid().to_string();
+        let udid = self.s.target.id().to_string();
         match orient::poll_change(before, || orient::read(dev, &udid)) {
             Ok(now) => self.set_orientation(now),
             Err(b) => self
@@ -435,7 +440,7 @@ impl Worker {
 
     fn run_one(&mut self, c: Cmd) {
         if let Cmd::ReadOrientation = c {
-            let udid = self.s.target.udid().to_string();
+            let udid = self.s.target.id().to_string();
             match orient::read(self.s.device.ptr(), &udid) {
                 Ok(o) => self.set_orientation(o),
                 Err(b) => self
@@ -445,11 +450,16 @@ impl Worker {
             }
             return;
         }
-        // Shake and rotation need no input connection.
+        // Shake and rotation need no input connection, and Android's buttons are refused at once.
         if let Cmd::Button { id, button } = c
             && matches!(
                 button,
-                Button::Shake | Button::RotateLeft | Button::RotateRight
+                Button::Shake
+                    | Button::RotateLeft
+                    | Button::RotateRight
+                    | Button::Back
+                    | Button::Recents
+                    | Button::Power
             )
         {
             let r = self.press(button);

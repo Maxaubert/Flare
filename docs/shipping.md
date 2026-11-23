@@ -93,6 +93,7 @@ and `%LOCALAPPDATA%\Flare\current\Flare.exe`). It replaces closing Stable by han
 
 ```
 cargo build --release -p flare -p flare-mcp -p flare-dictation --bin flare --bin flare-mcp --bin flare-parakeet-host
+cargo build --release -p flare-emu-host       # the Android emu host (the stage also takes the checked-in agent jar)
 pwsh tools\stage-install.ps1 -Stable          # or no switch for the plain Flare copy
 pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
 ```

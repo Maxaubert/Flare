@@ -1,5 +1,7 @@
 target/
 .claude/
+# The probe app's build output (tools/android-agent/probe/build.py); never shipped or checked in.
+tools/android-agent/probe/out/
 
 .e2e-shots/
 

@@ -5810,3 +5810,284 @@ folder is dropped (`xcode::resolve_in`) and no symlink can be swapped between th
 `find_takes_this_macs_signed_xcode` (`xcode.rs`, skipped without an Xcode), `a_fake_unsigned_xcode_is_refused`,
 `the_real_xcode_and_its_frameworks_pass` (`codesign.rs`, skipped without an Xcode) and
 `an_unsigned_xcode_is_never_loaded` (`load.rs`). Source: security review, 2026-11-20.
+
+## Device panel: Android (2026-11-22)
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`.
+Rules 1360 to 1371 are this feature's; each lands with the PR that builds it.
+
+1360. **Android is a second `DeviceSource` behind the same panel kind, tools and agent job. Its targets are `emu/<avd>`.
+No tool name, schema key or panel kind names a platform.** Max, 2026-11-22 ("how we'll build the android simulator, needs
+to work on both mac and pc"). Android plan PR A1 (the pure model, nothing wired): `flare_device::target::Target::Emu`
+reads `emu/<avd>`, where the AVD name is 1 to 64 of `A-Z a-z 0-9 . _ -`, not only dots, not starting with a dash (it
+would read as a flag on the emulator's command line), case kept. The adb serial is never part of a target (it changes
+per boot). `Target::id()` (was `udid()`) gives what the device's own tools take, and `Target::source()` which source
+shows it (`SourceKind::{Sim, Emu}`). The emu host speaks the sim host's protocol (`wire.rs`): its `hello` says `host:
+"emu"` and its facts in a `facts` map (the simulator fields are optional, so an old sim host still reads), and a frame
+is one `region` line (`HostLine::Region`, which becomes `SourceEvent::Region`). The emu host maps Android classes onto
+the tree model's roles (`tree::android_role`: `Button` and clickable views are buttons, `EditText` and editable nodes
+text fields, and so on), so `filter_tree` lists and numbers refs the same for both kinds. `FakeSource::android()` is a
+Pixel-sized fake with Android roles for the e2e scenarios. Setup states 1 to 4 and 6 of the spec are data and lines in
+`device_ctl::Setup` (`sdk_missing`, `licence`, `downloading`, `no_hypervisor`, `restart_needed`, `no_access`), not
+shown yet, and `Starter` takes a `SourceSetup` (`Xcode` or `AndroidSdk`). Held by
+`an_emu_target_round_trips_and_bad_avd_names_are_refused` (`target.rs`), `the_emu_hosts_lines_round_trip` (`wire.rs`),
+`android_classes_map_to_the_tree_roles` and `an_android_tree_filters_like_an_ios_one` (`tree.rs`),
+`the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`) and
+`android_setup_states_say_the_specs_lines` (`device_ctl.rs`). Android plan PR A5 puts the agent on it: the same twelve
+`device_*` tools, listed where Android's emulator is at the floor with a device (`DeviceCtl::agent_offered`); each call
+held to its own device's source (an Android setup state answers `unavailable` with the panel's line, and only the
+person sets it up); `device_launch` takes a package name (`emu::package_ok`) and `device_install` an `.apk` from the
+tab's folder only, a zip with `AndroidManifest.xml` (rule 1322's place check, symlinks resolved first; never
+DerivedData), each refused for the other kind's device. Held too by `the_tools_take_both_kinds_of_device` (`flare-mcp`,
+no platform in a name or key), `the_agent_drives_an_android_device_once_its_emulator_is_ready` and
+`device_install_takes_an_apk_from_the_tab_folder_only`. Source: Max, 2026-11-22.
+
+1361. **Flare never ships, mirrors or changes the emulator or a system image, and never writes into the person's own
+SDK. No Java, no `sdkmanager`, no `avdmanager`. Floors: emulator 37.2.13 on Windows, 37.3.10 on macOS.** Spec
+2026-11-22, "Setup" (Max: "we don't rely on things we install manually"). Android plan PR A2 holds the reading side:
+`emu::sdk` looks in the person's SDK first (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, then `%LOCALAPPDATA%\Android\Sdk` or
+`~/Library/Android/sdk`) and uses it only when its emulator (`emulator/source.properties`, `Pkg.Revision`) is at the
+floor, then Flare's own folder (`%LOCALAPPDATA%\Flare\android-sdk`, `~/Library/Application Support/Flare/android-sdk`);
+it only reads. `emu::avds` lists AVDs straight from the person's and Flare's AVD folders (`<name>.ini`, `config.ini`).
+PR A2b adds setup (the emu host's `setup` requests, `emu::setup`, `flare-emu-host/src/setup.rs`): Google's lists
+(`repository2-3.xml`, `sys-img/google_apis/sys-img2-3.xml`) over HTTPS, read with roxmltree's default options (a DOCTYPE
+is refused, so no entity is expanded), at most 8 MB each; the newest **stable** emulator (at the floor, else no setup)
+and platform-tools, and the newest stable plain `google_apis` image for this CPU that the emulator can run; an archive
+is only ever a bare file name joined to the list's own folder on `https://dl.google.com/android/repository/`. Nothing
+is downloaded before `start`, which carries the SHA-1 of each licence the person accepted (every licence the packages
+use is shown: the arm64 images use `android-sdk-arm-dbt-license`); a licence that changed is refused. Each archive is
+streamed to a temporary folder inside Flare's SDK folder, its size and SHA-1 checked before any unzip; the unzip takes
+only enclosed names under one top folder; then `package.xml` and the rename into place. PR A7 hardens the unzip: no link
+exists while files are written (folders and files first, links last), a link's target must be relative with no `..`,
+no colon and no backslash, and before each write the parent folder, canonicalized, must still be inside the output
+folder; links are made on unix only.
+A cancel or a failure removes the temporary folder, and a start (or the emu host's start) sweeps any left by a killed
+host. `licenses/<id>` gets the SHA-1 of the licence text as the SDK normalises it (`setup::licence_text`, the SDK's
+`TrimStringAdapter`; the raw text's hash is not the SDK's). Free space is checked first (three times the download and
+1 GiB). Flare's own device `Flare_Pixel` is written by hand (`emu::flare_avd`) and never written again; its first boot
+runs `pm bg-dexopt-job` once with a `preparing` event. An update never runs while a device runs. Windows Hypervisor
+Platform is turned on only by the `turn_on_hypervisor` step, `dism` elevated with Windows' own prompt. Held by
+`the_persons_sdk_comes_first_when_it_is_new_enough`, `the_floors_are_per_os_and_compare_part_by_part` (`sdk.rs`),
+`the_folders_list_every_avd_once` (`avds.rs`), `the_lists_give_the_stable_emulator_tools_and_image_for_each_computer`,
+`a_plan_lists_each_licence_its_packages_use_once`, `a_plan_fetches_only_what_flares_folder_lacks`,
+`an_archive_url_stays_in_googles_folder`, `a_list_with_a_doctype_is_refused`, `a_package_xml_reads_back`
+(`emu/setup.rs`), `flares_own_device_is_written_once_and_reads_back`, `only_a_new_flare_device_is_prepared`
+(`flare_avd.rs`), `the_licence_hash_is_the_one_the_sdk_writes`, `a_setup_installs_the_packages_the_licence_and_the_device`,
+`a_bad_checksum_unpacks_nothing`, `a_cancel_mid_download_leaves_nothing`, `no_download_before_the_licence_and_the_space`,
+`an_unsafe_zip_is_refused`, `a_hostile_zip_writes_nothing_outside_its_folder`,
+`a_write_through_a_planted_link_is_refused` (unix) (`flare-emu-host/src/setup.rs`), `android_setup_lines_round_trip` (`wire.rs`) and the opt-in
+`a_real_setup_from_google`. Source: Max, 2026-11-22. PR A7 (Max: no mockup, reuse the existing UI): Android is offered
+on a Mac on Apple silicon before it is set up, and the device chooser there lists the devices and one more row in the
+same style, "Android: set up (about 2.5 GB from Google)", which runs the same setup states as on Windows (the plan,
+Google's licence with [Cancel], the download); once set up in Flare's own SDK folder, the chooser has [Update Android emulator]
+(the same plan; nothing to fetch when it is current; not offered on the person's own SDK, since setup fills only
+Flare's folder). On a Mac the emu host starts only once Android has an SDK there or its setup runs, so an
+iPhone-only Mac never starts it. Which rows show is `device_ctl::chooser_rows`, a pure function. Held by
+`the_chooser_offers_android_setup_on_a_mac_and_an_update_once_set_up`, `a_mac_sets_android_up_from_the_chooser_row`
+(`device_ctl.rs`) and `a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence` (ui_tests).
+
+1362. **Flare starts emulators only with `-grpc-use-token` (never a plain `-grpc`), `-no-window`, `-gpu host` and
+`-idle-grpc-timeout 300`; the token is never logged or shown to the agent.** Spec 2026-11-22, builder's calls 11 and 13,
+finding 7 (a plain `-grpc` port is open to every local program). `emu::boot::args` makes the one command line and
+`boot::check` refuses any other before a start (`boot::command` runs it). The emu host reads `grpc.token` from the
+discovery file into `emu::discovery::Token`, whose `Debug` and `Display` print `hidden`, and sends it only as the
+`authorization` header, marked sensitive (`grpc::auth`); it is never in a hello fact, an error, an answer or the log. An
+emulator whose discovery file has a port and no token (plain `-grpc`) or none is not driven: "This emulator was started
+without access for other apps. Start it from Flare." (PR A7: the panel's state 6, `Setup::NoAccess`, one line and no
+button, `an_emulator_started_without_access_shows_its_line`). The discovery file's `avd.id` is the AVD's name (`avd.name` is its
+display name; checked on 37.2.13). Held by `the_boot_command_always_uses_a_token_and_no_window`,
+`the_command_is_checked_and_detached` (`boot.rs`), `a_discovery_file_gives_the_port_the_serial_and_a_hidden_token`,
+`an_emulator_without_a_token_has_no_access` (`discovery.rs`), `the_token_goes_only_into_a_sensitive_header`
+(`flare-emu-host/src/grpc.rs`), `the_hello_names_the_emu_host_and_its_facts` (`host.rs`) and the emu host's
+`--self-test`. Source: Max, 2026-11-22 (spec approved).
+
+1363. **Frames come through `streamScreenshot` with MMAP into a region Flare owns: a user-only file in a `flare` folder
+inside the emulator's discovery folder, deleted on detach and at start. Frame records travel on the emu host's stdout.**
+Spec 2026-11-22, builder's calls 2 and 3; Step 0 S7 (emulator 37.3.10 on macOS refuses a region anywhere else but
+`/tmp`). `emu::region` names the folder (`<discovery>/flare/<pid>-<n>.rgba`), makes the file 0600 in a 0700 folder on
+macOS, sizes it for every rotation (`max(w, h)^2 * 4`), and gives the `file:///` URL in the form the spikes used.
+`EmuSource` makes the region when the emu host says a device's screen (its `frames` line) and hands it over
+(`Request::Region`); the emu host streams into it while the device is not paused and writes one `region` line per frame
+through the 60 fps cap (`cap::FrameCap`). Rows are top-down (S1). Flare maps and copies the region in A4. Held by
+`a_region_is_made_user_only_and_deleted_on_detach_and_at_start`, `a_region_has_a_file_url_and_room_for_every_rotation`
+(`region.rs`) and `an_attached_device_gets_a_region_from_flare_and_frames_back` (`emu_client.rs`). Source: Max,
+2026-11-22. A4: the region's size is rounded up to 64 KiB (`region::ALIGN`), the size the GPU import takes; the frame
+thread lets go of a detached device's mapping (buffer, heap, then the view) before the file is deleted, since Windows
+refuses to delete a mapped file. Held also by `a_released_region_can_be_deleted` (`device_region.rs`). A7 review: every
+path that drops an import (a release, a new wgpu device, a refused first copy) waits until the device the import was
+made on is idle, not the renderer's current one, and the view is unmapped only after that (`Imported`'s `Drop`; `Mapped`
+holds the import before the map). Held also by `a_new_gpu_device_lets_go_of_the_old_import_first`.
+
+1364. **Each frame is copied out of the single-buffered region on the GPU at once, off the UI thread, into the device's
+ring; the UI thread only shows the newest finished slot. At most 60 a second; no frame queue.** Spec 2026-11-22,
+builder's calls 4 and 5; Step 0 S3. The emu host's reader hands each frame record straight to Flare's frame thread
+(`EmuConfig::on_region`, `crate::device_region`), never through the UI thread. The frame thread maps the region and
+copies it into a free slot of a ring of three `Rgba8Unorm` textures: zero copy where the machine allows it (Windows: a
+D3D12 heap opened on the mapped view with `OpenExistingHeapFromAddress`, a buffer placed on it, `buffer_from_raw` +
+`create_buffer_from_hal`; macOS: `newBufferWithBytesNoCopy` wrapped the same way), then a compute pass, because rows of
+4320 bytes break the 256-byte row rule of `copy_buffer_to_texture`. `write_texture` is the fallback when the import or
+the pass is refused (logged once, `refused` in `device.state`); with no wgpu device, or a texture Slint refuses, the
+region is copied by the CPU at most 30 a second (the slow mark). The mapping, the import and the pipeline are made on
+the frame thread (rule 34). A record that comes while an older one waits replaces it (counted as dropped); a slot on
+show is never written, and it is freed only from `on_submitted_work_done` after the frame that replaced it (rule
+1311's pattern). The newest slot is the newest copy on the frame thread, not the emulator's `seq`, which starts again
+with each new stream (a resume, an emu host restart). Each frame record of an attached device also counts as a change
+(the emulator sends a frame only on change), so the agent's input calls answer `changed` from it while the stream runs.
+Android frames come turned, so Slint does not turn them again. `device.state` reports the route (`gpu`, `upload`,
+`cpu`) and the copies, drops and copy time p50 and p99. Held by `a_region_frame_is_copied_by_the_gpu_into_the_ring`,
+`a_full_size_frame_and_a_turned_one_copy_into_the_ring`, `a_refused_import_uploads_the_region_instead`,
+`a_shown_slot_is_freed_only_after_the_gpu_is_done`, `the_newest_copy_shows_when_a_new_stream_starts_its_seq_again` and
+`without_a_gpu_the_region_is_copied_by_the_cpu` (`device_region.rs`, headless on both OSes' own GPU API) and
+`an_android_frame_record_counts_as_a_change` (`device_ctl.rs`). Source: Max, 2026-11-22. PR A7 adds the spec's
+fallbacks in the emu host (`host.rs`): when MMAP is refused, or gives no usable frame for 2 s while the display is on
+(no frame, or a region the emulator never wrote: 16 sample pixels marked before the stream opens still hold the
+mark), the pixels come in the gRPC messages and
+the emu host writes them into the same region, at most 30 a second, with the slow mark and its reason
+(`FrameMode::Slow`); when that fails too, a `getScreenshot` at most 3 times a second, written the same way, with the
+still badge and its reason (`FrameMode::Still`). A 0x0 frame means the display is off: the last picture stays,
+dimmed (`FrameMode::Asleep`, `panel-device-dim`). Each fallback is logged with the emulator's version; a resume tries
+MMAP first again. The mode travels as a `mode` line. Held also by `a_failed_stream_falls_back_in_the_specs_order`,
+`frames_are_written_into_the_region_and_a_blank_region_is_seen` (`host.rs`),
+`an_android_frame_modes_show_as_slow_still_and_dim` (`device_ctl.rs`) and `an_android_panel_shows_slow_still_and_asleep`
+(ui_tests).
+
+1365. **The stream runs only while the panel is seen; input, the tree, `snapshot` and the agent keep working while it
+is paused.** Spec 2026-11-22, builder's call 6. In the emu host, `pause` cancels `streamScreenshot` (the emulator then
+reads nothing back) and `resume` opens it again; the held input stream, `getScreenshot` for a snapshot and the minute's
+`getStatus` go on. Checked on a real emulator in A2: no `region` line while paused, frames again at once on resume.
+PR A4 sends the pause from the panel's visibility: `DeviceCtl` pauses every attached device but the front panel's, and
+all of them while the window is minimised or occluded, for both kinds through the same `Multi` source
+(`device_sources.rs`), which routes each request by its target's kind. After an emu host restart `EmuSource` sends a
+paused device's pause again with its frames line (once the new host has it, before the region), so a hidden panel never
+streams; a pause sent with the attach was refused as "not attached". A stream that ends by itself while not paused is
+opened again (1 to 16 s, five tries with no frame). Held by `an_attached_device_gets_a_region_from_flare_and_frames_back`
+and `a_paused_device_stays_paused_after_the_emu_host_restarts` (`emu_client.rs`),
+`a_frame_stream_that_ends_is_opened_again_a_few_times` (`host.rs`) and `both_sources_answer_as_one`
+(`device_sources.rs`). Source: Max, 2026-11-22. PR A7: while a device is paused the agent helper's window events stand
+in for frames: the emu host sends a `changed` line for each new count while paused, and Flare adds one to the
+device's own count (never the helper's number, which starts again with each helper), so the agent's input calls
+answer `changed: true` while paused too. Held by `an_android_frame_record_counts_as_a_change` (`device_ctl.rs`).
+
+1366. **An emulator Flare booted is shut down at quit (setting, detached, quit never waits) and stops by itself 5
+minutes after Flare dies; an emulator Flare did not boot is never shut down.** Spec 2026-11-22, builder's call 12, open
+decision 5. Flare starts the emulator itself (`emu_client::launch_emulator`, on a worker), detached from Flare and
+outside the emu host: its own session on macOS, its own process group outside any job on Windows. The emu host is
+guarded (`flare_proc::guard` on macOS, the kill-on-close job `flare_proc::job` on Windows, rule 1053), and a guard ends
+every process its program started, so an emulator the emu host started would be killed with Flare instead of shutting
+down cleanly. The emulator runs with `-idle-grpc-timeout 300`; the emu host calls `getStatus` every minute, paused or
+not, for every emulator it booted or attached, so the timeout fires only once Flare is gone. `EmuSource` keeps which
+emulators it booted (`booted_by_flare`); a shutdown is `setVmState(SHUTDOWN)` and waits for the emulator to end. PR A4
+adds the quit side: `<profile>/device/booted.json` holds both kinds by target name (`emu/<avd>`; an old file's
+simulator `udid` entries still read), and with `flare.device.shutdown_on_quit` on, quit starts one detached
+`flare-emu-host --shutdown <avd>...` (no window, never waited for, outside the guard) that asks each running AVD it
+names for `setVmState(SHUTDOWN)` and exits. A kind whose source is not running never forgets its entries from a list
+that could not include them. Only an emulator Flare started is recorded: a boot of an AVD that already ran (Android
+Studio's, or a list that was out of date) answers `started_elsewhere` and is waited for but never Flare's. Each
+emulator entry carries its boot's time (`<avd>@<ms>` on the quit command line, a new boot replaces an old entry's
+time), and quit leaves an emulator running whose discovery file was made after that time: the one Flare booted idled
+out and the person started the same AVD again. Held by `a_boot_starts_the_emulator_in_flare_then_waits_in_the_emu_host`
+(`emu_client.rs`), `a_guarded_helper_ends_with_its_guard` (`flare-proc/src/job.rs`), the boot command tests of rule
+1362, `an_android_device_boots_and_shuts_down_at_quit`, `an_emulator_that_already_ran_is_never_flares_to_shut_down`
+and `booted_json_holds_both_kinds` (`device_ctl.rs`), and `only_the_emulator_flare_booted_is_shut_down`
+(`flare-emu-host/src/quit.rs`). Source: Max, 2026-11-22. PR A7: an emulator Flare booted never idles out while Flare
+runs. The hosts do not stop two minutes after the last device panel while `booted.json` holds an `emu/` entry (the
+emu host's keep-alives hold the emulator, attached or not), and each Flare-booted emulator the list shows running is
+sent `keep` (`Request::Keep`: the emu host reaches it and keeps it alive), one from an earlier run of Flare too, and
+again after an emu host restart. A `keep` for one that no longer runs ends in a `shutdown` state, so its entry goes
+and the hosts stop two minutes later as before. Held by `the_emu_host_stays_while_an_emulator_flare_booted_runs`
+(`device_ctl.rs`) and `a_boot_of_an_emulator_that_already_runs_is_never_flares` (`emu_client.rs`, which also checks a
+boot of an AVD whose emulator already runs launches nothing and is never Flare's).
+
+1367. **Agent coordinates for Android are dp (pixels / (dpi / 160)); only the emu host converts dp to pixels.
+`device_look`'s PNG is at dp size.** Spec 2026-11-22, builder's call 7. The dp is Android's match for the iOS point:
+`Screen.size_pt` is in the agent's unit and `Screen.scale` is pixels per unit (`Screen::from_dpi`: 1080 x 2400 at 420
+dpi is 411.4 x 914.3 dp, scale 2.625). The panel's letterbox, the swipe path, the tree's frames and the agent's taps
+stay in dp, as they stay in points for iOS; `geom::dp_to_px` and `px_to_dp` are for the emu host alone. Android plan
+PR A1 holds the model; PR A5 the tool side: `device_look`, `device_ui` and `device_state` answer the screen in dp
+(`screen_pt`, never pixels), the look's text says "device points (Android dp)" for an `emu/` device, and the tool
+descriptions say a device point is a point on an iPhone and a dp on Android. Held by
+`dp_map_to_pixels_in_every_orientation` (`geom.rs`), `an_android_screen_is_in_dp` (`source.rs`),
+`the_agent_drives_an_android_device_once_its_emulator_is_ready` (`device_ctl.rs`, a 411 x 914 look),
+`an_android_device_is_listed_and_looked_at_in_dp` (`flare-mcp` `device.rs`) and the e2e `deviceAgentAndroid` and
+`mcpDeviceAndroid`. Source: Max, 2026-11-22 (spec approved, "all recommendations").
+
+1368. **Typing never touches the computer's clipboard: HID keys, then the agent helper's set-text, then the device's
+own clipboard and paste.** Spec 2026-11-22, builder's call 8. `emu::keys::text_steps` types keymap text as USB HID keys
+(`KeyboardEvent` with `codeType: Usb`, the usage on page 7, `0x07_0004` for A) and anything else through gRPC
+`setClipboard`, which is the device's own clipboard, then Ctrl+V. PR A3 puts the agent helper's set-text in between:
+text the keymap cannot type goes to the focused field through the helper (`Helper::insert_text`, `set_text` with
+`mode: insert`), which splices it in at the field's selection as keys would (`ACTION_SET_TEXT` alone replaces the whole
+field) and asks for the cursor after it; a password field, no focused field or no helper falls through to the clipboard
+and paste. Checked by hand on API 37: "blåbær ørret 😀" into Settings search and the probe app's field, each time at
+the end of the text (an insert in the middle is not checked by hand yet). Held by
+`text_without_keys_goes_through_the_devices_clipboard` (`keys.rs`),
+`input_text_and_snapshots_go_to_the_emu_host` (`emu_client.rs`) and
+`non_keymap_text_goes_through_the_simulator_pasteboard_not_the_macs` (`client.rs`, which reads every source file of
+flare-device). Source: Max, 2026-11-22.
+
+1369. **The agent helper jar is built from source in the repo and its hash is checked in CI; it is pushed only to
+emulators (never to a real phone in v1) and reached only through `adb forward` to localhost; when it fails, the tree
+comes from `uiautomator dump` with a "slow tree" mark.** Spec 2026-11-22, builder's call 14. Android plan PR A3. The
+source is `tools/android-agent/src` (Java, `UiAutomation` over the shell's `UiAutomationConnection`, which needs
+`Looper.prepareMainLooper()` first). `tools/android-agent/build.py` builds it with `javac` and the SDK's `d8` into
+`crates/flare-device/assets/flare-agent.jar` and writes `flare-agent.jar.sha256`: the jar's SHA-256 and the hash of
+`src/` plus `build.py` (each file's path and bytes without CR, in path order, so both OSes hash alike). The test
+`the_checked_in_jar_is_built_from_its_sources` checks both with no Java, so a changed source with an old jar fails CI.
+The emu host takes only a jar with the expected hash (`agent::jar`, beside the emu host, in `Resources`, or the repo's
+in a debug build; the self-test fails without it) and makes a helper only for an `emulator-<port>` serial from the
+emulator's own discovery file (`emu::agent::serial_ok`). The helper listens on the abstract socket `flare-agent` and
+refuses any peer that is not the shell user or root (adb's forward), so an app inside the device cannot use it. Any
+app in the device could bind that socket name first, so the emu host starts the helper with a random 128-bit nonce
+on its command line (`getrandom`) and the helper's hello echoes it; only a helper that echoes the nonce this emu host
+process started it with is reused (PR A7). Anything else on the socket (an app, another Flare's helper, an old build)
+is told to quit and the helpers are killed by name, since a running helper blocks a new one; so two Flares on one
+emulator replace each other's helper. It ends 15 s after its last client leaves. A failed call starts it again once; a
+second failure switches that attach to `uiautomator dump` (about 2 s), and the tree's answer says `path: "dump"`
+(`device_state` shows "slow tree" in PR A4). The dump needs the helper gone first: it fails quietly while a helper holds
+the UI automation connection (checked by hand). A tree with no element left after the filter (the first read right
+after a boot or a launch) is read again every 150 ms for up to 1 s, then answered as it is (PR A7). PR A6 ships the jar where the emu host looks: beside
+`flare-emu-host.exe` in `current\` (`pack.ps1`, `stage-install.ps1`) and in `Flare.app/Contents/Resources`
+(`release::build`); the release runs the shipped emu host's self-test on both OSes, since a release build has no repo
+copy to fall back on. Held by `the_checked_in_jar_is_built_from_its_sources`,
+`the_helper_goes_only_to_an_emulator`, `the_helpers_constants_match_its_source`,
+`a_real_settings_screen_reads_the_same_both_ways` (`emu/agent.rs`), `a_helper_is_made_only_for_an_emulator`,
+`a_helper_that_cannot_start_falls_back_and_answers`, `the_jar_is_found_with_its_hash`,
+`only_a_helper_that_echoes_this_hosts_nonce_is_reused`, `an_empty_tree_is_read_again_for_up_to_a_second`
+(`flare-emu-host/src/agent.rs`), `the_package_ships_the_emu_host_and_the_agent_jar_beside_the_app`
+(`crates/flare/tests/release_files.rs`), `the_bundle_lists_the_emu_host_as_a_tool_and_carries_the_agent_jar`
+(`flare-cef/src/macos/release.rs`) and `the_emu_host_self_test_runs_from_the_signed_bundle`
+(`flare-cef/tests/mac_release_files.rs`). Source: Max, 2026-11-22 (spec approved, "all recommendations"). A7 review:
+the helper's `hello` must put the nonce in its answer (`Agent.java`); a hello without it refused every start and sent
+every tree to the dump. `the_helpers_constants_match_its_source` checks the Java source for it, and the opt-in
+`a_real_emulator_answers_the_agent_tools` (`device_ctl.rs`) checks the emu host's log for a started helper and no dump.
+
+1370. **No emulator window, taskbar button or Dock icon ever appears.** Spec 2026-11-22, anti-goals. The emulator runs
+with `-no-window` (the headless engine, spike A5), and on Windows every program Flare's Android side starts (the emu
+host, the emulator, adb, `emulator -accel-check`) starts with `CREATE_NO_WINDOW` (`flare_emu_host::run::command`,
+`emu::boot::command`). Checked by hand in A2 and A4: the count of visible windows was the same before and after a
+headless boot (26 and 26 in A4). No automated test counts windows: the real runs are opt-in Rust tests run by hand
+(A5 deviation 3; GitHub's runners cannot run the emulator's hypervisor). A4: Flare's own detached programs at
+quit (`device_ctl::spawn_detached`, the `simctl` and `flare-emu-host --shutdown` commands) also start with
+`CREATE_NO_WINDOW` on Windows. No Windows Firewall dialog either: adb's mDNS binds UDP 5353 on every network, and
+Windows asks about that the first time an `adb.exe` from a new folder (Flare's own SDK) does it (seen in A2b's real
+setup). So the emulator's command and every program the emu host runs get `ADB_MDNS=0` (`emu::boot::ADB_MDNS`); with
+it the adb server binds only its localhost port (its socket list, platform-tools 37.0.1, 2026-11-22). Held by
+`the_boot_command_always_uses_a_token_and_no_window` and `the_command_is_checked_and_detached` (`boot.rs`) and
+`every_program_starts_without_a_window` (`flare-emu-host/src/run.rs`). Source: Max, 2026-11-22.
+
+1371. **Each source lists its own buttons; a press of another source's button is refused with `unavailable`.** Spec
+2026-11-22, builder's call 9. `Button` gains `Back`, `Recents` and `Power`. `SourceKind::buttons()` lists each
+source's: the simulator has Home, Lock, Volume up and down, Shake and the two rotations (the list `device_press` has
+offered since device panel PR 5); the emulator has Home, Back, Recents, Power, Volume up and down and the two rotations
+(the panel's Lock button sends Power on Android, Android plan PR A4). The agent's press of a button the device lacks
+answers `unavailable` with the buttons it has, before anything is sent (`device_agent.rs`, `agent_act`); a panel row
+naming one does nothing (`DeviceCtl::act`); the fake ignores one, and the sim host answers `unavailable` for
+Android's. Android plan PR A5 adds the tool side: `device_press`'s schema takes both sources' buttons (its enum has
+all ten) and its description names each source's list, `device.look`, `device.ui` and `device.state` answer the
+device's own `buttons` and the look's text lists them, and a name neither source has is `bad_params` naming both lists
+(`ctl_device::buttons_words`). `flare_mcp::SIM_BUTTONS` and `EMU_BUTTONS` are held to `SourceKind::buttons()`. Held by
+`each_source_lists_its_own_buttons` (`source.rs`), `another_sources_button_is_refused_unavailable`
+(`ui_tests/device_agent.rs`), `the_android_fake_boots_attaches_and_takes_only_its_own_buttons` (`fake.rs`),
+`device_press_names_each_sources_own_buttons` (`ctl_app.rs`), `the_tools_take_both_kinds_of_device` (`flare-mcp`),
+`the_agent_drives_an_android_device_once_its_emulator_is_ready` (`device_ctl.rs`) and the e2e `deviceAgent`,
+`mcpDevice`, `deviceAgentAndroid` and `mcpDeviceAndroid`. Source: Max, 2026-11-22.

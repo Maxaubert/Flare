@@ -2175,7 +2175,8 @@ Specs: `docs/superpowers/specs/2026-10-29-idle-install.md`, then `docs/superpowe
 only when the person clicks "Build ready". How to stage: `docs/shipping.md`, "Installing a local build with Build ready".
 
 - **Staging.** `tools/stage-install.ps1 [-Stable]` copies the release files into `<install>\staged\` under their names in
-  `current\` (`FlareStable.exe` or `Flare.exe`, `flare-mcp.exe`, `flare-parakeet-host.exe`, `LICENSE`,
+  `current\` (`FlareStable.exe` or `Flare.exe`, `flare-mcp.exe`, `flare-parakeet-host.exe`, `flare-emu-host.exe`,
+  `flare-agent.jar`, `LICENSE`,
   `THIRD-PARTY-NOTICES.md`, the pinned `conpty.dll` and `OpenConsole.exe` as `pack.ps1` ships them, `claude-plugin\`)
   and writes `staged.json` last: `{commit, built_at, files: {name: sha256}}`. Two names for one file (case, slashes) are
   refused. (`whisper\` is not staged; it changes only with a new engine and stays as installed.)
@@ -3190,3 +3191,113 @@ simulator in that tab's device panel, while the person watches and can take over
 - **Tests.** `cargo nextest run -p flare -E 'test(device)'`, `cargo nextest run -p flare-mcp`, `cargo nextest run -p
   flare-ctl`; the e2e `deviceAgent` and `mcpDevice` run on the fake source.
 
+## Device panel: Android, PR A4: the panel shows Android, 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`
+(PR A4). The first visible change.
+
+- **Where**: Windows (x64) offers the device panel in the tab menu, with Android only. A Mac on Apple silicon lists its
+  Android devices beside the iPhones once an Android SDK is found (Flare's own or the person's). From A7 it
+  offers Android before it is set up, with a setup row in the chooser.
+- **Setup** (Windows): "Android devices need Google's Android emulator" [Set up]; Google's licence text in a box with
+  [Accept and set up] and [Cancel]; the download with its MB and [Cancel]; "Android needs Windows Hypervisor Platform"
+  [Turn on], then "Restart Windows to finish."; "Preparing <name>..." on a new device's first start.
+- **The panel**: the iOS header buttons (Home, Lock sends Power, Rotate); Back and Recents in the More menu instead of
+  Shake. Frames are copied on the GPU (rule 1364): zero copy on DX12 and Metal, an upload or a CPU copy as fallbacks.
+- **Quit**: the emulators Flare booted are asked to shut down (the setting `flare.device.shutdown_on_quit`), detached.
+- **The agent**: unchanged in this PR. The `device_*` tools for Android come with A5.
+
+## Device panel: Android, PR A5: the agent drives Android too, 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`
+(PR A5). Claude in a tab can boot, look at and use an Android emulator in that tab's device panel with the same twelve
+`device_*` tools as an iPhone simulator. No tool name or schema key names a platform (rule 1360).
+
+- **Where the tools are listed.** Flare's `hello` lists `device.*` where any source is ready: Xcode on a Mac with Apple
+  silicon, or an Android emulator at the floor with at least one device (Windows x64, or a Mac), in a Flare that shows
+  a window. A finished Android setup lists them at once (`device.changed`, then `notifications/tools/list_changed`).
+  **Tool counts** (25 built-in tools, plus 12 device tools where listed):
+
+  | Computer | Tools |
+  |---|---|
+  | Windows x64, Android set up with a device ("Flare Pixel") | 37 |
+  | Windows x64, Android not set up yet | 25 |
+  | Windows on Arm | 25 |
+  | Mac with Apple silicon and Xcode, or with an Android SDK and a device | 37 |
+  | Mac with Apple silicon, neither | 25 |
+  | Intel Mac | 25 |
+  | No Flare running, or a Flare started hidden | 25 |
+
+- **Each call is held to its own device's source.** An iPhone's calls wait for Xcode, an Android device's for Android's
+  setup. Before Android is set up, a call answers `unavailable` with the panel's own line ("Android devices need
+  Google's Android emulator...", the licence, the download, "Android needs Windows Hypervisor Platform...") and says
+  only the user can do it: the agent never accepts the licence or starts a download.
+- **Android's values.** `device_list` gives `emu/<avd>` targets with kind `Android`. `device_look` is in dp (its PNG
+  at dp size, "device points (Android dp)", rule 1367) and lists the device's own buttons. `device_press` takes either
+  kind's buttons in its schema; a device answers `unavailable` for a button it lacks (Android has Back, Recents and
+  Power, no Lock or Shake; rule 1371). `device_launch` takes a package name (`com.android.settings`). `device_install`
+  takes an `.apk` file from the tab's folder only (never DerivedData), symlinks resolved, and only a zip holding
+  `AndroidManifest.xml`; an `.app` for an Android device, or an `.apk` for an iPhone, is refused.
+- **`/device`.** The Claude plugin's command now says "a phone simulator or emulator" and names Flare Pixel.
+- **Tests.** `device_ctl::tests::the_agent_drives_an_android_device_once_its_emulator_is_ready`,
+  `an_iphone_refuses_an_apk_and_keeps_its_own_buttons`, `ctl_app::tests::device_install_takes_an_apk_from_the_tab_folder_only`,
+  `device_press_names_each_sources_own_buttons`, and in `flare-mcp` `the_tools_take_both_kinds_of_device` and
+  `an_android_device_is_listed_and_looked_at_in_dp`. The e2e `deviceAgentAndroid` and `mcpDeviceAndroid` run the agent
+  scenarios on the Android fake (`FLARE_E2E_DEVICE=android`) on the Windows and Mac jobs. The opt-in
+  `device_ctl::tests::a_real_emulator_answers_the_agent_tools` (`FLARE_DEVICE_REAL=1`, `cargo build -p flare-emu-host`
+  first, by hand; `FLARE_DEVICE_APK` adds an install) drives a real headless emulator made for the run through the
+  controller and the real emu host. On the PC (2026-11-22, API 37): boot 48 s, first look 1.3 s (411.4 x 914.3 dp, a
+  411 x 913 PNG: the emulator keeps the aspect), Settings opened in 3.2 s, a tree read in 30 to 520 ms, a tap by ref,
+  Back, the probe `.apk` installed in 3.2 s, and the agent's shutdown in 2.4 s.
+
+## Device panel: Android, PR A6: the emu host and the agent jar ship (not yet started), 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`
+(PR A6). Nothing in the app changes: the package and the bundle carry the Android parts, nothing starts them before A4.
+
+- **Windows.** `pack.ps1` puts `flare-emu-host.exe` (built beside `Flare.exe`) and the checked-in
+  `crates/flare-device/assets/flare-agent.jar` into `current\`; `verify-pack.ps1` refuses a portable zip without them,
+  and `tools/stage-install.ps1` stages both. `release.yml` and `update-e2e.yml` build the emu host before the pack.
+  Windows has no code signing in Flare's release, so neither is signed, like the other helpers.
+- **macOS.** `make-app.sh` builds `flare-emu-host`, and `flare-mac-app` puts it in `Flare.app/Contents/MacOS` as a tool
+  (`flare_cef::macos::release::TOOLS`: identifier `com.flare.terminal.flare-emu-host`, the hardened runtime, no
+  entitlements) and the jar in `Contents/Resources`. `pack.sh` checks both, ad hoc too. The Mac stage script copies the
+  whole bundle, so it carries them with no change.
+- **Checked in the release.** The emu host's `--self-test` runs from the packed folder (Windows, after `pack.ps1`) and
+  from the signed bundle (macOS, before vpk). A release build has no repository copy of the jar, so these runs show it
+  finds the shipped jar with the hash it expects (rule 1369).
+- **Tests.** `release_files::the_package_ships_the_emu_host_and_the_agent_jar_beside_the_app`, the stage script test
+  (`crates/flare-update/tests/stage_script.rs`), and on macOS
+  `release::tests::the_bundle_lists_the_emu_host_as_a_tool_and_carries_the_agent_jar`,
+  `sign::tests::the_emu_host_is_signed_as_a_tool_with_no_entitlements` and
+  `mac_release_files::the_emu_host_self_test_runs_from_the_signed_bundle`.
+
+## Device panel: Android, PR A7: follow-ups, 2026-11-22
+
+Spec `docs/superpowers/specs/2026-11-22-android-device-design.md`, plan `docs/superpowers/plans/2026-11-22-android-device.md`.
+Follow-ups to A1 to A6 (PR #339).
+
+- **Android setup on a Mac.** A Mac on Apple silicon offers Android before it is set up. Its device chooser lists the
+  devices and one more row in the same style, "Android: set up (about 2.5 GB from Google)". The row leads to the same
+  states as on Windows: Google's licence with [Accept and set up] and [Cancel], then the download. Once Android is set
+  up in Flare's own folder, the chooser has an [Update Android emulator] row on both OSes (the same plan; nothing to
+  fetch when it is current). On the person's own SDK the row is not offered.
+  No mockup: Max chose to reuse the existing row.
+- **An emulator started without access.** One started outside Flare without a gRPC token shows "This emulator was
+  started without access for other apps. Start it from Flare." and no button (spec state 6).
+- **Frame fallbacks** (spec "Frames"). When the emulator refuses its shared memory, or gives no frame for 2 s while the
+  display is on, the frames come in the gRPC messages (at most 30 a second, with the slow mark and its reason). When
+  that fails too, a still picture three times a second, with the still badge and its reason. While the display is off
+  (a 0x0 frame) the last picture stays, dimmed.
+- **Kept alive while Flare runs.** An emulator Flare booted no longer idles out two minutes after its last panel
+  closes: the emu host stays and keeps it alive while Flare runs. Only a Flare that is gone lets it stop by itself 5
+  minutes later (rule 1366).
+- **The agent.** Input calls answer `changed: true` while the panel is hidden too (the agent helper's window changes
+  count). A UI-tree read right after a boot or a launch waits up to 1 s while the tree is empty.
+- **Security.** The setup's unzip makes no link while it writes files, refuses a link out of the package and checks
+  each folder it writes into. The agent helper is used only when its hello echoes the random nonce the emu host started
+  it with, so an app in the emulator that took the helper's socket name first is never trusted (rule 1369). Two Flares
+  on one emulator now replace each other's helper.
+- **Tests.** `devicePanelAndroid` (e2e, Windows and Mac), the ui_tests
+  `an_android_panel_takes_touches_in_dp_and_keys`, `an_android_panel_shows_slow_still_and_asleep` and
+  `a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence`, and the unit tests named in rules 1361 to 1369.

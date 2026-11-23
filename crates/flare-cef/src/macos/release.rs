@@ -13,6 +13,8 @@
 //!   MacOS/flare-sim-host                        the device panel's sim host (issue #248, rule 1310): the only process
 //!                                               that loads CoreSimulator and SimulatorKit; a tool like the two above
 //!                                               (hardened runtime, no entitlements)
+//!   MacOS/flare-emu-host                        the Android device panel's emu host (Android plan PR A2): the only
+//!                                               process that talks to the emulator and adb; a tool like the others
 //!   Frameworks/Chromium Embedded Framework.framework
 //!   Frameworks/whisper                          the speech engine, code only (rule 1138): whisper-server,
 //!                                               parakeet-cli and their libraries (`tools/build-whisper-macos.sh`)
@@ -22,6 +24,8 @@
 //!   Resources/Flare.icns                        the original Flare icon, from build/icon-source.png (tools/make-icon.py's
 //!                                               1024 px render of assets/icon/flare-color.svg; rule 1230)
 //!   Resources/claude-plugin                     the Claude Code plugin template (found there by flare_agent)
+//!   Resources/flare-agent.jar                   the Android agent helper (rule 1369), checked in under
+//!                                               crates/flare-device/assets; the emu host finds it in ../Resources
 //!   Resources/LICENSE, THIRD-PARTY-NOTICES.md, CEF-CREDITS.html, LICENSE-whisper.cpp.txt
 //! ```
 
@@ -43,9 +47,25 @@ pub const BUNDLE_ID: &str = "com.flare.terminal";
 /// The device panel's sim host, `flare_win::names::SIM_HOST_EXE` (the app starts it from beside its executable).
 pub const SIM_HOST_EXE: &str = "flare-sim-host";
 
+/// The Android device panel's emu host, `flare_win::names::EMU_HOST_EXE` (Android plan PR A6; the app starts it from
+/// beside its executable from PR A4 on).
+pub const EMU_HOST_EXE: &str = "flare-emu-host";
+
+/// The Android agent helper (rule 1369), `flare_win::names::AGENT_JAR`: a data file in `Contents/Resources` that the emu
+/// host pushes into an emulator.
+pub const AGENT_JAR: &str = "flare-agent.jar";
+
+/// The agent helper's checked-in build, from the repository root (`tools/android-agent/build.py` writes it).
+pub const AGENT_JAR_SOURCE: &str = "crates/flare-device/assets/flare-agent.jar";
+
 /// The other programs in `Contents/MacOS`, from the release bin dir: each signed as a tool (`Role::Tool`, identifier
 /// `com.flare.terminal.<name>`, hardened runtime, no entitlements). `UpdateMac` joins them when vpk packs the app.
-pub const TOOLS: [&str; 3] = ["flare-mcp", "flare-parakeet-host", SIM_HOST_EXE];
+pub const TOOLS: [&str; 4] = [
+    "flare-mcp",
+    "flare-parakeet-host",
+    SIM_HOST_EXE,
+    EMU_HOST_EXE,
+];
 
 /// The oldest macOS Flare runs on (the port's target, spec decision "Targets").
 pub const MIN_MACOS: &str = "15.0";
@@ -427,6 +447,7 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
         .collect::<Result<Vec<_>, _>>()?;
     let engine_license = need(i.engine_dir.join(ENGINE_LICENSE))?;
     let plugin = need(i.root.join("crates/flare-agent/claude-plugin"))?;
+    let agent_jar = need(i.root.join(AGENT_JAR_SOURCE))?;
     need(plugin.join("hooks/hooks.json"))?;
     let license = need(i.root.join("LICENSE"))?;
     let notices = need(i.root.join("THIRD-PARTY-NOTICES.md"))?;
@@ -456,6 +477,7 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
                 (&notices, "THIRD-PARTY-NOTICES.md"),
                 (&credits, "CEF-CREDITS.html"),
                 (&engine_license, ENGINE_LICENSE),
+                (&agent_jar, AGENT_JAR),
             ],
             frameworks: vec![(&engine, ENGINE_FOLDER)],
             plugins: vec![&dock_tile],
@@ -751,6 +773,50 @@ mod tests {
         }
         let doc = include_str!("release.rs");
         assert!(doc.contains("//!   MacOS/flare-sim-host "));
+    }
+
+    /// Android plan PR A6: the release bundle carries `flare-emu-host` in `Contents/MacOS` as a tool and the agent helper
+    /// jar in `Contents/Resources`, under the names the app and the emu host look for. make-app.sh builds the emu host
+    /// and pack.sh checks both.
+    #[test]
+    fn the_bundle_lists_the_emu_host_as_a_tool_and_carries_the_agent_jar() {
+        assert!(TOOLS.contains(&EMU_HOST_EXE), "{TOOLS:?}");
+        let app = Path::new("/x/Flare.app");
+        assert_eq!(
+            bundle::role_of(app, &app.join("Contents/MacOS").join(EMU_HOST_EXE)),
+            crate::macos::sign::Role::Tool
+        );
+        let names = include_str!("../../../flare-win/src/names.rs");
+        for want in [
+            format!("pub const EMU_HOST_EXE: &str = \"{EMU_HOST_EXE}\";"),
+            format!("pub const AGENT_JAR: &str = \"{AGENT_JAR}\";"),
+        ] {
+            assert!(names.contains(&want), "{want}");
+        }
+        // From Contents/MacOS the emu host looks for the jar in ../Resources.
+        let agent = include_str!("../../../flare-emu-host/src/agent.rs");
+        assert!(agent.contains(&format!("dir.join(\"../Resources/{AGENT_JAR}\")")));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert!(root.join(AGENT_JAR_SOURCE).is_file());
+        let me = include_str!("release.rs");
+        let body = me
+            .split("pub fn build(i: &Inputs<'_>)")
+            .nth(1)
+            .expect("build");
+        assert!(body.contains("need(i.root.join(AGENT_JAR_SOURCE))"));
+        assert!(body.contains("(&agent_jar, AGENT_JAR),"));
+        let make = include_str!("../../../../tools/release/mac/make-app.sh");
+        assert!(
+            make.contains("cargo build --release --locked -p flare-emu-host"),
+            "make-app.sh builds the emu host"
+        );
+        let pack = include_str!("../../../../tools/release/mac/pack.sh");
+        assert!(
+            pack.contains("\"$app/Contents/Resources/flare-agent.jar\""),
+            "pack.sh checks the jar"
+        );
+        assert!(me.contains("//!   MacOS/flare-emu-host "));
+        assert!(me.contains("//!   Resources/flare-agent.jar "));
     }
 
     /// Rule 1230: the shipped Mac app icon is the original Flare icon, the 1024 px render tools/make-icon.py makes of
