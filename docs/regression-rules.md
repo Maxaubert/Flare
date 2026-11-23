@@ -1514,7 +1514,9 @@ and nothing while Flare is the active app, never an informational one; "the wind
 (`taskbar_flash::is_foreground`, also the web panel's `window_is_foreground`). Every call is main-thread only and
 does nothing off it. Tests never make an attention request (an unbundled test app gets a real request id even with
 no Dock tile). Held by `dock::tests`, `a_text_badge_gets_the_count_as_the_disc_shows_it_and_a_clear_takes_it` and
-`dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active` (`crates/flare-win/tests/appkit.rs`).
+`dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active` (`crates/flare-win/tests/appkit.rs`). Amended 2026-11-22 (Max: "the badge on mac has
+stopped showing"): an app that uses notifications gets its Dock badge drawn only while its "Badge app icon" setting is
+on, so Flare asks for `UNAuthorizationOptionBadge` with sound and alerts (`notify.rs` `ASK_FOR`).
 Source: macOS port phase 4, step 2 (2026-11-08).
 1015. **macOS: notifications wait for the signed app, and say so.** The toast path goes through
 `flare_win::toast::NotifyBackend`; on macOS the backend (`MacBackend`) shows nothing and answers

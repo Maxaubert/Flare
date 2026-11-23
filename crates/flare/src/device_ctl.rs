@@ -1669,6 +1669,13 @@ impl DeviceCtl {
                         }
                         for x in &mut d {
                             x.booted_by_flare = self.booted.has(&x.target.name());
+                            // A boot Flare asked for is under way until it answers: a list read meanwhile (simctl
+                            // may still say shut down) does not take the panel back to Boot.
+                            if self.booting.contains_key(&x.target)
+                                && x.state == DeviceState::Shutdown
+                            {
+                                x.state = DeviceState::Booting;
+                            }
                         }
                         if forgot {
                             self.save_booted();
@@ -1752,6 +1759,8 @@ impl DeviceCtl {
                                     t.clone(),
                                     Err(flare_ctl::CtlError::new(e.fail.code(), e.message.clone())),
                                 ));
+                                // Not left "Starting ...": the list says what the device is now.
+                                self.settled(&t, DeviceState::Shutdown);
                                 self.fail(&t, e.message);
                             }
                             Ok(a) => {
@@ -2741,6 +2750,16 @@ impl DeviceCtl {
     fn boot(&mut self, t: &Target) {
         let now = self.now();
         self.booting.insert(t.clone(), now);
+        // The panel shows "Starting ..." from the click on: the sim host sends no state of its own until the boot
+        // answers, which can take 10 s and more (Max, 2026-11-22: "nothing happens on click").
+        if let Some(d) = self
+            .devices
+            .as_mut()
+            .and_then(|l| l.iter_mut().find(|d| &d.target == t))
+            && d.state != DeviceState::Booted
+        {
+            d.state = DeviceState::Booting;
+        }
         if let Some(id) = self.source().map(|s| s.boot(t)) {
             self.pending.insert(id, Pending::Boot(t.clone()));
         }
@@ -3140,6 +3159,40 @@ mod tests {
             s.borrow_mut().push((dir.to_path_buf(), udids.to_vec()));
         });
         (spawned, spawn)
+    }
+
+    /// Max, 2026-11-22: "nothing happens on click, it just eventually starts but it can take 10+ seconds". The
+    /// device reads booting from the click on, and a list read while it boots does not take it back to shut down.
+    #[test]
+    fn a_boot_shows_starting_from_the_click_on() {
+        let b = "00000000-0000-4000-8000-00000000000b";
+        let mut fake = FakeSource::new(vec![
+            flare_device::fake::iphone(b, "iPhone B", DeviceState::Shutdown).unwrap(),
+        ])
+        .without_state_events();
+        // A slow boot that has not answered yet (the fake's clock is not moved on here).
+        fake.set_boot_ms(60_000);
+        let (_spawned, spawn) = recorder();
+        let mut d = DeviceCtl::new(post(), Rc::new(|| 0), None);
+        d.install_real(starter_of(fake), None, spawn);
+        d.set_ios(true);
+        d.on_xcode(XcodeAnswer {
+            android: None,
+            xcode: Some(found_xcode()),
+            booted: Booted::default(),
+        });
+        d.ensure_source();
+        d.list();
+        let tb = Target::sim(b).unwrap();
+        d.boot(&tb);
+        d.drain();
+        assert_eq!(d.state_of(&tb), Some(DeviceState::Booting), "at once");
+        d.list();
+        assert_eq!(
+            d.state_of(&tb),
+            Some(DeviceState::Booting),
+            "a list read while it boots keeps it booting"
+        );
     }
 
     /// Max, 2026-11-22: "i click a device then click boot but nothing happens". The sim host answers a boot and
