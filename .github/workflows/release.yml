@@ -125,6 +125,10 @@ jobs:
         if: steps.ver.outputs.fresh == 'true'
         run: cargo build --release -p flare-dictation --bin flare-parakeet-host
 
+      - name: Build the emu host (pack.ps1 copies it from beside flare.exe)
+        if: steps.ver.outputs.fresh == 'true'
+        run: cargo build --release -p flare-emu-host
+
       - name: Fetch the speech engine (vendor/whisper, gitignored)
         if: steps.ver.outputs.fresh == 'true'
         shell: pwsh
@@ -145,7 +149,22 @@ jobs:
       - name: Pack
         if: steps.ver.outputs.fresh == 'true'
         shell: pwsh
-        run: ./tools/release/pack.ps1 -Version "${{ steps.ver.outputs.version }}" -Exe target/release/flare.exe -Notes notes.md -Out Releases
+        run: ./tools/release/pack.ps1 -Version "${{ steps.ver.outputs.version }}" -Exe target/release/flare.exe -Notes notes.md -Out Releases -Stage "$env:RUNNER_TEMP\flare-stage"
+
+      # The Android emu host as the package ships it (Android plan PR A6): a release build has no repository copy of the
+      # agent helper jar, so this proves it finds the packed flare-agent.jar beside itself with the hash it expects
+      # (rule 1369). What the runner has (SDK, hypervisor) is reported, never a failure.
+      - name: Emu host self-test, from the packed folder
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        run: |
+          # The JSON names what is missing: print it before a failure ends the step.
+          $out = & "$env:RUNNER_TEMP\flare-stage\flare-emu-host.exe" --self-test
+          $rc = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          $skip = $out | Select-String -SimpleMatch '"skipped": "'
+          if ($skip) { Write-Host "::notice::flare-emu-host --self-test skipped: $($skip[0].Line.Trim())" }
+          exit $rc
 
       - name: Verify the pack
         if: steps.ver.outputs.fresh == 'true'

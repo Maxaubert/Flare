@@ -304,6 +304,39 @@ fn typing_shows_the_keyboard_badge() {
     answer(&mut r, &rx, 2_000).expect("the key answers");
 }
 
+/// Rule 1371: each source lists its own buttons. An iPhone has no Back: the agent's press answers `unavailable`
+/// with the buttons it has, and neither the agent nor a panel row sends it.
+#[test]
+fn another_sources_button_is_refused_unavailable() {
+    use flare_device::job::Press;
+    use flare_device::source::Button;
+    let mut r = Rig::new();
+    let (rx, _) = r.call(AgentReq::Act(DeviceOp::Press(Press::Button(Button::Back))));
+    let e = rx.try_recv().expect("answered at once").unwrap_err();
+    assert_eq!(e.code, "unavailable");
+    assert!(
+        e.message.contains("no back button") && e.message.contains("home, lock"),
+        "{}",
+        e.message
+    );
+    r.dev.act("recents");
+    let buttons = |r: &Rig| {
+        r.dev
+            .fake()
+            .unwrap()
+            .inputs()
+            .iter()
+            .filter(|i| matches!(i, Recorded::Button(..)))
+            .count()
+    };
+    assert_eq!(buttons(&r), 0, "nothing was sent");
+    // Its own buttons still go.
+    let (rx, _) = r.call(AgentReq::Act(DeviceOp::Press(Press::Button(Button::Home))));
+    answer(&mut r, &rx, 2_000).expect("home answers");
+    r.dev.act("volume_up");
+    assert_eq!(buttons(&r), 2);
+}
+
 #[test]
 fn the_persons_press_ends_the_agent_call_interrupted_and_hides_the_dot() {
     let mut r = Rig::new();

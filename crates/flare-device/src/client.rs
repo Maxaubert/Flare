@@ -250,7 +250,7 @@ pub fn text_steps(text: &str) -> Vec<TextStep> {
 pub use mac::{OnEvent, Shoot, SimConfig, SimFrames, SimSource};
 
 #[cfg(target_os = "macos")]
-mod mac {
+pub(crate) mod mac {
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
     use std::path::{Path, PathBuf};
@@ -385,7 +385,7 @@ mod mac {
     /// The sim host gets stdin, stdout and stderr only. Any other descriptor Flare holds without
     /// close-on-exec (one a library opened, one a parent left open, a pipe another thread made
     /// between `pipe` and `fcntl`) is marked close-on-exec in the child just before its exec.
-    fn no_inherited_descriptors(cmd: &mut Command) {
+    pub(crate) fn no_inherited_descriptors(cmd: &mut Command) {
         use std::os::unix::process::CommandExt;
         // Read before the fork: the highest descriptor number this process may hold.
         let mut lim = libc::rlimit {
@@ -658,7 +658,24 @@ mod mac {
                 HostLine::Input { target, state } => {
                     self.event(SourceEvent::Input { target, state })
                 }
+                // The emu host's frame record (rule 1363); the sim host sends its frames on the mach channel.
+                HostLine::Region {
+                    target,
+                    seq,
+                    t_us,
+                    w,
+                    h,
+                    rotation,
+                } => self.event(SourceEvent::Region {
+                    target,
+                    seq,
+                    t_us,
+                    size_px: crate::geom::Size::new(f64::from(w), f64::from(h)),
+                    rotation,
+                }),
                 HostLine::Broken { why } => self.go_still(why),
+                // Android setup's events, changes while paused and frame modes come only from the emu host.
+                HostLine::Setup { .. } | HostLine::Changed { .. } | HostLine::Mode { .. } => {}
             }
         }
 
@@ -1433,7 +1450,7 @@ mod tests {
                 .get_args()
                 .map(|a| a.to_string_lossy().to_string())
                 .collect();
-            assert_eq!(args, ["simctl", "pbcopy", &t.udid().to_ascii_uppercase()]);
+            assert_eq!(args, ["simctl", "pbcopy", &t.id().to_ascii_uppercase()]);
             // And Flare hands such text to the sim host, which answers once it is pasted.
             let dir = tempfile::tempdir().unwrap();
             let mut s = source("record", dir.path(), None);
@@ -1473,12 +1490,14 @@ mod tests {
         Hello {
             protocol,
             version: "0.1.0".into(),
+            host: crate::wire::HostKind::Sim,
             coresim_version: "1174.21".into(),
             simkit_version: "1005.14".into(),
             xcode_version: xcode.into(),
             xcode_path: "/Applications/Xcode.app/Contents/Developer".into(),
-            input_path: crate::versions::InputPath::Dtuhid,
+            input_path: Some(crate::versions::InputPath::Dtuhid),
             ax: false,
+            facts: Default::default(),
         }
     }
 

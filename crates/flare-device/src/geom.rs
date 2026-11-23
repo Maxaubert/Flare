@@ -3,7 +3,8 @@
 //!
 //! Panel points are Slint logical points and device points are the device's, so neither the Mac's backing scale nor
 //! the device's scale enters the map. Device points are always in the current orientation (rule 1313): the size of a
-//! landscape screen is the portrait one turned.
+//! landscape screen is the portrait one turned. On Android a device point is a dp (pixels / (dpi / 160), rule 1367):
+//! the same letterbox and swipe code serves both, and only the emu host turns dp into pixels ([`dp_to_px`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -138,6 +139,35 @@ pub fn to_portrait_ratio(x: f64, y: f64, portrait: Size, o: Orientation) -> (f64
     ((px / w).clamp(0.0, 1.0), (py / h).clamp(0.0, 1.0))
 }
 
+/// The density at which one Android dp is one pixel.
+pub const DP_DPI: f64 = 160.0;
+
+/// Android's pixels per dp at `dpi` (dpi / 160), or None for a density that is not a positive number. The dp is the
+/// unit the agent sees on Android, as the point is on iOS (rule 1367).
+pub fn dp_scale(dpi: f64) -> Option<f64> {
+    (dpi.is_finite() && dpi > 0.0).then(|| dpi / DP_DPI)
+}
+
+/// A point in dp as pixels, both in the current orientation. Only the emu host calls it (rule 1367): the agent, the
+/// tree and the panel's touch map stay in dp, as they stay in points for iOS.
+pub fn dp_to_px(x: f64, y: f64, scale: f64) -> (f64, f64) {
+    (x * scale, y * scale)
+}
+
+/// A point in pixels as dp, both in the current orientation (the UI tree's bounds, in the emu host).
+pub fn px_to_dp(x: f64, y: f64, scale: f64) -> (f64, f64) {
+    (x / scale, y / scale)
+}
+
+impl Orientation {
+    /// The orientation of a number of clockwise quarter turns, 0 to 3 ([`Orientation::ALL`]'s order). None for anything
+    /// else. Not the emulator's `SkinRotation`: its LANDSCAPE turns the other way (checked on a real frame in Android
+    /// plan PR A2), so the emu host reads it with `emu::keys::orientation_of`.
+    pub fn from_quarter_turns(n: u32) -> Option<Orientation> {
+        Orientation::ALL.get(n as usize).copied()
+    }
+}
+
 /// The positions of a swipe from `from` to `to` over `duration_ms`: one every [`SWIPE_STEP_PT`] along the line,
 /// the end point exactly, each with its time from the start. The first is the start (time 0); a zero-length swipe
 /// is the start and the end at one spot.
@@ -261,6 +291,63 @@ mod tests {
             assert!(Orientation::parse(name).is_some());
         }
         assert_eq!(Orientation::parse("portrait"), None);
+    }
+
+    /// Rule 1367: Android's agent unit is the dp. In each of the four orientations, the panel maps to dp through the
+    /// same letterbox as iOS points, and only the dp-to-pixel step (the emu host's) knows the density.
+    #[test]
+    fn dp_map_to_pixels_in_every_orientation() {
+        // A Pixel 8: 1080 x 2400 pixels at 420 dpi.
+        let scale = dp_scale(420.0).unwrap();
+        assert_eq!(scale, 2.625);
+        let px = Size::new(1080.0, 2400.0);
+        let dp = Size::new(px.w / scale, px.h / scale);
+        for o in Orientation::ALL {
+            let shown_dp = o.size(dp);
+            let shown_px = o.size(px);
+            // The screen's corners and centre in dp land on the same corners and centre in pixels.
+            let pts = [
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (0.5, 0.5),
+                (0.25, 0.75),
+            ];
+            for (fx, fy) in pts {
+                let got = dp_to_px(shown_dp.w * fx, shown_dp.h * fy, scale);
+                let want = (shown_px.w * fx, shown_px.h * fy);
+                assert!(
+                    (got.0 - want.0).abs() < 1e-9 && (got.1 - want.1).abs() < 1e-9,
+                    "{o:?} ({fx}, {fy}): {got:?} want {want:?}"
+                );
+                // And back.
+                let back = px_to_dp(got.0, got.1, scale);
+                assert!(close(back, (shown_dp.w * fx, shown_dp.h * fy)), "{o:?}");
+            }
+            // A panel's click goes through the letterbox in dp, as for points: the panel's middle is the screen's.
+            let lb = Letterbox::fit(Size::new(500.0, 500.0), shown_dp).unwrap();
+            let (x, y) = lb.to_device(250.0, 250.0).unwrap();
+            assert!(close(
+                dp_to_px(x, y, scale),
+                (shown_px.w / 2.0, shown_px.h / 2.0)
+            ));
+        }
+        // A landscape screen is the portrait one turned, in dp too.
+        assert_eq!(Orientation::Rot90.size(dp), Size::new(dp.h, dp.w));
+        // 160 dpi is one pixel per dp; no density is no map.
+        assert_eq!(dp_scale(160.0), Some(1.0));
+        assert_eq!(dp_scale(0.0), None);
+        assert_eq!(dp_scale(-420.0), None);
+        assert_eq!(dp_scale(f64::INFINITY), None);
+        // The emulator's quarter turns, in order.
+        assert_eq!(
+            (0..4)
+                .map(|n| Orientation::from_quarter_turns(n).unwrap())
+                .collect::<Vec<_>>(),
+            Orientation::ALL
+        );
+        assert_eq!(Orientation::from_quarter_turns(4), None);
     }
 
     #[test]

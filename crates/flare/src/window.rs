@@ -1566,8 +1566,9 @@ pub fn run_window(
                 old_web_dir.clone(),
                 Some(plugin_limits),
             ));
-        // The device panel's real simulator (PR 4b): macOS on Apple silicon, the Xcode pick on a worker.
-        #[cfg(target_os = "macos")]
+        // The device panel's real sources: the simulator (PR 4b, macOS on Apple silicon) and the Android emulator
+        // (Android plan PR A4), found on a worker.
+        #[cfg(any(target_os = "macos", windows))]
         rc.borrow_mut().install_device(&inst.profile.dir);
         // An app link the person allowed opens through the Windows shell; under --e2e the recorder stays and nothing
         // opens outside the app (rule 252).

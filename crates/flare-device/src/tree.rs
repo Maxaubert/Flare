@@ -3,7 +3,10 @@
 //! their children, the rest numbered `d1, d2, ...` in reading order and capped at [`MAX_REFS`]. Every label and value
 //! is untrusted text and is cleaned here; the MCP side fences the list in the page-content markers (PR 5).
 //!
-//! Frames are device points in the current orientation, the same points a tap takes.
+//! Frames are device points in the current orientation, the same points a tap takes (dp on Android, rule 1367).
+//!
+//! Android (rule 1360): the emu host reads the tree through the agent helper and gives each node a role from
+//! [`android_role`], one of the roles below, so the filter, the refs and the agent's list work the same for both kinds.
 
 use std::collections::HashMap;
 
@@ -125,6 +128,76 @@ fn actionable(role: &str) -> bool {
             | "AXMenuItem"
             | "AXIncrementor"
     )
+}
+
+/// What an Android node says about itself (`AccessibilityNodeInfo`, read by the agent helper), for [`android_role`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AndroidNode<'a> {
+    /// The view's class name: `android.widget.Button`, `androidx.recyclerview.widget.RecyclerView`, or
+    /// `android.view.View` for most Compose nodes.
+    pub class: &'a str,
+    pub clickable: bool,
+    pub editable: bool,
+    pub checkable: bool,
+    pub scrollable: bool,
+}
+
+/// Android class names by their last part (after the last `.` or `$`), and the role each is. The first row whose
+/// name ends the class wins, so `MaterialButton` is a button and `RadioButton` a check box. Kept short on purpose:
+/// what is not here falls back on the node's flags.
+const ANDROID_ROLES: &[(&str, &str)] = &[
+    ("EditText", "AXTextField"),
+    ("AutoCompleteTextView", "AXTextField"),
+    ("SearchView", "AXSearchField"),
+    ("Switch", "AXSwitch"),
+    ("SwitchCompat", "AXSwitch"),
+    ("SwitchMaterial", "AXSwitch"),
+    ("MaterialSwitch", "AXSwitch"),
+    ("ToggleButton", "AXSwitch"),
+    ("CheckBox", "AXCheckBox"),
+    ("RadioButton", "AXCheckBox"),
+    ("CheckedTextView", "AXCheckBox"),
+    ("Chip", "AXCheckBox"),
+    ("SeekBar", "AXSlider"),
+    ("RatingBar", "AXSlider"),
+    ("Slider", "AXSlider"),
+    ("NumberPicker", "AXIncrementor"),
+    ("Spinner", "AXPopUpButton"),
+    ("Button", "AXButton"),
+    ("TabView", "AXTab"),
+    ("WebView", "AXWebArea"),
+    ("ProgressBar", "AXProgressIndicator"),
+    ("TextView", "AXStaticText"),
+    ("ImageView", "AXImage"),
+    ("RecyclerView", "AXScrollArea"),
+    ("ListView", "AXScrollArea"),
+    ("GridView", "AXScrollArea"),
+    ("ScrollView", "AXScrollArea"),
+    ("ViewPager", "AXScrollArea"),
+];
+
+/// The role an Android node has in the tree model, so [`filter_tree`] lists and numbers both kinds the same way
+/// (rule 1360): Android classes map onto the roles the iOS tree already uses. A node that types is a text field, a
+/// class in [`ANDROID_ROLES`] is its role, a checkable one is a check box, a clickable one is a button (a Compose
+/// `View` or a tappable row), a scrollable one a scroll area, anything else a group.
+pub fn android_role(n: AndroidNode<'_>) -> &'static str {
+    if n.editable {
+        return "AXTextField";
+    }
+    let short = n.class.rsplit(['.', '$']).next().unwrap_or_default();
+    let known = ANDROID_ROLES
+        .iter()
+        .find(|(name, _)| short.ends_with(name))
+        .map(|(_, role)| *role);
+    match known {
+        // A text or a picture someone can tap acts as a button.
+        Some("AXStaticText" | "AXImage") if n.clickable => "AXButton",
+        Some(role) => role,
+        None if n.checkable => "AXCheckBox",
+        None if n.clickable => "AXButton",
+        None if n.scrollable => "AXScrollArea",
+        None => "AXGroup",
+    }
 }
 
 /// The tree in points of the screen's current orientation. The accessibility frames of a turned screen come in the
@@ -349,6 +422,197 @@ mod tests {
         assert_eq!(l.refs[299].r, "d300");
         assert_eq!(l.refs[299].label, "row 299");
         assert_eq!(l.ref_map().len(), 300);
+    }
+
+    fn role(class: &str) -> &'static str {
+        android_role(AndroidNode {
+            class,
+            ..AndroidNode::default()
+        })
+    }
+
+    /// Rule 1360: Android classes map onto the tree model's roles, so the filter treats both kinds the same.
+    #[test]
+    fn android_classes_map_to_the_tree_roles() {
+        for (class, want) in [
+            ("android.widget.Button", "AXButton"),
+            ("android.widget.ImageButton", "AXButton"),
+            (
+                "com.google.android.material.button.MaterialButton",
+                "AXButton",
+            ),
+            (
+                "com.google.android.material.floatingactionbutton.FloatingActionButton",
+                "AXButton",
+            ),
+            ("android.widget.EditText", "AXTextField"),
+            (
+                "com.google.android.material.textfield.TextInputEditText",
+                "AXTextField",
+            ),
+            ("android.widget.AutoCompleteTextView", "AXTextField"),
+            ("android.widget.Switch", "AXSwitch"),
+            ("androidx.appcompat.widget.SwitchCompat", "AXSwitch"),
+            ("android.widget.ToggleButton", "AXSwitch"),
+            ("android.widget.CheckBox", "AXCheckBox"),
+            ("android.widget.RadioButton", "AXCheckBox"),
+            ("android.widget.CheckedTextView", "AXCheckBox"),
+            ("android.widget.SeekBar", "AXSlider"),
+            ("android.widget.Spinner", "AXPopUpButton"),
+            (
+                "com.google.android.material.tabs.TabLayout$TabView",
+                "AXTab",
+            ),
+            ("android.widget.TextView", "AXStaticText"),
+            (
+                "androidx.appcompat.widget.AppCompatTextView",
+                "AXStaticText",
+            ),
+            ("android.widget.ImageView", "AXImage"),
+            ("androidx.recyclerview.widget.RecyclerView", "AXScrollArea"),
+            ("androidx.core.widget.NestedScrollView", "AXScrollArea"),
+            ("android.webkit.WebView", "AXWebArea"),
+            ("android.widget.FrameLayout", "AXGroup"),
+            ("android.view.ViewGroup", "AXGroup"),
+            ("android.view.View", "AXGroup"),
+            ("", "AXGroup"),
+        ] {
+            assert_eq!(role(class), want, "{class}");
+        }
+        let with = |class, f: fn(&mut AndroidNode<'_>)| {
+            let mut n = AndroidNode {
+                class,
+                ..AndroidNode::default()
+            };
+            f(&mut n);
+            android_role(n)
+        };
+        // Flags decide what the class does not: Compose nodes are all `android.view.View`.
+        assert_eq!(
+            with("android.view.View", |n| n.clickable = true),
+            "AXButton"
+        );
+        assert_eq!(
+            with("android.view.View", |n| {
+                n.clickable = true;
+                n.checkable = true;
+            }),
+            "AXCheckBox",
+            "a Compose check box is clickable too"
+        );
+        assert_eq!(
+            with("android.view.View", |n| n.editable = true),
+            "AXTextField"
+        );
+        assert_eq!(
+            with("android.view.View", |n| n.scrollable = true),
+            "AXScrollArea"
+        );
+        // A tappable row, text or picture is a button; a known control keeps its role when it is clickable.
+        assert_eq!(
+            with("android.widget.LinearLayout", |n| n.clickable = true),
+            "AXButton"
+        );
+        assert_eq!(
+            with("android.widget.TextView", |n| n.clickable = true),
+            "AXButton"
+        );
+        assert_eq!(
+            with("android.widget.ImageView", |n| n.clickable = true),
+            "AXButton"
+        );
+        assert_eq!(
+            with("android.widget.Switch", |n| n.clickable = true),
+            "AXSwitch"
+        );
+        // Every role a known class gets is one the iOS tree uses; the actionable ones are listed without a label.
+        for (_, r) in ANDROID_ROLES {
+            assert!(r.starts_with("AX"), "{r}");
+        }
+        for class in [
+            "android.widget.Button",
+            "android.widget.EditText",
+            "android.widget.Switch",
+            "android.widget.CheckBox",
+            "android.widget.SeekBar",
+            "android.widget.Spinner",
+        ] {
+            assert!(actionable(role(class)), "{class}");
+        }
+    }
+
+    /// An Android tree in dp, as the emu host gives it, filters like an iOS one: an icon button with no label is
+    /// listed, the full-screen frame and the label-less layouts are not.
+    #[test]
+    fn an_android_tree_filters_like_an_ios_one() {
+        let screen = Size::new(411.0, 914.0);
+        let at = |class, clickable, label: &str, f: (f64, f64, f64, f64), kids| {
+            node(
+                android_role(AndroidNode {
+                    class,
+                    clickable,
+                    ..AndroidNode::default()
+                }),
+                label,
+                f,
+                kids,
+            )
+        };
+        let root = at(
+            "android.widget.FrameLayout",
+            false,
+            "",
+            (0.0, 0.0, 411.0, 914.0),
+            vec![at(
+                "android.widget.LinearLayout",
+                false,
+                "",
+                (0.0, 80.0, 411.0, 400.0),
+                vec![
+                    at(
+                        "android.widget.TextView",
+                        false,
+                        "Settings",
+                        (16.0, 90.0, 200.0, 32.0),
+                        vec![],
+                    ),
+                    at(
+                        "android.widget.ImageButton",
+                        true,
+                        "",
+                        (355.0, 90.0, 48.0, 48.0),
+                        vec![],
+                    ),
+                    at(
+                        "android.widget.LinearLayout",
+                        true,
+                        "",
+                        (0.0, 150.0, 411.0, 72.0),
+                        vec![at(
+                            "android.widget.TextView",
+                            false,
+                            "Network & internet",
+                            (72.0, 160.0, 300.0, 24.0),
+                            vec![],
+                        )],
+                    ),
+                ],
+            )],
+        );
+        let l = filter_tree(&root, screen);
+        assert_eq!(
+            l.refs
+                .iter()
+                .map(|r| (r.role.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("AXStaticText", "Settings"),
+                ("AXButton", ""),
+                ("AXButton", ""),
+                ("AXStaticText", "Network & internet"),
+            ]
+        );
+        assert_eq!(l.refs[0].r, "d1");
     }
 
     #[test]

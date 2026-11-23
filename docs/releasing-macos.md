@@ -26,11 +26,13 @@ The updater inside the app stays compiled out until the repository is public, ex
 All under `tools/release/mac/`, all writing under `target/` only:
 
 - `make-app.sh`: builds the release programs and `Flare.app` (`flare-mac-app`: the CEF framework, the five helpers,
-  the tools `MacOS/flare-mcp`, `MacOS/flare-parakeet-host` and `MacOS/flare-sim-host`, the icon, the plugin), signed
+  the tools `MacOS/flare-mcp`, `MacOS/flare-parakeet-host`, `MacOS/flare-sim-host` and `MacOS/flare-emu-host`, the
+  Android agent helper `Resources/flare-agent.jar`, the icon, the plugin), signed
   inside out by role (rules 1036 to 1042). Each tool gets its own identifier (`com.flare.terminal.<name>`), the
   hardened runtime and no entitlements; the sim host (the device panel, issue #248) loads CoreSimulator and
   SimulatorKit with none (device panel plan, Step 0 S3). The release workflow runs the signed bundle's
-  `flare-sim-host --self-test` before vpk packs it. Alone, with notary credentials, it
+  `flare-sim-host --self-test` and `flare-emu-host --self-test` (Android plan PR A6: it finds the jar in `Resources`)
+  before vpk packs it. Alone, with notary credentials, it
   also notarizes the app and makes a DMG; a release runs it with `FLARE_NOTARIZE=0`, because the app it makes is not
   the one that ships.
 - `pack.sh <Flare.app> <version> <Releases dir> [notes.md]`: `vpk pack` for osx-arm64. vpk adds `UpdateMac` and

@@ -227,54 +227,109 @@ impl AppCtl {
         self.device.frames()
     }
 
-    /// The real simulator (macOS on Apple silicon; under `--e2e` only for the opt-in `deviceReal`, which sets
-    /// `FLARE_DEVICE_REAL=1`): the Xcode pick and `booted.json` are read on a worker, and the sim host is made by the
-    /// first device panel. Its events wake the window through one coalesced `UiMsg::Device(Wake)`.
-    #[cfg(target_os = "macos")]
+    /// The real sources: the iOS simulator (macOS on Apple silicon) and the Android emulator (Windows; macOS on Apple
+    /// silicon). Under `--e2e` only for the opt-in real scenarios, which set `FLARE_DEVICE_REAL=1`. The Xcode pick, the
+    /// Android SDK search and `booted.json` are read on a worker; each host is made by the first device panel that
+    /// needs it. Their events wake the window through one coalesced `UiMsg::Device(Wake)`; the emu host's frame
+    /// records go straight to the frame thread (rule 1364).
+    #[cfg(any(target_os = "macos", windows))]
     pub fn install_device(&mut self, profile: &std::path::Path) {
         use std::sync::Arc;
 
-        use flare_device::client::{SimConfig, SimSource};
+        use flare_device::emu::Places;
+        use flare_device::emu_client::{EmuConfig, EmuSource};
 
-        use crate::device_ctl::{Booted, Started, Starter, XcodeAnswer, booted_file};
+        use crate::device_ctl::{
+            AndroidSdk, Booted, SourceSetup, Started, Starter, XcodeAnswer, booted_file,
+        };
 
-        if !crate::device_ctl::real_platform() {
+        let ios = crate::device_ctl::real_platform();
+        let android = crate::device_ctl::android_platform();
+        if !ios && !android {
             return;
         }
         if self.deps.e2e && std::env::var_os("FLARE_DEVICE_REAL").is_none() {
             return;
         }
-        let exe = std::env::current_exe() // sync-ok: startup, before the window shows
+        let dir = std::env::current_exe() // sync-ok: startup, before the window shows
             .ok()
-            .and_then(|e| e.parent().map(|d| d.join(flare_win::names::SIM_HOST_EXE)))
+            .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
             .unwrap_or_default();
-        let log = profile.join("logs").join("sim-host.log");
+        let logs = profile.join("logs");
         let waker = self.device.waker();
-        let starter: Starter = Box::new(move |x| {
-            let mut cfg = SimConfig::new(exe.clone(), x.developer_dir(), log.clone());
-            cfg.on_event = Some(Arc::clone(&waker));
-            let sim = SimSource::start(cfg);
-            let ring: Arc<dyn crate::device_frames::RingSource> = Arc::new(sim.frames());
-            Started {
-                source: Box::new(sim),
-                ring: Some(ring),
+        let frames = self.device.frames();
+        frames.borrow_mut().region().set_wake(Arc::clone(&waker));
+        let emu_exe = dir.join(flare_win::names::EMU_HOST_EXE);
+        #[cfg(target_os = "macos")]
+        let sim_exe = dir.join(flare_win::names::SIM_HOST_EXE);
+        let starter: Starter = Box::new(move |setup| match setup {
+            #[cfg(target_os = "macos")]
+            SourceSetup::Xcode(x) => {
+                use flare_device::client::{SimConfig, SimSource};
+                let mut cfg = SimConfig::new(
+                    sim_exe.clone(),
+                    x.developer_dir(),
+                    logs.join("sim-host.log"),
+                );
+                cfg.on_event = Some(Arc::clone(&waker));
+                let sim = SimSource::start(cfg);
+                let ring: Arc<dyn crate::device_frames::RingSource> = Arc::new(sim.frames());
+                Some(Started {
+                    source: Box::new(sim),
+                    ring: Some(ring),
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
+            SourceSetup::Xcode(_) => None,
+            SourceSetup::Android => {
+                let mut cfg = EmuConfig::new(
+                    emu_exe.clone(),
+                    logs.join("emu-host.log"),
+                    Places::from_env(),
+                );
+                cfg.logs_dir = Some(logs.clone());
+                cfg.on_event = Some(Arc::clone(&waker));
+                cfg.on_region = Some(frames.borrow_mut().region().sink());
+                Some(Started {
+                    source: Box::new(EmuSource::start(cfg)),
+                    #[cfg(target_os = "macos")]
+                    ring: None,
+                })
             }
         });
         let booted = booted_file(profile);
         self.device.install_real(
             starter,
             Some(booted.clone()),
-            std::rc::Rc::new(|dev_dir, udids| {
+            std::rc::Rc::new(|_dev_dir, _udids| {
+                #[cfg(target_os = "macos")]
                 crate::device_ctl::spawn_detached(crate::device_ctl::shutdown_command(
-                    dev_dir, udids,
+                    _dev_dir, _udids,
                 ));
             }),
         );
+        if android {
+            let exe = dir.join(flare_win::names::EMU_HOST_EXE);
+            self.device.install_android(std::rc::Rc::new(move |avds| {
+                crate::device_ctl::spawn_detached(crate::device_ctl::emu_shutdown_command(
+                    &exe, avds,
+                ));
+            }));
+        }
         self.panels.set_device_offered(true);
         let post = Arc::clone(&self.deps.post);
         std::thread::spawn(move || {
+            #[cfg(target_os = "macos")]
+            let xcode = if ios {
+                flare_device::xcode::find()
+            } else {
+                None
+            };
+            #[cfg(not(target_os = "macos"))]
+            let xcode = None;
             let answer = XcodeAnswer {
-                xcode: flare_device::xcode::find(),
+                xcode,
+                android: android.then(|| AndroidSdk::find(&Places::from_env())),
                 booted: Booted::load(&booted),
             };
             post(UiMsg::Device(DeviceMsg::Xcode(answer)));
@@ -321,6 +376,13 @@ impl AppCtl {
 
     pub(super) fn device_setup(&mut self) {
         let effects = self.device.setup_clicked();
+        self.apply_device(effects);
+        self.refresh();
+    }
+
+    /// The licence screen's [Cancel] (Android setup).
+    pub(super) fn device_cancel(&mut self) {
+        let effects = self.device.cancel_clicked();
         self.apply_device(effects);
         self.refresh();
     }

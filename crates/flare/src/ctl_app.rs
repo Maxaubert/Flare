@@ -7409,7 +7409,7 @@ mod tests {
             (Method::DeviceSwipe, json!({"from": {"x": 1, "y": 2}})),
             (Method::DeviceSwipe, json!({"direction": "sideways"})),
             (Method::DeviceType, json!({})),
-            (Method::DevicePress, json!({"button": "power"})),
+            (Method::DevicePress, json!({"button": "menu"})),
             (
                 Method::DevicePress,
                 json!({"button": "home", "key": "return"}),
@@ -7547,6 +7547,115 @@ mod tests {
             )
             .unwrap();
         assert!(v["op"].as_str().unwrap().contains("Install"));
+    }
+
+    /// A zip at `path` holding `names`.
+    fn zip_with(path: &std::path::Path, names: &[&str]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for n in names {
+            z.start_file(*n, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut z, b"x").unwrap();
+        }
+        z.finish().unwrap();
+    }
+
+    /// Android plan PR A5: an `.apk` installs from the tab's folder only (never DerivedData or elsewhere), and only an
+    /// Android app: a zip with `AndroidManifest.xml`. The path handed on is the plain resolved one.
+    #[test]
+    fn device_install_takes_an_apk_from_the_tab_folder_only() {
+        let root = tempfile::tempdir().unwrap();
+        let tab = root.path().join("project");
+        let derived = device::derived_data(&root.path().join("home"));
+        let apk = tab.join("app/build/outputs/apk/debug/app-debug.apk");
+        zip_with(&apk, &["AndroidManifest.xml", "classes.dex"]);
+        let got = device::install_ok(
+            std::path::Path::new("app/build/outputs/apk/debug/app-debug.apk"),
+            &tab,
+            &derived,
+        )
+        .expect("the tab's own .apk");
+        assert!(
+            got.is_absolute() && got.ends_with("app-debug.apk"),
+            "{got:?}"
+        );
+        assert!(
+            !got.to_string_lossy().starts_with(r"\\?\"),
+            "a plain path for adb: {got:?}"
+        );
+        assert!(device::is_apk(&got));
+        // Not from DerivedData, not from anywhere else.
+        for other in [
+            derived.join("x/app.apk"),
+            root.path().join("elsewhere/app.apk"),
+        ] {
+            zip_with(&other, &["AndroidManifest.xml"]);
+            let e = device::install_ok(&other, &tab, &derived).unwrap_err();
+            assert_eq!(e.code, "forbidden", "{other:?}: {}", e.message);
+        }
+        // Not an Android app: no zip, or a zip with no manifest, or a folder.
+        std::fs::write(tab.join("fake.apk"), b"not a zip").unwrap();
+        let e = device::install_ok(&tab.join("fake.apk"), &tab, &derived).unwrap_err();
+        assert_eq!(e.code, code::BAD_PARAMS, "{}", e.message);
+        zip_with(&tab.join("empty.apk"), &["res/x.xml"]);
+        let e = device::install_ok(&tab.join("empty.apk"), &tab, &derived).unwrap_err();
+        assert!(e.message.contains("AndroidManifest.xml"), "{}", e.message);
+        std::fs::create_dir_all(tab.join("dir.apk")).unwrap();
+        let e = device::install_ok(&tab.join("dir.apk"), &tab, &derived).unwrap_err();
+        assert_eq!(e.code, code::BAD_PARAMS);
+        let e = device::install_ok(&tab.join("missing.apk"), &tab, &derived).unwrap_err();
+        assert_eq!(e.code, code::NOT_FOUND);
+    }
+
+    /// Rule 1371 (tool side): `device.press` takes either source's buttons (the controller holds each to its device),
+    /// and a name neither has is refused naming each source's list. `flare-mcp`'s lists are these.
+    #[test]
+    fn device_press_names_each_sources_own_buttons() {
+        use flare_device::source::SourceKind;
+        let names = |k: SourceKind| k.buttons().iter().map(|b| b.name()).collect::<Vec<_>>();
+        assert_eq!(names(SourceKind::Sim), flare_mcp::SIM_BUTTONS);
+        assert_eq!(names(SourceKind::Emu), flare_mcp::EMU_BUTTONS);
+        let r = device_tab_rig();
+        let e =
+            r.d.call(
+                &agent_in_tab(),
+                Method::DevicePress,
+                json!({"button": "menu"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::BAD_PARAMS);
+        assert!(
+            e.message.contains("a simulator has home, lock")
+                && e.message
+                    .contains("an Android emulator has home, back, recents, power"),
+            "{}",
+            e.message
+        );
+        for b in ["back", "recents", "power", "shake", "lock"] {
+            assert!(
+                r.d.call(&agent_in_tab(), Method::DevicePress, json!({"button": b}))
+                    .is_ok(),
+                "{b}"
+            );
+        }
+        // A package name passes the params check too.
+        assert!(
+            r.d.call(
+                &agent_in_tab(),
+                Method::DeviceLaunch,
+                json!({"app": "com.android.settings"})
+            )
+            .is_ok()
+        );
+        assert!(
+            r.d.call(
+                &agent_in_tab(),
+                Method::DeviceBoot,
+                json!({"target": "emu/Flare_Pixel"})
+            )
+            .is_ok()
+        );
     }
 
     #[cfg(unix)]

@@ -288,7 +288,7 @@ impl Simctl {
 
 /// `simctl` takes the udid as it prints it (upper case).
 fn udid(target: &Target) -> String {
-    target.udid().to_ascii_uppercase()
+    target.id().to_ascii_uppercase()
 }
 
 /// The devices in `simctl list -j devices`: iPhones first, then iPads, newest OS first, by name. A device whose

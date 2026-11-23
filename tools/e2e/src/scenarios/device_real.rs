@@ -233,9 +233,10 @@ fn steps(ctx: &mut Ctx, app: &mut App, udid: &str) -> Result<(), String> {
         ),
     );
     ctx.ok(
-        s["booted_by_flare"]
-            .as_array()
-            .is_some_and(|l| l.iter().any(|u| u == udid)),
+        s["booted_by_flare"].as_array().is_some_and(|l| {
+            l.iter()
+                .any(|u| u.as_str() == Some(format!("sim/{udid}").as_str()))
+        }),
         "Flare remembers it booted this simulator (booted.json)",
     );
     ctx.ok(

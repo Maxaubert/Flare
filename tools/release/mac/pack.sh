@@ -76,9 +76,12 @@ check_bundle() {
   done
   grep -q "<version>$VERSION</version>" "$app/Contents/Resources/sq.version" || { echo "$what: sq.version is not $VERSION" >&2; exit 1; }
   [ "$(readlink "$app/Contents/MacOS/sq.version")" = ../Resources/sq.version ] || { echo "$what: no sq.version link" >&2; exit 1; }
+  # The Android agent helper (rule 1369): a data file in Resources, where the emu host looks for it.
+  [ -s "$app/Contents/Resources/flare-agent.jar" ] || { echo "$what: no flare-agent.jar" >&2; exit 1; }
   # Each program's role, ad hoc too (rule 1052): the app's identifier and its three keys; the tools (Velopack's
-  # UpdateMac, flare-mcp, flare-parakeet-host, flare-sim-host) by their own identifier, under the hardened runtime, with
-  # no entitlements (the sim host loads CoreSimulator and SimulatorKit with none: Step 0 S3 of the device panel plan).
+  # UpdateMac, flare-mcp, flare-parakeet-host, flare-sim-host, flare-emu-host) by their own identifier, under the
+  # hardened runtime, with no entitlements (the sim host loads CoreSimulator and SimulatorKit with none: Step 0 S3 of
+  # the device panel plan; the emu host only runs adb and talks gRPC on localhost).
   local info ents t gate
   info="$(codesign -d --verbose=2 "$app/Contents/MacOS/Flare" 2>&1)"
   ents="$(codesign -d --entitlements - --xml "$app/Contents/MacOS/Flare" 2>/dev/null)"
@@ -87,7 +90,7 @@ check_bundle() {
     grep -q "<key>com.apple.security.$k</key>" <<<"$ents" || { echo "$what: Flare has no $k" >&2; exit 1; }
   done
   [ "$(grep -o '<key>' <<<"$ents" | wc -l | tr -d ' ')" = 3 ] || { echo "$what: Flare has other entitlements" >&2; exit 1; }
-  for t in UpdateMac flare-mcp flare-parakeet-host flare-sim-host; do
+  for t in UpdateMac flare-mcp flare-parakeet-host flare-sim-host flare-emu-host; do
     info="$(codesign -d --verbose=2 "$app/Contents/MacOS/$t" 2>&1)"
     ents="$(codesign -d --entitlements - --xml "$app/Contents/MacOS/$t" 2>/dev/null)"
     grep -qx "Identifier=$BUNDLE_ID.$t" <<<"$info" || { echo "$what: $t is not $BUNDLE_ID.$t" >&2; exit 1; }

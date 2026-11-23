@@ -387,6 +387,62 @@ fn the_package_ships_the_mcp_server_beside_the_app_and_every_packing_workflow_bu
     }
 }
 
+/// Android plan PR A6: the emu host (`flare-emu-host.exe`) and the agent helper jar ship beside Flare.exe, where the app
+/// (from PR A4) and the emu host look for them. Every packing workflow builds the emu host first, the stage script
+/// copies both, and the release runs the packed emu host's self-test: a release build has no repository copy of the
+/// jar, so only that run shows it finds the packed one with the hash it expects (rule 1369).
+#[test]
+fn the_package_ships_the_emu_host_and_the_agent_jar_beside_the_app() {
+    let pack = read(PACK);
+    assert!(
+        pack.contains("'flare-emu-host.exe'"),
+        "pack.ps1 copies flare-emu-host.exe"
+    );
+    assert!(
+        pack.contains("crates\\flare-device\\assets\\flare-agent.jar"),
+        "pack.ps1 copies the checked-in jar"
+    );
+    assert!(pack.contains("(Join-Path $Stage 'flare-agent.jar')"));
+    let verify = read(VERIFY);
+    for need in ["'current/flare-emu-host.exe'", "'current/flare-agent.jar'"] {
+        assert!(verify.contains(need), "verify-pack.ps1 requires {need}");
+    }
+    for wf in [WF, ".github/workflows/update-e2e.yml"] {
+        let text = read(wf);
+        let build = at(&text, "cargo build --release -p flare-emu-host");
+        assert!(
+            build < at(&text, "./tools/release/pack.ps1"),
+            "{wf} builds the emu host before it packs"
+        );
+    }
+    let update = read(".github/workflows/update-e2e.yml");
+    let line = update
+        .lines()
+        .find(|l| l.contains("-p flare-emu-host"))
+        .expect("the update workflow builds the emu host");
+    assert!(line.contains("--target-dir target-update"), "{line}");
+    let stage = read("tools/stage-install.ps1");
+    assert!(stage.contains("$files['flare-emu-host.exe'] = Join-Path $Bin 'flare-emu-host.exe'"));
+    assert!(stage.contains(
+        "$files['flare-agent.jar'] = Join-Path $Repo 'crates\\flare-device\\assets\\flare-agent.jar'"
+    ));
+    // The names the app and the emu host look for.
+    let names = read("crates/flare-win/src/names.rs");
+    assert!(names.contains("pub const EMU_HOST_EXE: &str = \"flare-emu-host.exe\";"));
+    assert!(names.contains("pub const AGENT_JAR: &str = \"flare-agent.jar\";"));
+    assert!(read("crates/flare-emu-host/src/agent.rs").contains("dir.join(\"flare-agent.jar\")"));
+    // The packed emu host's self-test runs after the pack, from the folder the pack staged.
+    let wf = read(WF);
+    assert!(wf.contains("-Out Releases -Stage \"$env:RUNNER_TEMP\\flare-stage\""));
+    let test = at(
+        &wf,
+        "& \"$env:RUNNER_TEMP\\flare-stage\\flare-emu-host.exe\" --self-test",
+    );
+    assert!(test > at(&wf, "./tools/release/pack.ps1"));
+    assert!(test < at(&wf, "./tools/release/verify-pack.ps1"));
+    assert!(wf[test..].contains("exit $rc"));
+}
+
 #[test]
 fn no_fake_binary_is_packed() {
     let pack = read(PACK);

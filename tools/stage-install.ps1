@@ -34,6 +34,10 @@ try {
   $files[$ExeName] = Join-Path $Bin 'flare.exe'
   $files['flare-mcp.exe'] = Join-Path $Bin 'flare-mcp.exe'
   $files['flare-parakeet-host.exe'] = Join-Path $Bin 'flare-parakeet-host.exe'
+  # The Android device panel (PR A6), as tools\release\pack.ps1 ships it: the emu host and, beside it, the checked-in
+  # agent helper jar (rule 1369).
+  $files['flare-emu-host.exe'] = Join-Path $Bin 'flare-emu-host.exe'
+  $files['flare-agent.jar'] = Join-Path $Repo 'crates\flare-device\assets\flare-agent.jar'
   $files['LICENSE'] = Join-Path $Repo 'LICENSE'
   $files['THIRD-PARTY-NOTICES.md'] = Join-Path $Repo 'THIRD-PARTY-NOTICES.md'
   # The pinned ConPTY pair beside the exe, as tools\release\pack.ps1 ships it: a build that pins a new one checks
@@ -47,7 +51,7 @@ try {
     }
   }
   foreach ($k in @($files.Keys)) {
-    if (-not (Test-Path $files[$k])) { throw "$($files[$k]) is missing; build first (cargo build --release -p flare -p flare-mcp -p flare-parakeet-host)" }
+    if (-not (Test-Path $files[$k])) { throw "$($files[$k]) is missing; build first (cargo build --release -p flare -p flare-mcp -p flare-dictation --bin flare --bin flare-mcp --bin flare-parakeet-host; cargo build --release -p flare-emu-host)" }
   }
 
   $commit = (& git -C $Repo rev-parse HEAD 2>$null)

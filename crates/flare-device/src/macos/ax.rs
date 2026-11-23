@@ -550,11 +550,11 @@ mod tests {
             .expect("launch Settings");
         std::thread::sleep(Duration::from_secs(3));
         let ax = Ax::open().expect("the translator");
-        register(d.target.udid(), &dev);
+        register(d.target.id(), &dev);
         // The first request after a boot is slow (S4: 3.3 s), and may come back empty: the sim host warms the tree
         // right after attach for this reason.
         let started = Instant::now();
-        let mut first = ax.tree(d.target.udid(), None);
+        let mut first = ax.tree(d.target.id(), None);
         for i in 0..2 {
             eprintln!(
                 "try {i}: {} ms {:?}",
@@ -565,12 +565,12 @@ mod tests {
                 break;
             }
             std::thread::sleep(Duration::from_secs(1));
-            first = ax.tree(d.target.udid(), None);
+            first = ax.tree(d.target.id(), None);
         }
         let first = first.expect("a tree");
         let cold = started.elapsed();
         let started = Instant::now();
-        let root = ax.tree(d.target.udid(), None).expect("a tree");
+        let root = ax.tree(d.target.id(), None).expect("a tree");
         let warm = started.elapsed();
         fn all(n: &UiNode, out: &mut Vec<UiNode>) {
             out.push(UiNode {
@@ -619,11 +619,11 @@ mod tests {
             row.frame.x + row.frame.w / 2.0,
             row.frame.y + row.frame.h / 2.0,
         );
-        let hit = ax.tree(d.target.udid(), Some((cx, cy))).expect("a hit");
+        let hit = ax.tree(d.target.id(), Some((cx, cy))).expect("a hit");
         assert!(hit.frame.w > 0.0, "{hit:?}");
-        forget(d.target.udid());
+        forget(d.target.id());
         assert!(
-            ax.tree(d.target.udid(), None).is_err(),
+            ax.tree(d.target.id(), None).is_err(),
             "a forgotten token has no device"
         );
     }

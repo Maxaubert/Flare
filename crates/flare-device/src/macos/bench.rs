@@ -601,7 +601,7 @@ pub fn run_input(
     let (px, scale) = device.screen_facts().map_err(|e| e.to_string())?;
     let portrait = Size::new(px.w / scale, px.h / scale);
     let orientation = Arc::new(Mutex::new(
-        orient::read(device.ptr(), target.udid()).unwrap_or(Orientation::Rot0),
+        orient::read(device.ptr(), target.id()).unwrap_or(Orientation::Rot0),
     ));
     // The input worker, as Flare's panel runs it; the cold connect right after the boot.
     let path = versions::input_path(coresim_version);
