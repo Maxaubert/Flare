@@ -162,7 +162,7 @@ jobs:
           brew install ninja cmake zstd || true
           echo "CEF_PATH=$RUNNER_TEMP/flare-cef" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         if: steps.gate.outputs.go == 'true'
         with:
           dotnet-version: 8.0.x
