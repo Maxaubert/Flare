@@ -6091,3 +6091,13 @@ device's own `buttons` and the look's text lists them, and a name neither source
 `device_press_names_each_sources_own_buttons` (`ctl_app.rs`), `the_tools_take_both_kinds_of_device` (`flare-mcp`),
 `the_agent_drives_an_android_device_once_its_emulator_is_ready` (`device_ctl.rs`) and the e2e `deviceAgent`,
 `mcpDevice`, `deviceAgentAndroid` and `mcpDeviceAndroid`. Source: Max, 2026-11-22.
+
+## macOS: passkeys need Bluetooth's sentence (2026-11-24)
+
+1372. **macOS: `Flare.app`'s `Info.plist` has `NSBluetoothAlwaysUsageDescription`.** A passkey sign-in in a web
+panel (GitHub's, 2026-11-24) makes Chromium check Bluetooth for WebAuthn's "use a phone or tablet" (caBLE). Without the
+key macOS kills Flare at once (`EXC_CRASH SIGABRT` in `__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__`, "must contain an
+NSBluetoothAlwaysUsageDescription key"), and so it would for a terminal program that uses Bluetooth. Chrome declares
+the same key. No entitlement is needed: Flare is hardened, not sandboxed. Held by
+`the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic` (`release.rs`). Source: Max,
+2026-11-24.

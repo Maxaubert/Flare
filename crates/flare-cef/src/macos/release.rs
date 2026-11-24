@@ -85,6 +85,12 @@ pub const APPLE_EVENTS_USAGE: &str =
 pub const LOCAL_NETWORK_USAGE: &str =
     "Flare finds and links your other computers on this network, so you can open tabs on them.";
 
+/// The sentence macOS shows when a web page's passkey sign-in (WebAuthn's "use a phone or tablet", which talks to the
+/// phone over Bluetooth) or a program run in the terminal asks for Bluetooth. Without it macOS kills Flare outright at
+/// the first Bluetooth check (rule 1372).
+pub const BLUETOOTH_USAGE: &str = "A web page you open in Flare (a passkey sign-in that uses your phone, for example), \
+     or a program you run in its terminal, wants to use Bluetooth.";
+
 /// The Bonjour service Flare announces and looks for while Computer sharing is on (machine pairing).
 pub const PAIRING_SERVICE: &str = "_flare-pair._tcp";
 
@@ -118,6 +124,11 @@ pub fn app_keys(year: &str) -> Vec<(&'static str, String)> {
         (
             "NSLocalNetworkUsageDescription",
             format!("<string>{LOCAL_NETWORK_USAGE}</string>"),
+        ),
+        // Rule 1372: Chromium checks Bluetooth for a passkey sign-in; macOS kills an app that has no sentence for it.
+        (
+            "NSBluetoothAlwaysUsageDescription",
+            format!("<string>{BLUETOOTH_USAGE}</string>"),
         ),
         (
             "NSBonjourServices",
@@ -510,6 +521,8 @@ mod tests {
             // Machine pairing (rule 1254): the local network prompt's sentence, and the one Bonjour service.
             "<key>NSLocalNetworkUsageDescription</key>\n  <string>Flare finds and links your other computers",
             "<key>NSBonjourServices</key>\n  <array><string>_flare-pair._tcp</string></array>",
+            // Rule 1372: a passkey sign-in checks Bluetooth, and macOS kills Flare when this sentence is missing.
+            "<key>NSBluetoothAlwaysUsageDescription</key>\n  <string>A web page you open in Flare",
         ] {
             assert!(p.contains(want), "{want}\n{p}");
         }
