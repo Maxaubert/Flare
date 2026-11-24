@@ -866,9 +866,10 @@ pub fn run_window(
     instance: Option<Instance>,
 ) -> Result<(), slint::PlatformError> {
     // The window is made here, in a small frame, and `run_window_with` (whose debug frame is tens of KB) runs after.
-    // Slint's generated constructor holds about three copies of the window's inner struct (about 250 KB) on the
-    // stack in a debug build, and Windows gives the main thread 1 MB: with a big frame under it the debug app
-    // overflowed its stack at start (CI, PR #346).
+    // In a debug build Slint's generated constructor holds four copies of the window's inner struct (246,512 bytes,
+    // measured 2026-11-24) on the stack: two in `InnerAppWindow::new`'s frame and two in `VRc::new`'s, about
+    // 986,000 bytes. Windows gives the main thread 1 MiB, so with a big frame under it the debug app overflowed its
+    // stack at start (CI, PR #346). Every 1 KB added to the window costs about 4 KB of main stack here.
     let app = AppWindow::new()?;
     run_window_with(app, outcome, start, args, instance)
 }

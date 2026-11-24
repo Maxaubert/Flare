@@ -80,17 +80,24 @@ pub fn run_live(args: Args, start: Instant) -> Result<(), String> {
 }
 
 fn headless(args: Args, start: Instant, live_mode: bool) -> Result<(), String> {
-    let scale = args.scale;
-    let width = (args.size.0 as f32 * scale).round() as u32;
-    let height = (args.size.1 as f32 * scale).round() as u32;
+    let (win, host) = headless_before_window(&args)?;
+    // The window is made in this small frame, with nothing big under it: see `window::run_window`.
+    let app = AppWindow::new().map_err(|e| format!("cannot create the window: {e}"))?;
+    headless_with(args, start, live_mode, win, host, app)
+}
 
+/// The software window handed to Slint and the grid host (boxed, so `headless`'s frame stays small).
+#[inline(never)]
+fn headless_before_window(
+    args: &Args,
+) -> Result<(Rc<MinimalSoftwareWindow>, Box<GridHost>), String> {
     let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(HeadlessPlatform(win.clone())))
         .map_err(|e| format!("cannot set the headless platform: {e}"))?;
     crate::ui_font::register();
 
     let glyphs = Box::new(Rasterizer::new(DEFAULT_FAMILIES, 1.0));
-    let mut host = match args.renderer {
+    let host = match args.renderer {
         RendererChoice::Software => GridHost::new(glyphs, GridPainter::Cpu),
         RendererChoice::Gpu => {
             let (device, queue, info) =
@@ -101,8 +108,23 @@ fn headless(args: Args, start: Instant, live_mode: bool) -> Result<(), String> {
             host
         }
     };
+    Ok((win, Box::new(host)))
+}
 
-    let app = AppWindow::new().map_err(|e| format!("cannot create the window: {e}"))?;
+/// The rest of the headless run around its new window: the first frame, the screenshot and the benchmark.
+#[inline(never)]
+fn headless_with(
+    args: Args,
+    start: Instant,
+    live_mode: bool,
+    win: Rc<MinimalSoftwareWindow>,
+    host: Box<GridHost>,
+    app: AppWindow,
+) -> Result<(), String> {
+    let mut host = *host;
+    let scale = args.scale;
+    let width = (args.size.0 as f32 * scale).round() as u32;
+    let height = (args.size.1 as f32 * scale).round() as u32;
     win.dispatch_event(WindowEvent::ScaleFactorChanged {
         scale_factor: scale,
     });
