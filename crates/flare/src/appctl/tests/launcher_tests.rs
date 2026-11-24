@@ -78,6 +78,31 @@ fn the_button_shows_while_the_tabs_panel_is_closed_and_goes_when_it_opens() {
     assert!(!f.h.comp.get_launcher_shown());
 }
 
+/// Rule 1372 (review fix): the find bar sits in the same corner, so the button and its menu go while it is open and
+/// come back when it closes.
+#[test]
+fn the_button_goes_while_the_find_bar_is_open() {
+    let (f, _h, _) = live(Opts::default());
+    f.ctl.borrow_mut().refresh();
+    point(&f, button_mid(&f));
+    assert!(open(&f));
+    f.ctl.borrow_mut().toggle_find();
+    f.h.advance(0);
+    assert!(f.h.comp.get_find_open());
+    assert!(
+        !f.h.comp.get_launcher_shown(),
+        "the find bar covers the corner"
+    );
+    assert!(!open(&f), "the menu goes with the button");
+    f.ctl.borrow_mut().toggle_find();
+    f.h.advance(0);
+    assert!(!f.h.comp.get_find_open());
+    assert!(
+        f.h.comp.get_launcher_shown(),
+        "back when the find bar closes"
+    );
+}
+
 /// Rule 1372: at 100, 150 and 225 percent the button is 26 px round, 8 px from the top and 10 px from the right of the
 /// terminal, it draws, and its menu hangs 6 px under it with their right edges met, inside the window.
 #[test]

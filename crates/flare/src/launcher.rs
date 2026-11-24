@@ -128,12 +128,14 @@ pub struct Where {
     pub remote_view: bool,
     /// The resume skeleton covers the terminal.
     pub skeleton: bool,
+    /// The find bar is open: it sits in the same top right corner (review fix, 2026-11-24).
+    pub find_open: bool,
 }
 
 /// The launcher shows only where a panel could open and none is open: a shell tab in front, its panel closed, room
-/// for a slot, and nothing drawn over the terminal.
+/// for a slot, and nothing drawn over the terminal or in its top right corner (the find bar).
 pub fn shown(w: Where) -> bool {
-    w.shell_front && !w.panel_open && w.panel_fits && !w.remote_view && !w.skeleton
+    w.shell_front && !w.panel_open && w.panel_fits && !w.remote_view && !w.skeleton && !w.find_open
 }
 
 /// One row of the launcher's menu.
@@ -469,6 +471,10 @@ mod tests {
         }));
         assert!(!shown(Where {
             skeleton: true,
+            ..ok
+        }));
+        assert!(!shown(Where {
+            find_open: true,
             ..ok
         }));
     }

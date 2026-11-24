@@ -57,6 +57,8 @@ pub(crate) struct LauncherState {
     /// Default apps' names by extension, once looked up (None inside: none to name), and the lookups on their way.
     app_names: HashMap<String, Option<String>>,
     asking: std::collections::HashSet<String>,
+    /// The find bar was open at the last sync (it shares the corner, so the button follows it).
+    find_open: bool,
 }
 
 impl AppCtl {
@@ -91,7 +93,9 @@ impl AppCtl {
             panel_fits: app.get_panel_fits(),
             remote_view: self.remote_convo_shown(),
             skeleton: app.get_skeleton_shown(),
+            find_open: app.get_find_open(),
         });
+        self.launcher.find_open = app.get_find_open();
         // Another tab in front, or the button gone (the panel opened, the window too narrow): the menu goes with it.
         if !shown || tab != self.launcher.tab {
             self.launcher_close();
@@ -130,6 +134,13 @@ impl AppCtl {
         app.set_launcher_shown(shown);
         self.push_launcher(app);
         self.sync_open_in(app, snap.as_ref());
+    }
+
+    /// The find bar opened or closed outside a refresh (`push_term`): the launcher follows it at once.
+    pub(super) fn launcher_find_changed(&mut self, app: &AppWindow, open: bool) {
+        if open != self.launcher.find_open {
+            self.sync_launcher(app);
+        }
     }
 
     /// The menu's open state and lit row.

@@ -6102,12 +6102,12 @@ in); `appctl/launcher_glue.rs` feeds them and does what they say; `ui/launcher.s
 ghost button, 26 px, 8 px from the top and 10 px from the right of the terminal, the Layers icon, at 45% opacity idle
 and solid while hovered or while its menu is open. It is hidden while the tab's panel is open, while Settings or the
 start screen is in front, while the window is too narrow for a slot (`panel-fits`), and while a remote tab's fitted
-view or the resume skeleton covers the terminal (`launcher::shown`). Switching tabs or the button going away closes its
+view or the resume skeleton covers the terminal, and while the find bar is open, which sits in the same corner (`launcher::shown`; opening or closing the find bar updates it at once, review fix 2026-11-24). Switching tabs or the button going away closes its
 menu. Only the button and the open menu take the pointer (the component is a bare box over the grid). The Preview chip
 moves left of it while it shows. Whole device pixels at every scale. Held by
 `the_button_shows_only_where_a_panel_could_open_and_none_is_open` (`launcher.rs`),
 `the_button_shows_while_the_tabs_panel_is_closed_and_goes_when_it_opens` and
-`the_button_and_its_menu_sit_in_the_corner_at_every_scale` (`appctl/tests/launcher_tests.rs`). Source: Max, 2026-11-24.
+`the_button_and_its_menu_sit_in_the_corner_at_every_scale` and `the_button_goes_while_the_find_bar_is_open` (`appctl/tests/launcher_tests.rs`). Source: Max, 2026-11-24.
 
 1373. **The menu opens only from the button and survives the gap; 250 ms off both closes it.** Max: "it must appear
 only when the cursor is over the button, not wherever the menu would be; and it must not disappear while the cursor

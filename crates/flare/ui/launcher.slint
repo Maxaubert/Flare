@@ -163,17 +163,20 @@ export component PanelLauncher inherits Rectangle {
 
     // The menu's pointer: one touch area over the menu and the bridge above it (the gap to the button belongs to the
     // menu, so crossing it never counts as leaving). Off while the menu is closed: a closed menu takes nothing.
+    // It starts at the button's bottom edge exactly (not at the menu's top less the gap): the two snapped edges could
+    // leave a sliver of a device pixel on neither at 125 % (review fix, 2026-11-24).
+    property <length> bridge-h: menu.y - (btn.y + btn.height);
     mta := TouchArea {
         x: menu.x;
-        y: menu.y - root.gap;
+        y: btn.y + btn.height;
         width: menu.width;
-        height: menu.height + root.gap;
+        height: menu.height + root.bridge-h;
         enabled: root.shown && root.open;
         mouse-cursor: MouseCursor.default;
         changed has-hover => { root.hover(1, self.has-hover); }
         changed mouse-y => {
-            if (self.has-hover) { root.menu-moved(self.mouse-y - root.gap); }
+            if (self.has-hover) { root.menu-moved(self.mouse-y - root.bridge-h); }
         }
-        clicked => { root.menu-clicked(self.mouse-y - root.gap); }
+        clicked => { root.menu-clicked(self.mouse-y - root.bridge-h); }
     }
 }

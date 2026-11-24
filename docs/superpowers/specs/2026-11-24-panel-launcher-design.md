@@ -21,7 +21,7 @@ Anything marked **Claude's call** was decided by the builder, not by Max.
   open.
 - It is hidden while the tab's panel is open, and wherever a panel cannot open: Settings or the start screen in front,
   a window too narrow for a slot. **Claude's call:** also hidden while a remote tab's fitted conversation view or the
-  resume skeleton covers the terminal.
+  resume skeleton covers the terminal, and while the find bar is open (it sits in the same corner; review fix).
 - One button per window, standing for the tab in front; switching tabs closes its menu.
 - **Claude's call:** the Preview chip (stage 7) lives in the same corner. While the launcher shows, the chip moves left
   of it (8 px apart).

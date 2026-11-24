@@ -3653,6 +3653,8 @@ impl AppCtl {
         let Some(app) = self.app() else { return };
         let fs = self.term.find_state();
         app.set_find_open(fs.open);
+        // The panel launcher shares the find bar's corner and goes while it is open (rule 1372).
+        self.launcher_find_changed(&app, fs.open);
         if app.get_find_query().as_str() != fs.query {
             app.set_find_query(fs.query.as_str().into());
         }
