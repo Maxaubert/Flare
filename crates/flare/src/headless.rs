@@ -25,7 +25,6 @@ use flare_term::fake::{FakeShells, FakeSpawner};
 use flare_term::handle::{StartOptions, TermHandle};
 use flare_term::pty::PortableSpawner;
 use flare_term::session::{RealShells, SessionManager, SessionOptions};
-#[cfg(test)]
 use flare_theme::look::AppliedLook;
 use flare_win::taskbar::{badge_px, compose_disc, text_mask};
 use flare_win::window_state::WindowStateStore;
@@ -866,6 +865,18 @@ pub(crate) struct Scene {
     spawner: Arc<FakeSpawner>,
 }
 
+/// What `Scene::before_window` hands on to `Scene::around_window`, boxed so `build_with`'s frame stays small.
+struct ScenePre {
+    win: Rc<MinimalSoftwareWindow>,
+    host: Rc<RefCell<GridHost>>,
+    look: AppliedLook,
+    dir: PathBuf,
+    tabs_file: PathBuf,
+    prefs: PrefStore,
+    scale: f32,
+    phys: (u32, u32),
+}
+
 impl Drop for Scene {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir); // sync-ok: scene tooling, after the picture
@@ -893,6 +904,20 @@ impl Scene {
         sample_stream: bool,
         term: bool,
     ) -> Result<Self, String> {
+        let pre = Self::before_window(args, saved, prep)?;
+        // The window is made in this small frame, with nothing big under it: see `window::run_window`.
+        let app = AppWindow::new().map_err(|e| format!("cannot create the window: {e}"))?;
+        Self::around_window(pre, app, sample_stream, term)
+    }
+
+    /// What a scene makes before its window: the software window offered to Slint, the grid host, the look, the
+    /// scratch folder with its tabs file, and the prefs.
+    #[inline(never)]
+    fn before_window(
+        args: &Args,
+        saved: SavedTabs,
+        prep: fn(&PrefStore),
+    ) -> Result<Box<ScenePre>, String> {
         let scale = args.scale;
         let phys = (
             (args.size.0 as f32 * scale).round() as u32,
@@ -935,8 +960,36 @@ impl Scene {
         }
         let prefs = PrefStore::memory();
         prep(&prefs);
+        Ok(Box::new(ScenePre {
+            win,
+            host,
+            look,
+            dir,
+            tabs_file,
+            prefs,
+            scale,
+            phys,
+        }))
+    }
 
-        let app = AppWindow::new().map_err(|e| format!("cannot create the window: {e}"))?;
+    /// The rest of the scene around its new window: shown at the scene's size, the controller made, the tabs restored.
+    #[inline(never)]
+    fn around_window(
+        pre: Box<ScenePre>,
+        app: AppWindow,
+        sample_stream: bool,
+        term: bool,
+    ) -> Result<Self, String> {
+        let ScenePre {
+            win,
+            host,
+            look,
+            dir,
+            tabs_file,
+            prefs,
+            scale,
+            phys,
+        } = *pre;
         win.dispatch_event(WindowEvent::ScaleFactorChanged {
             scale_factor: scale,
         });

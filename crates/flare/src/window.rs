@@ -865,8 +865,23 @@ pub fn run_window(
     args: &Args,
     instance: Option<Instance>,
 ) -> Result<(), slint::PlatformError> {
-    let sample = args.sample;
+    // The window is made here, in a small frame, and `run_window_with` (whose debug frame is tens of KB) runs after.
+    // Slint's generated constructor holds about three copies of the window's inner struct (about 250 KB) on the
+    // stack in a debug build, and Windows gives the main thread 1 MB: with a big frame under it the debug app
+    // overflowed its stack at start (CI, PR #346).
     let app = AppWindow::new()?;
+    run_window_with(app, outcome, start, args, instance)
+}
+
+#[inline(never)]
+fn run_window_with(
+    app: AppWindow,
+    outcome: BackendOutcome,
+    start: Instant,
+    args: &Args,
+    instance: Option<Instance>,
+) -> Result<(), slint::PlatformError> {
+    let sample = args.sample;
     crate::startup_trace::mark(crate::startup_trace::Phase::Component);
     let painter = match outcome.effective {
         RendererChoice::Gpu => GridPainter::Gpu,
