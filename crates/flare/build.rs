@@ -15,6 +15,12 @@ fn main() {
     if target_windows {
         write_resource();
         copy_bundled_conpty();
+        // An 8 MiB main thread stack, as macOS and Linux give. Windows gives 1 MiB, and in a debug build
+        // Slint's window constructor puts four copies of the window struct on it (about 1 MB by #346), so
+        // each 1 KB of new UI cost about 4 KB of main stack and a UI change could overflow it at start.
+        if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
+            println!("cargo:rustc-link-arg-bin=flare=/STACK:8388608");
+        }
     }
     copy_claude_plugin();
 }
