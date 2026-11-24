@@ -40,6 +40,7 @@ mod host;
 mod host_os;
 mod ime;
 mod keymap;
+mod launcher;
 mod link_bases;
 mod live;
 mod look_ctl;

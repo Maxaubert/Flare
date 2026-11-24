@@ -1552,6 +1552,32 @@ pub fn run_window(
                 );
             }));
         }
+        {
+            // The panel launcher's "Open a file..." (rule 1374): the system's Open dialog, parented to the window,
+            // starting in the tab's folder. Under --e2e an unset seam is a cancel: no real dialog shows.
+            let weak = app.as_weak();
+            rc.borrow_mut()
+                .set_pick_file(Rc::new(move |folder, answer| {
+                    let parent = weak
+                        .upgrade()
+                        .and_then(|a| hwnd_of(&a))
+                        .map(|hwnd| ParentWindow { hwnd });
+                    let seam = e2e::global().dialog_seam(
+                        &["FLARE_E2E", "_PICK_FILE"].concat(),
+                        "",
+                        |_| true,
+                    );
+                    flare_win::pick::pick_any_file(
+                        PickOptions {
+                            parent,
+                            default_dir: folder,
+                            fallback_dir: None,
+                            seam,
+                        },
+                        move |p| answer(p),
+                    );
+                }));
+        }
         // The panels' file is read here, at start, before the restore gives the tabs their panels.
         let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
             inst.profile.panels_file(),

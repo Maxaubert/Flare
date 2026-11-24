@@ -1,0 +1,179 @@
+// The panel launcher (2026-11-24, rules 1372 to 1374; mockup `docs/superpowers/specs/2026-11-24-panel-launcher-ghost-button-mockup.html`):
+// a round ghost button in the top right of the tab's terminal while its side panel is closed, and the menu it blooms
+// into. The controller (`launcher.rs`, `appctl/launcher_glue.rs`) owns every rule: when it shows, when the menu opens
+// and closes (the 250 ms grace), which rows there are, where each row lies and which one is lit. This file only draws
+// it and reports the pointer.
+//
+// Only the button and, while open, the menu take the pointer: the component itself is a bare box, so the terminal
+// under it keeps every press. A closed menu is not drawn and its touch area is off.
+
+import { Theme, Px, Motion } from "theme.slint";
+
+// One row of the menu: its words, its stroke icon (24 unit viewbox), its top edge in the menu (the controller's
+// `launcher::tops`, so a pointer's row is worked out from the same numbers) and whether a rule sits above it.
+export struct LauncherRow {
+    label: string,
+    icon: string,
+    top: length,
+    rule: bool,
+}
+
+export component PanelLauncher inherits Rectangle {
+    in property <bool> shown;
+    in property <bool> open;
+    in property <[LauncherRow]> rows;
+    // The lit row (the pointer's or the keys'), -1 for none.
+    in property <int> hot: -1;
+    // The menu's height (`launcher::menu_h`).
+    in property <length> menu-h;
+    // zone 0: the button, 1: the menu with its bridge; on: the pointer came onto it (else it left).
+    callback hover(int, bool);
+    callback clicked();
+    // The pointer over the menu, or a press in it: css px from the menu's top edge (negative on the bridge).
+    callback menu-moved(length);
+    callback menu-clicked(length);
+    // A row's accessible action.
+    callback picked(int);
+
+    // The geometry, for the tests and the e2e (window coordinates).
+    out property <length> button-x: btn.absolute-position.x;
+    out property <length> button-y: btn.absolute-position.y;
+    out property <length> button-w: btn.width;
+    out property <length> menu-x: menu.absolute-position.x;
+    out property <length> menu-y: menu.absolute-position.y;
+    out property <length> menu-w: menu.width;
+    out property <length> menu-hh: menu.height;
+    out property <bool> button-lit: root.lit;
+
+    // The gap between the button and the menu, which the bridge covers.
+    property <length> gap: 6px;
+    property <bool> lit: root.open || bta.has-hover;
+    background: transparent;
+
+    // The rows' widest label, measured once (never drawn).
+    measure := VerticalLayout {
+        visible: false;
+        for r in root.rows: Text {
+            text: r.label;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+        }
+    }
+
+    btn := Rectangle {
+        x: Px.snap(parent.width - 10px - self.width);
+        y: Px.snap(8px);
+        width: Px.snap(26px);
+        height: Px.snap(26px);
+        visible: root.shown;
+        border-radius: self.width / 2;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        // Idle it is faint (the terminal's text under it stays readable); solid while hovered or while its menu is open.
+        background: root.lit ? Theme.side-flat : Theme.side-flat.with-alpha(0.6);
+        opacity: root.lit ? 1 : 0.45;
+        animate opacity, background { duration: Motion.d(200ms); easing: ease-out; }
+        accessible-role: button;
+        accessible-label: "Open in the side panel";
+        accessible-expandable: true;
+        accessible-expanded: root.open;
+        accessible-action-default => { root.clicked(); }
+        // Layers: three stacked rhombi, 14 px, stroke 1.6 (Max's pick, icon 6).
+        Path {
+            x: (parent.width - 14px) / 2 - self.stroke-width / 2;
+            y: (parent.height - 14px) / 2 - self.stroke-width / 2;
+            width: 14px + self.stroke-width;
+            height: 14px + self.stroke-width;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M12 4l8 4-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4";
+            fill: transparent;
+            stroke: root.lit ? Theme.text : Theme.text-soft;
+            stroke-width: 1.6 * 14px / 24;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        bta := TouchArea {
+            enabled: root.shown;
+            mouse-cursor: MouseCursor.pointer;
+            changed has-hover => { root.hover(0, self.has-hover); }
+            clicked => { root.clicked(); }
+        }
+    }
+
+    menu := Rectangle {
+        visible: root.shown && root.open;
+        width: Px.snap(2 * 4px + 8px + 14px + 8px + measure.preferred-width + 12px + 2 * Px.hair());
+        height: root.menu-h;
+        x: Px.snap(btn.x + btn.width - self.width);
+        y: Px.snap(btn.y + btn.height + root.gap);
+        background: Theme.side-flat;
+        border-radius: 8px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #00000080;
+        for r[i] in root.rows: Rectangle {
+            x: 4px;
+            y: Px.snap(r.top);
+            width: parent.width - 8px;
+            height: 28px + (r.rule ? 7px : 0px);
+            accessible-role: button;
+            accessible-label: r.label;
+            accessible-action-default => { root.picked(i); }
+            if r.rule: Rectangle {
+                y: 3px;
+                height: Px.hair();
+                background: Theme.divider;
+            }
+            Rectangle {
+                y: r.rule ? Px.snap(7px) : 0px;
+                height: 28px;
+                border-radius: 5px;
+                background: i == root.hot ? Theme.hover : transparent;
+                Path {
+                    x: 8px - self.stroke-width / 2;
+                    y: (parent.height - 14px) / 2 - self.stroke-width / 2;
+                    width: 14px + self.stroke-width;
+                    height: 14px + self.stroke-width;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: r.icon;
+                    fill: transparent;
+                    stroke: i == root.hot ? Theme.text : Theme.text-soft;
+                    stroke-width: 1.6 * 14px / 24;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                }
+                Text {
+                    x: 8px + 14px + 8px;
+                    width: parent.width - self.x - 12px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    text: r.label;
+                    font-family: Theme.font-ui;
+                    font-size: 11.5px;
+                    color: i == root.hot ? Theme.text : Theme.text-soft;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // The menu's pointer: one touch area over the menu and the bridge above it (the gap to the button belongs to the
+    // menu, so crossing it never counts as leaving). Off while the menu is closed: a closed menu takes nothing.
+    mta := TouchArea {
+        x: menu.x;
+        y: menu.y - root.gap;
+        width: menu.width;
+        height: menu.height + root.gap;
+        enabled: root.shown && root.open;
+        mouse-cursor: MouseCursor.default;
+        changed has-hover => { root.hover(1, self.has-hover); }
+        changed mouse-y => {
+            if (self.has-hover) { root.menu-moved(self.mouse-y - root.gap); }
+        }
+        clicked => { root.menu-clicked(self.mouse-y - root.gap); }
+    }
+}

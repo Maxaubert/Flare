@@ -6091,3 +6091,73 @@ device's own `buttons` and the look's text lists them, and a name neither source
 `device_press_names_each_sources_own_buttons` (`ctl_app.rs`), `the_tools_take_both_kinds_of_device` (`flare-mcp`),
 `the_agent_drives_an_android_device_once_its_emulator_is_ready` (`device_ctl.rs`) and the e2e `deviceAgent`,
 `mcpDevice`, `deviceAgentAndroid` and `mcpDeviceAndroid`. Source: Max, 2026-11-22.
+
+## Panel launcher and "Open in" (2026-11-24)
+
+Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, mockups approved by Max on 2026-11-24 (placement 3
+"ghost button that blooms", icon 6 "Layers"). The rules live in `crates/flare/src/launcher.rs` (pure, the clock passed
+in); `appctl/launcher_glue.rs` feeds them and does what they say; `ui/launcher.slint` only draws.
+
+1372. **The launcher shows only where a panel could open and none is open, one button for the tab in front.** A round
+ghost button, 26 px, 8 px from the top and 10 px from the right of the terminal, the Layers icon, at 45% opacity idle
+and solid while hovered or while its menu is open. It is hidden while the tab's panel is open, while Settings or the
+start screen is in front, while the window is too narrow for a slot (`panel-fits`), and while a remote tab's fitted
+view or the resume skeleton covers the terminal (`launcher::shown`). Switching tabs or the button going away closes its
+menu. Only the button and the open menu take the pointer (the component is a bare box over the grid). The Preview chip
+moves left of it while it shows. Whole device pixels at every scale. Held by
+`the_button_shows_only_where_a_panel_could_open_and_none_is_open` (`launcher.rs`),
+`the_button_shows_while_the_tabs_panel_is_closed_and_goes_when_it_opens` and
+`the_button_and_its_menu_sit_in_the_corner_at_every_scale` (`appctl/tests/launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1373. **The menu opens only from the button and survives the gap; 250 ms off both closes it.** Max: "it must appear
+only when the cursor is over the button, not wherever the menu would be; and it must not disappear while the cursor
+goes from the button to the menu across the small gap". The menu opens on the pointer entering the button, a click, or
+the button's accessible action; a closed menu is not drawn and its touch area is off. One touch area covers the menu
+and the 6 px bridge above it, so the gap belongs to the menu. Leaving the button or the menu starts a 250 ms grace
+(`launcher::GRACE_MS`, the timer `panel.launcher-grace`); entering either cancels it; once it has run out with the
+pointer on neither, the menu closes. Escape and a pick close it. A menu opened by a click or the keys holds Up, Down,
+Home, End, Enter and Escape (`launcher_key`, after the context menu's Escape in `on_key`); any other key closes it and
+goes on. A menu the pointer alone opened takes no key: Escape closes it and still reaches the shell. A click on a menu
+the pointer opened gives it the keys; a click on a keyed one closes it. Held by
+`only_the_button_opens_the_menu_and_a_closed_menu_takes_no_pointer`,
+`crossing_the_gap_from_the_button_to_the_menu_keeps_it_open`,
+`off_both_for_the_grace_closes_it_and_coming_back_in_time_does_not`,
+`a_click_opens_with_the_keys_takes_the_keys_from_a_hover_and_closes_a_keyed_menu` (`launcher.rs`),
+`the_menu_opens_only_from_the_button_and_survives_the_gap` (a real pointer through the window) and
+`a_clicked_menu_holds_its_keys_and_a_hovered_one_does_not` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1374. **The rows reuse the panel's own ways in; a row with nothing to do is left out.** Browser is
+`browser_open(tab, "about:blank")` with the address field holding the keys (a new page, even when the tab hid one);
+Device is `device_open(tab, None)`, offered only where `DeviceCtl::offered()`; Open a file... is the system Open dialog
+(`flare_win::pick::pick_any_file`, parented, starting in the tab's folder; `FLARE_E2E_PICK_FILE` answers under
+`--e2e`, unset is a cancel), left out on a remote tab. The picked file is vetted again on a worker
+(`term_ui::previewable`, rules 13 and 14) and goes in as `TermMsg::Preview { asked: true }`, the path of a file link's
+"Show in side panel"; a file the panel cannot show is said in the panel, a cancel does nothing, nothing opens outside
+Flare. The menu's rows are laid out at the controller's `launcher::tops`, and a pointer's row comes from the same
+numbers (`row_at`: the padding, the rule and the bridge pick nothing). Held by `the_rows_follow_what_the_machine_and_the_tab_offer`,
+`the_pointer_picks_the_row_it_is_over_never_the_padding_or_the_rule` (`launcher.rs`),
+`pick_any_file_with_a_seam_calls_done_at_once` (`flare-win` `pick.rs`), `browser_opens_the_web_panel_in_its_new_tab_state`
+and `open_a_file_shows_the_picked_file_and_says_so_when_it_cannot` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1375. **Last panel brings back what the tab's closed panel showed: a page, a device or a file.** It is
+`PanelCtl::reopen` (what Ctrl+Shift+P brings back), behind a rule as the menu's last row, and shown only when
+`launcher::last_ok` holds: the panel is closed and showed a page other than `about:blank`, a device, or a file. A note
+or text handed over and the Changes view are not brought back; a mini-app or a mod's page is forgotten when its panel
+closes. Held by `last_panel_brings_back_a_page_a_device_or_a_file_and_nothing_else` (`launcher.rs`) and
+`last_panel_brings_back_what_the_tab_showed_last` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1376. **"Open in" hands what the panel shows to the system, through the openers links use.** A labelled button with an
+external-link icon (no tooltip): in the header, the leftmost of the controls on the right; on a web page, in the bar
+left of Draw arrow and the close. A web page (http or https only, `is_web_url`) says "Open in browser" and goes to
+`open_url`. A file on the click allowlist says "Open in <app>" when the default app's name is known, else "Open in
+default app", and goes to `open_term_path` with `OpenMode::Open` on a worker; a file not on it (rule 14) says "Show in
+Explorer" (Finder on a Mac) and is revealed, never run. No button for the device panel, the Changes view, a mini-app or
+diagram, a mod's page, text handed over, or an empty page (`launcher::open_in`). The app's name is read by
+`flare_win::openers::default_app_name` (`AssocQueryStringW`, a plain extension only) on a worker once per extension,
+never under `--e2e`, and cleaned (`clean_app_name`: no control characters, at most 32 characters, a bare `.exe` is no
+name); a Mac says "Open in default app". Narrow: "Open" or "Show" below 360 px in the header, below 440 px in the bar,
+and none in a bar under 280 px. Held by `open_in_sends_a_page_to_the_browser_and_a_file_to_its_app`,
+`open_in_has_no_button_where_nothing_outside_flare_shows_it`, `the_button_names_the_app_when_known_and_shortens_when_narrow`,
+`an_app_name_is_cleaned_and_capped_and_a_bare_exe_is_no_name` (`launcher.rs`), `the_app_name_is_asked_only_for_a_plain_extension`
+and `a_text_file_has_a_default_app_with_a_name` (`flare-win` `openers.rs`), `open_in_hands_a_file_to_its_default_app` and
+`open_in_browser_sends_the_page_address` (`launcher_tests.rs`). Source: Max, 2026-11-24.

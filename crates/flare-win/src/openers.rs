@@ -206,6 +206,55 @@ pub fn shell_open_file(abs: &str, allow: &dyn Fn(&str) -> bool) -> Result<(), St
     })
 }
 
+/// The name of the app that opens a file of extension `ext` (no dot) by default, as the system words it ("Photos",
+/// "Notepad"); None when the type has no default app, the name cannot be read, or `ext` is not plain letters and
+/// digits. Reads the registry through `AssocQueryStringW`: call it on a worker, never on the UI thread (rule 34). The
+/// caller cleans the name before it is shown (`launcher::clean_app_name`).
+#[cfg(windows)]
+pub fn default_app_name(ext: &str) -> Option<String> {
+    use windows_sys::Win32::UI::Shell::{
+        ASSOCF_INIT_IGNOREUNKNOWN, ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYAPPNAME, AssocQueryStringW,
+    };
+    if !plain_ext(ext) {
+        return None;
+    }
+    ensure_com();
+    let assoc = utf16_with_nul(&format!(".{ext}"));
+    let verb = utf16_with_nul("open");
+    let mut buf = vec![0u16; 512];
+    let mut len = buf.len() as u32;
+    // SAFETY: `assoc` and `verb` are zero-terminated UTF-16 buffers alive across the call; `buf` holds `len` units
+    // and the call writes at most that many (ASSOCF_NOTRUNCATE: it fails instead of cutting the name short).
+    let hr = unsafe {
+        AssocQueryStringW(
+            ASSOCF_INIT_IGNOREUNKNOWN | ASSOCF_NOTRUNCATE,
+            ASSOCSTR_FRIENDLYAPPNAME,
+            assoc.as_ptr(),
+            verb.as_ptr(),
+            buf.as_mut_ptr(),
+            &mut len,
+        )
+    };
+    if hr != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let name = String::from_utf16_lossy(&buf[..end]);
+    (!name.trim().is_empty()).then_some(name)
+}
+
+/// macOS: the default app's name is not looked up yet; the button says "Open in default app" (spec 2026-11-24).
+#[cfg(not(windows))]
+pub fn default_app_name(ext: &str) -> Option<String> {
+    let _ = plain_ext(ext);
+    None
+}
+
+/// An extension the lookup may be asked about: 1 to 16 ASCII letters and digits.
+fn plain_ext(ext: &str) -> bool {
+    (1..=16).contains(&ext.len()) && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 /// Starts `explorer.exe` with `args` as its one raw command line (not waited on).
 #[cfg(windows)]
 fn spawn_explorer(args: &str) -> Result<(), String> {
@@ -474,6 +523,30 @@ mod tests {
     }
 
     use super::*;
+
+    /// Rule 1376: the default app's name is asked only for a plain extension, never a name the registry could read as
+    /// something else.
+    #[test]
+    fn the_app_name_is_asked_only_for_a_plain_extension() {
+        assert!(plain_ext("png"));
+        assert!(plain_ext("MP4"));
+        assert!(!plain_ext(""));
+        assert!(!plain_ext("p.ng"));
+        assert!(!plain_ext("png\\x"));
+        assert!(!plain_ext("p g"));
+        assert!(!plain_ext(&"a".repeat(17)));
+        assert_eq!(default_app_name("not an ext"), None);
+    }
+
+    /// The lookup itself on this machine: a `.txt` file has a default app on every Windows install (Notepad).
+    #[cfg(windows)]
+    #[test]
+    fn a_text_file_has_a_default_app_with_a_name() {
+        let name = std::thread::spawn(|| default_app_name("txt"))
+            .join()
+            .unwrap();
+        assert!(name.is_some_and(|n| !n.trim().is_empty()));
+    }
 
     #[test]
     fn the_reveal_argument_is_one_select_argument() {

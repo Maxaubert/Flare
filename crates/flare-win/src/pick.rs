@@ -85,12 +85,29 @@ pub fn pick_file(
     filter: (&'static str, &'static [&'static str]),
     done: impl FnOnce(Option<PathBuf>) + Send + 'static,
 ) {
+    pick_one(opts, Some(filter), done);
+}
+
+/// The system's Open dialog for any one file (the panel launcher's "Open a file...", rule 1374), as [`pick_file`]
+/// does with no filter: on a worker, `done` with the file or None on a cancel, a seam answering at once.
+pub fn pick_any_file(opts: PickOptions, done: impl FnOnce(Option<PathBuf>) + Send + 'static) {
+    pick_one(opts, None, done);
+}
+
+fn pick_one(
+    opts: PickOptions,
+    filter: Option<(&'static str, &'static [&'static str])>,
+    done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+) {
     if let Some(answer) = pick_seam(opts.seam.as_deref()) {
         done(answer);
         return;
     }
     thread::spawn(move || {
-        let mut dialog = rfd::FileDialog::new().add_filter(filter.0, filter.1);
+        let mut dialog = rfd::FileDialog::new();
+        if let Some((label, exts)) = filter {
+            dialog = dialog.add_filter(label, exts);
+        }
         if let Some(parent) = &opts.parent {
             dialog = dialog.set_parent(parent);
         }
@@ -155,6 +172,35 @@ mod tests {
         };
         // sync-ok: test code only, never the app
         assert_eq!(start_dir(&opts, |d| d.is_dir()), Some(dir));
+    }
+
+    /// Rule 1374: the launcher's "Open a file..." answers from the seam under --e2e, an empty one being a cancel.
+    #[test]
+    fn pick_any_file_with_a_seam_calls_done_at_once() {
+        let (tx, rx) = mpsc::channel();
+        let tx2 = tx.clone();
+        pick_any_file(
+            PickOptions {
+                seam: Some("C:\\x\\a.png".to_string()),
+                ..PickOptions::default()
+            },
+            move |p| {
+                let _ = tx.send(p);
+            },
+        );
+        let got = rx.recv_timeout(Duration::from_secs(1)).expect("answered");
+        assert_eq!(got, Some(PathBuf::from("C:\\x\\a.png")));
+        pick_any_file(
+            PickOptions {
+                seam: Some(String::new()),
+                ..PickOptions::default()
+            },
+            move |p| {
+                let _ = tx2.send(p);
+            },
+        );
+        let got = rx.recv_timeout(Duration::from_secs(1)).expect("answered");
+        assert_eq!(got, None);
     }
 
     #[test]
