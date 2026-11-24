@@ -712,10 +712,7 @@ fn draw_open_in(s: f32) -> Drawn {
     let cy = h.comp.get_panel_slot_top() + 16.0;
     let r = region_around(&f, cx * s, cy * s, 7.0 * s);
     let got = drawn(&f, r, super::icons_tabs::TEXT_SOFT);
-    (
-        got,
-        expected_extent_px(EXTERNAL, 12.0, 24.0, 1.0, s),
-    )
+    (got, expected_extent_px(EXTERNAL, 12.0, 24.0, 1.0, s))
 }
 
 #[test]

@@ -6137,7 +6137,7 @@ Flare. The menu's rows are laid out at the controller's `launcher::tops`, and a 
 numbers (`row_at`: the padding, the rule and the bridge pick nothing). Held by `the_rows_follow_what_the_machine_and_the_tab_offer`,
 `the_pointer_picks_the_row_it_is_over_never_the_padding_or_the_rule` (`launcher.rs`),
 `pick_any_file_with_a_seam_calls_done_at_once` (`flare-win` `pick.rs`), `browser_opens_the_web_panel_in_its_new_tab_state`
-and `open_a_file_shows_the_picked_file_and_says_so_when_it_cannot` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+`browser_after_a_hidden_page_goes_to_an_empty_page` and `open_a_file_shows_the_picked_file_and_says_so_when_it_cannot` (`launcher_tests.rs`). Source: Max, 2026-11-24.
 
 1375. **Last panel brings back what the tab's closed panel showed: a page, a device or a file.** It is
 `PanelCtl::reopen` (what Ctrl+Shift+P brings back), behind a rule as the menu's last row, and shown only when
@@ -6155,9 +6155,9 @@ Explorer" (Finder on a Mac) and is revealed, never run. No button for the device
 diagram, a mod's page, text handed over, or an empty page (`launcher::open_in`). The app's name is read by
 `flare_win::openers::default_app_name` (`AssocQueryStringW`, a plain extension only) on a worker once per extension,
 never under `--e2e`, and cleaned (`clean_app_name`: no control characters, at most 32 characters, a bare `.exe` is no
-name); a Mac says "Open in default app". Narrow: "Open" or "Show" below 360 px in the header, below 440 px in the bar,
+name); a Mac says "Open in default app". The header gives it only the room the title can spare (the title keeps 80 px): the full words, else "Open" or "Show", else no button; in the bar "Open" below 440 px,
 and none in a bar under 280 px. Held by `open_in_sends_a_page_to_the_browser_and_a_file_to_its_app`,
 `open_in_has_no_button_where_nothing_outside_flare_shows_it`, `the_button_names_the_app_when_known_and_shortens_when_narrow`,
 `an_app_name_is_cleaned_and_capped_and_a_bare_exe_is_no_name` (`launcher.rs`), `the_app_name_is_asked_only_for_a_plain_extension`
 and `a_text_file_has_a_default_app_with_a_name` (`flare-win` `openers.rs`), `open_in_hands_a_file_to_its_default_app` and
-`open_in_browser_sends_the_page_address` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+`open_in_browser_sends_the_page_address`, `open_in_follows_a_page_the_browser_went_to` and `open_in_takes_only_the_room_the_title_can_spare` (`launcher_tests.rs`), and `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale` (`ui_tests/icons_misc.rs`). Source: Max, 2026-11-24.

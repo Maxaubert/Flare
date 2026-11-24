@@ -2098,8 +2098,6 @@ impl AppCtl {
 
         // The panel of the tab in front, and the previews switch the terminal reads.
         self.sync_panels(&app);
-        // The panel launcher and "Open in" follow the panel of the tab in front (2026-11-24).
-        self.sync_launcher(&app);
         self.notify_update();
         // Remote sessions PR 4: a followed tab that works holds the system awake (rule 296).
         self.sync_keep_awake();
@@ -2131,6 +2129,9 @@ impl AppCtl {
 
         self.push_term();
         self.update_skeleton(now);
+        // The panel launcher and "Open in" follow the panel of the tab in front (2026-11-24), after the skeleton (the
+        // launcher hides under it).
+        self.sync_launcher(&app);
         self.update_clock();
         self.update_badge();
         // What changed on the tabs since the last refresh goes to the plugins that listen (one round a refresh).

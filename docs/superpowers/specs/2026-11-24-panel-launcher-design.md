@@ -81,7 +81,7 @@ A labelled button with an external-link icon, no tooltip (it is labelled).
   (control characters out, at most 32 characters, a bare `.exe` name counts as none). **Claude's call:** on a Mac the
   name is not looked up in this change (it says "Open in default app"); under `--e2e` and in tests nothing is looked
   up, so the words are the same on every machine.
-- Narrow panels: the header button says only "Open" (or "Show") below 360 px. In a web page's bar it sits left of
+- Narrow panels: the header gives the button only the room the title can spare (the title keeps 80 px): the full words, else "Open" (or "Show"), else no button. In a web page's bar it sits left of
   "Draw arrow" and the close, says "Open" below 440 px and gives way below 280 px so the address keeps room.
   **Claude's call** (the numbers).
 

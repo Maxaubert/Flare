@@ -254,6 +254,43 @@ fn browser_opens_the_web_panel_in_its_new_tab_state() {
     );
 }
 
+/// Rule 1374: a page the tab's panel hid is not shown again by Browser: the view goes to the empty page.
+#[test]
+fn browser_after_a_hidden_page_goes_to_an_empty_page() {
+    let (f, _h, _) = live(Opts::default());
+    let slot: Rc<RefCell<Option<FakeWeb>>> = Rc::default();
+    let keep = slot.clone();
+    f.ctl.borrow_mut().set_web_factory(Box::new(move |sink| {
+        let fake = FakeWeb::new(sink);
+        *keep.borrow_mut() = Some(fake.clone());
+        Box::new(fake)
+    }));
+    let id = f.ctl.borrow().front_id().unwrap();
+    let page = "https://flare-test.local/index.html";
+    assert!(f.ctl.borrow_mut().browser_open(&id, page).is_ok());
+    f.pump();
+    f.h.comp.invoke_panel_close();
+    f.h.advance(0);
+    f.pump();
+    assert!(f.h.comp.get_launcher_shown());
+    f.h.comp.invoke_launcher_clicked();
+    let i = index_of(&f, "Browser");
+    f.h.comp.invoke_launcher_picked(i as i32);
+    f.pump();
+    let snap = f.ctl.borrow().panels.snap(&id).unwrap();
+    assert!(snap.open);
+    assert_eq!(snap.url.as_deref(), Some("about:blank"));
+    let fake = slot.borrow().clone().expect("the browser was made");
+    let calls = fake.calls();
+    let last_nav = calls.iter().rev().find_map(|c| match c {
+        flare_web::fake::Call::Open { url, .. } | flare_web::fake::Call::Navigate(_, url) => {
+            Some(url.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(last_nav.as_deref(), Some("about:blank"), "{calls:?}");
+}
+
 /// Rule 1374: Open a file... starts the Open dialog in the tab's folder; a picture picked there shows in the panel the
 /// way a file link's "Show in side panel" shows it; a file the panel cannot show is said in the panel; a cancel does
 /// nothing.
@@ -364,6 +401,82 @@ fn open_in_hands_a_file_to_its_default_app() {
         ),
         other => panic!("{other:?}"),
     }
+}
+
+/// Rule 1376: the header gives "Open in" only the room the title can spare: full words when they fit, the short word
+/// when only that fits, none at all at the narrowest slot. A markdown file (its view control in the header) with a long
+/// app name, at the default slot and at the smallest.
+#[test]
+fn open_in_takes_only_the_room_the_title_can_spare() {
+    let (f, _h, _) = live(Opts::default());
+    let long = format!("{}\u{2026}", "A".repeat(31));
+    f.ctl
+        .borrow_mut()
+        .set_app_name_for_test("md", Some(long.as_str()));
+    show_text(&f, "notes.md", "# Notes\n");
+    f.pump_until("the panel", |f| f.h.comp.get_panel_open());
+    let id = f.ctl.borrow().front_id().unwrap();
+    assert_eq!(
+        f.h.comp.get_panel_open_in().as_str(),
+        format!("Open in {long}")
+    );
+    for share in [0.4_f32, 0.3, 0.24] {
+        f.ctl.borrow_mut().panels.set_share(&id, share);
+        f.ctl.borrow_mut().refresh();
+        f.h.advance(0);
+        let c = &f.h.comp;
+        let slot_left = c.get_page_left() + c.get_panel_slot_x();
+        let slot_w = c.get_panel_visible_w();
+        if c.get_panel_open_in_visible() {
+            let (x, w) = (c.get_panel_open_in_x(), c.get_panel_open_in_w());
+            assert!(
+                x >= slot_left + 12.0 + 80.0 - 1.0,
+                "share {share}: the title keeps 80 px ({x} in a slot at {slot_left}, {slot_w} wide)"
+            );
+            assert!(
+                x + w <= slot_left + slot_w,
+                "share {share}: inside the slot"
+            );
+        }
+    }
+    // The smallest slot (240 px) with a view control: no room for the button.
+    assert!(!f.h.comp.get_panel_open_in_visible());
+}
+
+/// Rule 1376: the label follows the page the person went to, not only one an agent opened.
+#[test]
+fn open_in_follows_a_page_the_browser_went_to() {
+    let (f, _h, _) = live(Opts::default());
+    let slot: Rc<RefCell<Option<FakeWeb>>> = Rc::default();
+    let keep = slot.clone();
+    f.ctl.borrow_mut().set_web_factory(Box::new(move |sink| {
+        let fake = FakeWeb::new(sink);
+        *keep.borrow_mut() = Some(fake.clone());
+        Box::new(fake)
+    }));
+    let id = f.ctl.borrow().front_id().unwrap();
+    assert!(f.ctl.borrow_mut().browser_open(&id, "about:blank").is_ok());
+    f.pump();
+    assert_eq!(f.h.comp.get_panel_open_in().as_str(), "");
+    let fake = slot.borrow().clone().expect("the browser was made");
+    let url = "https://flare-test.local/two.html";
+    fake.say(flare_web::WebEvent::Loading {
+        tab: id.clone(),
+        url: url.into(),
+        nav: 1,
+    });
+    fake.say(flare_web::WebEvent::Loaded {
+        tab: id.clone(),
+        url: url.into(),
+        ok: true,
+        status: "0".into(),
+        nav: 1,
+    });
+    f.pump_until("the label", |f| {
+        f.h.comp.get_panel_open_in().as_str() == "Open in browser"
+    });
+    f.h.comp.invoke_panel_open_in_clicked();
+    assert_eq!(f.log.borrow().urls.last().map(String::as_str), Some(url));
 }
 
 /// Rule 1376: a web page's "Open in browser" sends the page's address to the default browser through `open_url`; an

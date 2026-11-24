@@ -991,12 +991,21 @@ export component PanelSlot inherits Rectangle {
     in property <string> open-in;
     in property <string> open-in-short;
     callback open-in-clicked();
-    property <bool> head-open-shown: root.open-in != "" && !root.bar-only;
+    // The header's room decides its words: the full words when they fit beside the other controls with the title keeping
+    // `head-title-min`, else the short word, else no button (the title always keeps its room).
+    property <length> head-rest: root.head-wrap + root.head-draw + root.head-md + root.head-device + root.head-slow;
+    property <length> head-title-min: Px.snap(80px);
+    property <length> head-room: root.width - Px.snap(12px) - Px.snap(8px) - close-btn.width - Px.snap(8px) - root.head-rest - (root.sub == "" ? 0px : Px.snap(sub-text.preferred-width + 10px)) - root.head-title-min;
+    property <int> head-open-mode: root.open-in == "" || root.bar-only ? 0
+        : root.head-room >= Px.snap(36px + open-full-probe.preferred-width) + Px.snap(6px) ? 2
+        : root.head-room >= Px.snap(36px + open-short-probe.preferred-width) + Px.snap(6px) ? 1
+        : 0;
+    property <bool> head-open-shown: root.head-open-mode > 0;
     property <length> head-open: root.head-open-shown ? head-open-btn.width + Px.snap(6px) : 0px;
     out property <bool> open-in-visible: root.open && (root.bar-only ? web-bar.open-in-visible : root.head-open-shown);
     out property <length> open-in-x: root.bar-only ? web-bar.open-in-x : head-open-btn.absolute-position.x;
     out property <length> open-in-w: root.bar-only ? web-bar.open-in-w : head-open-btn.width;
-    property <length> head-extra: root.head-wrap + root.head-draw + root.head-md + root.head-device + root.head-slow + root.head-open;
+    property <length> head-extra: root.head-rest + root.head-open;
     callback wrap-toggled();
     callback close();
     callback escape();
@@ -1196,13 +1205,26 @@ export component PanelSlot inherits Rectangle {
                 }
                 slow-ta := TouchArea {}
             }
+            // The words "Open in" would take, measured (never drawn), for the room rule above.
+            open-full-probe := Text {
+                visible: false;
+                text: root.open-in;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+            }
+            open-short-probe := Text {
+                visible: false;
+                text: root.open-in-short;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+            }
             head-open-btn := OpenInButton {
-                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - (root.head-extra - root.head-open) - self.width;
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-rest - self.width;
                 y: (parent.height - self.height) / 2;
                 visible: root.head-open-shown;
                 text: root.open-in;
                 short: root.open-in-short;
-                compact: root.width < 360px;
+                compact: root.head-open-mode == 1;
                 clicked => { root.open-in-clicked(); }
             }
             close-btn := PanelClose {

@@ -65,9 +65,12 @@ impl AppCtl {
         self.launcher.pick_file = Some(pick);
     }
 
-    /// Whether the launcher's menu is open (tests, e2e).
-    pub(crate) fn launcher_open(&self) -> bool {
-        self.launcher.hover.is_open()
+    /// The default app's name for files of `ext`, as a worker would have found it (tests).
+    #[cfg(test)]
+    pub(crate) fn set_app_name_for_test(&mut self, ext: &str, name: Option<&str>) {
+        self.launcher
+            .app_names
+            .insert(ext.to_string(), name.map(str::to_string));
     }
 
     // ---- what the window shows ----
@@ -82,7 +85,9 @@ impl AppCtl {
         let remote = front.is_some_and(|t| t.remote.is_some());
         let shown = launcher::shown(Where {
             shell_front: tab.is_some(),
-            panel_open: tab.as_deref().is_some_and(|t| self.panels.is_open(t)),
+            // What the window shows (an open panel of a kind this build draws), as `PanelCtl::sync` set it: a stored
+            // panel this machine cannot draw (rule 1316) leaves the way in.
+            panel_open: tab.is_some() && app.get_panel_open(),
             panel_fits: app.get_panel_fits(),
             remote_view: self.remote_convo_shown(),
             skeleton: app.get_skeleton_shown(),
@@ -97,7 +102,9 @@ impl AppCtl {
         self.launcher.items = launcher::items(Offer {
             device: self.device.offered(),
             file: !remote,
-            last: launcher::last_ok(snap.as_ref()),
+            // Only a kind this build draws comes back (as for Ctrl+Shift+P).
+            last: tab.as_deref().is_some_and(|t| self.panels.has_built(t))
+                && launcher::last_ok(snap.as_ref()),
         });
         if self.launcher.hot >= self.launcher.items.len() as i32 {
             self.launcher.hot = -1;
@@ -202,7 +209,9 @@ impl AppCtl {
 
     /// The pointer came onto (`on`) or left the button (zone 0) or the menu with its bridge (zone 1).
     pub(super) fn launcher_hover(&mut self, zone: i32, on: bool) {
-        if !self.launcher.shown {
+        // A hidden button opens nothing, but the pointer leaving it is still heard, so a button that shows again does
+        // not think the pointer is on it.
+        if !self.launcher.shown && on {
             return;
         }
         let now = self.now();
