@@ -37,6 +37,9 @@ pub struct Machine {
     /// The SSH host key pinned when this machine was paired (its base64 field): pairing again finds the machine by it,
     /// never by a name the other computer says (rule 1259).
     pub host_key: Option<String>,
+    /// The machine's own `.local` name, saved when it was paired (`Maxs-Mac-Mini.local`): where it is looked for when
+    /// its saved address no longer answers (rule 1373, `machine_follow`). None for a machine paired before this.
+    pub hostname: Option<String>,
 }
 
 impl Machine {
@@ -44,6 +47,16 @@ impl Machine {
     pub fn target(&self) -> &str {
         self.host.as_deref().unwrap_or(&self.ssh)
     }
+}
+
+/// Pure: a host name a machine may be looked up by (rule 1373): ASCII letters, digits, `-` and `.`, never starting with
+/// `-` or `.`, at most 253 characters.
+pub fn host_word(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && !s.starts_with(['-', '.'])
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
 }
 
 /// A file path that goes to ssh as one argv item or one option's value (a key, a known-hosts file, rule 1249): no
@@ -111,6 +124,7 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
             let key = opt("key", path_word)?;
             let known_hosts = opt("known_hosts", path_word)?;
             let host_key = opt("host_key", plain_base64)?;
+            let hostname = opt("hostname", host_word)?;
             let port = match m.get("port") {
                 None | Some(Value::Null) => None,
                 Some(p) => Some(
@@ -139,6 +153,7 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
                 key,
                 known_hosts,
                 host_key,
+                hostname,
             })
         })
         .collect()
@@ -163,6 +178,7 @@ pub fn machines_json(machines: &[Machine]) -> String {
                 ("key", &m.key),
                 ("known_hosts", &m.known_hosts),
                 ("host_key", &m.host_key),
+                ("hostname", &m.hostname),
             ] {
                 if let Some(val) = val {
                     v[k] = json!(val);

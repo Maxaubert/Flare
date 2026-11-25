@@ -295,6 +295,7 @@ fn mini() -> crate::machines::Machine {
         key: None,
         known_hosts: None,
         host_key: None,
+        hostname: None,
     }
 }
 

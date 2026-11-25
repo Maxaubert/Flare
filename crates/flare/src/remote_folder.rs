@@ -27,6 +27,17 @@ use crate::remote_link::{Connector, LinkError};
 /// How long one listing may take once the link is up: the host's own limit for `remote.ls`.
 pub const LS_WAIT: Duration = flare_ctl::method::REMOTE_CALL;
 
+/// How long the dialog shows "Loading..." for one ask before it says the machine cannot be reached and offers Try
+/// again (rule 1373). Long enough for the link to look for a machine that moved (`machine_follow`: a few short checks)
+/// and for a host that answers at once; a slower answer that still comes is taken when it comes.
+pub const LIST_LIMIT: Duration = Duration::from_secs(20);
+
+/// Pure: the dialog's line for a machine that cannot be reached: nothing answered, its name was not found, or no
+/// answer came within [`LIST_LIMIT`] (rule 1373).
+pub fn unreachable_line(name: &str) -> String {
+    format!("Cannot reach {name}. Check that it is on and on this network.")
+}
+
 /// The longest name the list takes (a longer one is no file name on any host Flare runs on).
 const NAME_MAX: usize = 255;
 
@@ -263,6 +274,8 @@ pub struct Browser {
     /// The folders shown before, for Back.
     back: Vec<String>,
     seq: u64,
+    /// The folder the newest ask named (none: the home), for Try again.
+    asked: Option<String>,
 }
 
 impl Browser {
@@ -279,6 +292,7 @@ impl Browser {
             error: None,
             back: Vec::new(),
             seq,
+            asked: None,
         };
         (b, Ask { seq, path: None })
     }
@@ -293,6 +307,7 @@ impl Browser {
         self.loading = true;
         self.error = None;
         self.selected = None;
+        self.asked.clone_from(&path);
         Ask {
             seq: self.seq,
             path,
@@ -318,6 +333,15 @@ impl Browser {
     pub fn go_back(&mut self) -> Option<Ask> {
         let to = self.back.pop()?;
         Some(self.ask(Some(to)))
+    }
+
+    /// Try again (rule 1373): the failed ask once more, as a new ask. None while an ask runs or nothing failed.
+    pub fn retry(&mut self) -> Option<Ask> {
+        if self.loading || self.error.is_none() {
+            return None;
+        }
+        let path = self.asked.clone();
+        self.go(path)
     }
 
     /// Whether Back has somewhere to go.
@@ -371,14 +395,24 @@ impl Browser {
         self.listing.as_ref()?.entries.get(i)
     }
 
-    /// A worker's answer: taken only for the newest ask. True when it was taken.
+    /// A worker's answer: taken only for the newest ask. True when it was taken. An ask already answered (its time ran
+    /// out, rule 1373) still takes a listing that comes late, never a second failure.
     pub fn answered(&mut self, m: FolderMsg) -> bool {
-        if m.seq != self.seq {
+        if m.seq != self.seq || (!self.loading && m.answer.is_err()) {
             return false;
         }
+        let late = !self.loading;
         self.loading = false;
         match m.answer {
             Ok(l) => {
+                // A late listing for a step that was taken back when its time ran out: the step is taken again.
+                if late
+                    && let Some(cur) = self.path.clone()
+                    && cur != l.path
+                    && self.back.last() != Some(&cur)
+                {
+                    self.back.push(cur);
+                }
                 self.path = Some(l.path.clone());
                 self.listing = Some(l);
                 self.error = None;
@@ -484,11 +518,21 @@ impl FolderLister for NoLister {
     }
 }
 
-/// BLOCKING: one ask answered: the listing, or the one line the dialog shows (`machines::failure_line`'s words, so a
-/// machine that is off reads "Not answering" as it does on Settings > Machines).
+/// BLOCKING: one ask answered: the listing, or the one line the dialog shows. A machine that cannot be reached (nothing
+/// answered, its name not found) is [`unreachable_line`] (rule 1373); anything else is `machines::failure_line`'s
+/// words, as on Settings > Machines.
 pub fn answer(lister: &dyn FolderLister, machine: &str, name: &str, ask: &Ask) -> FolderMsg {
+    use crate::ssh_problem::{SshProblem, sort_down};
     let answer = match lister.list(machine, ask.path.as_deref()) {
         Ok(v) => parse_listing(&v),
+        Err(LinkError::Down(m))
+            if matches!(
+                sort_down(&m),
+                Some(SshProblem::NotAnswering | SshProblem::NotFound)
+            ) =>
+        {
+            Err(unreachable_line(name))
+        }
         Err(e) => Err(crate::machines::failure_line(
             name,
             &e,
@@ -498,6 +542,52 @@ pub fn answer(lister: &dyn FolderLister, machine: &str, name: &str, ask: &Ask) -
     FolderMsg {
         seq: ask.seq,
         answer,
+    }
+}
+
+/// BLOCKING (a worker's, rule 34): one ask answered within `limit` (rule 1373). The listing runs on a thread of its own;
+/// when no answer came within `limit`, `post` gets [`unreachable_line`] at once, and the answer still gets posted when
+/// it comes (the dialog takes a late listing, never a late failure). So the dialog never waits on a link with no end.
+pub fn answer_in_time(
+    lister: Arc<dyn FolderLister>,
+    machine: &str,
+    name: &str,
+    ask: &Ask,
+    limit: Duration,
+    post: &dyn Fn(FolderMsg),
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (m, n, a) = (machine.to_string(), name.to_string(), ask.clone());
+    let started = std::thread::Builder::new()
+        .name("flare-remote-ls-link".into())
+        .spawn(move || {
+            let _ = tx.send(answer(&*lister, &m, &n, &a));
+        });
+    if let Err(e) = started {
+        log::warn!("could not start the folder list's link: {e}");
+        return post(FolderMsg {
+            seq: ask.seq,
+            answer: Err("Flare could not ask the machine.".into()),
+        });
+    }
+    match rx.recv_timeout(limit) {
+        // sync-ok: the folder list's worker waits for its link, at most `limit`
+        Ok(m) => post(m),
+        Err(_) => {
+            log::info!(
+                "remote folder: no answer from {machine} in {} s",
+                limit.as_secs()
+            );
+            post(FolderMsg {
+                seq: ask.seq,
+                answer: Err(unreachable_line(name)),
+            });
+            // A late answer (a host that started its Flare slowly) is still shown.
+            if let Ok(m) = rx.recv() {
+                // sync-ok: the folder list's worker waits for its link's late answer, never the UI thread
+                post(m);
+            }
+        }
     }
 }
 
@@ -804,7 +894,33 @@ mod tests {
         );
         let line = m.answer.unwrap_err();
         assert!(!line.contains('\n'), "{line}");
-        assert_eq!(line, "Not answering");
+        // Rule 1373: a machine that cannot be reached says so in full, with what to check.
+        assert_eq!(
+            line,
+            "Cannot reach Mac Mini. Check that it is on and on this network."
+        );
+        let m = answer(
+            &Fixed(Err((
+                false,
+                "the link ended; ssh said: ssh: Could not resolve hostname mini: No such host is known."
+                    .into(),
+            ))),
+            "mac",
+            "Mac Mini",
+            &ask,
+        );
+        assert_eq!(m.answer.unwrap_err(), unreachable_line("Mac Mini"));
+        // Another key there is not "cannot reach": it is the identity line.
+        let m = answer(
+            &Fixed(Err((
+                false,
+                "the link ended; ssh said: Host key verification failed.".into(),
+            ))),
+            "mac",
+            "Mac Mini",
+            &ask,
+        );
+        assert_eq!(m.answer.unwrap_err(), "Its identity changed. Pair again");
         let m = answer(
             &Fixed(Err((true, "that folder cannot be read on the host".into()))),
             "mac",
@@ -815,5 +931,111 @@ mod tests {
             m.answer.unwrap_err(),
             "Mac Mini said: that folder cannot be read on the host"
         );
+    }
+
+    /// A lister that waits until the test lets it answer (a link that hangs).
+    struct Gate {
+        open: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl FolderLister for Gate {
+        fn list(&self, _m: &str, _p: Option<&str>) -> Result<Value, LinkError> {
+            let _ = self.open.lock().unwrap().recv();
+            Ok(json!({"path": "/Users/max", "entries": [{"name": "proj", "dir": true}]}))
+        }
+    }
+
+    /// Rule 1373: an ask with no answer within the limit gives the "Cannot reach" line at once (the dialog never shows
+    /// Loading forever); the listing that comes after is still posted, and the dialog takes it.
+    #[test]
+    fn an_ask_with_no_answer_in_time_is_the_cannot_reach_line_and_a_late_listing_is_taken() {
+        let (go, gate) = std::sync::mpsc::channel();
+        let lister: Arc<dyn FolderLister> = Arc::new(Gate {
+            open: std::sync::Mutex::new(gate),
+        });
+        let (mut b, ask) = Browser::new("mac", "Maxs-Mac-Mini", Some(Os::Mac), 1);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            answer_in_time(
+                lister,
+                "mac",
+                "Maxs-Mac-Mini",
+                &ask,
+                Duration::from_millis(50),
+                &|m| tx.send(m).unwrap(),
+            );
+        });
+        let first = rx.recv_timeout(Duration::from_secs(10)).expect("in time");
+        assert!(b.answered(first));
+        assert!(!b.loading(), "the error state, not Loading");
+        assert_eq!(
+            b.error(),
+            Some("Cannot reach Maxs-Mac-Mini. Check that it is on and on this network.")
+        );
+        // A late failure is never taken over the line; a late listing is.
+        assert!(!b.answered(FolderMsg {
+            seq: 1,
+            answer: Err("Not answering".into())
+        }));
+        go.send(()).unwrap();
+        let late = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the late answer");
+        assert!(b.answered(late));
+        assert_eq!(b.error(), None);
+        assert_eq!(b.path(), Some("/Users/max"));
+        worker.join().unwrap();
+        // An answer in time is posted once.
+        let (tx, rx) = std::sync::mpsc::channel();
+        answer_in_time(
+            Arc::new(Fixed(Ok(json!({"path": "/x", "entries": []})))),
+            "mac",
+            "Mac Mini",
+            &Ask { seq: 3, path: None },
+            Duration::from_secs(10),
+            &|m| tx.send(m).unwrap(),
+        );
+        assert_eq!(rx.try_iter().count(), 1);
+    }
+
+    /// Rule 1373: Try again asks the failed folder once more as a new ask; it does nothing while an ask runs or when
+    /// nothing failed. A late listing for a step taken back keeps Back's way home.
+    #[test]
+    fn try_again_asks_the_failed_folder_again() {
+        let (mut b, first) = Browser::new("mac", "Mini", Some(Os::Mac), 1);
+        assert_eq!(b.retry(), None, "Loading: nothing to try again");
+        b.answered(FolderMsg {
+            seq: first.seq,
+            answer: Err(unreachable_line("Mini")),
+        });
+        let again = b.retry().expect("try again");
+        assert_eq!(again, Ask { seq: 2, path: None }, "the home again");
+        assert!(b.loading() && b.error().is_none());
+        b.answered(FolderMsg {
+            seq: 2,
+            answer: Ok(listing("/Users/max", &[("proj", true)])),
+        });
+        assert_eq!(b.retry(), None, "nothing failed");
+        // A folder that fails: the same folder is asked again, and Back still leads home.
+        let into = b.enter(0).unwrap();
+        b.answered(FolderMsg {
+            seq: into.seq,
+            answer: Err(unreachable_line("Mini")),
+        });
+        assert!(!b.can_back(), "the step was taken back");
+        let again = b.retry().unwrap();
+        assert_eq!(again.path.as_deref(), Some("/Users/max/proj"));
+        assert!(b.can_back());
+        // Its time runs out, then the listing comes late: taken, and Back leads home.
+        b.answered(FolderMsg {
+            seq: again.seq,
+            answer: Err(unreachable_line("Mini")),
+        });
+        assert!(!b.can_back());
+        assert!(b.answered(FolderMsg {
+            seq: again.seq,
+            answer: Ok(listing("/Users/max/proj", &[])),
+        }));
+        assert_eq!(b.path(), Some("/Users/max/proj"));
+        assert_eq!(b.go_back().unwrap().path.as_deref(), Some("/Users/max"));
     }
 }

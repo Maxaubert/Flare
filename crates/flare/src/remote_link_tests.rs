@@ -979,6 +979,7 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
         key: Some("/Users/max/Library/Flare/id_flare_ed25519".into()),
         known_hosts: Some(r"C:\Users\John Doe\AppData\Flare\known_hosts".into()),
         host_key: None,
+        hostname: None,
     };
     assert_eq!(
         ssh_argv("ssh", &paired).unwrap(),
@@ -1112,7 +1113,7 @@ fn machines_json_reads_and_writes_the_address_port_key_and_known_hosts() {
     // A machine with none of them is written as before.
     let plain = parse_machines(r#"{"machines":[{"id":"m","ssh":"m"}]}"#);
     let text = crate::machines::machines_json(&plain);
-    for k in ["host", "port", "key", "known_hosts"] {
+    for k in ["host", "port", "key", "known_hosts", "host_key", "hostname"] {
         assert!(!text.contains(&format!("\"{k}\"")), "{k}: {text}");
     }
 }

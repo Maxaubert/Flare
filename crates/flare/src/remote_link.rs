@@ -296,6 +296,8 @@ pub const HELLO_WAIT: Duration = Duration::from_secs(90);
 pub struct SshConnector {
     machines: PathBuf,
     loopback: Option<Vec<String>>,
+    /// The network a paired machine is looked for on when its saved address no longer answers (rule 1373).
+    net: Arc<dyn crate::machine_follow::Net>,
 }
 
 impl SshConnector {
@@ -303,19 +305,23 @@ impl SshConnector {
         Self {
             machines: machines_file(profile),
             loopback,
+            net: Arc::new(crate::machine_follow::RealNet),
         }
+    }
+
+    /// BLOCKING (a file read): the machine `machines.json` calls `machine`.
+    fn machine(&self, machine: &str) -> Result<Machine, LinkError> {
+        read_machines(&self.machines)
+            .into_iter()
+            .find(|m| m.id == machine)
+            .ok_or_else(|| LinkError::Down(format!("no machine called {machine} in machines.json")))
     }
 
     fn argv(&self, machine: &str) -> Result<Vec<String>, LinkError> {
         if let Some(l) = &self.loopback {
             return Ok(l.clone());
         }
-        let m = read_machines(&self.machines)
-            .into_iter()
-            .find(|m| m.id == machine)
-            .ok_or_else(|| {
-                LinkError::Down(format!("no machine called {machine} in machines.json"))
-            })?;
+        let m = self.machine(machine)?;
         ssh_argv_ready(&ssh_exe(), &m)
             .ok_or_else(|| LinkError::Down(format!("cannot build the ssh command for {machine}")))
     }
@@ -390,8 +396,35 @@ fn start_link(argv: &[String]) -> Result<(ClientLink<StdioWire>, RemoteHelloInfo
 const STDERR_WAIT: Duration = Duration::from_millis(1500);
 
 impl Connector for SshConnector {
+    /// The e2e's loopback as it is; a real machine through `machine_follow::connect` (rule 1373): its saved address
+    /// briefly, then, for a paired machine that is not there, its `.local` names, an address followed only once the
+    /// machine proves its pinned key there, and saved then.
     fn connect(&self, machine: &str) -> Result<Box<dyn Link>, LinkError> {
-        let (link, _) = start_link(&self.argv(machine)?)?;
+        if self.loopback.is_some() {
+            let (link, _) = start_link(&self.argv(machine)?)?;
+            return Ok(Box::new(link));
+        }
+        let m = self.machine(machine)?;
+        keep_key_private(&m);
+        let (link, moved) = crate::machine_follow::connect(
+            &m,
+            &ssh_exe(),
+            &*self.net,
+            &mut |argv: &[String]| start_link(argv).map(|(l, _)| l),
+        )?;
+        if let Some(now) = moved {
+            match crate::machine_follow::save_moved(&self.machines, &m, &now) {
+                Ok(()) => log::info!(
+                    "machines: {machine} moved from {} to {}; saved",
+                    m.target(),
+                    now.target()
+                ),
+                Err(e) => log::warn!(
+                    "machines: {machine} found at {}, not saved: {e}",
+                    now.target()
+                ),
+            }
+        }
         Ok(Box::new(link))
     }
 }

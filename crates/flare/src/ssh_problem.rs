@@ -17,6 +17,10 @@ pub const SAID: &str = "ssh said: ";
 /// The mark a link that could not start ssh at all carries (no ssh client on this machine).
 pub const NO_CLIENT: &str = "no ssh client: ";
 
+/// The mark a link carries when Flare's own short connect check found nothing at any address of the machine, so ssh
+/// was never started there (rule 1373, `machine_follow`): it reads as "Not answering".
+pub const NOT_REACHED: &str = "not reached: ";
+
 /// How many of ssh's last lines are kept, and how long each may be.
 pub const TAIL_LINES: usize = 12;
 pub const LINE_MAX: usize = 400;
@@ -102,6 +106,9 @@ pub fn sort(said: &str) -> Option<SshProblem> {
 pub fn sort_down(message: &str) -> Option<SshProblem> {
     if message.starts_with(NO_CLIENT) {
         return Some(SshProblem::NoClient);
+    }
+    if message.starts_with(NOT_REACHED) {
+        return Some(SshProblem::NotAnswering);
     }
     message
         .find(SAID)
@@ -323,6 +330,13 @@ mod tests {
             Some(SshProblem::NoClient)
         );
         assert_eq!(sort_down(&format!("x; {SAID}hello")), None);
+        // Rule 1373: Flare's own connect check found nothing: "Not answering".
+        assert_eq!(
+            sort_down(&format!(
+                "{NOT_REACHED}nothing answered at 192.0.2.7 port 22"
+            )),
+            Some(SshProblem::NotAnswering)
+        );
     }
 
     /// Rule 1277: ssh ignoring Flare's key because others may read its file is its own line, not "Not paired", though

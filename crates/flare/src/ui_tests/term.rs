@@ -3419,8 +3419,20 @@ mod flow {
         let i = menu_row(&w, "Mac Mini").unwrap();
         w.h.comp.invoke_menu_picked(i as i32);
         listed(&w);
-        assert_eq!(w.h.comp.get_rfolder_error().as_str(), "Not answering");
+        // Rule 1373: the whole line, with what to check.
+        assert_eq!(
+            w.h.comp.get_rfolder_error().as_str(),
+            "Cannot reach Mac Mini. Check that it is on and on this network."
+        );
         assert_eq!(w.h.comp.get_rfolder_rows().row_count(), 0);
+        // Try again: the machine is back, and the same folder (its home) lists.
+        mac_lister(&w);
+        w.h.comp.invoke_rfolder_retry();
+        assert!(w.h.comp.get_rfolder_loading());
+        assert_eq!(w.h.comp.get_rfolder_error().as_str(), "");
+        listed(&w);
+        assert_eq!(w.h.comp.get_rfolder_rows().row_count(), 3);
+        assert_eq!(w.h.comp.get_rfolder_path().as_str(), "/Users/max");
         w.h.comp.invoke_rfolder_cancel();
         assert!(!w.h.comp.get_rfolder_open());
         // Opened again and cancelled before its answer: the answer finds no dialog.
@@ -3433,6 +3445,48 @@ mod flow {
         assert!(!w.h.comp.get_rfolder_open());
         assert!(w.remote.made().is_empty(), "nothing opened");
         assert_eq!(w.ctl.borrow().rfolder_state()["open"], false);
+    }
+
+    /// A link that never answers (Max, 2026-11-25: the Mac had moved to another address).
+    struct HungLister;
+    impl crate::remote_folder::FolderLister for HungLister {
+        fn list(
+            &self,
+            _machine: &str,
+            _path: Option<&str>,
+        ) -> Result<serde_json::Value, crate::remote_link::LinkError> {
+            std::thread::sleep(std::time::Duration::from_secs(5)); // sync-ok: a test's link that hangs
+            Err(crate::remote_link::LinkError::Down("late".into()))
+        }
+    }
+
+    /// Rule 1373: a link that never answers never leaves the dialog on Loading: after the time limit it says the
+    /// machine cannot be reached, with Try again, and nothing opens.
+    #[test]
+    fn a_link_that_never_answers_ends_in_the_cannot_reach_line_not_loading_forever() {
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        w.ctl.borrow_mut().set_folder_lister(Arc::new(HungLister));
+        w.ctl
+            .borrow_mut()
+            .set_folder_limit(std::time::Duration::from_millis(100));
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").unwrap();
+        w.h.comp.invoke_menu_picked(i as i32);
+        assert!(w.h.comp.get_rfolder_loading());
+        listed(&w);
+        assert_eq!(
+            w.h.comp.get_rfolder_error().as_str(),
+            "Cannot reach Mac Mini. Check that it is on and on this network."
+        );
+        assert_eq!(w.ctl.borrow().rfolder_state()["loading"], false);
+        // Try again with the machine back.
+        mac_lister(&w);
+        w.h.comp.invoke_rfolder_retry();
+        listed(&w);
+        assert_eq!(w.h.comp.get_rfolder_rows().row_count(), 3);
+        w.h.comp.invoke_rfolder_cancel();
+        assert!(w.remote.made().is_empty(), "nothing opened");
     }
 
     /// Rule 1282: while the dialog is up, a key is the dialog's (Escape, Enter, the arrows), never the shell's.

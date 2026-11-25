@@ -868,6 +868,7 @@ mod tests {
             key: None,
             known_hosts: None,
             host_key: None,
+            hostname: None,
         };
         let rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &open);
         assert_eq!(
