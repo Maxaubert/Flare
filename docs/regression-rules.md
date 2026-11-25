@@ -6118,10 +6118,15 @@ host's Flare answers while Computer sharing is on (`pairing::mdns_host`). ssh ru
 itself proves the key; a name, an announcement or an address is never proof. Only after that proof is the key pinned
 for the new address and `machines.json`'s entry (same id, same `host_key`, read strict, written whole) given the new
 address. A computer with another key is never followed: "Its identity changed. Pair again". A machine with no pinned
-key (an `~/.ssh/config` alias) is never followed. Nothing in the code names a particular machine. Held by
-`the_same_key_at_a_new_address_is_followed`, `another_key_at_a_new_address_is_refused`,
+key (an `~/.ssh/config` alias) is never followed. A move onto an address another paired machine is saved at with
+another key is never saved (review, 2026-11-25): replacing that pin would let the other machine's next link open this
+computer under its name; the link still runs and the next one follows again. A refusal from the host's Flare at a new
+address (after ssh proved the key) is the answer shown, not "Not answering". Nothing in the code names a particular
+machine. Held by `the_same_key_at_a_new_address_is_followed`, `another_key_at_a_new_address_is_refused`,
 `the_saved_address_is_used_when_it_answers_and_nothing_else_is_tried_otherwise`,
-`names_addresses_and_the_alias_are_read_plainly` and `a_proven_move_is_saved_and_pinned` (`machine_follow.rs`).
+`names_addresses_and_the_alias_are_read_plainly`, `a_proven_move_is_saved_and_pinned`,
+`a_move_onto_another_machines_address_is_not_saved` and `a_refusal_at_the_new_address_is_the_answer`
+(`machine_follow.rs`).
 Checked by hand 2026-11-25 with Windows' OpenSSH 9.5: `HostKeyAlias` set to a pin's pattern (`addr` and
 `[addr]:port`) passes the key check at another address with the same key, and fails it with another key.
 

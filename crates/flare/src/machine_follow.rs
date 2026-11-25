@@ -267,6 +267,8 @@ pub fn connect<T>(
         m.target()
     );
     let mut other_key: Option<LinkError> = None;
+    // A refusal of the host's own comes only after ssh proved the key there: it is the answer to show.
+    let mut refused: Option<LinkError> = None;
     for ip in found {
         if !net.reaches(ip, port, PROBE_WAIT) {
             continue;
@@ -285,10 +287,14 @@ pub fn connect<T>(
                 );
                 other_key = Some(e);
             }
+            Err(e @ LinkError::Refused(_)) => {
+                log::info!("machines: {} refused at {addr}: {e}", m.id);
+                refused.get_or_insert(e);
+            }
             Err(e) => log::info!("machines: {} not reached at {addr}: {e}", m.id),
         }
     }
-    Err(other_key.unwrap_or(first))
+    Err(refused.or(other_key).unwrap_or(first))
 }
 
 /// Pure: Flare's known-hosts text with `key` (a saved `host_key`) pinned for `pattern` too, its type taken from the
@@ -311,7 +317,8 @@ pub fn repin(text: &str, pattern: &str, key: &str) -> Option<String> {
 
 /// BLOCKING (two reads and two whole-file writes, a link worker's): a machine proven at a new address is saved there:
 /// its key pinned for the new address in Flare's known-hosts file, then `machines.json`'s entry with the same id and
-/// the same host key takes the new address. A file that cannot be read whole is never saved over (audit #3).
+/// the same host key takes the new address. A file that cannot be read whole is never saved over (audit #3), and an
+/// address another paired machine is saved at with another key is never taken (its pin stays its own).
 pub fn save_moved(machines: &Path, was: &Machine, now: &Machine) -> Result<(), String> {
     let (Some(key), Some(known), Some(addr)) = (&was.host_key, &was.known_hosts, &now.host) else {
         return Err("only a paired machine is followed".into());
@@ -322,6 +329,15 @@ pub fn save_moved(machines: &Path, was: &Machine, now: &Machine) -> Result<(), S
     let pinned = repin(&text, &pattern, key)
         .ok_or_else(|| "the machine's key is not pinned in Flare's known hosts".to_string())?;
     let mut list = crate::machines::load_machines(machines)?;
+    // Another paired machine saved at that address relies on the pin there: replacing it would let that machine's next
+    // link open this computer under its name. Not saved; this link still runs, and the next one follows again.
+    if let Some(other) = list.iter().find(|e| {
+        e.id != was.id
+            && e.host_key.as_deref().is_some_and(|k| k != key.as_str())
+            && host_pattern(e.target(), e.port.unwrap_or(22)) == pattern
+    }) {
+        return Err(format!("{} is saved at {addr} with another key", other.id));
+    }
     let Some(entry) = list
         .iter_mut()
         .find(|e| e.id == was.id && e.host_key.as_deref() == Some(key.as_str()))
@@ -625,5 +641,66 @@ mod tests {
         assert!(save_moved(&file, &m, &moved(&m, "192.0.2.77")).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ not json");
         assert_eq!(repin("x ssh-ed25519 AAAAother\n", "y", KEY), None);
+    }
+
+    /// Rule 1373: a machine proven at an address another paired machine is saved at (with another key) is never saved
+    /// there: the other machine's pin would become this one's key, and its next link would open this computer under
+    /// its name. Both files stay as they were; a pin no saved machine uses is replaced as before.
+    #[test]
+    fn a_move_onto_another_machines_address_is_not_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let known = dir.path().join("flare_known_hosts");
+        let pins = format!("192.0.2.242 ssh-ed25519 {KEY}\n192.0.2.5 ssh-ed25519 AAAAother\n");
+        std::fs::write(&known, &pins).unwrap();
+        let m = mac(&known.to_string_lossy());
+        let mut pc = m.clone();
+        pc.id = "pc".into();
+        pc.name = "PC".into();
+        pc.ssh = "192.0.2.5".into();
+        pc.host = Some("192.0.2.5".into());
+        pc.host_key = Some("AAAAother".into());
+        let file = crate::machines::machines_file(dir.path());
+        crate::machines::FileMachines::new(dir.path())
+            .save(&[m.clone(), pc])
+            .unwrap();
+        let before = std::fs::read_to_string(&file).unwrap();
+        assert!(save_moved(&file, &m, &moved(&m, "192.0.2.5")).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&known).unwrap(), pins);
+        // A stale pin no saved machine uses is replaced.
+        std::fs::write(&known, format!("{pins}192.0.2.8 ssh-ed25519 AAAAstale\n")).unwrap();
+        save_moved(&file, &m, &moved(&m, "192.0.2.8")).unwrap();
+        let text = std::fs::read_to_string(&known).unwrap();
+        assert!(
+            text.contains(&format!("192.0.2.8 ssh-ed25519 {KEY}\n")),
+            "{text}"
+        );
+        assert!(!text.contains("AAAAstale"), "{text}");
+    }
+
+    /// A computer at the new address that proved the key and then refused (its Flare's own answer) is that answer, not
+    /// "Not answering" from the saved address.
+    #[test]
+    fn a_refusal_at_the_new_address_is_the_answer() {
+        let m = mac("/p/kh");
+        let mut net = FakeNet {
+            up: vec![ip("192.0.2.76")],
+            ..FakeNet::default()
+        };
+        net.names
+            .insert("Maxs-Mac-Mini.local.".into(), vec![ip("192.0.2.76")]);
+        let e = connect(
+            &m,
+            "ssh",
+            &net,
+            &mut |_: &[String]| -> Result<String, LinkError> {
+                Err(LinkError::Refused(flare_ctl::CtlError::new(
+                    "unsupported_protocol",
+                    "remote protocol 2 here, 1 there",
+                )))
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(e, LinkError::Refused(_)), "{e:?}");
     }
 }
