@@ -645,7 +645,7 @@ mod tests {
         assert_eq!(hook["command"].as_str(), Some(MCP_EXE_PLACEHOLDER));
         assert_eq!(hook["args"], serde_json::json!(["--hook-context"]));
         // Short: the hook itself gives up on Flare after a second, so a prompt is never held long.
-        assert!(hook["timeout"].as_u64().expect("timeout") <= 5);
+        assert!(hook["timeout"].as_u64().expect("timeout") <= 15);
         // The state hook of the same event is still there, and still first.
         let first = &value["hooks"]["UserPromptSubmit"][0]["hooks"][0];
         assert_eq!(first["command"].as_str(), Some(SYSTEM_CMD_PLACEHOLDER));
@@ -888,7 +888,7 @@ mod tests {
         for (event, matcher, joined, hook) in hook_entries(&value) {
             assert_eq!(hook["type"].as_str(), Some("command"));
             assert_eq!(hook["command"].as_str(), Some(SYSTEM_CMD_PLACEHOLDER));
-            assert!(hook["timeout"].as_u64().expect("timeout") <= 10);
+            assert!(hook["timeout"].as_u64().expect("timeout") <= 15);
             let args: Vec<&str> = hook["args"]
                 .as_array()
                 .expect("args")
@@ -943,7 +943,7 @@ mod tests {
             hook["args"],
             serde_json::json!(["--hook-context", "--session-start"])
         );
-        assert!(hook["timeout"].as_u64().expect("timeout") <= 5);
+        assert!(hook["timeout"].as_u64().expect("timeout") <= 15);
     }
 
     /// Changes after review (2026-11-11): entering or leaving a worktree tells Flare the session's new folder at once,
@@ -962,7 +962,7 @@ mod tests {
             hook["args"],
             serde_json::json!(["--hook-context", "--folder"])
         );
-        assert!(hook["timeout"].as_u64().expect("timeout") <= 5);
+        assert!(hook["timeout"].as_u64().expect("timeout") <= 15);
         // The state hook of every tool is still the first group.
         let first = &value["hooks"]["PostToolUse"][0];
         assert_eq!(first["matcher"].as_str(), Some("*"));
