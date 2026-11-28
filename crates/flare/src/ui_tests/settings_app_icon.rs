@@ -20,7 +20,7 @@ use flare_settings::app_icon::{APP_ICONS, FakeShellRestart, KEY, RESTART_BUTTON,
 use flare_settings::kv::PrefStore;
 use flare_settings::layout::{ICON_GAP, ICON_TILE};
 use flare_settings::look::LookStore;
-use flare_settings::page::{GlassSupport, ThemeColours};
+use flare_settings::page::ThemeColours;
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use slint::{ComponentHandle, Model};
 
@@ -73,7 +73,6 @@ fn fx_sized(scale: f32, prefs: PrefStore, w: u32, restart: Arc<FakeShellRestart>
         open_path: Rc::new(|_: &Path| {}),
         clipboard: Rc::new(|_: &str| {}),
         shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
-        glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|_: &str| String::new()),
         theme_colours: Rc::new(|| ThemeColours {
             accent: String::new(),

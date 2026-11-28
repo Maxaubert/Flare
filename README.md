@@ -31,7 +31,7 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 - Find in scrollback (Ctrl+F, Ctrl+Shift+F) with highlights, the count and wrap-around.
 - Links: web links and OSC 8 links, and file paths a session writes between `⟦` and `⟧` (a `:line` opens the file at that line), painted and opened by a left click through an allowlist.
 - A terminal right-click menu that fits what was clicked.
-- Panels: a click on a path to a picture or a text file (or "Show in side panel" in its right-click menu) shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency; long text lines wrap, with a button in the header to turn that off). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off.
+- Panels: a click on a path to a picture or a text file (or "Show in side panel" in its right-click menu) shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency; long text lines wrap, with a button in the header to turn that off). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off. While a tab's panel is closed, a faint round button in the terminal's top right opens a small menu when you point at it: Browser, Device, Open a file... and Last panel. The panel's header has an "Open in" button that hands the file to its default app, or the page to your browser.
 - Agent tools: Claude in a Flare tab can show an image, a file or some text in that tab's panel (`show_image`, `show_file`, `show_text`, `open_page`, `close_panel`) through a local, per-user, per-tab control channel and the bundled `flare-mcp.exe`; no setup, nothing leaves the PC. The contract is `docs/surfaces/protocol.md`.
 - Web panel: a real browser beside the terminal (Microsoft Edge WebView2, already on Windows 11), per tab, with an address bar, back, forward and reload, the page title in the header, local video at full speed and the same splitter. It hides behind Flare's own menus and dialogs (a still of the page stays in its place), the page gets its keys with Ctrl+Shift+O and gives them back with a second Escape, a page cannot open a window or ask for a permission, a download waits for your yes before anything is saved, and only http and https addresses open. Claude opens a page with `open_page` and then uses it as you would: `browser_look` gives it a screenshot and a numbered list of the page's controls and text, and `browser_click`, `browser_type`, `browser_press`, `browser_scroll`, `browser_wait` and `browser_navigate` act on those numbers, in Flare's own browser instead of your Chrome. A ribbon in the panel's head says "Claude is using this page" while it works, and your own click or key in the page stops it at once (a quick tap too). It also works in a tab that is behind, and hidden characters in a page's text (Unicode tag characters and the like) never reach the agent. Running scripts in the page (`browser_eval`) stays off until you switch on "Let agents run scripts in pages" in Settings. Type `/browser` (or `/browser docs.rs`, `/browser rust lifetimes`) in Claude to open a page or a Google search there and browse it yourself; Claude is told which page the panel shows when you next write to it, and `browser_state` lets it check. Without the runtime the panel shows the download link and nothing else changes.
 - Changes panel: on a tab that runs Claude, the right-click menu (or Claude itself, with `panel.open`) shows the files it edited, each edit as a diff, beside the terminal. Flare reads the session's transcript on a worker only while that panel is open, nothing is read otherwise, and nothing leaves your PC. `convo.state` on the control channel gives Claude its own tab's summary.
@@ -137,8 +137,7 @@ Development tools in `tools/`, never shipped in the installer:
   take the reference screenshots.
 - `tools/theme-matrix`: PowerShell scripts that take the theme screenshots of every theme at 100,
   150 and 225 percent, compose the contact sheets and compare the two renderers.
-- `tools/material-spike`: the Windows 11 material spike (acrylic, the z-order and the sampling); its
-  results are in `docs/material.md`.
+
 - `tools/oracle-help`: Node (v24, no install step). It generates Flare's command help catalogue and the
   search golden vectors from Prism Terminal's own help code; `node --test tools/oracle-help/` checks them.
 - `tools/pt-metrics`: Node. Measures the installed Prism Terminal's Settings page (rects and computed
@@ -157,7 +156,7 @@ Development tools in `tools/`, never shipped in the installer:
   performance baseline. Its README says how.
 - `tools/dpi-matrix`: every headless scene at every display scaling on both renderers, with a check
   script and contact sheets (M10). Its README says how.
-- `tools/m5-compare`, `tools/m9-matrix`, `tools/glass-light`, `tools/visual`: scripts that check and
+- `tools/m5-compare`, `tools/m9-matrix`, `tools/visual`: scripts that check and
   compose screenshot sets for earlier milestones and audits (contact sheets, side-by-sides, contrast).
 - `tools/fonts`: builds the `assets/selawik` fonts from Microsoft's Selawik release.
 - `tools/model-viewer`: builds `assets/three/viewer.js`, the 3D model viewer, with esbuild.

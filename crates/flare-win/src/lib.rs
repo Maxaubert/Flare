@@ -25,11 +25,7 @@ pub mod eyedrop_math;
 #[cfg(target_os = "macos")]
 #[path = "macos/float_panel.rs"]
 pub mod float_panel;
-#[cfg(target_os = "macos")]
-#[path = "macos/glass.rs"]
-pub mod glass;
 pub mod keep_awake;
-pub mod material;
 #[cfg(target_os = "macos")]
 #[path = "macos/menu_bar.rs"]
 pub mod menu_bar;
@@ -90,6 +86,9 @@ pub mod window_state;
 pub mod workspace;
 
 pub mod names;
+#[cfg(target_os = "macos")]
+#[path = "macos/ns_window.rs"]
+pub mod ns_window;
 pub mod packaged;
 pub mod registry;
 #[cfg(windows)]

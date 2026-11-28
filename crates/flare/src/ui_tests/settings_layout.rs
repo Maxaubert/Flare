@@ -16,7 +16,7 @@ use flare_settings::layout::{
     rail_layout, rail_width,
 };
 use flare_settings::look::LookStore;
-use flare_settings::page::{DiagInfo, GlassSupport, PageEnv, PageModel, ThemeColours, build_page};
+use flare_settings::page::{DiagInfo, PageEnv, PageModel, ThemeColours, build_page};
 use flare_settings::pages::PAGES;
 use flare_settings::verb::VerbState;
 use flare_settings::wall::{self, WallLayout};
@@ -81,7 +81,6 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
         home: "C:/Users/Test".to_string(),
         version: "1.2.3".to_string(),
         copyright: "Copyright 2026".to_string(),
-        glass: GlassSupport::Ok,
         diag: DiagInfo {
             verbose: false,
             dir: "C:/logs".to_string(),

@@ -3,14 +3,13 @@
 //! `core/renderer/settings/theme/palette.ts` (`paletteOf`).
 //!
 //! There is one Custom slot, edited and saved over. A save carries the palette and the extras. The
-//! font, its size, the opacity and the acrylic switch of older saves are read no more and never
-//! written.
+//! font, its size, the opacity, the acrylic switch and the see-through level (`seeThrough`, the
+//! see-through window removed on 2026-11-28) of older saves are read no more and never written.
 
 use flare_theme::ansi::{ANSI_KEYS, PartialAnsi, normalize_color};
 use flare_theme::colour::{canonical_stored, opaque, parse_colour, to_stored};
 use flare_theme::ground::{DEFAULT_CURSOR, DEFAULT_GROUND, DEFAULT_INK};
 use flare_theme::resolve::{CustomPalette, preset_accent, resolve_saved_theme};
-use flare_theme::see_through::see_through_level;
 use serde_json::{Map, Value};
 
 /// The store key of the one Custom theme.
@@ -24,8 +23,7 @@ pub struct CustomTheme {
     pub indicator_color: Option<String>,
     pub done_color: Option<String>,
     pub question_color: Option<String>,
-    pub see_through: Option<u8>,
-    // read no more, never written: acrylic, opacity, font, fontPct (older saves may carry them)
+    // read no more, never written: acrylic, opacity, font, fontPct, seeThrough (older saves may carry them)
 }
 
 /// A colour in its stored form, or None for anything that is not one.
@@ -55,11 +53,7 @@ pub fn parse_custom(raw: &str) -> Option<CustomTheme> {
             ansi[i] = stored(obj.get(*key));
         }
     }
-    let level = v
-        .get("seeThrough")
-        .and_then(Value::as_f64)
-        .filter(|n| n.is_finite())
-        .map(|n| see_through_level(Some(&n.to_string())));
+
     Some(CustomTheme {
         palette: CustomPalette {
             bg,
@@ -76,7 +70,6 @@ pub fn parse_custom(raw: &str) -> Option<CustomTheme> {
         indicator_color: agent_colour(v.get("indicatorColor")),
         done_color: agent_colour(v.get("doneColor")),
         question_color: agent_colour(v.get("questionColor")),
-        see_through: level,
     })
 }
 
@@ -107,9 +100,6 @@ pub fn serialize_custom(c: &CustomTheme) -> String {
     opt(&mut m, "indicatorColor", &c.indicator_color);
     opt(&mut m, "doneColor", &c.done_color);
     opt(&mut m, "questionColor", &c.question_color);
-    if let Some(l) = c.see_through {
-        m.insert("seeThrough".into(), l.into());
-    }
     Value::Object(m).to_string()
 }
 
@@ -134,7 +124,7 @@ pub fn palette_of(id: &str, custom: Option<&CustomTheme>, in_force: &str) -> Cus
     }
 }
 
-/// The ground opaque: the see-through is the slider's, never the colour's.
+/// The ground opaque: the window is solid, so a saved ground never carries an alpha.
 pub fn with_ground_alpha(p: &CustomPalette) -> CustomPalette {
     CustomPalette {
         bg: opaque(&p.bg, DEFAULT_GROUND),
@@ -164,7 +154,6 @@ mod tests {
             indicator_color: None,
             done_color: None,
             question_color: None,
-            see_through: None,
         }
     }
 
@@ -242,7 +231,6 @@ mod tests {
             indicator_color: Some("#22c55e".into()),
             done_color: None,
             question_color: Some("#11223380".into()),
-            see_through: Some(35),
         };
         let text = serialize_custom(&c);
         let v: Value = serde_json::from_str(&text).unwrap();
@@ -256,24 +244,23 @@ mod tests {
             "indicator",
             "indicatorColor",
             "questionColor",
-            "seeThrough",
         ] {
             assert!(v.get(k).is_some(), "missing {k}");
         }
         assert!(v.get("doneColor").is_none());
         assert_eq!(v["ansi"]["brightWhite"], "#ffffff");
-        assert_eq!(v["seeThrough"], 35);
         assert_eq!(parse_custom(&text), Some(c));
     }
 
     #[test]
     fn older_keys_are_read_no_more() {
         let c = parse_custom(
-            r##"{"bg":"#111111","fg":"#eeeeee","cursor":"#fff","ansi":{},"font":"cascadia","fontPct":90,"opacity":60,"acrylic":true}"##,
+            r##"{"bg":"#111111","fg":"#eeeeee","cursor":"#fff","ansi":{},"font":"cascadia","fontPct":90,"opacity":60,"acrylic":true,"seeThrough":40}"##,
         )
         .unwrap();
+        assert_eq!(c.palette.bg, "#111111");
         let text = serialize_custom(&c);
-        for k in ["font", "fontPct", "opacity", "acrylic"] {
+        for k in ["font", "fontPct", "opacity", "acrylic", "seeThrough"] {
             assert!(!text.contains(&format!("\"{k}\"")), "{k} written");
         }
     }

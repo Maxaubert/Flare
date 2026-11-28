@@ -92,16 +92,15 @@ fn pct_hex(pct: f64) -> String {
     alpha_hex(clamp(pct, 0.0, 100.0) / 100.0)
 }
 
-/// Pure: a terminal theme in, the chrome's tokens out (PT `chromeTokens`). `ground_alpha` below 1 makes the
-/// window's surfaces translucent. `--p-bg-solid` and `--p-side-flat` are always flat, which is what everything
-/// here is measured against and what a menu or a dialog paints. Every value is `#rrggbb` or `#rrggbbaa`.
+/// Pure: a terminal theme in, the chrome's tokens out (PT `chromeTokens`, for a solid window: the see-through
+/// window was removed on 2026-11-28). `--p-bg-solid` and `--p-side-flat` are flat, which is what everything here
+/// is measured against and what a menu or a dialog paints. Every value is `#rrggbb` or `#rrggbbaa`.
 ///
 /// `edges` is applied here, to the two tokens every edge reads (`--p-divider`, `--p-line`). `chosen_accent` is
 /// the accent the user chose (it may carry an alpha); `chosen_secondary` the sidebar and title bar colour they
 /// chose. `None` or an empty string for either follows the theme.
 pub fn chrome_tokens(
     theme: &TermTheme,
-    ground_alpha: f64,
     wanted_accent: Option<&str>,
     edges: WindowEdges,
     chosen_accent: Option<&str>,
@@ -170,7 +169,6 @@ pub fn chrome_tokens(
             .cloned()
             .unwrap_or_else(|| floor_on(&candidates[0], QUIET_FLOOR)),
     };
-    let glass = ground_alpha < 1.0;
     let mut accent = solid.clone();
     let on_accent: String;
     let mut sel_bg: String;
@@ -226,12 +224,6 @@ pub fn chrome_tokens(
             sel_bg = mix_hex(&sel_bg, away, 0.04);
         }
     }
-    // Fills under glass: a see-through fill that carries text is flattened over the solid ground it was
-    // chosen on. An opaque accent composites to itself.
-    if glass && fill_alpha < 1.0 {
-        accent = composite(&accent, &bg);
-        sel_bg = composite(&sel_bg, &bg);
-    }
     let accent_hi = floor_on(&mix_hex(&solid, &fg, 0.25), QUIET_FLOOR);
     // Accent as small text: the same colour, held to the body floor on every flat ground.
     let accent_ink = floor_on(&accent_hi, TEXT_FLOOR);
@@ -267,13 +259,8 @@ pub fn chrome_tokens(
     } else {
         (ea.divider.dark, ea.line.dark)
     };
-    // The window is ONE sheet: the title bar, the tab strip and the ground are the same colour and alpha.
-    let sheet = if glass {
-        format!("{bg}{}", alpha_hex(ground_alpha))
-    } else {
-        bg.clone()
-    };
-    let clear = format!("{bg}00");
+    // The window is ONE sheet: the title bar, the tab strip and the ground are the same colour.
+    let sheet = bg.clone();
     let dim2 = if light {
         floor_on(&mix_hex(&fg, &bg, 0.42), TEXT_FLOOR)
     } else {
@@ -322,21 +309,12 @@ pub fn chrome_tokens(
     };
     put("--p-bg-solid", bg.clone());
     put("--p-bg", sheet.clone());
-    // The settings rail sits ON a page that already paints the sheet: on glass it paints nothing.
-    put("--p-side", if glass { clear.clone() } else { bg.clone() });
+    put("--p-side", bg.clone());
     put("--p-side-flat", flat.clone());
-    put(
-        "--p-secondary",
-        if glass {
-            format!("{secondary}{}", alpha_hex(ground_alpha))
-        } else {
-            secondary.clone()
-        },
-    );
+    put("--p-secondary", secondary.clone());
     put("--p-title", sheet.clone());
     put("--p-tabs", sheet);
-    // The active tab is told by its ink, not a fill; on glass it must paint nothing.
-    put("--p-tab-active", if glass { clear } else { bg.clone() });
+    put("--p-tab-active", bg.clone());
     put("--p-text", fg.clone());
     put("--p-text-soft", text_soft);
     put("--p-dim", dim);
@@ -381,13 +359,13 @@ mod tests {
     use crate::ansi::idx;
     use crate::edges::WINDOW_EDGES;
     use crate::marks::ground_mode;
-    use crate::num::js_round;
     use crate::preset::{find_preset, presets, Preset};
     use crate::resolve::resolve_preset;
-    use crate::see_through::see_through_alpha;
     use crate::testutil::fixture;
 
     const HAIR: WindowEdges = WindowEdges::Hairline;
+    /// The rows of `chrome_picks.json` at ground alpha 1 (the solid window's).
+    const SOLID_PICK_ROWS: usize = 44;
 
     fn preset(id: &str) -> &'static Preset {
         find_preset(id).unwrap_or_else(|| panic!("no preset {id}"))
@@ -398,12 +376,12 @@ mod tests {
     }
 
     fn of(p: &Preset) -> ChromeTokens {
-        chrome_tokens(&resolve_preset(p), 1.0, p.accent, HAIR, None, None)
+        chrome_tokens(&resolve_preset(p), p.accent, HAIR, None, None)
     }
 
-    fn with(id: &str, alpha: f64, accent: Option<&str>, secondary: Option<&str>) -> ChromeTokens {
+    fn with(id: &str, accent: Option<&str>, secondary: Option<&str>) -> ChromeTokens {
         let p = preset(id);
-        chrome_tokens(&resolve_preset(p), alpha, p.accent, HAIR, accent, secondary)
+        chrome_tokens(&resolve_preset(p), p.accent, HAIR, accent, secondary)
     }
 
     fn v<'a>(c: &'a ChromeTokens, name: &str) -> &'a str {
@@ -477,18 +455,18 @@ mod tests {
     fn a_program_is_told_the_mode_the_chrome_wears() {
         for p in presets() {
             let t = resolve_preset(p);
-            let c = chrome_tokens(&t, 1.0, p.accent, HAIR, None, None);
+            let c = chrome_tokens(&t, p.accent, HAIR, None, None);
             assert_eq!(ground_mode(&t.background), c.mode, "{}", p.id);
         }
     }
 
     #[test]
     fn wears_a_chosen_accent_exactly_when_the_ground_can_show_it() {
-        let c = with("prism", 1.0, Some("#e07a2f"), None);
+        let c = with("prism", Some("#e07a2f"), None);
         assert_eq!(v(&c, "--p-accent"), "#e07a2f");
         assert!(ratio(v(&c, "--p-on-accent"), v(&c, "--p-accent")) >= 3.0);
         assert!(ratio(v(&c, "--p-on-accent"), v(&c, "--p-sel-bg")) >= 4.5);
-        let own = with("prism", 1.0, None, None);
+        let own = with("prism", None, None);
         assert_ne!(v(&c, "--p-accent"), v(&own, "--p-accent"));
     }
 
@@ -496,7 +474,7 @@ mod tests {
     fn a_chosen_accent_the_ground_cannot_show_is_moved_to_the_floor_not_swapped() {
         for p in presets() {
             for pick in ["#0a0a0a", "#f7f7f7"] {
-                let c = with(p.id, 1.0, Some(pick), None);
+                let c = with(p.id, Some(pick), None);
                 assert!(
                     ratio(v(&c, "--p-accent"), v(&c, "--p-bg-solid")) >= 3.0,
                     "{} {pick}",
@@ -520,7 +498,7 @@ mod tests {
     fn a_picked_light_background_makes_a_light_window_whose_inks_still_read() {
         let mut t = theme_of("pt-default");
         t.background = "#f4f1ea".to_string();
-        let c = chrome_tokens(&t, 1.0, Some("#fe8f34"), HAIR, None, None);
+        let c = chrome_tokens(&t, Some("#fe8f34"), HAIR, None, None);
         assert_eq!(c.mode, Mode::Light);
         assert_eq!(v(&c, "--p-bg-solid"), "#f4f1ea");
         assert!(ratio(v(&c, "--p-text"), v(&c, "--p-bg-solid")) >= 4.5);
@@ -530,19 +508,19 @@ mod tests {
     #[test]
     fn follows_the_theme_when_nothing_is_chosen() {
         let t = theme_of("prism");
-        let none = chrome_tokens(&t, 1.0, None, HAIR, None, None);
+        let none = chrome_tokens(&t, None, HAIR, None, None);
         assert_eq!(
             none.vars,
-            chrome_tokens(&t, 1.0, None, HAIR, Some(""), Some("")).vars
+            chrome_tokens(&t, None, HAIR, Some(""), Some("")).vars
         );
         assert_eq!(
             none.vars,
-            chrome_tokens(&t, 1.0, None, HAIR, Some(""), None).vars
+            chrome_tokens(&t, None, HAIR, Some(""), None).vars
         );
         for p in presets() {
             let t = resolve_preset(p);
-            let a = chrome_tokens(&t, 1.0, p.accent, HAIR, None, None);
-            let b = chrome_tokens(&t, 1.0, p.accent, HAIR, Some(""), Some(""));
+            let a = chrome_tokens(&t, p.accent, HAIR, None, None);
+            let b = chrome_tokens(&t, p.accent, HAIR, Some(""), Some(""));
             assert_eq!(a, b, "{}", p.id);
         }
     }
@@ -550,16 +528,14 @@ mod tests {
     #[test]
     fn publishes_every_colour_token_the_components_read() {
         assert_eq!(CHROME_COLOUR_TOKENS.len(), 31);
-        for alpha in [1.0, 153.0 / 255.0] {
-            let c = with("prism", alpha, None, None);
-            assert_eq!(c.vars.len(), 31);
-            assert_eq!(c.extra.len(), FLARE_EXTRA_TOKENS.len());
-            for name in FLARE_EXTRA_TOKENS {
-                assert!(is_hex(&c.extra[name]), "{name}");
-            }
-            for name in CHROME_COLOUR_TOKENS {
-                assert!(is_hex(v(&c, name)), "{name} = {}", v(&c, name));
-            }
+        let c = with("prism", None, None);
+        assert_eq!(c.vars.len(), 31);
+        assert_eq!(c.extra.len(), FLARE_EXTRA_TOKENS.len());
+        for name in FLARE_EXTRA_TOKENS {
+            assert!(is_hex(&c.extra[name]), "{name}");
+        }
+        for name in CHROME_COLOUR_TOKENS {
+            assert!(is_hex(v(&c, name)), "{name} = {}", v(&c, name));
         }
     }
 
@@ -570,27 +546,27 @@ mod tests {
     }
 
     #[test]
-    fn paints_a_translucent_ground_only_when_asked() {
-        let opaque = with("prism", 1.0, None, None);
-        for name in ["--p-bg", "--p-title", "--p-tabs"] {
-            assert_eq!(v(&opaque, name).len(), 7, "{name}");
+    fn the_window_sheet_is_always_opaque() {
+        for p in presets() {
+            let c = of(p);
+            for name in [
+                "--p-bg",
+                "--p-title",
+                "--p-tabs",
+                "--p-tab-active",
+                "--p-side",
+                "--p-secondary",
+            ] {
+                assert_eq!(v(&c, name).len(), 7, "{} {name}", p.id);
+            }
+            assert_eq!(v(&c, "--p-side"), v(&c, "--p-bg"), "{}", p.id);
         }
-        assert_eq!(v(&opaque, "--p-side"), v(&opaque, "--p-bg"));
-        let glass = with("prism", 153.0 / 255.0, None, None);
-        for name in ["--p-bg", "--p-title", "--p-tabs"] {
-            assert!(v(&glass, name).ends_with("99"), "{name}");
-        }
-        for name in ["--p-tab-active", "--p-side"] {
-            assert!(v(&glass, name).ends_with("00"), "{name}");
-        }
-        assert_eq!(v(&glass, "--p-side-flat").len(), 7);
-        assert_eq!(v(&glass, "--p-bg-solid").len(), 7);
     }
 
     #[test]
     fn moves_a_custom_theme_that_fails_the_floors_instead_of_trusting_it() {
         let t = plain_theme("#202020", "#2a2a2a", "#242424", "#222233");
-        let c = chrome_tokens(&t, 1.0, None, HAIR, None, None);
+        let c = chrome_tokens(&t, None, HAIR, None, None);
         let g = v(&c, "--p-bg-solid");
         assert!(ratio(v(&c, "--p-text"), g) >= 4.5);
         assert!(ratio(v(&c, "--p-dim"), g) >= 3.0);
@@ -601,7 +577,7 @@ mod tests {
     fn measures_against_a_flat_ground_when_the_theme_publishes_anything_else() {
         let mut t = theme_of("pt-default");
         t.background = "rgba(11, 11, 15, 0.8)".to_string();
-        let c = chrome_tokens(&t, 1.0, None, HAIR, None, None);
+        let c = chrome_tokens(&t, None, HAIR, None, None);
         assert_eq!(c.mode, Mode::Dark);
         assert_eq!(v(&c, "--p-bg-solid"), "#0b0b0f");
         for name in CHROME_COLOUR_TOKENS {
@@ -611,7 +587,7 @@ mod tests {
 
     fn edged(id: &str, e: WindowEdges) -> ChromeTokens {
         let p = preset(id);
-        chrome_tokens(&resolve_preset(p), 1.0, p.accent, e, None, None)
+        chrome_tokens(&resolve_preset(p), p.accent, e, None, None)
     }
 
     fn alpha_byte(s: &str) -> u32 {
@@ -671,7 +647,7 @@ mod tests {
     fn see_through_accent_fills_see_through_lines_solid_text_4_5_on_the_composite() {
         for p in presets() {
             for pick in PICKS {
-                let c = with(p.id, 1.0, Some(pick), None);
+                let c = with(p.id, Some(pick), None);
                 let a = &pick[7..9];
                 assert_eq!(v(&c, "--p-accent").len(), 9, "{} {pick}", p.id);
                 assert!(v(&c, "--p-accent").ends_with(a), "{} {pick}", p.id);
@@ -700,13 +676,13 @@ mod tests {
                 }
             }
         }
-        let c = with("pt-default", 1.0, Some("#e07a2f80"), None);
+        let c = with("pt-default", Some("#e07a2f80"), None);
         assert_eq!(v(&c, "--p-accent-solid"), "#e07a2f");
     }
 
     #[test]
     fn keeps_the_picked_colour_where_the_ground_can_show_it() {
-        let c = with("pt-default", 1.0, Some("#e07a2f80"), None);
+        let c = with("pt-default", Some("#e07a2f80"), None);
         assert_eq!(v(&c, "--p-accent-solid"), "#e07a2f");
     }
 
@@ -714,7 +690,7 @@ mod tests {
     fn an_opaque_accent_publishes_its_solid_as_itself() {
         for p in presets() {
             for pick in [None, Some("#e07a2f")] {
-                let c = with(p.id, 1.0, pick, None);
+                let c = with(p.id, pick, None);
                 assert_eq!(
                     v(&c, "--p-accent"),
                     v(&c, "--p-accent-solid"),
@@ -726,51 +702,12 @@ mod tests {
     }
 
     #[test]
-    fn under_a_see_through_ground_the_text_fills_are_flattened() {
-        let alpha = 153.0 / 255.0;
-        let c = with("pt-default", alpha, Some("#e07a2f80"), None);
-        assert!(v(&c, "--p-bg").ends_with("99"));
-        assert_eq!(v(&c, "--p-accent").len(), 7);
-        assert_eq!(v(&c, "--p-sel-bg").len(), 7);
-        for t in ["--p-accent", "--p-sel-bg"] {
-            assert!(ratio(v(&c, "--p-on-accent"), v(&c, t)) >= 4.5);
-        }
-        let open = with("pt-default", 1.0, Some("#e07a2f80"), None);
-        assert_eq!(
-            v(&c, "--p-sel-bg"),
-            composite(v(&open, "--p-sel-bg"), v(&open, "--p-bg-solid"))
-        );
-    }
-
-    #[test]
-    fn every_preset_is_legible_at_its_default_see_through() {
-        for p in presets() {
-            let t = resolve_preset(p);
-            let alpha = see_through_alpha(&t.background);
-            let c = chrome_tokens(&t, alpha, p.accent, HAIR, None, None);
-            let suffix = if c.mode == Mode::Dark { "b9" } else { "d1" };
-            assert!(v(&c, "--p-bg").ends_with(suffix), "{}", p.id);
-            for g in [v(&c, "--p-bg-solid"), v(&c, "--p-side-flat")] {
-                assert!(ratio(v(&c, "--p-text"), g) >= 4.5, "{}", p.id);
-            }
-            for t in ["--p-accent", "--p-sel-bg"] {
-                assert!(
-                    ratio(v(&c, "--p-on-accent"), v(&c, t)) >= 4.5,
-                    "{} {t}",
-                    p.id
-                );
-            }
-        }
-    }
-
-    #[test]
     fn bg_solid_is_always_flat() {
         let mut t = theme_of("pt-default");
         t.background = "#10203099".to_string();
-        for alpha in [0.3, 0.5, 153.0 / 255.0, 1.0] {
-            let c = chrome_tokens(&t, alpha, None, HAIR, None, None);
-            assert_eq!(v(&c, "--p-bg-solid"), "#102030", "{alpha}");
-        }
+        let c = chrome_tokens(&t, None, HAIR, None, None);
+        assert_eq!(v(&c, "--p-bg-solid"), "#102030");
+        assert_eq!(v(&c, "--p-bg"), "#102030");
     }
 
     #[test]
@@ -798,11 +735,11 @@ mod tests {
                 p.id
             );
         }
-        let c = with("paper", 1.0, Some("#cfe4ff80"), None);
+        let c = with("paper", Some("#cfe4ff80"), None);
         assert_eq!(v(&c, "--p-switch-knob"), "#0b0b0f");
         let track = composite(v(&c, "--p-sel-bg"), v(&c, "--p-bg-solid"));
         assert!(contrast_ratio("#ffffff", &track) < 2.0);
-        let c = with("pt-default", 1.0, Some("#2a2c3080"), None);
+        let c = with("pt-default", Some("#2a2c3080"), None);
         assert_eq!(v(&c, "--p-switch-knob"), "#ffffff");
         let track = composite(v(&c, "--p-sel-bg"), v(&c, "--p-bg-solid"));
         assert!(contrast_ratio("#0b0b0f", &track) < 2.0);
@@ -827,23 +764,15 @@ mod tests {
     #[test]
     fn a_pick_is_worn_and_the_inks_are_held_to_it() {
         for p in presets() {
-            let c = with(p.id, 1.0, None, Some("#3a3a3a"));
+            let c = with(p.id, None, Some("#3a3a3a"));
             let sec = v(&c, "--p-secondary");
             assert_eq!(sec, "#3a3a3a", "{}", p.id);
         }
         // The inks are held to the pick where the ground allows it. PT tests pt-default only: on a light
         // ground no text can clear 4.5 on both the ground and a dark pick.
-        let c = with("pt-default", 1.0, None, Some("#3a3a3a"));
+        let c = with("pt-default", None, Some("#3a3a3a"));
         assert!(ratio(v(&c, "--p-text"), "#3a3a3a") >= 4.5);
         assert!(ratio(v(&c, "--p-dim"), "#3a3a3a") >= 3.0);
-    }
-
-    #[test]
-    fn on_glass_it_is_see_through_at_the_grounds_alpha() {
-        let c = with("prism", 0.73, None, None);
-        let sec = v(&c, "--p-secondary");
-        assert_eq!(sec.len(), 9);
-        assert_eq!(&sec[7..9], &v(&c, "--p-bg")[7..9]);
     }
 
     #[test]
@@ -894,41 +823,18 @@ mod tests {
     }
 
     #[test]
-    fn oracle_alpha_sweep() {
-        let sweep = fixture("chrome_alpha_sweep.json");
-        let mut n_checked = 0;
-        for (id, by_alpha) in sweep.as_object().unwrap() {
-            let t = theme_of(id);
-            for (n, want) in by_alpha.as_object().unwrap() {
-                let n: f64 = n.parse().unwrap();
-                let alpha = js_round(n / 100.0 * 255.0) / 255.0;
-                let got = chrome_tokens(&t, alpha, None, HAIR, None, None);
-                assert_vars(&got, want, &format!("{id} at {n}"));
-                n_checked += 1;
-            }
-        }
-        assert_eq!(n_checked, 4 * 71);
-    }
-
-    #[test]
-    fn oracle_every_preset_four_variants() {
+    fn oracle_every_preset_solid_variants() {
+        // The fixture also holds PT's see-through variants (`glass`, `pickedGlass`); Flare's window is solid.
         let all = fixture("chrome_presets.json");
-        let glass = js_round(0.6 * 255.0) / 255.0;
         for p in presets() {
             let t = resolve_preset(p);
             let want = &all[p.id];
-            let a = |g: f64, pick: Option<&str>| chrome_tokens(&t, g, p.accent, HAIR, pick, None);
-            assert_vars(&a(1.0, None), &want["theme"], &format!("{} theme", p.id));
-            assert_vars(&a(glass, None), &want["glass"], &format!("{} glass", p.id));
+            let a = |pick: Option<&str>| chrome_tokens(&t, p.accent, HAIR, pick, None);
+            assert_vars(&a(None), &want["theme"], &format!("{} theme", p.id));
             assert_vars(
-                &a(1.0, Some("#e07a2f")),
+                &a(Some("#e07a2f")),
                 &want["picked"],
                 &format!("{} picked", p.id),
-            );
-            assert_vars(
-                &a(glass, Some("#e07a2f")),
-                &want["pickedGlass"],
-                &format!("{} pickedGlass", p.id),
             );
         }
     }
@@ -941,36 +847,22 @@ mod tests {
             let p = preset(id);
             for (word, want) in by_word.as_object().unwrap() {
                 let e = WindowEdges::from_word(word).unwrap();
-                let got = chrome_tokens(&resolve_preset(p), 1.0, p.accent, e, None, None);
+                let got = chrome_tokens(&resolve_preset(p), p.accent, e, None, None);
                 assert_vars(&got, want, &format!("{id} {word}"));
                 count += 1;
             }
         }
         assert_eq!(count, 12);
 
-        let levels = fixture("chrome_levels.json");
-        count = 0;
-        for (id, by_level) in levels.as_object().unwrap() {
-            let p = preset(id);
-            for (level, want) in by_level.as_object().unwrap() {
-                let level: f64 = level.parse().unwrap();
-                let got = chrome_tokens(
-                    &resolve_preset(p),
-                    1.0 - level / 100.0,
-                    p.accent,
-                    HAIR,
-                    None,
-                    None,
-                );
-                assert_vars(&got, want, &format!("{id} level {level}"));
-                count += 1;
-            }
-        }
-        assert_eq!(count, 32);
-
+        // The fixture also holds PT's rows at a see-through ground alpha; Flare's window is solid.
         let picks = fixture("chrome_picks.json");
-        let rows = picks.as_array().unwrap();
-        assert_eq!(rows.len(), 88);
+        let rows: Vec<_> = picks
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["alpha"].as_f64() == Some(1.0))
+            .collect();
+        assert_eq!(rows.len(), SOLID_PICK_ROWS);
         for row in rows {
             let mut t = theme_of("pt-default");
             if let Some(bg) = row["bg"].as_str() {
@@ -978,12 +870,11 @@ mod tests {
             }
             let accent = row["accent"].as_str();
             let secondary = row["secondary"].as_str();
-            let alpha = row["alpha"].as_f64().unwrap();
-            let got = chrome_tokens(&t, alpha, Some("#fe8f34"), HAIR, accent, secondary);
+            let got = chrome_tokens(&t, Some("#fe8f34"), HAIR, accent, secondary);
             assert_vars(
                 &got,
                 &row["vars"],
-                &format!("pick {accent:?} {secondary:?} {alpha} {:?}", row["bg"]),
+                &format!("pick {accent:?} {secondary:?} {:?}", row["bg"]),
             );
         }
     }
@@ -1011,7 +902,7 @@ mod tests {
 
     #[test]
     fn a_too_dark_pick_is_what_the_window_paints_its_saves_in() {
-        let c = with("pt-default", 1.0, Some("#140707"), None);
+        let c = with("pt-default", Some("#140707"), None);
         let [r, g, b] = channels(v(&c, "--p-accent"));
         assert!(r - g > 50, "{r} {g}");
         assert!(r - b > 50, "{r} {b}");
@@ -1021,11 +912,11 @@ mod tests {
     #[test]
     fn the_ink_on_the_accent_is_white_on_strong_red_or_blue_dark_on_pale() {
         for pick in ["#ff0000", "#3b78ff"] {
-            let c = with("pt-default", 1.0, Some(pick), None);
+            let c = with("pt-default", Some(pick), None);
             assert_eq!(v(&c, "--p-on-accent"), "#ffffff", "{pick}");
         }
         for pick in ["#fe8f34", "#f5d90a"] {
-            let c = with("pt-default", 1.0, Some(pick), None);
+            let c = with("pt-default", Some(pick), None);
             assert_ne!(v(&c, "--p-on-accent"), "#ffffff", "{pick}");
         }
     }
@@ -1075,7 +966,7 @@ mod tests {
     fn the_inks_on_a_picked_secondary_hold_their_floor_on_it() {
         for p in presets() {
             for pick in ["#808080", "#e8e8e8", "#202020"] {
-                let c = with(p.id, 1.0, None, Some(pick));
+                let c = with(p.id, None, Some(pick));
                 let on = composite(pick, v(&c, "--p-bg-solid"));
                 assert!(
                     contrast_ratio(ex(&c, "--f-secondary-text"), &on) >= 4.5,
@@ -1095,7 +986,7 @@ mod tests {
     fn the_accent_as_text_holds_4_5_on_the_ground_and_the_flat_panel() {
         for p in presets() {
             for pick in [None, Some("#e07a2f"), Some("#2f6fe0"), Some("#9acd32")] {
-                let c = with(p.id, 1.0, pick, None);
+                let c = with(p.id, pick, None);
                 for g in [v(&c, "--p-bg-solid"), v(&c, "--p-side-flat")] {
                     assert!(
                         ratio(ex(&c, "--f-accent-ink"), g) >= 4.5,

@@ -4,11 +4,23 @@
 //! calls `tick` at `next_deadline`.
 
 use crate::dwm::Border;
-use crate::material::{is_light_bg, valid_bg};
 use flare_theme::edges::{WindowEdges, edge_border_step};
 use flare_theme::ground::DEFAULT_GROUND;
 use flare_theme::num::js_round;
 use std::time::{Duration, Instant};
+
+/// `^#[0-9a-f]{6}$`, either case, nothing else.
+pub fn valid_bg(hex: &str) -> bool {
+    let b = hex.as_bytes();
+    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// The direction of the window edge (and the dark or light window frame): the SAME measure the chrome
+/// wears, WCAG relative luminance over `LIGHT_GROUND` (`flare_theme::marks::ground_mode`), so on a
+/// mid-grey ground the edge never disagrees with the inks drawn on it (review #10 and #80).
+pub fn is_light_bg(hex: &str) -> bool {
+    valid_bg(hex) && flare_theme::marks::ground_mode(hex) == flare_theme::marks::Mode::Light
+}
 
 /// The window border colour for a ground: `None` means no border, else `#rrggbb`.
 pub fn edge_for(bg: &str, edges: WindowEdges) -> Option<String> {
@@ -97,6 +109,35 @@ mod tests {
     use flare_theme::edges::WINDOW_EDGES;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    #[test]
+    fn the_window_ground_takes_rrggbb_and_nothing_else() {
+        assert!(valid_bg("#0b0b0f"));
+        assert!(valid_bg("#FFFFFF"));
+        for s in ["#fff", "#0b0b0f80", "red", ""] {
+            assert!(!valid_bg(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn a_pale_ground_is_light() {
+        assert!(is_light_bg("#fdf6e3"));
+        assert!(!is_light_bg("#0b0b0f"));
+        assert!(is_light_bg("#aaaaaa"));
+        assert!(!is_light_bg("#777777"));
+    }
+
+    #[test]
+    fn the_edge_and_the_chrome_call_every_grey_the_same_mode() {
+        for v in 0..=255u32 {
+            let hex = format!("#{v:02x}{v:02x}{v:02x}");
+            let chrome = flare_theme::marks::ground_mode(&hex) == flare_theme::marks::Mode::Light;
+            assert_eq!(is_light_bg(&hex), chrome, "{hex}");
+        }
+        // The two greys the old luma rule split from the chrome.
+        assert!(!is_light_bg("#8a8a8a"));
+        assert!(!is_light_bg("#9a9a9a"));
+    }
 
     fn luma(hex: &str) -> f64 {
         let n = u32::from_str_radix(&hex[1..], 16).unwrap();

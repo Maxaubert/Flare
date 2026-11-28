@@ -35,8 +35,6 @@ fn look(id: &str) -> AppliedLook {
         accent: None,
         secondary: None,
         edges: DEFAULT_WINDOW_EDGES,
-        see_through: 0,
-        glass_possible: false,
     })
 }
 

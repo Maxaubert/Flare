@@ -11,7 +11,6 @@ use crate::links::link_colour;
 use crate::marks::Mode;
 use crate::resolve::{on_ground, preset_accent, resolve_theme, CustomPalette, TermTheme};
 use crate::retired::live_theme_id;
-use crate::see_through::{ground_alpha, SEE_THROUGH_TOP};
 
 /// Everything the settings say about the look.
 pub struct LookInput<'a> {
@@ -25,10 +24,6 @@ pub struct LookInput<'a> {
     pub accent: Option<&'a str>,
     pub secondary: Option<&'a str>,
     pub edges: WindowEdges,
-    /// 0 to 70.
-    pub see_through: u8,
-    /// The GPU renderer is effective and the OS has the backdrop.
-    pub glass_possible: bool,
 }
 
 /// What the window wears.
@@ -45,14 +40,9 @@ pub struct AppliedLook {
     pub chrome: ChromeTokens,
     /// The chrome's `--p-bg-solid`.
     pub solid_ground: String,
-    /// 1.0 unless glass.
-    pub ground_alpha: f64,
-    /// See-through is on and possible.
-    pub glass: bool,
     /// The chrome is in light mode.
     pub light: bool,
     pub edges: WindowEdges,
-    pub see_through: u8,
     /// The terminal caret's colours (`caret_ink`).
     pub caret: CaretInk,
 }
@@ -97,13 +87,6 @@ pub fn caret_ink(term: &TermTheme, chrome: &ChromeTokens, own_cursor: bool) -> C
 /// Settings in, everything the window wears out (PT `paintChrome` plus `groundedTheme`).
 pub fn apply_look(i: &LookInput) -> AppliedLook {
     let id = live_theme_id(i.theme_id);
-    let see_through = i.see_through.min(SEE_THROUGH_TOP);
-    let glass = see_through > 0 && i.glass_possible;
-    let alpha = if glass {
-        ground_alpha(see_through)
-    } else {
-        1.0
-    };
     // While the colour editor's draft is open its ground is what the owner is editing, so it wins over a
     // picked Background (otherwise editing the ground changed nothing on screen until Save: review #79).
     let background = i
@@ -119,7 +102,6 @@ pub fn apply_look(i: &LookInput) -> AppliedLook {
     let wanted = preset_accent(id, id, i.custom, i.draft);
     let chrome = chrome_tokens(
         &chrome_theme,
-        alpha,
         wanted.as_deref(),
         i.edges,
         i.accent,
@@ -154,10 +136,7 @@ pub fn apply_look(i: &LookInput) -> AppliedLook {
         term,
         chrome,
         solid_ground,
-        ground_alpha: alpha,
-        glass,
         edges: i.edges,
-        see_through,
     }
 }
 
@@ -201,8 +180,6 @@ mod tests {
             accent: None,
             secondary: None,
             edges: WindowEdges::Hairline,
-            see_through: 0,
-            glass_possible: true,
         }
     }
 
@@ -317,35 +294,12 @@ mod tests {
     }
 
     #[test]
-    fn the_slider_level_sets_the_ground_alpha_once() {
-        let levels = fixture("chrome_levels.json");
-        for id in ["pt-default", "paper", "volt", "dracula"] {
-            for level in [0u8, 1, 10, 25, 30, 50, 69, 70] {
-                let mut i = input(id);
-                i.see_through = level;
-                let a = apply_look(&i);
-                assert_eq!(
-                    vars_of(&a.chrome),
-                    want_of(&levels[id][level.to_string()]),
-                    "{id} {level}"
-                );
-                assert_eq!(a.glass, level > 0, "{id} {level}");
-                assert_eq!(a.ground_alpha, 1.0 - f64::from(level) / 100.0);
-            }
+    fn every_theme_wears_an_opaque_ground() {
+        for p in presets() {
+            let a = apply_look(&input(p.id));
+            assert_eq!(v(&a.chrome, "--p-bg").len(), 7, "{}", p.id);
+            assert_eq!(v(&a.chrome, "--p-bg"), a.solid_ground, "{}", p.id);
         }
-    }
-
-    #[test]
-    fn a_level_without_glass_leaves_the_window_solid() {
-        let mut i = input("pt-default");
-        i.see_through = 40;
-        i.glass_possible = false;
-        let a = apply_look(&i);
-        assert!(!a.glass);
-        assert_eq!(a.ground_alpha, 1.0);
-        assert_eq!(v(&a.chrome, "--p-bg").len(), 7);
-        let solid = apply_look(&input("pt-default"));
-        assert_eq!(vars_of(&a.chrome), vars_of(&solid.chrome));
     }
 
     #[test]

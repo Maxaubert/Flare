@@ -1,4 +1,5 @@
-//! The oracle fixtures are present and have Prism Terminal's counts (Task 2).
+//! The oracle fixtures are present and have Prism Terminal's counts (Task 2). The see-through ones
+//! (chrome_alpha_sweep.json, chrome_levels.json) went with the see-through window on 2026-11-28.
 
 use std::fs;
 use std::path::PathBuf;
@@ -11,13 +12,12 @@ fn fixture(name: &str) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name} does not parse: {e}"))
 }
 
-const TWENTY_SEVEN: [&str; 27] = [
+const TWENTY_FIVE: [&str; 25] = [
     "presets.json",
     "resolved_presets.json",
     "on_grounds.json",
     "custom_opaque.json",
     "chrome_presets.json",
-    "chrome_alpha_sweep.json",
     "wall_order.json",
     "link_colours.json",
     "sidebar_grounds.json",
@@ -36,14 +36,13 @@ const TWENTY_SEVEN: [&str; 27] = [
     "edge_vectors.json",
     "chrome_edges.json",
     "chrome_picks.json",
-    "chrome_levels.json",
     "agent_colours.json",
     "marks_apart.json",
 ];
 
 #[test]
-fn all_twenty_seven_fixtures_exist_and_parse() {
-    for name in TWENTY_SEVEN {
+fn all_twenty_five_fixtures_exist_and_parse() {
+    for name in TWENTY_FIVE {
         let _ = fixture(name);
     }
 }

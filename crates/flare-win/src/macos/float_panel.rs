@@ -16,7 +16,7 @@
 //! The handle every call takes is the window's content `NSView` (raw-window-handle's `AppKit` handle) as an
 //! integer. Every call refuses (false, `None`) off the main thread or for 0.
 
-use crate::glass::window_of;
+use crate::ns_window::window_of;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{MainThreadMarker, sel};

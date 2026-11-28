@@ -1,5 +1,10 @@
 # Material spike results (Task 19)
 
+History (2026-11-28): the see-through window this spike was for was removed; every window is solid (parity DIFF-30,
+regression rules 73, 149, 150 and 152 retired). `tools/material-spike` is gone. The facts still in use: E0 (only the
+visual swapchain has a non-opaque alpha mode, which the dictation widget's card needs), E3 (Slint reads an imported
+texture as straight alpha) and E4 (the DWM border does not show on the frameless window, so Slint draws the edge).
+
 Date: 2026-10-17. OS: Windows 11 build 10.0.26300 (`support()` = Ok, so acrylic and system backdrop are available).
 Adapter: NVIDIA GeForce RTX 5090, DX12. Tool: `tools/material-spike` (`--mode ...`), window 400 x 300 logical,
 900 x 675 physical at this PC's 225% scale, bottom right corner, inactive, always on top, off the taskbar.

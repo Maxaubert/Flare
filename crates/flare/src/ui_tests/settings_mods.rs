@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use flare_settings::kv::PrefStore;
 use flare_settings::look::LookStore;
+use flare_settings::page::ThemeColours;
 use flare_settings::page::mods::{ModInfo, ModsInfo, Problem};
-use flare_settings::page::{GlassSupport, ThemeColours};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use slint::{ComponentHandle, Model};
 
@@ -142,7 +142,6 @@ fn fx_at(scale: f32, page: ModsInfo) -> Fx {
         },
         clipboard: Rc::new(|_: &str| {}),
         shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
-        glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|_: &str| String::new()),
         theme_colours: Rc::new(|| ThemeColours {
             accent: String::new(),

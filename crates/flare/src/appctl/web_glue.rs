@@ -298,8 +298,6 @@ impl AppCtl {
                 self.web_full_was = Some(was);
                 self.web.set_window_follows(!was);
                 if !was {
-                    // The UI turns solid and the backdrop comes off before the OS is asked (D7).
-                    crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());
                     w.set_fullscreen(true);
                 }
             }
@@ -428,6 +426,10 @@ impl AppCtl {
                         .page_at(&tab, &flare_surfaces::web::site_of(&url));
                     if self.panels.set_web_url(&tab, &url) {
                         self.panel_changed(&tab);
+                        // "Open in browser" follows the page the panel is on now (rule 1388).
+                        if let Some(app) = self.app() {
+                            self.sync_launcher(&app);
+                        }
                     }
                 }
                 WebOut::Title { tab, title } => {

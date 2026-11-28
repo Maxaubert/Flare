@@ -62,7 +62,7 @@ seconds. The exit code is 1 when any assertion failed.
   pixels or measure the window as Prism Terminal's horizontal layout drew it do: the strip and indicator groups,
   spawn, agentHooks, agentDiag, backgroundWork, agentKeys, theme, titleBar, systemMenu, settingsPage, scrollbar,
   selectionEdit and the other `input_b` link scenarios, termReplies, linkPaintStall, reviewKeys, the `settings_a`
-  and `settings_c` launches (options, settingsLook, colourPicker, seeThrough and their neighbours), closeAsk, the
+  and `settings_c` launches (options, settingsLook, colourPicker and their neighbours), closeAsk, the
   agent launch scenarios, dpiMatrix and monitorMove, and verticalTabs before it picks Vertical (found by a full Mac
   run with the new default, 2026-11-11: 61 scenarios failed, most of them on the `app.state` parse below). The
   visual tour's `seed` writes Horizontal unless a cell names a layout. `verticalStart` checks that a fresh profile opens down the
@@ -223,7 +223,7 @@ tabDragFirst, tabWidth, tabLooks, tabSwitch, indicatorStyles, verticalTabs, wind
 backgroundWork, agentKeys, cogToggle, accentAsk, titleBar, settingsPage, restore, handoff, quitManyShells, lastTab,
 powerlineGlyphs, markerLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
 reviewKeys, dropAndMenu, helpPanel, options, diagLog, settingsLook, settingsSearch, settingsKeys, themeEditorLive,
-themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, seeThrough, themeCards, edges, accent,
+themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, themeCards, edges, accent,
 exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, devicePanel, devicePanelAndroid, deviceAgent, mcpDevice, deviceAgentAndroid, mcpDeviceAndroid,
 ctlChannel,
 mcpRoundTrip, convoPanels, questionToast.
