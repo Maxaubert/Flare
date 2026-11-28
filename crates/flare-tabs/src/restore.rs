@@ -242,11 +242,14 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
             }
             at_of.push(at);
             // A remote tab's agent is read for its icon only (rule 1390): `plan_restore_with` never resumes it, since
-            // the host owns its session.
+            // the host owns its session. A remote that no longer reads well makes a local shell, never a local agent:
+            // its agent and folder are the host's, so resuming it here would start the wrong agent in the wrong place.
+            let broken_remote = remote.is_none() && e.get("remote").is_some_and(|r| !r.is_null());
             let agent = e
                 .get("agent")
                 .and_then(Value::as_str)
-                .and_then(AgentKind::parse);
+                .and_then(AgentKind::parse)
+                .filter(|_| !broken_remote);
             // Only a local Claude tab keeps its session (rule 1286); a file from before the key has none.
             let session = e
                 .get("session")
@@ -1844,7 +1847,21 @@ mod remote_tests {
             let s = parse_tabs(&raw);
             assert_eq!(s.tabs.len(), 1, "{bad}");
             assert_eq!(s.tabs[0].remote, None, "{bad}");
+            // Rule 1390: an agent saved beside a remote that no longer reads well is never resumed as a local one.
+            let raw = format!(
+                r#"{{"tabs":[{{"cwd":"C:\\x","agent":"claude","session":"new","remote":{bad}}}],"active":0}}"#
+            );
+            let s = parse_tabs(&raw);
+            assert_eq!(s.tabs[0].remote, None, "{bad}");
+            assert_eq!(s.tabs[0].agent, None, "{bad}");
+            assert_eq!(s.tabs[0].session, None, "{bad}");
+            let plan = plan_restore(&s, &|_| true, &|_| vec!["any".into()]);
+            assert_eq!(plan.tabs[0].resume, None, "{bad}");
         }
+        // A null remote is no remote: a local agent tab as before.
+        let s =
+            parse_tabs(r#"{"tabs":[{"cwd":"C:\\x","agent":"codex","remote":null}],"active":0}"#);
+        assert_eq!(s.tabs[0].agent, Some(AgentKind::Codex));
         // Rule 1390: the agent beside a remote is read for the icon, and it never resumes nor brings a session.
         let raw = r#"{"tabs":[{"cwd":"/p","agent":"claude","session":"new","remote":{"machine":"mac","host_tab":"t1"}}],"active":0}"#;
         let s = parse_tabs(raw);
