@@ -6092,13 +6092,23 @@ device's own `buttons` and the look's text lists them, and a name neither source
 `the_agent_drives_an_android_device_once_its_emulator_is_ready` (`device_ctl.rs`) and the e2e `deviceAgent`,
 `mcpDevice`, `deviceAgentAndroid` and `mcpDeviceAndroid`. Source: Max, 2026-11-22.
 
+## macOS: passkeys need Bluetooth's sentence (2026-11-24)
+
+1372. **macOS: `Flare.app`'s `Info.plist` has `NSBluetoothAlwaysUsageDescription`.** A passkey sign-in in a web
+panel (GitHub's, 2026-11-24) makes Chromium check Bluetooth for WebAuthn's "use a phone or tablet" (caBLE). Without the
+key macOS kills Flare at once (`EXC_CRASH SIGABRT` in `__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__`, "must contain an
+NSBluetoothAlwaysUsageDescription key"), and so it would for a terminal program that uses Bluetooth. Chrome declares
+the same key. No entitlement is needed: Flare is hardened, not sandboxed. Held by
+`the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic` (`release.rs`). Source: Max,
+2026-11-24.
+
 ## Panel launcher and "Open in" (2026-11-24)
 
 Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, mockups approved by Max on 2026-11-24 (placement 3
 "ghost button that blooms", icon 6 "Layers"). The rules live in `crates/flare/src/launcher.rs` (pure, the clock passed
 in); `appctl/launcher_glue.rs` feeds them and does what they say; `ui/launcher.slint` only draws.
 
-1372. **The launcher shows only where a panel could open and none is open, one button for the tab in front.** A round
+1384. **The launcher shows only where a panel could open and none is open, one button for the tab in front.** A round
 ghost button, 26 px, 8 px from the top and 10 px from the right of the terminal, the Layers icon, at 45% opacity idle
 and solid while hovered or while its menu is open. It is hidden while the tab's panel is open, while Settings or the
 start screen is in front, while the window is too narrow for a slot (`panel-fits`), and while a remote tab's fitted
@@ -6109,7 +6119,7 @@ moves left of it while it shows. Whole device pixels at every scale. Held by
 `the_button_shows_while_the_tabs_panel_is_closed_and_goes_when_it_opens` and
 `the_button_and_its_menu_sit_in_the_corner_at_every_scale` and `the_button_goes_while_the_find_bar_is_open` (`appctl/tests/launcher_tests.rs`). Source: Max, 2026-11-24.
 
-1373. **The menu opens only from the button and survives the gap; 250 ms off both closes it.** Max: "it must appear
+1385. **The menu opens only from the button and survives the gap; 250 ms off both closes it.** Max: "it must appear
 only when the cursor is over the button, not wherever the menu would be; and it must not disappear while the cursor
 goes from the button to the menu across the small gap". The menu opens on the pointer entering the button, a click, or
 the button's accessible action; a closed menu is not drawn and its touch area is off. One touch area covers the menu
@@ -6126,7 +6136,7 @@ the pointer opened gives it the keys; a click on a keyed one closes it. Held by
 `the_menu_opens_only_from_the_button_and_survives_the_gap` (a real pointer through the window) and
 `a_clicked_menu_holds_its_keys_and_a_hovered_one_does_not` (`launcher_tests.rs`). Source: Max, 2026-11-24.
 
-1374. **The rows reuse the panel's own ways in; a row with nothing to do is left out.** Browser is
+1386. **The rows reuse the panel's own ways in; a row with nothing to do is left out.** Browser is
 `browser_open(tab, "about:blank")` with the address field holding the keys (a new page, even when the tab hid one);
 Device is `device_open(tab, None)`, offered only where `DeviceCtl::offered()`; Open a file... is the system Open dialog
 (`flare_win::pick::pick_any_file`, parented, starting in the tab's folder; `FLARE_E2E_PICK_FILE` answers under
@@ -6139,14 +6149,14 @@ numbers (`row_at`: the padding, the rule and the bridge pick nothing). Held by `
 `pick_any_file_with_a_seam_calls_done_at_once` (`flare-win` `pick.rs`), `browser_opens_the_web_panel_in_its_new_tab_state`
 `browser_after_a_hidden_page_goes_to_an_empty_page` and `open_a_file_shows_the_picked_file_and_says_so_when_it_cannot` (`launcher_tests.rs`). Source: Max, 2026-11-24.
 
-1375. **Last panel brings back what the tab's closed panel showed: a page, a device or a file.** It is
+1387. **Last panel brings back what the tab's closed panel showed: a page, a device or a file.** It is
 `PanelCtl::reopen` (what Ctrl+Shift+P brings back), behind a rule as the menu's last row, and shown only when
 `launcher::last_ok` holds: the panel is closed and showed a page other than `about:blank`, a device, or a file. A note
 or text handed over and the Changes view are not brought back; a mini-app or a mod's page is forgotten when its panel
 closes. Held by `last_panel_brings_back_a_page_a_device_or_a_file_and_nothing_else` (`launcher.rs`) and
 `last_panel_brings_back_what_the_tab_showed_last` (`launcher_tests.rs`). Source: Max, 2026-11-24.
 
-1376. **"Open in" hands what the panel shows to the system, through the openers links use.** A labelled button with an
+1388. **"Open in" hands what the panel shows to the system, through the openers links use.** A labelled button with an
 external-link icon (no tooltip): in the header, the leftmost of the controls on the right; on a web page, in the bar
 left of Draw arrow and the close. A web page (http or https only, `is_web_url`) says "Open in browser" and goes to
 `open_url`. A file on the click allowlist says "Open in <app>" when the default app's name is known, else "Open in

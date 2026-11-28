@@ -40,6 +40,6 @@ Shown and hidden; the corner at 100, 150 and 225 percent; the hover rules with a
 Open a file (picture, refused zip, cancel); Last panel; Open in for a file and a page.
 
 ## 6. Docs and gates
-Rules 1372 to 1376 in `docs/regression-rules.md`, `docs/features.md`, README's panel line, the e2e seam in
+Rules 1384 to 1388 in `docs/regression-rules.md`, `docs/features.md`, README's panel line, the e2e seam in
 `tests/names.rs`. Gates: `cargo fmt`, `cargo clippy -D warnings` for `flare` and `flare-win`, `cargo test -p flare --bin
 flare`, `cargo test -p flare-win`.

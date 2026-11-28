@@ -380,7 +380,7 @@ export component AppWindow inherits Window {
     out property <length> panel-convo-list-row-h: panel-slot.convo-list-row-h;
     callback panel-convo-select(string);
     callback panel-convo-open(string);
-    // The panel launcher (2026-11-24, rules 1372 to 1374): the ghost button over the front tab's terminal while its
+    // The panel launcher (2026-11-24, rules 1384 to 1386): the ghost button over the front tab's terminal while its
     // panel is closed, and its menu. The controller (`appctl/launcher_glue.rs`) sets all of it.
     in property <bool> launcher-shown;
     in property <bool> launcher-open;
@@ -400,7 +400,7 @@ export component AppWindow inherits Window {
     out property <length> launcher-menu-w: launcher.menu-w;
     out property <length> launcher-menu-hh: launcher.menu-hh;
     out property <bool> launcher-lit: launcher.button-lit;
-    // The panel header's "Open in" button (rule 1376): its words ("" hides it) and a press.
+    // The panel header's "Open in" button (rule 1388): its words ("" hides it) and a press.
     in property <string> panel-open-in;
     in property <string> panel-open-in-short;
     callback panel-open-in-clicked();
@@ -1461,7 +1461,7 @@ export component AppWindow inherits Window {
                             tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                             clicked => { root.preview-chip-clicked(); }
                         }
-                        // The panel launcher, over the terminal's top right (rule 1372). Only its button and its open
+                        // The panel launcher, over the terminal's top right (rule 1384). Only its button and its open
                         // menu take the pointer.
                         launcher := PanelLauncher {
                             x: 0px;

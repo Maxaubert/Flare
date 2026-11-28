@@ -1,4 +1,4 @@
-//! The panel launcher (2026-11-24, rules 1372 to 1376): the round ghost button in the top right of a tab's terminal
+//! The panel launcher (2026-11-24, rules 1384 to 1388): the round ghost button in the top right of a tab's terminal
 //! area while its side panel is closed, the menu it blooms into, and the panel header's "Open in" button.
 //!
 //! Everything here is pure and takes its time from the caller, so the tests hold the hover rules without a window or
@@ -9,7 +9,7 @@ use crate::panel_ctl::PanelSnap;
 /// How long the pointer may be off both the button and the menu before the menu closes (Max, 2026-11-24).
 pub const GRACE_MS: u64 = 250;
 
-/// The hover rules of the launcher's menu (rule 1373). The menu opens only on the pointer entering the BUTTON (or a
+/// The hover rules of the launcher's menu (rule 1385). The menu opens only on the pointer entering the BUTTON (or a
 /// click, or the keys); a closed menu takes no pointer, so the pointer passing where the menu would be does nothing.
 /// The menu's invisible bridge over the gap belongs to the menu. Leaving the button or the menu starts a grace;
 /// entering either cancels it; once it has run out with the pointer on neither, the menu closes.
@@ -115,7 +115,7 @@ impl Hover {
     }
 }
 
-/// What decides whether the launcher shows on the tab in front (rule 1372).
+/// What decides whether the launcher shows on the tab in front (rule 1384).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Where {
     /// The tab in front is a shell tab (not Settings, the start screen or a placeholder).
@@ -249,7 +249,7 @@ pub fn step(len: usize, from: i32, step: i32) -> i32 {
     (from + step).rem_euclid(n)
 }
 
-/// What Last panel can bring back (rule 1375): a closed panel that showed a page address, a device or a file. Not a
+/// What Last panel can bring back (rule 1387): a closed panel that showed a page address, a device or a file. Not a
 /// note or text handed over (no path), the Changes view, nor an empty page that never went anywhere. A mini-app or a
 /// mod's page is forgotten when its panel closes, so it never reaches here.
 pub fn last_ok(snap: Option<&PanelSnap>) -> bool {
@@ -264,7 +264,7 @@ pub fn last_ok(snap: Option<&PanelSnap>) -> bool {
     }
 }
 
-/// Where the panel header's "Open in" button sends what the panel shows (rule 1376).
+/// Where the panel header's "Open in" button sends what the panel shows (rule 1388).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenIn {
     /// A web page: the default browser, at this address (http or https only).
@@ -356,7 +356,7 @@ mod tests {
         }
     }
 
-    // ---- the hover rules (rule 1373) ----
+    // ---- the hover rules (rule 1385) ----
 
     #[test]
     fn only_the_button_opens_the_menu_and_a_closed_menu_takes_no_pointer() {
@@ -443,7 +443,7 @@ mod tests {
         assert!(!h.tick(10_000));
     }
 
-    // ---- where it shows (rule 1372) ----
+    // ---- where it shows (rule 1384) ----
 
     #[test]
     fn the_button_shows_only_where_a_panel_could_open_and_none_is_open() {
@@ -479,7 +479,7 @@ mod tests {
         }));
     }
 
-    // ---- the rows (rule 1374) ----
+    // ---- the rows (rule 1386) ----
 
     #[test]
     fn the_rows_follow_what_the_machine_and_the_tab_offer() {
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(step(0, 0, 1), -1);
     }
 
-    // ---- Last panel (rule 1375) ----
+    // ---- Last panel (rule 1387) ----
 
     #[test]
     fn last_panel_brings_back_a_page_a_device_or_a_file_and_nothing_else() {
@@ -575,7 +575,7 @@ mod tests {
         assert!(!last_ok(None));
     }
 
-    // ---- Open in (rule 1376) ----
+    // ---- Open in (rule 1388) ----
 
     #[test]
     fn open_in_sends_a_page_to_the_browser_and_a_file_to_its_app() {

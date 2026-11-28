@@ -669,7 +669,7 @@ const E2E_SEAMS: &[&str] = &[
     // M3, unchanged: the folder picker answers from this path with no dialog (window.rs reads it as a
     // concatenated name; tools/e2e newTabFolder and spawn set it).
     "FLARE_E2E_PICK",
-    // The panel launcher's "Open a file..." (2026-11-24, rule 1374): the Open dialog answers from this path with no
+    // The panel launcher's "Open a file..." (2026-11-24, rule 1386): the Open dialog answers from this path with no
     // dialog, unset is a cancel (window.rs reads it as a concatenated name).
     "FLARE_E2E_PICK_FILE",
     // M10 Appendix F: with a sandboxed HOME, the transcript store of that HOME is read for the Claude

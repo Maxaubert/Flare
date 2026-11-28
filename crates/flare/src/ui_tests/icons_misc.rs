@@ -633,7 +633,7 @@ fn the_plugin_notices_close_cross_draws_at_full_size_at_every_scale() {
     }
 }
 
-// --- The panel launcher (launcher.slint, rule 1372) and "Open in" (panel.slint, rule 1376). ---
+// --- The panel launcher (launcher.slint, rule 1384) and "Open in" (panel.slint, rule 1388). ---
 
 /// The launcher's Layers glyph and the panel header's external-link glyph.
 const LAYERS: &str = "M12 4l8 4-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4";
@@ -748,9 +748,9 @@ const SIZED: [(&str, usize); 18] = [
     ("update.slint", 1),
     ("dictation_pill.slint", 1),
     ("dictation_widget.slint", 1),
-    // The third is "Open in" (rule 1376): `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale`.
+    // The third is "Open in" (rule 1388): `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale`.
     ("panel.slint", 3),
-    // The Layers glyph and a row's icon (rule 1372), the same test.
+    // The Layers glyph and a row's icon (rule 1384), the same test.
     ("launcher.slint", 2),
     // The badge glyph (plugins phase 1): `ui_tests::decor::every_badge_glyph_draws_at_full_size_at_every_scale`.
     ("decor.slint", 1),

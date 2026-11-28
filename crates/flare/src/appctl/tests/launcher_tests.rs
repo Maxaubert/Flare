@@ -1,4 +1,4 @@
-//! The panel launcher and "Open in" through the real controller and window (2026-11-24, rules 1372 to 1376): where the
+//! The panel launcher and "Open in" through the real controller and window (2026-11-24, rules 1384 to 1388): where the
 //! button shows, the hover rules with a real pointer (the menu opens only from the button, survives the gap, closes
 //! 250 ms after the pointer left both), the keys, what each row opens, and where "Open in" sends a file or a page.
 
@@ -60,7 +60,7 @@ fn open(f: &Fx) -> bool {
     f.h.comp.get_launcher_open()
 }
 
-/// Rule 1372: the button shows on a shell tab whose panel is closed, and goes while the panel is open.
+/// Rule 1384: the button shows on a shell tab whose panel is closed, and goes while the panel is open.
 #[test]
 fn the_button_shows_while_the_tabs_panel_is_closed_and_goes_when_it_opens() {
     let (f, _h, _) = live(Opts::default());
@@ -78,7 +78,7 @@ fn the_button_shows_while_the_tabs_panel_is_closed_and_goes_when_it_opens() {
     assert!(!f.h.comp.get_launcher_shown());
 }
 
-/// Rule 1372 (review fix): the find bar sits in the same corner, so the button and its menu go while it is open and
+/// Rule 1384 (review fix): the find bar sits in the same corner, so the button and its menu go while it is open and
 /// come back when it closes.
 #[test]
 fn the_button_goes_while_the_find_bar_is_open() {
@@ -103,7 +103,7 @@ fn the_button_goes_while_the_find_bar_is_open() {
     );
 }
 
-/// Rule 1372: at 100, 150 and 225 percent the button is 26 px round, 8 px from the top and 10 px from the right of the
+/// Rule 1384: at 100, 150 and 225 percent the button is 26 px round, 8 px from the top and 10 px from the right of the
 /// terminal, it draws, and its menu hangs 6 px under it with their right edges met, inside the window.
 #[test]
 fn the_button_and_its_menu_sit_in_the_corner_at_every_scale() {
@@ -159,7 +159,7 @@ fn the_button_and_its_menu_sit_in_the_corner_at_every_scale() {
 
 use crate::ui_harness::Frame;
 
-/// Rule 1373, with the pointer: where the menu would be does nothing; the button opens it; the gap to the menu keeps it;
+/// Rule 1385, with the pointer: where the menu would be does nothing; the button opens it; the gap to the menu keeps it;
 /// off both for 250 ms closes it, and back within that time does not.
 #[test]
 fn the_menu_opens_only_from_the_button_and_survives_the_gap() {
@@ -203,7 +203,7 @@ fn the_menu_opens_only_from_the_button_and_survives_the_gap() {
     assert!(!open(&f));
 }
 
-/// Rule 1373, the keys: a click opens the menu with the keys and its first row lit; the arrows move, Enter picks, and
+/// Rule 1385, the keys: a click opens the menu with the keys and its first row lit; the arrows move, Enter picks, and
 /// Escape is the menu's. A menu the pointer opened takes no key: its Escape still reaches the shell.
 #[test]
 fn a_clicked_menu_holds_its_keys_and_a_hovered_one_does_not() {
@@ -247,7 +247,7 @@ fn a_clicked_menu_holds_its_keys_and_a_hovered_one_does_not() {
     assert!(!open(&f));
 }
 
-/// Rule 1374: Browser opens the tab's web panel on an empty page with the address field holding the keys, and the
+/// Rule 1386: Browser opens the tab's web panel on an empty page with the address field holding the keys, and the
 /// button goes because the panel is open.
 #[test]
 fn browser_opens_the_web_panel_in_its_new_tab_state() {
@@ -279,7 +279,7 @@ fn browser_opens_the_web_panel_in_its_new_tab_state() {
     );
 }
 
-/// Rule 1374: a page the tab's panel hid is not shown again by Browser: the view goes to the empty page.
+/// Rule 1386: a page the tab's panel hid is not shown again by Browser: the view goes to the empty page.
 #[test]
 fn browser_after_a_hidden_page_goes_to_an_empty_page() {
     let (f, _h, _) = live(Opts::default());
@@ -316,7 +316,7 @@ fn browser_after_a_hidden_page_goes_to_an_empty_page() {
     assert_eq!(last_nav.as_deref(), Some("about:blank"), "{calls:?}");
 }
 
-/// Rule 1374: Open a file... starts the Open dialog in the tab's folder; a picture picked there shows in the panel the
+/// Rule 1386: Open a file... starts the Open dialog in the tab's folder; a picture picked there shows in the panel the
 /// way a file link's "Show in side panel" shows it; a file the panel cannot show is said in the panel; a cancel does
 /// nothing.
 #[test]
@@ -376,7 +376,7 @@ fn open_a_file_shows_the_picked_file_and_says_so_when_it_cannot() {
     assert!(!f.h.comp.get_panel_open());
 }
 
-/// Rule 1375: Last panel appears once the tab's panel showed a file (or a page, or a device) and is closed, and brings
+/// Rule 1387: Last panel appears once the tab's panel showed a file (or a page, or a device) and is closed, and brings
 /// that back. A note handed over is not something to bring back.
 #[test]
 fn last_panel_brings_back_what_the_tab_showed_last() {
@@ -404,7 +404,7 @@ fn last_panel_brings_back_what_the_tab_showed_last() {
     assert_eq!(snap.path.as_deref(), Some(abs.as_str()));
 }
 
-/// Rule 1376: a file's "Open in" hands it to its default app through the path openers (on a worker), with the words
+/// Rule 1388: a file's "Open in" hands it to its default app through the path openers (on a worker), with the words
 /// for a default app no one named; the device panel has no button.
 #[test]
 fn open_in_hands_a_file_to_its_default_app() {
@@ -428,7 +428,7 @@ fn open_in_hands_a_file_to_its_default_app() {
     }
 }
 
-/// Rule 1376: the header gives "Open in" only the room the title can spare: full words when they fit, the short word
+/// Rule 1388: the header gives "Open in" only the room the title can spare: full words when they fit, the short word
 /// when only that fits, none at all at the narrowest slot. A markdown file (its view control in the header) with a long
 /// app name, at the default slot and at the smallest.
 #[test]
@@ -468,7 +468,7 @@ fn open_in_takes_only_the_room_the_title_can_spare() {
     assert!(!f.h.comp.get_panel_open_in_visible());
 }
 
-/// Rule 1376: the label follows the page the person went to, not only one an agent opened.
+/// Rule 1388: the label follows the page the person went to, not only one an agent opened.
 #[test]
 fn open_in_follows_a_page_the_browser_went_to() {
     let (f, _h, _) = live(Opts::default());
@@ -504,7 +504,7 @@ fn open_in_follows_a_page_the_browser_went_to() {
     assert_eq!(f.log.borrow().urls.last().map(String::as_str), Some(url));
 }
 
-/// Rule 1376: a web page's "Open in browser" sends the page's address to the default browser through `open_url`; an
+/// Rule 1388: a web page's "Open in browser" sends the page's address to the default browser through `open_url`; an
 /// empty page has no button.
 #[test]
 fn open_in_browser_sends_the_page_address() {

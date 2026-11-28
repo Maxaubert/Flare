@@ -1569,7 +1569,7 @@ fn run_window_with(
             }));
         }
         {
-            // The panel launcher's "Open a file..." (rule 1374): the system's Open dialog, parented to the window,
+            // The panel launcher's "Open a file..." (rule 1386): the system's Open dialog, parented to the window,
             // starting in the tab's folder. Under --e2e an unset seam is a cancel: no real dialog shows.
             let weak = app.as_weak();
             rc.borrow_mut()

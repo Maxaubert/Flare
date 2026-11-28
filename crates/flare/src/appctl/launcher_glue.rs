@@ -1,4 +1,4 @@
-//! The panel launcher and the panel header's "Open in" in the window (2026-11-24, rules 1372 to 1376). The rules live
+//! The panel launcher and the panel header's "Open in" in the window (2026-11-24, rules 1384 to 1388). The rules live
 //! in `crate::launcher` (pure, with its tests); this file feeds them the pointer, the keys and the grace timer, pushes
 //! what they say into the window, and does what a row or the button asks with the calls that already exist: the web
 //! panel's `browser_open`, the device panel's `device_open`, the path a file link's "Show in side panel" takes

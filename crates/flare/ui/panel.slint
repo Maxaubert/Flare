@@ -354,7 +354,7 @@ component WebButton inherits Rectangle {
     }
 }
 
-// "Open in" (2026-11-24, rule 1376): what the panel shows, outside Flare (a file in its default app, a page in the
+// "Open in" (2026-11-24, rule 1388): what the panel shows, outside Flare (a file in its default app, a page in the
 // default browser). Labelled, so it has no tooltip; an external-link glyph, 12 px. `short` is the narrow panel's word.
 component OpenInButton inherits Rectangle {
     in property <string> text;
@@ -476,7 +476,7 @@ component WebBar inherits Rectangle {
     out property <length> draw-w: draw-btn.width;
     out property <length> close-x: close-btn.absolute-position.x;
     out property <length> close-w: close-btn.width;
-    // "Open in browser" (rule 1376), left of "Draw arrow" and the close: "" hides it. It gives way below 280 px, and
+    // "Open in browser" (rule 1388), left of "Draw arrow" and the close: "" hides it. It gives way below 280 px, and
     // says only "Open" below 440 px, so the address keeps room to read.
     in property <string> open-in;
     callback open-in-clicked();
@@ -986,7 +986,7 @@ export component PanelSlot inherits Rectangle {
     // rule before the close) and the slow mark.
     property <length> head-device: root.kind == 5 && root.device-controls ? 5 * Px.snap(24px) + 4 * Px.snap(2px) + Px.snap(10px) : 0px;
     property <length> head-slow: root.kind == 5 && root.device-slow != "" ? slow-mark.width + Px.snap(6px) : 0px;
-    // "Open in" (rule 1376): the words ("" hides it), the narrow panel's word, and a press. In the header it is the
+    // "Open in" (rule 1388): the words ("" hides it), the narrow panel's word, and a press. In the header it is the
     // leftmost of the controls on the right; on a web page it sits in the bar.
     in property <string> open-in;
     in property <string> open-in-short;

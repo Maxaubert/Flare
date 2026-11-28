@@ -1,7 +1,7 @@
 # Panel launcher and "Open in"
 
 Status: mockups approved by Max, 2026-11-24 (placement 3 "ghost button that blooms", icon 6 "Layers"). Plan:
-`docs/superpowers/plans/2026-11-24-panel-launcher.md`. Rules 1372 to 1376.
+`docs/superpowers/plans/2026-11-24-panel-launcher.md`. Rules 1384 to 1388.
 
 Mockups: `2026-11-24-panel-launcher-mockup.html` (the first flow, with "Open in"), `2026-11-24-panel-launcher-10-mockups.html`
 (the ten placements), `2026-11-24-panel-launcher-ghost-button-mockup.html` (the pick, with the ten icons).

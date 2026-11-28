@@ -3304,7 +3304,7 @@ Follow-ups to A1 to A6 (PR #339).
 
 ## Panel launcher and "Open in", 2026-11-24
 
-Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1372 to 1376. Mockups approved by Max
+Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to 1388. Mockups approved by Max
 (placement 3, icon 6).
 
 - **A way into a closed panel.** While a tab's side panel is closed, a faint round button (the Layers icon) sits in the

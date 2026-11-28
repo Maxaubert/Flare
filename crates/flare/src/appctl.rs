@@ -3653,7 +3653,7 @@ impl AppCtl {
         let Some(app) = self.app() else { return };
         let fs = self.term.find_state();
         app.set_find_open(fs.open);
-        // The panel launcher shares the find bar's corner and goes while it is open (rule 1372).
+        // The panel launcher shares the find bar's corner and goes while it is open (rule 1384).
         self.launcher_find_changed(&app, fs.open);
         if app.get_find_query().as_str() != fs.query {
             app.set_find_query(fs.query.as_str().into());
@@ -5120,7 +5120,7 @@ impl AppCtl {
             self.close_menu();
             return KeyOutcome::Consumed;
         }
-        // The panel launcher's open menu (rule 1373): a keyed one holds its keys; Escape closes any.
+        // The panel launcher's open menu (rule 1385): a keyed one holds its keys; Escape closes any.
         if let Some(out) = self.launcher_key(ev) {
             return out;
         }

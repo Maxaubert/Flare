@@ -524,7 +524,7 @@ mod tests {
 
     use super::*;
 
-    /// Rule 1376: the default app's name is asked only for a plain extension, never a name the registry could read as
+    /// Rule 1388: the default app's name is asked only for a plain extension, never a name the registry could read as
     /// something else.
     #[test]
     fn the_app_name_is_asked_only_for_a_plain_extension() {
