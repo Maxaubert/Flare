@@ -1509,6 +1509,13 @@ fn run_window_with(
                         } else {
                             Arc::new(flare_win::keep_awake::SystemAwake::new())
                         });
+                        // Rule 1392: no App Nap while a remote viewer follows a tab here. An e2e run holds it off
+                        // for its whole life already (`hold_off_app_nap`), so a counter stands in.
+                        c.set_no_nap(if args.e2e {
+                            Arc::new(flare_win::app_nap::FakeNoNap::new())
+                        } else {
+                            Arc::new(flare_win::app_nap::SystemNoNap)
+                        });
                     }
                     mods_dispatcher = Some(server.dispatcher());
                     owner_events = Some(server.owner_events());

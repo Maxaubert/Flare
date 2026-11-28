@@ -21,6 +21,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::process::{ChildStdin, ChildStdout};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::Duration;
 
 use crate::framing::Wire;
 
@@ -43,6 +44,8 @@ struct Inbox {
     queue: Mutex<Queue>,
     /// Signalled when the line reader took bytes, or the wire was dropped.
     room: Condvar,
+    /// Signalled when bytes came or the stream ended, so a reader's nap ends at once (rule 1392).
+    ready: Condvar,
 }
 
 impl Inbox {
@@ -123,8 +126,11 @@ fn pump(mut reader: impl Read, inbox: &Inbox) {
             return;
         }
         q.data.extend(&buf[..got]);
+        drop(q);
+        inbox.ready.notify_all();
     }
     inbox.lock().ended = true;
+    inbox.ready.notify_all();
 }
 
 impl Wire for StdioWire {
@@ -146,6 +152,16 @@ impl Wire for StdioWire {
         let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         w.write_all(bytes)?;
         w.flush()
+    }
+
+    /// Rule 1392: the reader thread says when bytes came, so a line reader's nap ends then and not up to 10 ms later.
+    fn wait_ready(&self, max: Duration) {
+        let q = self.inbox.lock();
+        let _ = self
+            .inbox
+            .ready
+            .wait_timeout_while(q, max, |q| q.data.is_empty() && !q.ended) // sync-ok: a channel worker thread, capped at the reader's nap
+            .unwrap_or_else(|e| e.into_inner());
     }
 }
 
@@ -346,6 +362,122 @@ mod tests {
         assert!(info.capabilities.iter().all(|c| c.starts_with("remote.")));
         drop(viewer);
         host.join().unwrap();
+    }
+
+    /// Rule 1392: a reader's nap on this wire ends when bytes come or the stream ends, not when its time is up.
+    #[test]
+    fn a_nap_ends_when_bytes_come_or_the_stream_ends() {
+        let (wire, mut w, _out) = os_wire();
+        let t = Instant::now();
+        wire.wait_ready(Duration::from_millis(30));
+        assert!(
+            t.elapsed() >= Duration::from_millis(25),
+            "nothing came: the whole nap"
+        );
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            w.write_all(b"x").unwrap();
+            w
+        });
+        let t = Instant::now();
+        wire.wait_ready(Duration::from_secs(10));
+        let woke = t.elapsed();
+        assert!(woke < Duration::from_secs(5), "woken by the byte: {woke:?}");
+        let w = writer.join().unwrap();
+        let t = Instant::now();
+        wire.wait_ready(Duration::from_secs(10));
+        assert!(
+            t.elapsed() < Duration::from_millis(100),
+            "a byte is ready: no nap"
+        );
+        assert_eq!(drain(&wire, 1), b"x");
+        drop(w);
+        let t = Instant::now();
+        wire.wait_ready(Duration::from_secs(10));
+        assert!(t.elapsed() < Duration::from_secs(5), "the end wakes it");
+    }
+
+    /// Rule 1392, the measurement: a call's round trip over two stdio wires on OS pipes (the viewer's ssh child and the
+    /// serve process), calls 30 ms apart as the polls make them, with the naps that wake when bytes come and with the
+    /// old plain sleeps. Printed, not asserted: `cargo test -p flare-ctl --lib round_trip -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run by hand"]
+    fn round_trip_with_and_without_the_wake() {
+        use crate::client::{Client, RemoteHelloParams};
+        use crate::grant::Grant;
+        use crate::method::Method;
+        use crate::proto::CtlError;
+        use crate::session::{
+            CallContext, ConnOrigin, Dispatcher, ServerConfig, Shared, serve_stdio,
+        };
+        use serde_json::{Value, json};
+
+        struct Host;
+        impl Dispatcher for Host {
+            fn resolve_token(&self, _: &str) -> Option<Grant> {
+                None
+            }
+            fn resolve_tab_token(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn remote_grant(&self, _: ConnOrigin) -> Option<Grant> {
+                Some(Grant::Remote)
+            }
+            fn call(&self, _: &CallContext, _: Method, _: Value) -> Result<Value, CtlError> {
+                Ok(json!({}))
+            }
+        }
+        /// The wire as it was: its nap is a plain sleep.
+        struct Sleepy(StdioWire);
+        impl Wire for Sleepy {
+            fn poll_read(&self, buf: &mut [u8]) -> io::Result<Option<usize>> {
+                self.0.poll_read(buf)
+            }
+            fn write_all(&self, bytes: &[u8]) -> io::Result<()> {
+                self.0.write_all(bytes)
+            }
+        }
+        fn run<W: Wire + Send + 'static>(wrap: fn(StdioWire) -> W) -> Vec<u32> {
+            let (to_host_r, to_host_w) = io::pipe().unwrap();
+            let (to_viewer_r, to_viewer_w) = io::pipe().unwrap();
+            let host = std::thread::spawn(move || {
+                let wire = wrap(StdioWire::new(to_host_r, to_viewer_w).unwrap());
+                let shared = Shared::new_stdio(Arc::new(Host), ServerConfig::stdio());
+                serve_stdio(&wire, &shared);
+            });
+            let mut viewer = Client::new(wrap(StdioWire::new(to_viewer_r, to_host_w).unwrap()));
+            viewer
+                .remote_hello(
+                    &RemoteHelloParams {
+                        machine: "viewer".into(),
+                        flare_version: "1".into(),
+                    },
+                    Duration::from_secs(10),
+                )
+                .unwrap();
+            let mut took = Vec::new();
+            for _ in 0..60 {
+                std::thread::sleep(Duration::from_millis(30));
+                let t = Instant::now();
+                viewer
+                    .call(Method::RemoteStatus, json!({}), Duration::from_secs(5))
+                    .unwrap();
+                took.push(u32::try_from(t.elapsed().as_micros()).unwrap());
+            }
+            drop(viewer);
+            host.join().unwrap();
+            took.sort_unstable();
+            took
+        }
+        let ms = |v: &[u32], p: usize| f64::from(v[(v.len() - 1) * p / 100]) / 1000.0;
+        for (name, v) in [("plain sleeps", run(Sleepy)), ("wake on bytes", run(|w| w))] {
+            println!(
+                "{name}: round trip p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms",
+                ms(&v, 50),
+                ms(&v, 95),
+                ms(&v, 100)
+            );
+        }
     }
 
     #[test]

@@ -532,11 +532,48 @@ impl AppCtl {
             }
             _ => {}
         }
+        self.sync_no_nap();
+    }
+
+    /// Rule 1392: while a remote viewer follows any tab of this host, the app is kept out of App Nap (macOS), so the
+    /// viewer's keys echo at once; the last follower gone lets go. Idle system sleep is left to the keep-awake above.
+    fn sync_no_nap(&mut self) {
+        let want = self
+            .remote_host
+            .as_ref()
+            .is_some_and(|h| !h.followed_tabs().is_empty());
+        match (want, self.nap_hold.is_some()) {
+            (true, false) => {
+                self.nap_hold = self.no_nap.as_ref().map(|k| k.hold());
+                if self.nap_hold.is_some() {
+                    crate::diag_ctl::crumb_often(
+                        "no-app-nap",
+                        &[("held", crate::diag_ctl::txt("1"))],
+                    );
+                }
+            }
+            (false, true) => {
+                self.nap_hold = None;
+                crate::diag_ctl::crumb_often("no-app-nap", &[("held", crate::diag_ctl::txt("0"))]);
+            }
+            _ => {}
+        }
     }
 
     /// The keep-awake the host holds while a remote session works (startup; a test gives a fake).
     pub fn set_keep_awake(&mut self, k: Arc<dyn flare_win::keep_awake::KeepAwake>) {
         self.keep_awake = Some(k);
+    }
+
+    /// What keeps the host out of App Nap while it serves a remote session (startup; a test gives a fake).
+    pub fn set_no_nap(&mut self, k: Arc<dyn flare_win::app_nap::NoNap>) {
+        self.no_nap = Some(k);
+    }
+
+    /// Whether this host holds App Nap off now (tests).
+    #[cfg(test)]
+    pub(crate) fn holds_no_nap(&self) -> bool {
+        self.nap_hold.is_some()
     }
 
     /// Whether this host holds the system awake now (tests and the probe).

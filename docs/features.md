@@ -3351,3 +3351,43 @@ Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to
   225 percent).
 - **Not yet.** A Mac lookup of the default app's name; an e2e scenario of its own (the window tests run the real
   controller and window headless).
+
+
+## Remote tabs: faster typing, with timing in the log, 2026-11-28
+
+Rule 1392. Max, 2026-11-28: "when i type since it uses ssh, theres a big delay". Step 1 only (measure, and the quick
+wins); output is still polled, not pushed.
+
+- **Timing in the diagnostics log.** A remote tab's link times every call by its method, and each key from when it was
+  typed to its echo (the first output after its `remote.input`, sampled only when the poll before it was empty). A
+  `remote-typing` line goes to the diagnostics log every 10 s while there was typing, or after 200 keys: `keys`,
+  `noEcho`, `echoP50Ms`, `echoP95Ms`, `echoMaxMs`, `fastPolls`, and for each method its count and p50 and p95 (for
+  example `inputN`, `inputP50Ms`, `outputP95Ms`, `statusP50Ms`). Numbers only, never what was typed.
+- **Fast polls after typing.** After the host took a key, text or a paste, `remote.output` is polled every 3 ms (a
+  sleep, not a condvar wait, which on Windows ends on the 15.6 ms tick) until the echo comes, 100 ms at most, where it
+  used to wait 30 ms. Every call spends from a budget of 50 a second (20 at once); a fast poll is made only while the
+  budget has room, so fast polls add nothing once a link makes 50 calls a second, and the other calls are as before
+  (a held key at 30 a second came to 75 calls a second at most, under the host's 100). An idle tab polls as before.
+- **Typing first.** While a key waits for its echo, or typing waits to be sent, the status and conversation polls wait
+  (half a second at most), so a key never queues behind them.
+- **No App Nap on the host (macOS).** While a remote viewer follows any tab of a Mac, its Flare holds an activity that
+  is user initiated and latency critical (`NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical`),
+  so the system does not nap it; the last follower gone lets go. Idle sleep is still the keep-awake's call (rules 296,
+  1302).
+- **The stdio wire wakes on bytes.** A line reader on the link's stdio (the viewer's ssh child, and the serve process on
+  the host) used to sleep 1 to 10 ms between looks; it now waits on the wire's reader thread and wakes when bytes come.
+  The pipe hops (the serve process to the running Flare) still sleep-poll as before.
+- **Measured (headless fakes, this PC).** Key to echo over a fake link, p50: round trip 2 ms and echo 3 ms, before
+  50.8 ms in one run and 6.8 ms in the next (it depends on whether the first poll catches the echo; p95 about 53 ms
+  in both), after 12.9 ms and 6.8 ms (p95 13.1 ms); round trip 2 ms and echo 30 ms, 51.1 ms before, 36.5 ms after; round trip 20 ms
+  and echo 3 ms, 42 ms both (two round trips is the floor); round trip 20 ms and echo 30 ms, 97.4 ms before, 65.8 ms
+  after. One call's round trip over two stdio wires on OS pipes, calls 30 ms apart: p50 7.68 ms before, 0.31 ms after.
+- **Tests.** `remote_timing.rs` (percentiles, the budget, the echo sampling, the summary's cadence),
+  `remote_link_tests.rs` (fast polls until the echo and an idle tab as slow as before, a held key under the host's real
+  rates with the link up, the status poll waiting for an echo), `typing_waits_is_seen_without_taking_it`
+  (`remote_pty.rs`), `a_nap_ends_when_bytes_come_or_the_stream_ends` (`stdio.rs`), `app_nap.rs` (`flare-win`) and
+  `the_host_holds_app_nap_off_while_a_remote_viewer_follows_a_tab` (`ui_tests/agent_flows/remote_flows.rs`). The
+  measurements are ignored tests run by hand: `key_to_echo_before_and_after` and `round_trip_with_and_without_the_wake`.
+- **Not yet.** Output pushed by the host (a protocol change, step 2), the pipe hops' sleeps, and Mac keys (word delete
+  and word jumps as a Mac shell reads them). The App Nap hold is compiled for macOS (checked for `aarch64-apple-darwin`
+  here) but not run on a Mac.

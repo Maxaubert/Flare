@@ -67,6 +67,20 @@ struct HostState {
     no_mouse: bool,
     snapshot_mouse: Option<(&'static str, bool)>,
     input_at: Vec<Instant>,
+    /// Rule 1392: a shell that echoes each typed text this long after its `remote.input` (None: no echo), the echoes
+    /// still to come, and what happened in order (`input`, `output`, `echo` for an output that carried bytes,
+    /// `status`, `convo`).
+    echo_after: Option<Duration>,
+    echoes: Vec<(Instant, String, Vec<u8>)>,
+    events: Vec<&'static str>,
+    /// Rule 1392: the real host's rates (100 calls a second per link, 200 at once; 50 `remote.input` a second per
+    /// tab), when set; how many calls they refused, and when every call came.
+    rates: Option<HashMap<u64, flare_ctl::session::Bucket>>,
+    input_rates: HashMap<String, flare_ctl::session::Bucket>,
+    rate_limited: u32,
+    call_at: Vec<Instant>,
+    /// Rule 1392: what each call takes on the line, half before the host answers and half after (ssh's round trip).
+    latency: Duration,
 }
 
 #[derive(Clone, Default)]
@@ -89,6 +103,47 @@ impl FakeHost {
         let mut st = lk(self);
         st.calls.push(m.name().to_string());
         let tab = p["tab"].as_str().unwrap_or_default().to_string();
+        let now = Instant::now();
+        st.call_at.push(now);
+        if let Some(rates) = st.rates.as_mut() {
+            let b = rates
+                .entry(conn)
+                .or_insert_with(|| flare_ctl::session::Bucket::new(100.0, 200.0, now));
+            let link_ok = b.take(now);
+            let input_ok = m != Method::RemoteInput
+                || st
+                    .input_rates
+                    .entry(tab.clone())
+                    .or_insert_with(|| flare_ctl::session::Bucket::new(50.0, 50.0, now))
+                    .take(now);
+            if !link_ok || !input_ok {
+                st.rate_limited += 1;
+                return Err(CtlError::new(code::RATE_LIMITED, "too many requests"));
+            }
+        }
+        // The shell's echoes that are due are in its output before any read.
+        let due: Vec<(String, Vec<u8>)> = {
+            let (now_due, later): (Vec<_>, Vec<_>) =
+                st.echoes.drain(..).partition(|(at, _, _)| *at <= now);
+            st.echoes = later;
+            now_due.into_iter().map(|(_, t, b)| (t, b)).collect()
+        };
+        for (t, b) in due {
+            if let Some(ht) = st.tabs.get_mut(&t) {
+                ht.out.extend_from_slice(&b);
+            }
+        }
+        match m {
+            Method::RemoteInput => st.events.push("input"),
+            Method::RemoteStatus => st.events.push("status"),
+            Method::RemoteConvo => st.events.push("convo"),
+            Method::RemoteOutput => {
+                let since = p["since"].as_u64().unwrap_or(0) as usize;
+                let more = st.tabs.get(&tab).is_some_and(|t| t.out.len() > since);
+                st.events.push(if more { "echo" } else { "output" });
+            }
+            _ => {}
+        }
         match m {
             Method::RemoteOpen => {
                 st.opens.push(p.clone());
@@ -170,6 +225,19 @@ impl FakeHost {
                 }
                 let intents = parse_intents(p.get("intents"))?;
                 let n = intents.len();
+                if let Some(after) = st.echo_after {
+                    let mut said = Vec::new();
+                    for i in &intents {
+                        match i {
+                            Intent::Text(t) => said.extend_from_slice(t.as_bytes()),
+                            Intent::Key(_) => said.push(b'*'),
+                            _ => {}
+                        }
+                    }
+                    if !said.is_empty() {
+                        st.echoes.push((now + after, tab.clone(), said));
+                    }
+                }
                 st.tabs
                     .get_mut(&tab)
                     .ok_or_else(no_tab)?
@@ -354,10 +422,20 @@ struct FakeLink {
 
 impl Link for FakeLink {
     fn call(&mut self, m: Method, p: Value, _t: Duration) -> Result<Value, LinkError> {
-        if lk(&self.host).epoch != self.epoch {
+        let (epoch, latency) = {
+            let st = lk(&self.host);
+            (st.epoch, st.latency)
+        };
+        if epoch != self.epoch {
             return Err(LinkError::Down("the link broke".into()));
         }
+        if !latency.is_zero() {
+            std::thread::sleep(latency / 2); // sync-ok: test code only, the line's way there
+        }
         let answer = self.host.answer(self.conn, m, &p);
+        if !latency.is_zero() {
+            std::thread::sleep(latency / 2); // sync-ok: test code only, the line's way back
+        }
         let mut st = lk(&self.host);
         if m == Method::RemoteOpen && answer.is_ok() && st.lose_open_answers > 0 {
             // The host opened the tab; the link broke before its answer came back.
@@ -396,6 +474,8 @@ fn fast() -> Timing {
     Timing {
         poll_min: Duration::from_millis(5),
         poll_max: Duration::from_millis(20),
+        poll_fast: Duration::from_millis(1),
+        fast_for: Duration::from_millis(20),
         backoff_min: Duration::from_millis(20),
         backoff_max: Duration::from_millis(80),
         call: Duration::from_secs(5),
@@ -2183,4 +2263,236 @@ fn a_find_refused_past_the_patience_tries_the_link_again_and_never_ends_the_tab(
     wait_for("the new id", || r.live.host_tab().as_deref() == Some("h2"));
     r.live_on();
     assert!(!r.text().contains("was ended"), "{:?}", r.text());
+}
+
+// ---- rule 1392: typing's echo, fast ----
+
+fn echoing(after_ms: u64) -> FakeHost {
+    let h = FakeHost::default();
+    lk(&h).echo_after = Some(Duration::from_millis(after_ms));
+    h
+}
+
+/// Waits until the tab shows `n` copies of `c`; how long that took.
+fn echo_of(r: &Rig, c: char, n: usize) -> Duration {
+    let t = Instant::now();
+    while r.text().matches(c).count() < n {
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "no echo: {:?}",
+            r.text()
+        );
+        std::thread::sleep(Duration::from_micros(200)); // sync-ok: test code only, never the app
+    }
+    t.elapsed()
+}
+
+/// The host's events from the last `input` on, up to the first echo after it.
+fn to_the_echo(host: &FakeHost) -> Vec<&'static str> {
+    let ev = lk(host).events.clone();
+    let i = ev.iter().rposition(|e| *e == "input").expect("an input");
+    let j = ev[i..]
+        .iter()
+        .position(|e| *e == "echo")
+        .map_or(ev.len(), |j| i + j);
+    ev[i..j].to_vec()
+}
+
+fn outputs_between(host: &FakeHost, from: Instant, to: Instant) -> usize {
+    let st = lk(host);
+    st.calls
+        .iter()
+        .zip(&st.call_at)
+        .filter(|(c, at)| *c == "remote.output" && **at >= from && **at < to)
+        .count()
+}
+
+/// Rule 1392: after a key the host took, the output is polled every few ms until its echo comes (here 60 ms later),
+/// where the polls used to wait 30 ms (three polls at most); an idle tab polls as slowly as before, fast polls or not.
+#[test]
+fn after_a_key_the_output_is_polled_fast_until_its_echo_and_idle_stays_slow() {
+    let host = echoing(60);
+    let mut r = rig_timed(host, None, Timing::default());
+    r.live_on();
+    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test code only, the polls reach their slowest
+    let t = Instant::now();
+    let idle = outputs_between(&r.host, t - Duration::from_millis(250), t);
+    assert!(idle <= 2, "idle: {idle} polls in 250 ms");
+    r.writer.write_all(b"q").unwrap();
+    echo_of(&r, 'q', 1);
+    let polls = to_the_echo(&r.host)
+        .iter()
+        .filter(|e| **e == "output")
+        .count();
+    assert!(
+        polls >= 6,
+        "fast polls while the echo was on its way: {:?}",
+        to_the_echo(&r.host)
+    );
+    // Once the echo is in, the polls slow down as before: a fast poll never shortens the idle back-off.
+    std::thread::sleep(Duration::from_millis(1300)); // sync-ok: test code only, the idle back-off
+    let t = Instant::now();
+    let idle = outputs_between(&r.host, t - Duration::from_millis(1000), t);
+    assert!(idle <= 5, "{idle} polls in an idle second");
+}
+
+/// Rule 1392: a held key (30 a second for 3 s) over a link with the host's real rates: no call is refused, the link
+/// never drops, every key's echo arrives, and no second of calls passes the host's 100.
+#[test]
+fn a_held_key_stays_under_the_hosts_rates_and_the_link_stays_up() {
+    let host = echoing(5);
+    {
+        let mut st = lk(&host);
+        st.rates = Some(HashMap::new());
+        st.latency = Duration::from_millis(1);
+    }
+    let mut r = rig_timed(host, None, Timing::default());
+    r.live_on();
+    let keys = 90;
+    for _ in 0..keys {
+        r.writer.write_all(b"z").unwrap();
+        std::thread::sleep(Duration::from_millis(33)); // sync-ok: test code only, a key's repeat
+    }
+    echo_of(&r, 'z', keys);
+    let st = lk(&r.host);
+    assert_eq!(st.rate_limited, 0, "no call refused");
+    assert_eq!(st.connects, 1, "the link never dropped");
+    let at = &st.call_at;
+    let most = (0..at.len())
+        .map(|i| {
+            at[i..]
+                .iter()
+                .take_while(|u| **u < at[i] + Duration::from_secs(1))
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    println!("a held key: at most {most} calls in one second");
+    assert!(most <= 100, "{most} calls in one second");
+}
+
+/// Rule 1392: while a key waits for its echo the status poll waits, and it is asked again once the echo is in; a key
+/// whose echo never comes holds it off half a second at most.
+#[test]
+fn the_status_poll_waits_while_a_key_waits_for_its_echo() {
+    let host = echoing(60);
+    lk(&host).states = Some(HashMap::new());
+    let t = Timing {
+        status_every: Duration::from_millis(5),
+        poll_fast: Duration::from_millis(2),
+        fast_for: Duration::from_secs(3),
+        ..fast()
+    };
+    let mut r = rig_timed(host, None, t);
+    r.live_on();
+    wait_for("the status polls", || r.host.calls("remote.status") >= 2);
+    r.writer.write_all(b"q").unwrap();
+    echo_of(&r, 'q', 1);
+    assert!(
+        !to_the_echo(&r.host).contains(&"status"),
+        "{:?}",
+        to_the_echo(&r.host)
+    );
+    let after = r.host.calls("remote.status");
+    wait_for("the status after the echo", || {
+        r.host.calls("remote.status") > after
+    });
+    // No echo at all: the status is still asked, about half a second after the key.
+    lk(&r.host).echo_after = None;
+    let n = r.host.calls("remote.status");
+    let t = Instant::now();
+    r.writer.write_all(b"x").unwrap();
+    wait_for("the status despite the key", || {
+        r.host.calls("remote.status") > n
+    });
+    let waited = t.elapsed();
+    assert!(
+        waited >= Duration::from_millis(300) && waited < Duration::from_secs(2),
+        "{waited:?}"
+    );
+}
+
+/// Rule 1392: a key whose echo never comes keeps the polls fast for `fast_for` only; after that they back off as an
+/// idle tab's do.
+#[test]
+fn a_key_with_no_echo_polls_fast_only_for_a_while() {
+    let mut r = rig_timed(FakeHost::default(), None, Timing::default());
+    r.live_on();
+    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test code only, the polls reach their slowest
+    r.writer.write_all(b"q").unwrap();
+    wait_for("the key", || !lk(&r.host).input_at.is_empty());
+    let sent = *lk(&r.host).input_at.last().unwrap();
+    std::thread::sleep(Duration::from_millis(450)); // sync-ok: test code only, past the fast window
+    let fast = outputs_between(&r.host, sent, sent + Duration::from_millis(100));
+    let after = outputs_between(
+        &r.host,
+        sent + Duration::from_millis(200),
+        sent + Duration::from_millis(450),
+    );
+    assert!(fast >= 6, "fast polls right after the key: {fast}");
+    assert!(
+        after <= 5,
+        "{after} polls in 250 ms once the fast window ended"
+    );
+}
+
+/// Rule 1392: a click is no key: it has no echo to wait for, so it starts no fast polls and holds no status poll off.
+#[test]
+fn a_click_starts_no_fast_polls_and_holds_no_status_poll() {
+    let host = echoing(60);
+    lk(&host).states = Some(HashMap::new());
+    let t = Timing {
+        status_every: Duration::from_millis(5),
+        poll_fast: Duration::from_millis(1),
+        fast_for: Duration::from_secs(3),
+        ..fast()
+    };
+    let mut r = rig_timed(host, None, t);
+    r.live_on();
+    wait_for("the status polls", || r.host.calls("remote.status") >= 2);
+    r.writer.write_all(b"\x1b[<0;5;3M\x1b[<0;5;3m").unwrap();
+    wait_for("the click", || r.host.typed("h1").len() >= 2);
+    let n = r.host.calls("remote.status");
+    let t = Instant::now();
+    wait_for("the status after the click", || {
+        r.host.calls("remote.status") > n
+    });
+    // A key would hold it off for half a second (`PUT_OFF_MAX`).
+    let waited = t.elapsed();
+    assert!(waited < Duration::from_millis(250), "{waited:?}");
+}
+
+/// Rule 1392, the measurement: a key's time to its echo with the polls as they were (30 ms after typing) and as they
+/// are now (fast until the echo), over a fake link with a round trip of 2 ms and of 20 ms, and a host whose shell
+/// echoes 3 ms or 30 ms after the key. Printed, not asserted:
+/// `cargo test -p flare --bin flare key_to_echo -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, run by hand"]
+fn key_to_echo_before_and_after() {
+    let before = Timing {
+        fast_for: Duration::ZERO,
+        ..Timing::default()
+    };
+    for (rtt, shell) in [(2u64, 3u64), (2, 30), (20, 3), (20, 30)] {
+        for (name, t) in [("before", before), ("after", Timing::default())] {
+            let host = echoing(shell);
+            lk(&host).latency = Duration::from_millis(rtt);
+            let mut r = rig_timed(host, None, t);
+            r.live_on();
+            let mut took: Vec<u32> = Vec::new();
+            for n in 1..=40 {
+                std::thread::sleep(Duration::from_millis(180)); // sync-ok: test code only, a typist's gap
+                r.writer.write_all(b"q").unwrap();
+                took.push(u32::try_from(echo_of(&r, 'q', n).as_micros()).unwrap());
+            }
+            took.sort_unstable();
+            println!(
+                "rtt {rtt} ms, echo {shell} ms, {name}: key to echo p50 {} ms, p95 {} ms, max {} ms ({} output polls)",
+                crate::remote_timing::percentile_ms(&took, 50),
+                crate::remote_timing::percentile_ms(&took, 95),
+                crate::remote_timing::percentile_ms(&took, 100),
+                r.host.calls("remote.output"),
+            );
+        }
+    }
 }

@@ -435,6 +435,11 @@ impl RemoteIo {
         }
     }
 
+    /// Whether typing waits to be taken, without taking it: the link puts its slower polls off while it does (rule 1392).
+    pub fn typing_waits(&self) -> bool {
+        !lk(&self.out).intents.is_empty()
+    }
+
     /// The tab let go (closed or left), without taking anything.
     pub fn leaving(&self) -> Option<Leaving> {
         lk(&self.out).leaving
@@ -1579,6 +1584,22 @@ mod tests {
     fn pty() -> (RemotePty, Arc<RemoteIo>) {
         let io = RemoteIo::new();
         (RemotePty::new(Arc::clone(&io)), io)
+    }
+
+    /// Rule 1392: the link can see that typing waits without taking it; a size alone is no typing.
+    #[test]
+    fn typing_waits_is_seen_without_taking_it() {
+        let (mut p, io) = pty();
+        assert!(!io.typing_waits());
+        p.resize(90, 30).unwrap();
+        assert!(!io.typing_waits(), "a size is no typing");
+        let mut w = p.take_writer().unwrap();
+        w.write_all(b"a").unwrap();
+        assert!(io.typing_waits());
+        assert!(io.typing_waits(), "looking takes nothing");
+        let o = io.take_outgoing(Duration::ZERO);
+        assert_eq!(o.intents, vec![RemoteIntent::Text("a".into())]);
+        assert!(!io.typing_waits());
     }
 
     /// The writer batches typing into intents, the resize keeps only the last size, and the link takes both at once.
