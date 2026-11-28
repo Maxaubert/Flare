@@ -841,6 +841,8 @@ export component AppWindow inherits Window {
     in property <bool> dialog-default-cancel;
     // Raised for each app-link question, so the next one starts on Cancel again in the same open dialog (rule 252).
     in property <int> dialog-question;
+    // The third button's words; "" for every question but the busy Claude sessions one (rule 1382).
+    in property <string> dialog-alt-label;
     // A plugin's question (the `fill` permission): a fill to approve (kind 0) or a secret to type (kind 1).
     in property <bool> pask-open;
     in property <int> pask-kind;
@@ -1094,6 +1096,8 @@ export component AppWindow inherits Window {
     callback overflow-query-edited(string);
     callback dialog-cancel();
     callback dialog-confirm();
+    // The dialog's third button (the busy Claude sessions question's Wait, rule 1382).
+    callback dialog-alt();
     // A plugin fill's answer (0 Deny, 1 Allow) and a secret's (OK with the text, or Cancel).
     callback pask-fill(int);
     callback pask-secret(bool, string);
@@ -2182,8 +2186,10 @@ export component AppWindow inherits Window {
             opened-by-key: root.dialog-by-key;
             default-cancel: root.dialog-default-cancel;
             question: root.dialog-question;
+            alt-label: root.dialog-alt-label;
             cancel => { root.dialog-cancel(); }
             confirm => { root.dialog-confirm(); }
+            alt => { root.dialog-alt(); }
         }
         // The Copied badge shows even over a dialog (PT LAYER.toast); the tip is above it.
         // Centred over the terminal, not the window: a web panel's browser window sits above anything drawn, and the

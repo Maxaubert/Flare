@@ -11,6 +11,7 @@ mod badge;
 mod caret_blink;
 mod chords;
 mod chrome_apply;
+mod claude_sessions;
 mod cli_install;
 mod cli_open;
 mod clip_flow;

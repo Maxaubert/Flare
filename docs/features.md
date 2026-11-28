@@ -3301,3 +3301,15 @@ Follow-ups to A1 to A6 (PR #339).
 - **Tests.** `devicePanelAndroid` (e2e, Windows and Mac), the ui_tests
   `an_android_panel_takes_touches_in_dp_and_keys`, `an_android_panel_shows_slow_still_and_asleep` and
   `a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence`, and the unit tests named in rules 1361 to 1369.
+
+## Claude sessions in all tabs, 2026-11-28
+
+- **End, start and restart Claude without closing a tab** (Max, 2026-11-28: "some way for me to close all sessions
+  without closing the tabs ... in one place"; he chose a menu item over an MCP command). A tab's right-click menu has
+  "End Claude session" (Claude runs there) or "Start Claude" (the shell waits at its prompt), and a "Claude sessions"
+  flyout: "End all Claude sessions (N)", "Start Claude in all tabs (N)", "Restart all Claude sessions (N)" (after a
+  Flare update, so plugins, hooks and MCP servers load again). An idle Claude gets `/exit` and Enter; a busy one asks
+  first (Cancel, Wait, End now; End now sends Escape first); a draft in the prompt box is never sent; Start types
+  `claude --resume <id>` with the tab's last session, or `claude`. Remote tabs are left out. Rules 1380 to 1383.
+  Held by `claude_sessions.rs`'s tests and `appctl/tests/claude_sessions_tests.rs`. Design:
+  `docs/superpowers/specs/2026-11-28-session-controls-design.md`.

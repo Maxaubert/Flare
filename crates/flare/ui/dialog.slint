@@ -85,14 +85,19 @@ export component Dialog inherits Rectangle {
     // A new question in the open dialog whose title and default stay the same (one app link after another): a change
     // puts the focus back on the default, so a Tab given to the last question never opens the next.
     in property <int> question: 0;
+    // A third button between Cancel and the primary (the busy Claude sessions question's "Wait", rule 1382): empty for
+    // every other question, which then keeps its two buttons. When set it is the default.
+    in property <string> alt-label: "";
     out property <bool> ring-shown: root.by-key;
     property <bool> by-key;
+    property <bool> has-alt: root.alt-label != "";
     callback cancel();
     callback confirm();
+    callback alt();
 
-    // 0 is Cancel, 1 is the primary button.
+    // 0 is Cancel, 1 is the primary button, 2 the third button.
     property <int> focus-idx: 1;
-    property <int> first-idx: root.default-cancel ? 0 : 1;
+    property <int> first-idx: root.has-alt ? 2 : (root.default-cancel ? 0 : 1);
     out property <bool> chrome-has-focus: fs.has-focus;
     // Where the keys reach: -1 nowhere, 0 Cancel, 1 the primary button (the close question's e2e reads it).
     out property <int> focused-button: fs.has-focus ? root.focus-idx : -1;
@@ -136,6 +141,11 @@ export component Dialog inherits Rectangle {
             root.focus-idx = root.first-idx;
         }
     }
+    changed alt-label => {
+        if root.open {
+            root.focus-idx = root.first-idx;
+        }
+    }
     changed question => {
         if root.open {
             root.focus-idx = root.first-idx;
@@ -172,7 +182,9 @@ export component Dialog inherits Rectangle {
             // Space presses the button that has the focus, as Enter does; with Cancel the default, Space only cancels.
             if e.text == Key.Return || e.text == " " {
                 root.by-key = true;
-                if root.focus-idx == 1 && !(root.default-cancel && e.text == " ") {
+                if root.focus-idx == 2 && root.has-alt {
+                    root.alt();
+                } else if root.focus-idx == 1 && !(root.default-cancel && e.text == " ") {
                     root.confirm();
                 } else {
                     root.cancel();
@@ -181,7 +193,14 @@ export component Dialog inherits Rectangle {
             }
             if (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
                 root.by-key = true;
-                root.focus-idx = 1 - root.focus-idx;
+                // With a third button the order is the row's: Cancel, the third, the primary, and round again.
+                if !root.has-alt {
+                    root.focus-idx = 1 - root.focus-idx;
+                } else if e.text == Key.Tab {
+                    root.focus-idx = root.focus-idx == 0 ? 2 : (root.focus-idx == 2 ? 1 : 0);
+                } else {
+                    root.focus-idx = root.focus-idx == 0 ? 1 : (root.focus-idx == 1 ? 2 : 0);
+                }
                 return accept;
             }
             return reject;
@@ -231,6 +250,12 @@ export component Dialog inherits Rectangle {
                     ringed: root.by-key && root.focus-idx == 0;
                     clicked => { root.cancel(); }
                 }
+                // Only while set: a hidden button would still take the row's spacing.
+                if root.has-alt: DialogButton {
+                    label: root.alt-label;
+                    ringed: root.by-key && root.focus-idx == 2;
+                    clicked => { root.alt(); }
+                }
                 primary-btn := DialogButton {
                     label: root.primary-label;
                     is-primary: true;
@@ -260,10 +285,12 @@ export component DialogPreview inherits Window {
     in-out property <bool> opened-by-key;
     in-out property <bool> default-cancel;
     in-out property <int> question;
+    in-out property <string> alt-label;
     out property <int> focused-button: dlg.focused-button;
     out property <bool> ring-shown: dlg.ring-shown;
     in-out property <int> cancels;
     in-out property <int> confirms;
+    in-out property <int> alts;
     in-out property <int> behind-clicks;
     in-out property <string> term-key;
     out property <bool> chrome-has-focus: dlg.chrome-has-focus;
@@ -307,7 +334,9 @@ export component DialogPreview inherits Window {
         opened-by-key: root.opened-by-key;
         default-cancel: root.default-cancel;
         question: root.question;
+        alt-label: root.alt-label;
         cancel => { root.cancels += 1; }
         confirm => { root.confirms += 1; }
+        alt => { root.alts += 1; }
     }
 }

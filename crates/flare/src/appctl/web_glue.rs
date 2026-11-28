@@ -70,7 +70,8 @@ impl AppCtl {
     /// The download question of the first waiting download is on the dialog (unless the close question
     /// has it: that one is answered first and this is asked after).
     pub(super) fn show_download_ask(&mut self) {
-        if self.ask.is_some() {
+        // The busy Claude sessions question keeps the dialog until it is answered (rule 1382).
+        if self.ask.is_some() || self.claude_ask_up() {
             return;
         }
         let Some(app) = self.app() else { return };
@@ -161,6 +162,7 @@ impl AppCtl {
     /// first) and it is not on the screen already.
     pub(super) fn sync_app_ask(&mut self) {
         if self.ask.is_none()
+            && !self.claude_ask_up()
             && self.downloads.current().is_none()
             && self.app_asks.current().is_some()
             && !self.app_asks.is_shown()
@@ -171,7 +173,7 @@ impl AppCtl {
 
     /// Shows the first waiting app link: "Open an app?", Cancel the default, Open unarmed for 0.3 s.
     pub(super) fn show_app_ask(&mut self) {
-        if self.ask.is_some() || self.downloads.current().is_some() {
+        if self.ask.is_some() || self.downloads.current().is_some() || self.claude_ask_up() {
             return;
         }
         let Some(app) = self.app() else { return };
@@ -258,7 +260,11 @@ impl AppCtl {
     /// An app link whose tab is gone is not asked about, and a tab's page on another site forgets its Cancels.
     pub(super) fn prune_app_asks(&mut self) {
         let changed = self.app_asks.prune(|t| self.web.has_tab(t));
-        if changed && self.ask.is_none() && self.downloads.current().is_none() {
+        if changed
+            && self.ask.is_none()
+            && self.downloads.current().is_none()
+            && !self.claude_ask_up()
+        {
             if self.app_asks.current().is_some() {
                 self.show_app_ask();
             } else if let Some(app) = self.app() {

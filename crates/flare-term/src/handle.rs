@@ -44,6 +44,21 @@ pub enum PluginInput<'a> {
     Enter,
 }
 
+/// What the tab menu's "Claude sessions" rows type (rules 2 and 1381): fixed words, never caller text. `Exit` ends an
+/// idle Claude the way the person's `/exit` does (its Enter is a separate `Enter`, a moment later); `Interrupt` is
+/// Claude's own Escape ("esc to interrupt"); `Start` types the start line of
+/// `flare_shells::resume::typed_start_line` and its Enter at a shell's prompt, the id checked again here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionKey<'a> {
+    Exit,
+    Enter,
+    Interrupt,
+    Start {
+        shell: &'a str,
+        resume: Option<&'a str>,
+    },
+}
+
 /// What a remote viewer typed on a host tab (remote sessions PR 2, rule 279): the second typed path beside the plugin's,
 /// never raw bytes. A key goes through the same encoder a local key does, with this tab's modes; a text holds no
 /// control character (one that does is dropped); a paste is sanitised and goes the way a local paste goes.
@@ -823,6 +838,31 @@ impl TermHandle {
                 self.sh.mark_typed();
             }
         }
+        true
+    }
+
+    /// The "Claude sessions" rows' typing (rule 1381): only the fixed words of [`SessionKey`], called only by the app's
+    /// session runner. Counts as typing, so the tab's prompt is no longer fresh. False when nothing was written (a
+    /// shell the start line is not made for).
+    pub fn session_key(&self, key: SessionKey<'_>) -> bool {
+        let line;
+        let bytes: &[u8] = match key {
+            SessionKey::Exit => b"/exit",
+            SessionKey::Enter => b"\r",
+            SessionKey::Interrupt => b"\x1b",
+            SessionKey::Start { shell, resume } => {
+                let resume = resume.filter(|r| flare_agent::signal::is_session_id(r));
+                let Some(l) = flare_shells::resume::typed_start_line(shell, resume) else {
+                    return false;
+                };
+                line = format!("{l}\r");
+                line.as_bytes()
+            }
+        };
+        self.sh.finish_reveal();
+        self.sh.snap_to_bottom();
+        self.sh.mgr.write(&self.sh.id, bytes);
+        self.sh.mark_typed();
         true
     }
 
@@ -1918,6 +1958,43 @@ mod tests {
         assert_eq!(
             t.h.drain_events(),
             vec![TermEvent::Title("t1".into()), TermEvent::Output]
+        );
+    }
+
+    /// Rule 1381: the session rows type only their fixed words, each as typing; a start line only for a shell it is
+    /// made for, and an id that is not a session id starts a new Claude.
+    #[test]
+    fn the_session_keys_write_only_their_fixed_words() {
+        let t = T::started();
+        t.h.drain_events();
+        assert!(t.h.session_key(SessionKey::Exit));
+        assert!(t.h.session_key(SessionKey::Enter));
+        assert!(t.h.session_key(SessionKey::Interrupt));
+        wait_until("the keys", || t.fake().written() == b"/exit\r\x1b");
+        assert_eq!(
+            t.h.drain_events(),
+            vec![TermEvent::Typed, TermEvent::Typed, TermEvent::Typed]
+        );
+        let id = "5a1d0c2e-1111-4222-8333-94445555a666";
+        assert!(t.h.session_key(SessionKey::Start {
+            shell: "pwsh",
+            resume: Some(id),
+        }));
+        assert!(t.h.session_key(SessionKey::Start {
+            shell: "pwsh",
+            resume: Some("x; calc"),
+        }));
+        assert!(!t.h.session_key(SessionKey::Start {
+            shell: "wsl-Arch",
+            resume: None,
+        }));
+        let want = format!("/exit\r\x1bclaude --resume {id}\rclaude\r");
+        wait_until("the lines", || t.fake().written() == want.as_bytes());
+        std::thread::sleep(std::time::Duration::from_millis(50)); // sync-ok: test code only
+        assert_eq!(
+            String::from_utf8(t.fake().written()).unwrap(),
+            want,
+            "nothing for the unknown shell"
         );
     }
 

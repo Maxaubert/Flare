@@ -229,6 +229,13 @@ pub struct AgentHub {
     /// Each tab's Claude session (a lower-case UUID): named by the turn's own hooks, or by the
     /// resume id of a restored tab; gone with the agent (N25).
     sessions: HashMap<String, String>,
+    /// Each tab's last Claude session, kept after the agent leaves (rule 1381: "Start Claude" resumes it). Gone with
+    /// the tab.
+    last_sessions: HashMap<String, String>,
+    /// Tabs whose shell reported its prompt (OSC 9;9 or OSC 7) after the last key typed there (rule 1381).
+    prompt_fresh: HashSet<String>,
+    /// How many prompt reports each tab's shell has made (rule 1381: a restart starts Claude after the next one).
+    prompts_seen: HashMap<String, u64>,
     /// Each tab's agent folder: the folder its Claude session works in, as its hooks last named it (`panel.state`
     /// with `cwd`, changes after review 2026-11-11). A relative file link is read from it. Gone with the agent.
     agent_folders: HashMap<String, String>,
@@ -273,6 +280,9 @@ impl AgentHub {
             order: Vec::new(),
             folders: HashMap::new(),
             sessions: HashMap::new(),
+            last_sessions: HashMap::new(),
+            prompt_fresh: HashSet::new(),
+            prompts_seen: HashMap::new(),
             agent_folders: HashMap::new(),
             agent_start_folders: HashMap::new(),
             polled: HashSet::new(),
@@ -498,6 +508,7 @@ impl AgentHub {
                 HostEvent::Osc777 { id, data } => {
                     if let Some(signal) = parse_agent_signal(data) {
                         if let Some(session) = &signal.session {
+                            self.last_sessions.insert(id.clone(), session.clone());
                             let old = self.sessions.insert(id.clone(), session.clone());
                             // A session named (or another one) is a change of its own: the window saves it with
                             // the tab (rule 1286). The marks often do not move with it (the title showed the work
@@ -534,6 +545,8 @@ impl AgentHub {
                 }
                 HostEvent::Cwd { id, path } => {
                     self.folders.insert(id.clone(), path.clone());
+                    self.prompt_fresh.insert(id.clone());
+                    *self.prompts_seen.entry(id.clone()).or_default() += 1;
                     self.ind.activity.mark_prompt(id, now);
                     self.ind_handle(now, Event::Prompt { tab: id.clone() });
                     let step = arm_on_prompt(&self.arm_of(id));
@@ -549,7 +562,10 @@ impl AgentHub {
                             .on_output(now);
                     }
                 }
-                HostEvent::Typed { id } => self.ind.activity.mark_touched(id, now),
+                HostEvent::Typed { id } => {
+                    self.prompt_fresh.remove(id);
+                    self.ind.activity.mark_touched(id, now);
+                }
                 HostEvent::AnswerKey { id, key } => {
                     self.ind_handle(
                         now,
@@ -586,6 +602,7 @@ impl AgentHub {
         // A restored Claude tab already has its session: the resume id (only a UUID).
         let old = match resumed {
             Some(r) if agent_of_resume(r) == AgentKind::Claude && is_session_id(r) => {
+                self.last_sessions.insert(tab.to_string(), r.to_string());
                 self.sessions.insert(tab.to_string(), r.to_string())
             }
             _ => self.sessions.remove(tab),
@@ -740,6 +757,9 @@ impl AgentHub {
         self.order.retain(|t| t != tab);
         self.folders.remove(tab);
         self.sessions.remove(tab);
+        self.last_sessions.remove(tab);
+        self.prompt_fresh.remove(tab);
+        self.prompts_seen.remove(tab);
         self.agent_folders.remove(tab);
         self.agent_start_folders.remove(tab);
         self.polled.remove(tab);
@@ -939,6 +959,44 @@ impl AgentHub {
             return None;
         }
         self.sessions.get(tab).map(String::as_str)
+    }
+
+    /// The tab's last Claude session (rule 1381): the one its agent is in, or the one it was in before it left. None
+    /// while Codex or agy is the tab's agent, and for a tab that never named one.
+    pub fn last_claude_session(&self, tab: &str) -> Option<&str> {
+        if matches!(
+            self.ind.agent_kind(tab),
+            Some(DetectedAgent::Codex | DetectedAgent::Agy)
+        ) {
+            return None;
+        }
+        self.sessions
+            .get(tab)
+            .or_else(|| self.last_sessions.get(tab))
+            .map(String::as_str)
+    }
+
+    /// The tab's shell reported its prompt after the last key typed in the tab (rule 1381): it waits there, nothing
+    /// half typed and no command started since.
+    pub fn at_prompt(&self, tab: &str) -> bool {
+        self.prompt_fresh.contains(tab)
+    }
+
+    /// How many prompt reports the tab's shell has made.
+    pub fn prompts_seen(&self, tab: &str) -> u64 {
+        self.prompts_seen.get(tab).copied().unwrap_or(0)
+    }
+
+    /// The tab's agent is armed (its keys are an agent's): a title or the restore said so before the poll did.
+    pub fn armed_agent(&self, tab: &str) -> Option<AgentKind> {
+        flare_agent::keys::AgentView::armed(&self.arms, tab)
+    }
+
+    /// Asks the poll to look again soon (an agent was asked to end, or started).
+    pub fn look_soon(&self) {
+        if let Some(p) = &self.poll {
+            p.soon(START_LOOK_MS);
+        }
     }
 
     /// The agent's hooks named the folder its session works in: the latest wins.
@@ -1545,6 +1603,67 @@ mod tests {
             .into_iter()
             .find(|t| t.tab == id)
             .unwrap_or_else(|| panic!("no send tab {id}"))
+    }
+
+    /// Rule 1381: the tab's last Claude session outlives the agent (Start Claude resumes it) and goes with the tab;
+    /// `claude_session` still goes with the agent.
+    #[test]
+    fn the_last_session_outlives_the_agent_and_goes_with_the_tab() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        assert_eq!(r.hub.last_claude_session("a"), None);
+        r.print("a", &osc_session("working", SID));
+        r.title("a", "\u{2733} Claude Code");
+        assert_eq!(r.hub.last_claude_session("a"), Some(SID));
+        // The agent leaves (its title goes and the shell is back at its prompt).
+        r.title("a", "");
+        r.ev(HostEvent::Cwd {
+            id: "a".into(),
+            path: "C:\\proj".into(),
+        });
+        assert_eq!(r.hub.claude_session("a"), None);
+        assert_eq!(r.hub.last_claude_session("a"), Some(SID));
+        r.hub.on_closed("a");
+        assert_eq!(r.hub.last_claude_session("a"), None);
+        // A restored tab's resume id is its last session too.
+        r.open("b", Some(SID));
+        assert_eq!(r.hub.last_claude_session("b"), Some(SID));
+    }
+
+    /// Rule 1381: a tab is at its prompt after a prompt report, and no longer once a key is typed there; each report
+    /// is counted.
+    #[test]
+    fn a_prompt_report_after_the_last_key_is_the_prompt() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        assert!(!r.hub.at_prompt("a"), "no prompt yet");
+        let cwd = || HostEvent::Cwd {
+            id: "a".into(),
+            path: "C:\\proj".into(),
+        };
+        r.ev(cwd());
+        assert!(r.hub.at_prompt("a"));
+        assert_eq!(r.hub.prompts_seen("a"), 1);
+        r.ev(HostEvent::Typed { id: "a".into() });
+        assert!(
+            !r.hub.at_prompt("a"),
+            "something typed or a command started"
+        );
+        r.ev(HostEvent::Output { id: "a".into() });
+        assert!(!r.hub.at_prompt("a"));
+        r.ev(cwd());
+        assert!(r.hub.at_prompt("a"));
+        assert_eq!(r.hub.prompts_seen("a"), 2);
+        // In one batch, the order decides.
+        r.hub
+            .on_host_events(&[cwd(), HostEvent::Typed { id: "a".into() }]);
+        assert!(!r.hub.at_prompt("a"));
+        r.hub
+            .on_host_events(&[HostEvent::Typed { id: "a".into() }, cwd()]);
+        assert!(r.hub.at_prompt("a"));
+        r.hub.on_closed("a");
+        assert!(!r.hub.at_prompt("a"));
+        assert_eq!(r.hub.prompts_seen("a"), 0);
     }
 
     /// N25: the turn's own two hooks name the Claude session; the hub keeps it per tab and

@@ -68,6 +68,65 @@ fn enter_confirms_because_the_primary_has_the_focus() {
     assert_eq!(h.comp.get_cancels(), 0);
 }
 
+/// Rule 1382: the busy Claude sessions question's third button ("Wait") is the default and sits between Cancel and the
+/// primary in the Tab order; a question without one keeps its two buttons where they were.
+#[test]
+fn a_third_button_is_the_default_and_tab_walks_the_row() {
+    let plain = harness(1.0, 1000, 600);
+    open(&plain);
+    let primary_x = plain.comp.get_primary_x();
+    let h = harness(1.0, 1000, 600);
+    h.comp.set_alt_label("Wait".into());
+    open(&h);
+    assert_eq!(h.comp.get_focused_button(), 2, "Wait has the focus");
+    assert_eq!(
+        h.comp.get_primary_x(),
+        primary_x,
+        "the primary stays at the end"
+    );
+    h.key_text("\n");
+    assert_eq!(
+        (
+            h.comp.get_alts(),
+            h.comp.get_confirms(),
+            h.comp.get_cancels()
+        ),
+        (1, 0, 0)
+    );
+    // Just left of the primary sits Wait, where the two-button question has Cancel.
+    let (_, py) = primary_centre(&h);
+    let left_of = primary_x - 16.0;
+    h.click(left_of, py);
+    assert_eq!(
+        (h.comp.get_alts(), h.comp.get_cancels()),
+        (2, 0),
+        "a click on Wait"
+    );
+    // Tab: Wait, then the primary, then Cancel, then Wait again; Shift+Tab goes back.
+    h.key_text("\t");
+    assert_eq!(h.comp.get_focused_button(), 1);
+    h.key_text("\t");
+    assert_eq!(h.comp.get_focused_button(), 0);
+    h.key_text("\t");
+    assert_eq!(h.comp.get_focused_button(), 2);
+    h.key_text("\u{19}");
+    assert_eq!(h.comp.get_focused_button(), 0);
+    h.key_text("\t\t\n");
+    assert_eq!(h.comp.get_confirms(), 1, "Tab to the primary, then Enter");
+    // Without one: two buttons, Tab toggles as before, and the cancel button sits where it did.
+    assert_eq!(plain.comp.get_focused_button(), 1);
+    plain.key_text("\t");
+    assert_eq!(plain.comp.get_focused_button(), 0);
+    plain.key_text("\t");
+    assert_eq!(plain.comp.get_focused_button(), 1);
+    plain.click(left_of, py);
+    assert_eq!(
+        (plain.comp.get_cancels(), plain.comp.get_alts()),
+        (1, 0),
+        "Cancel there without it"
+    );
+}
+
 #[test]
 fn escape_cancels_and_is_swallowed() {
     let h = harness(1.0, 1000, 600);
