@@ -643,7 +643,8 @@ pub fn delete_keys(caret: usize, a: usize, b: usize, app_cursor: bool) -> String
 }
 
 /// The plan for a key, given the prompt on the screen, Flare's prompt selection (already checked against this
-/// text by the caller, or made from a mouse selection in the box), the cursor-key mode and the system.
+/// text by the caller, or made from a mouse selection in the box), the cursor-key mode and the system the agent runs
+/// on (its word delete is that system's: a remote tab's host, rule 1391, not the keyboard's).
 pub fn plan(
     input: Input,
     t: &PromptText,

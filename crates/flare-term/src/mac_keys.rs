@@ -78,6 +78,27 @@ pub fn mac_pty_key(e: &KeyEvent, option_as_meta: bool) -> PtyKey {
     }
 }
 
+/// The Windows word keys and what a Mac's shell reads for them (rule 1391): Ctrl+Backspace, Ctrl+Delete and
+/// Ctrl+Left and Right are the Option keys above on a Mac (ESC DEL, ESC d, ESC b, ESC f).
+pub const PC_WORD_KEYS_ON_MAC: [(&str, &str); 4] = [
+    ("Backspace", "\x1b\x7f"),
+    ("Delete", "\x1bd"),
+    ("ArrowLeft", "\x1bb"),
+    ("ArrowRight", "\x1bf"),
+];
+
+/// What a PC sends a Mac host's shell for a Windows word key (rule 1391): the Mac's bytes for it, with Ctrl alone held
+/// and the key pressed. Any other key (Ctrl+Shift+arrows included) is None and goes its usual way.
+pub fn pc_word_key_on_mac(e: &KeyEvent) -> Option<&'static str> {
+    if !e.pressed || !e.ctrl || e.alt || e.shift || e.meta {
+        return None;
+    }
+    PC_WORD_KEYS_ON_MAC
+        .iter()
+        .find(|(k, _)| *k == e.key)
+        .map(|(_, bytes)| *bytes)
+}
+
 /// The character the key makes without Option: the physical letter or digit (Shift makes the
 /// letter upper case), else the key's own single character, else none.
 fn base_char(e: &KeyEvent) -> Option<String> {
@@ -248,6 +269,47 @@ mod tests {
             bytes(&k("x", "KeyX").alt().ctrl().text("x"), false),
             Some(vec![0x18])
         );
+    }
+
+    /// Rule 1391: the Windows word keys are the Mac's own bytes for a Mac host; with another modifier, released, or
+    /// any other key they are nothing here.
+    #[test]
+    fn the_windows_word_keys_are_the_macs_option_keys() {
+        assert_eq!(
+            pc_word_key_on_mac(&k("Backspace", "Backspace").ctrl()),
+            Some("\x1b\x7f")
+        );
+        assert_eq!(
+            pc_word_key_on_mac(&k("Delete", "Delete").ctrl()),
+            Some("\x1bd")
+        );
+        assert_eq!(
+            pc_word_key_on_mac(&k("ArrowLeft", "ArrowLeft").ctrl()),
+            Some("\x1bb")
+        );
+        assert_eq!(
+            pc_word_key_on_mac(&k("ArrowRight", "ArrowRight").ctrl()),
+            Some("\x1bf")
+        );
+        // The same bytes a Mac's Option keys send.
+        for (key, _) in PC_WORD_KEYS_ON_MAC {
+            let mac = bytes(&k(key, key).alt(), false).unwrap();
+            assert_eq!(
+                pc_word_key_on_mac(&k(key, key).ctrl()).map(|s| s.as_bytes().to_vec()),
+                Some(mac),
+                "{key}"
+            );
+        }
+        for e in [
+            k("ArrowLeft", "ArrowLeft").ctrl().shift(),
+            k("ArrowLeft", "ArrowLeft").ctrl().alt(),
+            k("Backspace", "Backspace"),
+            k("Backspace", "Backspace").ctrl().released(),
+            k("ArrowUp", "ArrowUp").ctrl(),
+            k("w", "KeyW").ctrl(),
+        ] {
+            assert_eq!(pc_word_key_on_mac(&e), None, "{e:?}");
+        }
     }
 
     #[test]

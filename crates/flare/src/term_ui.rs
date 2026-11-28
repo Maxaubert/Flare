@@ -1453,12 +1453,15 @@ impl TermUi {
     /// A key for an agent's prompt (rule 1235), called only while agent hotkeys are on and Claude runs in the tab:
     /// a prompt key acts, and a key over Flare's prompt selection replaces, deletes or cuts it. `None`: the key
     /// goes on its usual way (after any bytes sent here, such as the deletion of the selection it replaces).
-    /// `option_as_meta`: the Mac's "Use Option as Meta" (Option+letter is then a Meta key, not text).
+    /// `option_as_meta`: the Mac's "Use Option as Meta" (Option+letter is then a Meta key, not text). `os` is the system
+    /// whose keys were pressed; `shell_os` the one the agent runs on, whose editor keys are sent (a remote tab's host,
+    /// rule 1391: a Mac's word delete is ESC DEL, never the PC's ^H).
     pub fn prompt_key(
         &mut self,
         tab: &TabInfo,
         ev: &KeyEvent,
         os: KeyOs,
+        shell_os: KeyOs,
         option_as_meta: bool,
     ) -> Option<KeyDone> {
         let input = pk::classify(ev, os, option_as_meta);
@@ -1501,7 +1504,7 @@ impl TermUi {
                     text: now_text.clone(),
                 })
             });
-        let plan = pk::plan(input, &text, sel.as_ref(), app_cursor, os);
+        let plan = pk::plan(input, &text, sel.as_ref(), app_cursor, shell_os);
         if !plan.send.is_empty() {
             tab.handle.send_text(&plan.send);
         }

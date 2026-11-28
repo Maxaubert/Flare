@@ -1880,6 +1880,35 @@ impl AppCtl {
         self.key_os = os;
     }
 
+    /// The system of the tab in front's host when it is a remote tab whose host said what it is (`remote.hello`),
+    /// else None (rule 1391).
+    pub fn front_host_os(&self) -> Option<flare_tabs::tabs::Os> {
+        self.model.active_shell()?.remote.as_ref()?.kind
+    }
+
+    /// What the shell in front (`handle`) gets for a key the app did not take: the Mac way on macOS (Cmd never types),
+    /// and on a PC the editing keys as a remote tab's host reads them, unless a full-screen program has its screen
+    /// (rule 1391).
+    pub fn front_pty_key(
+        &self,
+        ev: &KeyEvent,
+        handle: &TermHandle,
+    ) -> flare_term::mac_keys::PtyKey {
+        let host = self.front_host_os();
+        let alt_screen = host.is_some() && handle.mode().alt_screen;
+        crate::keymap::tab_pty_key(self.key_os, host, alt_screen, ev, self.option_as_meta())
+    }
+
+    /// The system whose editor keys the tab's shell reads: its host's for a remote tab whose host is known, else this
+    /// machine's (rule 1391).
+    fn shell_key_os(&self, id: &str) -> KeyOs {
+        match self.model.remote_of(id).and_then(|m| m.kind) {
+            Some(flare_tabs::tabs::Os::Mac) => KeyOs::Mac,
+            Some(flare_tabs::tabs::Os::Pc) => KeyOs::Windows,
+            None => self.key_os,
+        }
+    }
+
     /// "Use Option as Meta" (macOS; default off, like Terminal.app).
     pub fn option_as_meta(&self) -> bool {
         flare_settings::term_prefs::option_as_meta(&self.prefs)
@@ -2718,7 +2747,14 @@ impl AppCtl {
                     open_id,
                 );
                 self.model.set_remote_live(&s.id, live.clone());
+                // Rule 1390: the agent `tabs.json` saved for it (the boot put it on the placeholder) stays on the tab
+                // for its icon until the host's first status sets or drops it. Never a resume: the host owns that.
+                let saved = self.model.agent_kind(&s.id);
                 self.start_remote(&s.id, &r.machine, &s.cwd, None, live);
+                if let Some(k) = saved {
+                    self.model.set_agent(&s.id, Some(k));
+                    self.hub.seed_remote_agent(&s.id, DetectedAgent::from(k));
+                }
                 continue;
             }
             // A hidden session comes back hidden, at its opener's last size (rule 1302), resumed as a local tab is.
@@ -3813,10 +3849,13 @@ impl AppCtl {
         let option_as_meta = self.option_as_meta();
         // Agent hotkeys with Claude in front: the prompt is a text box (rule 1235). Only Claude: Flare knows no
         // other agent's editor keys.
+        // The keys are this machine's; the editor keys sent are those of the system the agent runs on (rule 1391).
+        let shell_os = self.shell_key_os(&front.id);
         if ctx.agent_keys
             && armed == Some(flare_agent::kinds::AgentKind::Claude)
             && let Some(KeyDone::Handled) =
-                self.term.prompt_key(&info, ev, self.key_os, option_as_meta)
+                self.term
+                    .prompt_key(&info, ev, self.key_os, shell_os, option_as_meta)
         {
             self.push_term();
             self.wake_term();
@@ -6378,6 +6417,8 @@ mod tests {
         lookup: Option<Arc<dyn SessionLookup>>,
         /// The plugin folder the host hands new shells (None: the environment is untouched).
         plugin_dir: Option<String>,
+        /// The places of saved tabs that are remote tabs on the machine `mac` (rule 1390).
+        saved_remote: Vec<usize>,
     }
 
     struct Fx {
@@ -6408,7 +6449,14 @@ mod tests {
                     .map(|(i, (cwd, agent))| SavedTab {
                         cwd: (*cwd).to_string(),
                         agent: *agent,
-                        remote: None,
+                        remote: opts.saved_remote.contains(&i).then(|| {
+                            flare_tabs::restore::SavedRemote {
+                                machine: "mac".into(),
+                                host_tab: Some(format!("h{i}")),
+                                last_seq: 0,
+                                open_id: Some(format!("o{i}")),
+                            }
+                        }),
                         session: opts
                             .saved_sessions
                             .get(i)
@@ -6630,6 +6678,41 @@ mod tests {
         assert!(rows.row_data(1).unwrap().loading);
         assert_eq!(f.h.comp.get_front_kind(), 3);
         assert_eq!(f.sp.made().len(), 0);
+    }
+
+    /// Rule 1390: a remote tab saved with its host's agent wears that agent's icon from the first frame, with no
+    /// loading ring (nothing resumes here), and keeps it once the restore attached it, until its host speaks. It is
+    /// never armed by what was saved.
+    #[test]
+    fn a_restored_remote_tab_wears_its_saved_agent_from_the_first_frame() {
+        let f = fx_with(Opts {
+            saved: vec![
+                ("/Users/max/proj", Some(AgentKind::Claude)),
+                ("C:\\a", None),
+            ],
+            saved_remote: vec![0],
+            active: 1,
+            ..Opts::default()
+        });
+        let rows = f.h.comp.get_tab_rows();
+        let first = rows.row_data(0).unwrap();
+        assert_eq!(first.agent, 1, "the Claude icon from the first frame");
+        assert!(!first.loading, "a remote tab resumes nothing here");
+        f.start_restore_and_wait();
+        f.pump_until("the local shell", |f| !f.made_with("C:\\a").is_empty());
+        let id = f.ctl.borrow().model().state.tabs[0].id.clone();
+        assert!(f.ctl.borrow().model().remote_of(&id).is_some());
+        f.ctl.borrow_mut().refresh();
+        let rows = f.h.comp.get_tab_rows();
+        assert_eq!(rows.row_data(0).unwrap().agent, 1, "kept once attached");
+        let c = f.ctl.borrow();
+        assert_eq!(
+            c.agent_view.armed(&id),
+            None,
+            "never armed by what was saved"
+        );
+        assert_eq!(c.model().agent_kind(&id), Some(AgentKind::Claude));
+        assert_eq!(c.model().saved().tabs[0].agent, Some(AgentKind::Claude));
     }
 
     #[test]

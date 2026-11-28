@@ -669,6 +669,13 @@ impl AgentHub {
                 self.remote_kind.remove(tab);
             }
         }
+        // Rule 1390: the host's agent is the tab's (its icon, its prompt keys), idle or not. Applied before the early
+        // returns, since a status read again stops there. A tab the host says works or asks with no agent named keeps
+        // what `remote_mark` gives it; only another word without an agent takes the agent away, after the mark moved.
+        if kind.is_some() {
+            self.drive_remote_agent(now, tab, kind);
+        }
+        let drop_agent = kind.is_none() && !matches!(st.state.as_str(), "working" | "question");
         let question = st
             .question
             .as_deref()
@@ -700,14 +707,43 @@ impl AgentHub {
         }
         // The same word again is skipped only while the marks still show it: a mark this end took down on its own (an
         // answer key read the box gone) is raised again by the host's next word (rule 298).
-        if self.remote_said.get(tab) == Some(&st.state) && self.remote_marks_show(tab, &st.state) {
+        let again =
+            self.remote_said.get(tab) == Some(&st.state) && self.remote_marks_show(tab, &st.state);
+        if !again && let Some(mark) = crate::remote_status::mark_of(st) {
+            self.remote_said.insert(tab.to_string(), st.state.clone());
+            self.ind.remote_mark(now, tab, mark, kind);
+        }
+        if drop_agent {
+            self.drive_remote_agent(now, tab, None);
+        }
+        self.settle(now);
+    }
+
+    /// A remote tab holds the agent its host names, or none (rule 1390): the indicator's kind and membership (the
+    /// strip's icon), and the arm (Flare's prompt keys: Ctrl+A, Shift and Ctrl+Shift with the arrows, cut). A change
+    /// is a change to draw and to save.
+    fn drive_remote_agent(&mut self, now: u64, tab: &str, kind: Option<DetectedAgent>) {
+        if self.ind.set_remote_agent(now, tab, kind) {
+            self.changed = true;
+        }
+        let before = self.arm_of(tab);
+        let step = flare_agent::arm::arm_on_host(&before, kind);
+        if step.arm != before || step.gone {
+            self.changed = true;
+            self.apply_arm(tab, step);
+        }
+    }
+
+    /// A restored remote tab wears the agent `tabs.json` saved for it until its host speaks (rule 1390): the icon only.
+    /// Never an arm, never the host's word (`remote_agent`), never a resume: the host's first status sets or drops it.
+    pub fn seed_remote_agent(&mut self, tab: &str, kind: DetectedAgent) {
+        if !self.remote.contains(tab) {
             return;
         }
-        let Some(mark) = crate::remote_status::mark_of(st) else {
-            return;
-        };
-        self.remote_said.insert(tab.to_string(), st.state.clone());
-        self.ind.remote_mark(now, tab, mark, kind);
+        let now = self.now();
+        if self.ind.set_remote_agent(now, tab, Some(kind)) {
+            self.changed = true;
+        }
         self.settle(now);
     }
 
@@ -2394,6 +2430,74 @@ mod tests {
         // A local tab is the hub's own business.
         r.hub.on_remote_status("b", &st("working", None));
         assert!(!r.hub.working("b"));
+    }
+
+    /// Rule 1390: the host's named agent is the tab's whatever the state word: an idle Claude after a reconnect wears its
+    /// icon and arms Flare's prompt keys, a title that names no agent leaves it armed, the same status read again
+    /// changes nothing, a Codex named later replaces it, and no agent named takes it all away once. A tab restored from
+    /// `tabs.json` wears the saved agent until its host speaks, never armed by it.
+    #[test]
+    fn a_remote_tabs_host_agent_drives_its_icon_and_keys_whatever_the_state() {
+        use flare_term::remote_pty::HostStatus;
+        let st = |state: &str, agent: Option<&str>| HostStatus {
+            state: state.into(),
+            agent: agent.map(str::to_string),
+            session: None,
+            question: None,
+            failed: None,
+            host_sized: false,
+            folder: None,
+        };
+        let mut r = Rig::new();
+        r.open("b", None);
+        r.open_remote("r");
+        let _ = r.hub.take_changed();
+        r.hub.on_remote_status("r", &st("idle", Some("claude")));
+        assert!(r.hub.take_changed(), "a new agent is a change to draw");
+        assert!(r.hub.agent_here("r"));
+        assert_eq!(r.hub.agent_kind("r"), Some(DetectedAgent::Claude));
+        assert_eq!(r.hub.armed("r"), Some(AgentKind::Claude));
+        assert!(!r.hub.working("r"));
+        assert_eq!(r.hub.saved_agent("r"), Some(AgentKind::Claude));
+        // Read again (every 1.5 s, or after a reconnect): nothing moves, nothing is said gone.
+        let _ = r.hub.take_decor_gone();
+        r.hub.on_remote_status("r", &st("idle", Some("claude")));
+        assert!(!r.hub.take_changed());
+        assert!(r.hub.take_decor_gone().is_empty());
+        // A live title that names no agent leaves the host's arm alone.
+        r.ev(HostEvent::Title {
+            id: "r".into(),
+            text: "zsh".into(),
+        });
+        assert_eq!(r.hub.armed("r"), Some(AgentKind::Claude));
+        r.hub.on_remote_status("r", &st("idle", Some("codex")));
+        assert!(r.hub.take_changed());
+        assert_eq!(r.hub.agent_kind("r"), Some(DetectedAgent::Codex));
+        assert_eq!(r.hub.armed("r"), Some(AgentKind::Codex));
+        // Working with no agent named keeps what the tab has.
+        r.hub.on_remote_status("r", &st("working", None));
+        assert!(r.hub.agent_here("r") && r.hub.working("r"));
+        // The agent quit on the host: the icon and the keys go, once.
+        let _ = r.hub.take_decor_gone();
+        r.hub.on_remote_status("r", &st("idle", None));
+        assert!(r.hub.take_changed());
+        assert!(!r.hub.agent_here("r"));
+        assert_eq!(r.hub.agent_kind("r"), None);
+        assert_eq!(r.hub.armed("r"), None);
+        assert_eq!(r.hub.take_decor_gone().len(), 1);
+        r.hub.on_remote_status("r", &st("idle", None));
+        assert!(!r.hub.take_changed());
+        assert!(r.hub.take_decor_gone().is_empty());
+        // A restored remote tab wears its saved agent before the host speaks, unarmed; a local tab takes no seed.
+        r.open_remote("s");
+        r.hub.seed_remote_agent("s", DetectedAgent::Claude);
+        assert_eq!(r.hub.agent_kind("s"), Some(DetectedAgent::Claude));
+        assert_eq!(r.hub.armed("s"), None, "the seed is for the icon only");
+        assert_eq!(r.hub.remote_agent("s"), None);
+        r.hub.on_remote_status("s", &st("idle", None));
+        assert_eq!(r.hub.agent_kind("s"), None, "the host corrects the seed");
+        r.hub.seed_remote_agent("b", DetectedAgent::Claude);
+        assert_eq!(r.hub.agent_kind("b"), None);
     }
 
     /// Rule 298: an answer key here reads the mirrored box gone and takes the question down while the host's last word

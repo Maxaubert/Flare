@@ -4,6 +4,7 @@
 //! Prism Terminal W3C convention: `code` is the Debug name of the physical `KeyCode`
 //! ("KeyC", "Digit1", "NumpadEnter"), which is the W3C code name for that key.
 
+use flare_tabs::tabs::Os;
 use flare_term::keys::{KeyEvent, KeyOs};
 use flare_term::mac_keys::{PtyKey, mac_pty_key};
 use slint::winit_030::winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
@@ -109,6 +110,34 @@ pub fn pty_key(os: KeyOs, ev: &KeyEvent, option_as_meta: bool) -> PtyKey {
     }
 }
 
+/// The editing keys a remote host's shell reads another way than this machine's keyboard sends them, by the host's
+/// system (rule 1391). A Mac reads the Windows word keys as its Option keys; a PC host reads them as this PC does.
+fn host_editing_key(host: Os, ev: &KeyEvent) -> Option<&'static str> {
+    match host {
+        Os::Mac => flare_term::mac_keys::pc_word_key_on_mac(ev),
+        Os::Pc => None,
+    }
+}
+
+/// [`pty_key`] for the tab in front, told its remote host's system (None: a local tab, or a host that has not said)
+/// and whether its screen is the alternate one (rule 1391). On a Windows keyboard the editing keys go as the host's
+/// shell reads them, except while a full-screen program has the screen: it gets the keys as they are.
+pub fn tab_pty_key(
+    os: KeyOs,
+    host: Option<Os>,
+    alt_screen: bool,
+    ev: &KeyEvent,
+    option_as_meta: bool,
+) -> PtyKey {
+    if os == KeyOs::Windows
+        && !alt_screen
+        && let Some(bytes) = host.and_then(|h| host_editing_key(h, ev))
+    {
+        return PtyKey::Text(bytes.to_string());
+    }
+    pty_key(os, ev, option_as_meta)
+}
+
 /// Whether a W3C or winit key code is a modifier key on its own (Shift, Ctrl, Alt, the Windows or Cmd key).
 pub fn is_modifier_code(code: &str) -> bool {
     matches!(
@@ -145,6 +174,74 @@ mod tests {
 
     fn code(c: KeyCode) -> PhysicalKey {
         PhysicalKey::Code(c)
+    }
+
+    /// The bytes a Mac host's shell gets for what the PC sent: decoded by the link as it is (`decode_typing`) and
+    /// encoded again on the host (`encode_key`), as `remote.input` carries it.
+    fn on_the_host(sent: &PtyKey) -> Vec<u8> {
+        use flare_term::handle::RemoteIntent;
+        use flare_term::remote_pty::decode_typing;
+        let bytes = match sent {
+            PtyKey::Event(e) => encode_key(e, false).unwrap_or_default(),
+            PtyKey::Text(t) => t.as_bytes().to_vec(),
+            PtyKey::Nothing => Vec::new(),
+        };
+        decode_typing(&bytes)
+            .into_iter()
+            .flat_map(|i| match i {
+                RemoteIntent::Key(k) => encode_key(&k, false).unwrap_or_default(),
+                RemoteIntent::Text(t) => t.into_bytes(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Rule 1391 (Max, 2026-11-28: "windows shortcuts dont work like ctrl backspace, ctrl shift left arrow and so
+    /// on"): on a PC, a remote tab on a Mac gets the Mac's word keys for Ctrl+Backspace, Ctrl+Delete and Ctrl+Left and
+    /// Right, and they reach the host's shell as those bytes. A PC host, a local tab, a full-screen program and a Mac
+    /// keyboard get the keys as before.
+    #[test]
+    fn a_mac_hosts_shell_gets_the_macs_word_keys_from_a_pc() {
+        let ctrl = ModifiersState::CONTROL;
+        let key = |c: KeyCode, n: NamedKey| {
+            key_event_from_parts(true, &code(c), &Key::Named(n), None, ctrl)
+        };
+        let table = [
+            (key(KeyCode::Backspace, NamedKey::Backspace), "\x1b\x7f"),
+            (key(KeyCode::Delete, NamedKey::Delete), "\x1bd"),
+            (key(KeyCode::ArrowLeft, NamedKey::ArrowLeft), "\x1bb"),
+            (key(KeyCode::ArrowRight, NamedKey::ArrowRight), "\x1bf"),
+        ];
+        for (ev, want) in &table {
+            let sent = tab_pty_key(KeyOs::Windows, Some(Os::Mac), false, ev, false);
+            assert_eq!(sent, PtyKey::Text((*want).to_string()), "{ev:?}");
+            assert_eq!(on_the_host(&sent), want.as_bytes(), "{ev:?}");
+            // As before: a PC host, a local tab, a full-screen program, a Mac keyboard.
+            for (os, host, alt) in [
+                (KeyOs::Windows, Some(Os::Pc), false),
+                (KeyOs::Windows, None, false),
+                (KeyOs::Windows, Some(Os::Mac), true),
+                (KeyOs::Mac, Some(Os::Mac), false),
+            ] {
+                assert_eq!(
+                    tab_pty_key(os, host, alt, ev, false),
+                    pty_key(os, ev, false),
+                    "{ev:?} {os:?} {host:?} {alt}"
+                );
+            }
+        }
+        // Ctrl+Shift+Left is no word key here: it goes as it is (the armed prompt box takes it before).
+        let sel = key_event_from_parts(
+            true,
+            &code(KeyCode::ArrowLeft),
+            &Key::Named(NamedKey::ArrowLeft),
+            None,
+            ctrl | ModifiersState::SHIFT,
+        );
+        assert_eq!(
+            tab_pty_key(KeyOs::Windows, Some(Os::Mac), false, &sel, false),
+            PtyKey::Event(sel.clone())
+        );
     }
 
     #[test]
