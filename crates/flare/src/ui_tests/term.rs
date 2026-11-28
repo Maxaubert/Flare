@@ -2126,6 +2126,9 @@ mod flow {
     fn typing_highlights_every_match_and_enter_steps() {
         let w = Wx::new(1.0);
         w.feed("err one\r\nerr two\r\nfine\r\nerr three");
+        // The panel launcher shares the bar's corner and goes while the bar is open (rule 1384): the reference frame is
+        // taken without it, so only the bar differs.
+        w.h.comp.set_launcher_shown(false);
         let closed = w.frame();
         w.key(ctrl("f", "KeyF"));
         w.type_text("err");

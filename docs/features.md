@@ -3326,3 +3326,28 @@ Mac comes later as its own feature; nothing here blocks it.
   and `glyph-stroke-floor` properties, the `--see-through` flag, the e2e `seeThrough` scenario (retired in the
   ledger), `tools/material-spike` and `tools/glass-light`. Regression rules 73, 149, 150 and 152 are retired;
   parity DIFF-30 records the difference.
+
+## Panel launcher and "Open in", 2026-11-24
+
+Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to 1388. Mockups approved by Max
+(placement 3, icon 6).
+
+- **A way into a closed panel.** While a tab's side panel is closed, a faint round button (the Layers icon) sits in the
+  terminal's top right. Pointing at it opens a small menu: Browser (an empty page, the address field holding the
+  keys), Device (where this machine offers the device panel), Open a file... (the system Open dialog in the tab's
+  folder; the file shows in the panel as a file link's "Show in side panel" would show it) and, behind a rule, Last
+  panel (what the tab's panel showed last: a page, a device or a file). The button hides while the panel is open, and
+  wherever a panel cannot open.
+- **Hover the way Max asked.** Only the button opens the menu; where the menu would be does nothing while it is closed.
+  Crossing the 6 px gap to the menu keeps it open, and it closes 250 ms after the pointer has left both. A click opens
+  it with the keys (arrows, Home, End, Enter, Escape); a menu the pointer opened leaves every key alone, so an agent's
+  Escape is never swallowed.
+- **"Open in".** The panel header (or a web page's bar) has a labelled button: "Open in <app>" (the default app's name
+  on Windows, "default app" when it is not known), "Open in browser" for a page, "Show in Explorer" for a file a click
+  would never open. It uses the openers file links use, so nothing runs that a click would not run.
+- **Tests.** The unit tests in `launcher.rs` (the hover rules with the clock passed in, where it shows, the rows, Last
+  panel, Open in), `pick_any_file_with_a_seam_calls_done_at_once` and the app-name tests in `flare-win`, and the window
+  tests in `appctl/tests/launcher_tests.rs` (a real pointer, the keys, every row, Open in, and the corner at 100, 150 and
+  225 percent).
+- **Not yet.** A Mac lookup of the default app's name; an e2e scenario of its own (the window tests run the real
+  controller and window headless).

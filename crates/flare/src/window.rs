@@ -861,8 +861,24 @@ pub fn run_window(
     args: &Args,
     instance: Option<Instance>,
 ) -> Result<(), slint::PlatformError> {
-    let sample = args.sample;
+    // The window is made here, in a small frame, and `run_window_with` (whose debug frame is tens of KB) runs after.
+    // In a debug build Slint's generated constructor holds four copies of the window's inner struct (246,512 bytes,
+    // measured 2026-11-24) on the stack: two in `InnerAppWindow::new`'s frame and two in `VRc::new`'s, about
+    // 986,000 bytes. Windows gives the main thread 1 MiB, so with a big frame under it the debug app overflowed its
+    // stack at start (CI, PR #346). Every 1 KB added to the window costs about 4 KB of main stack here.
     let app = AppWindow::new()?;
+    run_window_with(app, outcome, start, args, instance)
+}
+
+#[inline(never)]
+fn run_window_with(
+    app: AppWindow,
+    outcome: BackendOutcome,
+    start: Instant,
+    args: &Args,
+    instance: Option<Instance>,
+) -> Result<(), slint::PlatformError> {
+    let sample = args.sample;
     crate::startup_trace::mark(crate::startup_trace::Phase::Component);
     let painter = match outcome.effective {
         RendererChoice::Gpu => GridPainter::Gpu,
@@ -1547,6 +1563,32 @@ pub fn run_window(
                     move |p| answer(p),
                 );
             }));
+        }
+        {
+            // The panel launcher's "Open a file..." (rule 1386): the system's Open dialog, parented to the window,
+            // starting in the tab's folder. Under --e2e an unset seam is a cancel: no real dialog shows.
+            let weak = app.as_weak();
+            rc.borrow_mut()
+                .set_pick_file(Rc::new(move |folder, answer| {
+                    let parent = weak
+                        .upgrade()
+                        .and_then(|a| hwnd_of(&a))
+                        .map(|hwnd| ParentWindow { hwnd });
+                    let seam = e2e::global().dialog_seam(
+                        &["FLARE_E2E", "_PICK_FILE"].concat(),
+                        "",
+                        |_| true,
+                    );
+                    flare_win::pick::pick_any_file(
+                        PickOptions {
+                            parent,
+                            default_dir: folder,
+                            fallback_dir: None,
+                            seam,
+                        },
+                        move |p| answer(p),
+                    );
+                }));
         }
         // The panels' file is read here, at start, before the restore gives the tabs their panels.
         let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
