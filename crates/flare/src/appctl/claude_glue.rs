@@ -1,4 +1,4 @@
-//! The tab menu's "Claude sessions" rows in the window (rules 1380 to 1383): the rows, the picks, the busy question
+//! The tab menu's "Claude sessions" rows in the window (rules 1380 to 1382): the rows, the picks, the busy question
 //! in the dialog's turn, and the runner stepped on every drained batch of terminal events and on the timer. The
 //! decisions are `crate::claude_sessions`'s; here the facts are read and its acts are typed.
 
@@ -8,15 +8,13 @@ use flare_term::handle::SessionKey;
 
 use super::AppCtl;
 use crate::claude_sessions::{
-    Act, Mode, Outcome, Pick, Press, Runner, TabFacts, ask_words, busy_among, end_targets,
-    menu_rows, restart_targets,
+    Act, Outcome, Pick, Press, Runner, TabFacts, ask_words, busy_among, end_targets, menu_rows,
 };
 use crate::menus_ui::MenuRowData;
 
-/// The busy question on the dialog: the tabs it is about (the idle ones too) and what they get.
+/// The busy question on the dialog: the tabs it is about (the idle ones too).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClaudeAsk {
-    pub(crate) mode: Mode,
     pub(crate) tabs: Vec<String>,
 }
 
@@ -100,33 +98,32 @@ impl AppCtl {
                     .filter(|t| t.id == tab && t.can_end())
                     .map(|t| t.id.clone())
                     .collect();
-                self.claude_end(ids, Mode::End);
+                self.claude_end(ids);
             }
             Pick::StartTab => {
                 let one: Vec<TabFacts> = all.into_iter().filter(|t| t.id == tab).collect();
                 let acts = Runner::start(&one);
                 self.claude_acts(acts);
             }
-            Pick::EndAll => self.claude_end(end_targets(&all), Mode::End),
+            Pick::EndAll => self.claude_end(end_targets(&all)),
             Pick::StartAll => {
                 let acts = Runner::start(&all);
                 self.claude_acts(acts);
             }
-            Pick::RestartAll => self.claude_end(restart_targets(&all), Mode::Restart),
         }
         self.refresh();
         true
     }
 
-    /// Ends (or restarts) `ids`: at once when none is busy, else after the busy question (rule 1382). Nothing for no
+    /// Ends `ids`: at once when none is busy, else after the busy question (rule 1382). Nothing for no
     /// tab, and nothing while another question has the dialog.
-    fn claude_end(&mut self, ids: Vec<String>, mode: Mode) {
+    fn claude_end(&mut self, ids: Vec<String>) {
         if ids.is_empty() {
             return;
         }
         let facts: Vec<TabFacts> = ids.iter().map(|id| self.claude_facts(id)).collect();
         if busy_among(&ids, &facts).is_empty() {
-            self.claude_run_end(&ids, mode, false);
+            self.claude_run_end(&ids, false);
             return;
         }
         if self.ask.is_some()
@@ -136,14 +133,14 @@ impl AppCtl {
         {
             return;
         }
-        self.claude_ask = Some(ClaudeAsk { mode, tabs: ids });
+        self.claude_ask = Some(ClaudeAsk { tabs: ids });
         self.show_claude_ask();
     }
 
-    fn claude_run_end(&mut self, ids: &[String], mode: Mode, interrupt: bool) {
+    fn claude_run_end(&mut self, ids: &[String], interrupt: bool) {
         let facts: Vec<TabFacts> = ids.iter().map(|id| self.claude_facts(id)).collect();
         let now = self.now();
-        let acts = self.claude_run.end(&facts, mode, interrupt, now);
+        let acts = self.claude_run.end(&facts, interrupt, now);
         self.claude_acts(acts);
         self.claude_note_done();
         self.kick();
@@ -156,7 +153,7 @@ impl AppCtl {
         };
         let facts: Vec<TabFacts> = a.tabs.iter().map(|id| self.claude_facts(id)).collect();
         let busy = busy_among(&a.tabs, &facts).len().max(1);
-        let w = ask_words(a.mode, busy);
+        let w = ask_words(busy);
         let Some(app) = self.app() else { return };
         self.clear_tip();
         self.close_menu_quietly();
@@ -190,7 +187,7 @@ impl AppCtl {
             app.set_dialog_open(false);
         }
         if let Some(interrupt) = choice {
-            self.claude_run_end(&a.tabs, a.mode, interrupt);
+            self.claude_run_end(&a.tabs, interrupt);
         }
         self.show_download_ask();
         self.refresh();
@@ -206,7 +203,7 @@ impl AppCtl {
         }
     }
 
-    /// Moves the ends and restarts on with the tabs as they are now.
+    /// Moves the ends on with the tabs as they are now.
     pub(super) fn claude_step(&mut self) {
         if !self.claude_run.active() {
             return;

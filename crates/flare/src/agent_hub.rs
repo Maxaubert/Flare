@@ -234,7 +234,7 @@ pub struct AgentHub {
     last_sessions: HashMap<String, String>,
     /// Tabs whose shell reported its prompt (OSC 9;9 or OSC 7) after the last key typed there (rule 1381).
     prompt_fresh: HashSet<String>,
-    /// How many prompt reports each tab's shell has made (rule 1381: a restart starts Claude after the next one).
+    /// How many prompt reports each tab's shell has made (rule 1381: an end is done at the next one).
     prompts_seen: HashMap<String, u64>,
     /// Each tab's agent folder: the folder its Claude session works in, as its hooks last named it (`panel.state`
     /// with `cwd`, changes after review 2026-11-11). A relative file link is read from it. Gone with the agent.

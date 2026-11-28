@@ -687,7 +687,7 @@ pub struct AppCtl {
     downloads: crate::download_ask::DownloadQueue,
     /// The app links of web pages waiting for the person's Open (rule 252).
     app_asks: crate::app_ask::AppAsks,
-    /// The "Claude sessions" rows' ends and restarts under way (rule 1381).
+    /// The "Claude sessions" rows' ends under way (rule 1381).
     claude_run: crate::claude_sessions::Runner,
     /// The busy Claude sessions question while it is on the dialog (rule 1382).
     claude_ask: Option<claude_glue::ClaudeAsk>,
@@ -6146,7 +6146,7 @@ impl AppCtl {
             self.push_term();
             self.wake_term();
         }
-        // The Claude sessions rows' ends and restarts follow the tabs' new state (rule 1381).
+        // The Claude sessions rows' ends follow the tabs' new state (rule 1381).
         self.claude_step();
     }
 }

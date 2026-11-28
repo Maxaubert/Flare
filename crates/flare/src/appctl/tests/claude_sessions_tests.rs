@@ -1,4 +1,4 @@
-//! The tab menu's "Claude sessions" rows (rules 1380 to 1383) in the real window controller: fake shells, the agent's
+//! The tab menu's "Claude sessions" rows (rules 1380 to 1382) in the real window controller: fake shells, the agent's
 //! title and hook signals as Claude prints them, the menu picked through `menu_picked`, the busy question answered
 //! through the dialog's own callbacks, and the keys read back from what each fake shell was sent.
 
@@ -121,9 +121,8 @@ fn the_rows_follow_the_tabs_and_show_their_counts() {
     assert!(labels.iter().any(|l| l == GROUP));
     assert!(labels.iter().any(|l| l == "End all Claude sessions (1)"));
     assert!(
-        labels
-            .iter()
-            .any(|l| l == "Restart all Claude sessions (1)")
+        !labels.iter().any(|l| l.starts_with("Restart")),
+        "{labels:?}"
     );
     assert!(labels.iter().any(|l| l == "Start Claude in all tabs (1)"));
     let labels = menu_labels(&f, &c);
@@ -268,32 +267,6 @@ fn start_types_the_resume_line_of_the_last_session() {
         !labels.iter().any(|l| l.starts_with("Start Claude")),
         "{labels:?}"
     );
-}
-
-/// Rule 1383: Restart ends Claude and types the resume line only once the shell is back at its prompt.
-#[test]
-fn restart_starts_the_same_session_at_the_next_prompt() {
-    let f = fx();
-    f.open_tabs(&["C:\\a"]);
-    prompt(&f, "C:\\a");
-    // The person typed `claude` after that prompt: a prompt report before the restart is the old one.
-    let typed = crate::tab_host::HostEvent::Typed {
-        id: id_of(&f, "C:\\a"),
-    };
-    f.ctl.borrow_mut().hub.on_host_events(&[typed]);
-    let a = idle_claude(&f, "C:\\a");
-    pick(&f, &a, "Restart all Claude sessions");
-    f.pump_until("the exit", |f| written(f, "C:\\a") == "/exit");
-    boxed(&f, "C:\\a", "/exit");
-    later(&f, ENTER_AFTER_MS);
-    f.pump_until("the Enter", |f| written(f, "C:\\a") == "/exit\r");
-    later(&f, 500);
-    assert_eq!(written(&f, "C:\\a"), "/exit\r", "nothing before the prompt");
-    prompt(&f, "C:\\a");
-    f.pump_until("the resume line", |f| {
-        written(f, "C:\\a") == format!("/exit\rclaude --resume {SID}\r")
-    });
-    assert!(f.ctl.borrow().claude_running().is_empty());
 }
 
 /// Rule 1381: a draft in Claude's prompt box keeps the tab: nothing is typed into it.

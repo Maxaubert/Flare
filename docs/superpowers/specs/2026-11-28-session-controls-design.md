@@ -1,8 +1,9 @@
-# Claude session controls: end, start and restart Claude in all tabs (design)
+# Claude session controls: end and start Claude in all tabs (design)
 
 Date: 2026-11-28. Owner request (Max): "some way for me to close all sessions without closing the tabs ... in one
 place", then "there's also a start claude session in all tabs, and maybe other stuff too". He chose a Flare menu
-item over an MCP command, and said to skip the mockup and reuse the existing menu rows and dialog styles.
+item over an MCP command, and said to skip the mockup and reuse the existing menu rows and dialog styles. Later the
+same day he said he does not want "Restart all Claude sessions": the restart row was taken out.
 
 ## Where the rows live
 
@@ -15,8 +16,7 @@ menu every tab already has: a tab's right-click menu.
   have something to act on, each with its count:
   - "End all Claude sessions (N)"
   - "Start Claude in all tabs (N)"
-  - "Restart all Claude sessions (N)"
-  A row with N = 0 is left out; with all three out, the flyout is left out too. Nothing ever acts on zero tabs.
+  A row with N = 0 is left out; with both out, the flyout is left out too. Nothing ever acts on zero tabs.
 
 The macOS menu bar (`mac_menu.rs`) is not changed in this PR.
 
@@ -29,9 +29,8 @@ live, and the process poll has answered for it at least once.
 | --- | --- |
 | End | Claude (`DetectedAgent::Claude`) is here. Codex and agy are never touched. |
 | Start | No agent is here (none detected and none armed) and the shell is at its prompt: a prompt report (OSC 9;9 or OSC 7) came after the last key typed in the tab. |
-| Restart | The End tabs. |
 
-Remote tabs are left out of all three: their agent state is the host's words over the link, and the host shell's
+Remote tabs are left out of both: their agent state is the host's words over the link, and the host shell's
 prompt cannot be read here. Hidden sessions (run for another machine) are never counted.
 
 ## What is typed
@@ -73,7 +72,7 @@ The tab and its shell stay open in every case. Flare never kills the shell or cl
 
 ## Busy agents: one question
 
-When any End or Restart tab is busy (working or with a question up), one dialog asks first, in the dialog's existing
+When any End tab is busy (working or with a question up), one dialog asks first, in the dialog's existing
 style:
 
 - Title: "1 session is working" / "N sessions are working".
@@ -93,10 +92,6 @@ the new question takes its turn with the others: downloads and app-link question
 At the prompt with no agent: `SessionKey::Start` with the tab's shell and last session. Nothing waits after it; the
 poll is asked to look soon.
 
-## Restart
-
-End as above, and when the shell is back at its prompt (a prompt report after the Enter), type the start line with
-the session id captured before the end. A tab whose end was given up, or kept for a draft, is not started.
 
 ## Out of scope / not decided here
 

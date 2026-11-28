@@ -6106,10 +6106,10 @@ the same key. No entitlement is needed: Flare is hardened, not sandboxed. Held b
 
 1380. **The "Claude sessions" rows act only on tabs they can act on, and are left out with none.** A tab's menu has
 "End Claude session" while Claude Code (not Codex or agy) runs there, "Start Claude" while the shell waits at its
-prompt with no agent, and the "Claude sessions" flyout with "End all Claude sessions (N)", "Start Claude in all tabs
-(N)" and "Restart all Claude sessions (N)". A tab counts only as a local shell tab of this window with a live shell
-(never a remote or hidden one). Start needs the poll to have looked and a prompt report after the last key typed. A row
-with N = 0 is left out, the flyout with all three. No tab is ever closed and no shell process is touched. Held by
+prompt with no agent, and the "Claude sessions" flyout with "End all Claude sessions (N)" and "Start Claude in all
+tabs (N)". There is no restart row (Max, 2026-11-28). A tab counts only as a local shell tab of this window with a live
+shell (never a remote or hidden one). Start needs the poll to have looked and a prompt report after the last key typed.
+A row with N = 0 is left out, the flyout with both. No tab is ever closed and no shell process is touched. Held by
 `each_row_touches_only_its_own_tabs`, `the_rows_show_counts_and_nothing_acts_on_zero_tabs`,
 `the_rows_follow_the_tabs_and_show_their_counts`, `nothing_to_act_on_shows_no_row` and `a_closed_tab_drops_its_job`.
 Source: Max, 2026-11-28.
@@ -6132,8 +6132,9 @@ the line is not made for. Held by `the_typed_start_line_resumes_a_known_session_
 `the_last_session_outlives_the_agent_and_goes_with_the_tab`, `a_prompt_report_after_the_last_key_is_the_prompt`,
 `prompt_text_reads_the_box_only`, `a_second_pick_leaves_the_other_jobs_alone`, `a_pick_again_never_types_exit_twice`,
 `a_shell_at_its_prompt_gets_no_exit`, `no_prompt_box_gets_no_exit`, `the_enter_waits_for_the_echo_and_never_sends_other_words`,
-`a_shell_back_at_its_prompt_gets_no_exit` and `the_enter_waits_for_the_echo`. Source: Max, 2026-11-28; review
-2026-11-28.
+`a_shell_back_at_its_prompt_gets_no_exit`, `the_enter_waits_for_the_echo` and
+`a_shell_that_never_comes_back_is_given_up` (an end whose shell shows no prompt in 15 s is given up). Source: Max,
+2026-11-28; review 2026-11-28.
 
 1382. **A busy Claude asks once: Cancel, Wait (the default), End now.** "N sessions are working". Cancel does nothing,
 the idle tabs included. Wait ends each busy tab as soon as it is idle, with no time limit. End now sends Escape once
@@ -6143,9 +6144,3 @@ third button exists only for this question; downloads and app-link questions wai
 `a_busy_claude_asks_and_cancel_does_nothing`, `wait_ends_the_busy_claude_once_it_rests`,
 `end_now_interrupts_then_ends` and `a_third_button_is_the_default_and_tab_walks_the_row`. Source: Max, 2026-11-28.
 
-1383. **Restart starts Claude again only after the shell's next prompt report, with the session it had.** The id is
-taken as `/exit` is typed (the hub forgets the agent's session as it leaves; a `/clear` under Wait named a new one). A
-start line typed earlier would land in Claude's own prompt box. A shell that does not come back in 15 s is given up,
-with nothing typed. Held by `a_restart_starts_the_same_session_at_the_next_prompt`,
-`a_restart_resumes_the_session_at_the_exit` and `restart_starts_the_same_session_at_the_next_prompt`. Source: Max,
-2026-11-28; review 2026-11-28.
