@@ -534,6 +534,12 @@ fn draw_arrow_starts_and_stops_from_the_more_menu() {
     f.h.advance(0);
     let _m = mouse(&f);
     assert_eq!(open_more(&f), ["Open in browser", "Draw arrow"]);
+    f.pump();
+    assert_ne!(
+        f.ctl.borrow().web.phase_name(),
+        "live",
+        "the menu made the page a still"
+    );
     pick_more(&f, "Draw arrow");
     f.h.advance(0);
     f.pump();
@@ -543,6 +549,7 @@ fn draw_arrow_starts_and_stops_from_the_more_menu() {
     assert_eq!(open_more(&f), ["Open in browser", "Stop drawing the arrow"]);
     // The menu over the page ends the mode on the agent's next turn (rule 256); the stop is then only a close.
     agent_turn(&f, 16);
+    assert!(!drawing(&f, &id), "the menu over the page ended the mode");
     pick_more(&f, "Stop drawing the arrow");
     f.h.advance(0);
     f.pump();

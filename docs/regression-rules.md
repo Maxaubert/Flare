@@ -4471,7 +4471,7 @@ and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Ove
 `ask-*` properties of `WebBar` and `PanelSlot`, `panel-ask-on`, `panel-ask-agent`, `panel-ask-tip` and
 `panel-ask-x/y/w/visible` in `ui/app.slint`, `AppCtl::panel_ask_agent`, `ask_about_path`, `ask_selection_done`, the
 page reference (`ask_agent::frame_page`) and the notes only the button used (`NOTE_NO_FILE`, `NOTE_PATH_REFUSED`,
-`NOTE_PAGE_FAILED`), the button's tooltip side (`tip_request_toward`) and its glyph size test. Kept: the terminal
+`NOTE_PAGE_FAILED`), the button's tooltip side (`tip_request_toward`, back since rule 1389 for the web bar's More button) and its glyph size test. Kept: the terminal
 menu's row "Ask agent about this selection" (`ask_about_grid`, `deliver_ask`, `frame_selection`), the arrow's typed
 frame for an agent with no hooks (`frame_arrow`), and the 4 s note over the terminal. "Draw arrow" no longer needs the
 button: it shows on a web page or a mini-app of a tab with an agent, with no pop-up open, while the panel is at least
