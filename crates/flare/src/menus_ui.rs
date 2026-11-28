@@ -43,6 +43,8 @@ pub const GLYPH_BADGE_PIN: &str = "badge-pin";
 /// Settings > Machines' ⋯ menu (rule 1281): Test (a pulse line) and Remove (the Plugins page's trash).
 pub const GLYPH_TEST: &str = "menu-test";
 pub const GLYPH_TRASH: &str = "menu-trash";
+/// The web bar's More menu (rule 1389): "Draw arrow" wears the arrow its old button drew.
+pub const GLYPH_POINT_ARROW: &str = "point-arrow";
 /// A remote machine's system (remote sessions PR 7): filled logos on the 24-unit box.
 pub const GLYPH_LOGO_MAC: &str = "logo-mac";
 pub const GLYPH_LOGO_PC: &str = "logo-pc";
@@ -112,6 +114,7 @@ pub fn glyph_path(name: &str) -> &'static str {
         GLYPH_BADGE_PLUS => "M12 5v14M5 12h14",
         GLYPH_BADGE_PIN => "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z",
         GLYPH_TEST => "M3 12h4l2.5-6 5 12 2.5-6h4",
+        GLYPH_POINT_ARROW => "M18 18L6 6M6 14V6h8",
         GLYPH_TRASH => {
             "M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"
         }
@@ -196,6 +199,43 @@ pub enum MenuKind {
     },
     /// Ctrl+Shift+R (rule 1236): the linked machines alone, the + menu's machine rows; a pick opens a tab there.
     Machines,
+    /// The web bar's More menu (rule 1389) of this tab's page; each row carries its `WEB_MORE_*` action.
+    WebMore {
+        tab: String,
+    },
+}
+
+/// The web bar's More menu (rule 1389): what each row does, carried with the row (its words change with the state, so
+/// a pick never goes by them).
+pub const WEB_MORE_OPEN: &str = "open-in-browser";
+pub const WEB_MORE_DRAW: &str = "draw-arrow";
+pub const WEB_MORE_STOP_DRAW: &str = "stop-drawing";
+/// The rows' words. "Open in browser" is `launcher::open_in_label`'s for a page.
+pub const WEB_MORE_OPEN_LABEL: &str = "Open in browser";
+pub const WEB_MORE_DRAW_LABEL: &str = "Draw arrow";
+pub const WEB_MORE_STOP_LABEL: &str = "Stop drawing the arrow";
+
+/// The web bar's More menu (rule 1389), in order: "Open in browser" when the page is a web address to hand on
+/// (`open_in`, rule 1388), then "Draw arrow" when the draw mode is offered (`draw`: Some, rule 256), which says "Stop
+/// drawing the arrow" while it is on. A row with nothing to do is left out; a new row is one more push here.
+pub fn web_more_rows(open_in: bool, draw: Option<bool>) -> Vec<(MenuRowData, &'static str)> {
+    let mut rows = Vec::new();
+    if open_in {
+        let mut row = MenuRowData::plain(WEB_MORE_OPEN_LABEL);
+        row.icon = GLYPH_OPEN;
+        rows.push((row, WEB_MORE_OPEN));
+    }
+    if let Some(active) = draw {
+        let (label, action) = if active {
+            (WEB_MORE_STOP_LABEL, WEB_MORE_STOP_DRAW)
+        } else {
+            (WEB_MORE_DRAW_LABEL, WEB_MORE_DRAW)
+        };
+        let mut row = MenuRowData::plain(label);
+        row.icon = GLYPH_POINT_ARROW;
+        rows.push((row, action));
+    }
+    rows
 }
 
 /// The machine menu's note when no machine is linked yet (rule 1236).
@@ -1014,6 +1054,7 @@ mod tests {
             GLYPH_BADGE_PIN,
             GLYPH_TEST,
             GLYPH_TRASH,
+            GLYPH_POINT_ARROW,
             GLYPH_LOGO_MAC,
             GLYPH_LOGO_PC,
             GLYPH_LOGO_LINUX,
@@ -1024,6 +1065,43 @@ mod tests {
                 "glyph {name} differs from glyphs.slint"
             );
         }
+    }
+
+    /// Rule 1389: the web bar's More menu lists only rows with something to do, "Open in browser" first, and "Draw
+    /// arrow" turns into "Stop drawing the arrow" while the mode is on; each row carries its action, not its words.
+    #[test]
+    fn the_web_more_menu_lists_only_what_it_can_do() {
+        let labels = |rows: &[(MenuRowData, &str)]| -> Vec<(String, String)> {
+            rows.iter()
+                .map(|(r, a)| (r.label.clone(), (*a).to_string()))
+                .collect()
+        };
+        assert!(web_more_rows(false, None).is_empty());
+        assert_eq!(
+            labels(&web_more_rows(true, None)),
+            [("Open in browser".into(), WEB_MORE_OPEN.into())]
+        );
+        assert_eq!(
+            labels(&web_more_rows(true, Some(false))),
+            [
+                ("Open in browser".to_string(), WEB_MORE_OPEN.to_string()),
+                ("Draw arrow".into(), WEB_MORE_DRAW.into())
+            ]
+        );
+        assert_eq!(
+            labels(&web_more_rows(false, Some(true))),
+            [("Stop drawing the arrow".into(), WEB_MORE_STOP_DRAW.into())]
+        );
+        let rows = web_more_rows(true, Some(false));
+        assert_eq!(rows[0].0.icon, GLYPH_OPEN);
+        assert_eq!(rows[1].0.icon, GLYPH_POINT_ARROW);
+        assert!(rows.iter().all(|(r, _)| !r.disabled && !r.flyout));
+        // The row's words are the page's "Open in" words (rule 1388).
+        let url = crate::launcher::OpenIn::Url("https://a.example/".into());
+        assert_eq!(
+            crate::launcher::open_in_label(&url, None, false, false),
+            WEB_MORE_OPEN_LABEL
+        );
     }
 
     /// Rule 1281: Remove draws the Plugins page's trash, the very path its button uses.

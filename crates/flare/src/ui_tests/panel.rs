@@ -1228,7 +1228,7 @@ fn the_popup_strip_takes_the_pages_top_and_its_close_calls_back() {
     assert_eq!(h.comp.get_panel_web_y(), page_y);
     assert_eq!(h.comp.get_panel_popup_h(), 0.0);
 }
-// ---- "Draw arrow" with no "Ask agent" beside it (rules 256, 1267) ----
+// ---- "Draw arrow" and "Open in browser" in the web bar's More menu (rules 256, 1267, 1388, 1389) ----
 
 #[test]
 fn draw_arrow_is_offered_on_a_page_only_with_an_agent_and_room() {
@@ -1247,8 +1247,44 @@ fn draw_arrow_is_offered_on_a_page_only_with_an_agent_and_room() {
     }
 }
 
+/// Rule 1389: the bar has one More button for "Open in browser" and "Draw arrow", shown only while its menu has a
+/// row; neither has a button of its own in the bar any more.
 #[test]
-fn the_address_field_gives_up_only_the_draw_arrow_buttons_room() {
+fn the_more_button_shows_only_while_its_menu_has_a_row() {
+    let panel = include_str!("../../ui/panel.slint");
+    assert!(panel.contains("more-btn := WebButton"));
+    assert!(!panel.contains(" draw-btn := WebButton"));
+    assert!(!panel.contains("open-in-btn := OpenInButton"));
+    for s in SCALES {
+        let h = window(s);
+        open_web(&h);
+        assert!(
+            !h.comp.get_panel_web_more_visible(),
+            "nothing to offer, scale {s}"
+        );
+        h.comp.set_panel_draw_on(true);
+        h.advance(0);
+        assert!(h.comp.get_panel_web_more_visible(), "draw, scale {s}");
+        assert!(!h.comp.get_panel_open_in_visible(), "no address, scale {s}");
+        h.comp.set_panel_draw_on(false);
+        h.comp.set_panel_open_in("Open in browser".into());
+        h.advance(0);
+        assert!(h.comp.get_panel_web_more_visible(), "open in, scale {s}");
+        assert!(
+            h.comp.get_panel_open_in_visible(),
+            "offered in the menu, scale {s}"
+        );
+        assert!(!h.comp.get_panel_draw_visible(), "scale {s}");
+        open_text(&h, 3);
+        assert!(
+            !h.comp.get_panel_web_more_visible(),
+            "a text file, scale {s}"
+        );
+    }
+}
+
+#[test]
+fn the_address_field_gives_up_only_the_more_buttons_room() {
     for s in SCALES {
         // 1600 css px at 40%: a wide panel. 600 css px at the minimum share: the narrowest it gets.
         for (css_w, share) in [(1600u32, 0.4f32), (600, 0.15)] {
@@ -1262,17 +1298,20 @@ fn the_address_field_gives_up_only_the_draw_arrow_buttons_room() {
                 (close_x - 4.0 - field_end).abs() <= 1.0,
                 "{css_w} at scale {s}: {field_end} {close_x}"
             );
+            // Both rows offered: still one button.
             h.comp.set_panel_draw_on(true);
+            h.comp.set_panel_open_in("Open in browser".into());
             h.advance(0);
-            let (draw_x, draw_w) = (h.comp.get_panel_draw_x(), h.comp.get_panel_draw_w());
-            assert!(draw_w > 0.0, "{css_w} at scale {s}");
+            let (more_x, more_w) = (h.comp.get_panel_web_more_x(), h.comp.get_panel_web_more_w());
+            assert!(more_w > 0.0, "{css_w} at scale {s}");
+            assert_eq!(more_x, h.comp.get_panel_draw_x(), "{css_w} at scale {s}");
             assert!(
-                draw_x + draw_w <= close_x,
+                more_x + more_w <= close_x,
                 "left of close, {css_w} at scale {s}"
             );
             let field_end = h.comp.get_panel_web_field_x() + h.comp.get_panel_web_field_w();
             assert!(
-                (draw_x - 4.0 - field_end).abs() <= 1.0,
+                (more_x - 4.0 - field_end).abs() <= 1.0,
                 "the field ends just left of it, {css_w} at scale {s}"
             );
             assert!(
@@ -1287,18 +1326,32 @@ fn the_address_field_gives_up_only_the_draw_arrow_buttons_room() {
     }
 }
 
+/// Rule 1389: a click on the More button calls back with the button's right edge, top and foot (the menu drops from
+/// there); it never presses "Draw arrow" itself.
 #[test]
-fn draw_arrow_calls_back_from_the_browser_bar() {
+fn the_more_button_calls_back_with_its_edges() {
     for s in SCALES {
         let h = window(s);
-        let pressed = Rc::new(Cell::new(0u32));
-        let p = pressed.clone();
-        h.comp.on_panel_draw_arrow(move || p.set(p.get() + 1));
+        let drawn = Rc::new(Cell::new(0u32));
+        let d = drawn.clone();
+        h.comp.on_panel_draw_arrow(move || d.set(d.get() + 1));
+        let got = Rc::new(Cell::new(None::<(f32, f32, f32)>));
+        let g = got.clone();
+        h.comp
+            .on_panel_web_more_clicked(move |r, t, b| g.set(Some((r, t, b))));
         h.comp.set_panel_draw_on(true);
         open_web(&h);
-        let (x, w) = (h.comp.get_panel_draw_x(), h.comp.get_panel_draw_w());
-        h.click(x + w / 2.0, h.comp.get_panel_draw_y() + 12.0);
-        assert_eq!(pressed.get(), 1, "scale {s}");
+        let (x, y, w) = (
+            h.comp.get_panel_web_more_x(),
+            h.comp.get_panel_web_more_y(),
+            h.comp.get_panel_web_more_w(),
+        );
+        h.click(x + w / 2.0, y + w / 2.0);
+        let (r, t, b) = got.get().expect("the More button called back");
+        assert!((r - (x + w)).abs() < 0.01, "scale {s}");
+        assert!((t - y).abs() < 0.01, "scale {s}");
+        assert!((b - (y + w)).abs() < 0.01, "a square button, scale {s}");
+        assert_eq!(drawn.get(), 0, "scale {s}");
     }
 }
 #[test]

@@ -326,6 +326,10 @@ component WebButton inherits Rectangle {
     // A toggle that is on (the header's wrap button): a resting fill and the full ink.
     in property <bool> on: false;
     callback activated();
+    // The pointer came onto the button or left it (for a tooltip, rule 1389).
+    callback hovered(bool);
+    property <bool> over: ta.has-hover;
+    changed over => { root.hovered(root.over); }
     width: Px.snap(24px);
     height: Px.snap(24px);
     border-radius: Theme.radius-button;
@@ -466,24 +470,24 @@ component WebBar inherits Rectangle {
     callback submit(string);
     callback escape();
     callback close();
-    // "Draw arrow", left of the close button (rule 256): pressed while the person draws. The address field gives up
-    // only its room (rule 1267: no "Ask agent" button beside it any more).
+    // The More button (rule 1389), left of the close: a vertical three-dot button whose menu holds "Open in browser"
+    // (rule 1388) and "Draw arrow" (rule 256), and whatever comes later. It shows while the menu has a row: a web
+    // address to hand on (`open-in` not "") or the draw mode offered (`draw-shown`). The address field gives up only
+    // its room. The menu is the window's shared one (`more-clicked` with the button's right edge, top and foot); it
+    // is pressed while that menu is open.
     in property <bool> draw-shown;
-    in property <bool> draw-active;
-    callback draw-arrow();
-    out property <length> draw-x: draw-btn.absolute-position.x;
-    out property <length> draw-y: draw-btn.absolute-position.y;
-    out property <length> draw-w: draw-btn.width;
+    in property <string> open-in;
+    in property <bool> more-open;
+    callback more-clicked(length, length, length);
+    // Its tooltip ("More"): the text, or "" when the pointer left, and the button's box in the window.
+    callback more-tip(string, length, length, length, length);
+    property <bool> more-shown: root.open-in != "" || root.draw-shown;
+    out property <bool> more-visible: root.more-shown;
+    out property <length> more-x: more-btn.absolute-position.x;
+    out property <length> more-y: more-btn.absolute-position.y;
+    out property <length> more-w: more-btn.width;
     out property <length> close-x: close-btn.absolute-position.x;
     out property <length> close-w: close-btn.width;
-    // "Open in browser" (rule 1388), left of "Draw arrow" and the close: "" hides it. It gives way below 280 px, and
-    // says only "Open" below 440 px, so the address keeps room to read.
-    in property <string> open-in;
-    callback open-in-clicked();
-    property <bool> open-in-shown: root.open-in != "" && root.width >= 280px;
-    out property <bool> open-in-visible: root.open-in-shown;
-    out property <length> open-in-x: open-in-btn.absolute-position.x;
-    out property <length> open-in-w: open-in-btn.width;
     public function focus-address() { input.focus(); input.select-all(); }
 
     // The field shows the address of the page unless it is being typed in.
@@ -521,7 +525,7 @@ component WebBar inherits Rectangle {
     field := Rectangle {
         x: Px.snap(8px + 3 * (24px + 2px) + 4px);
         y: (parent.height - self.height) / 2;
-        width: (root.open-in-shown ? open-in-btn.x : root.draw-shown ? draw-btn.x : close-btn.x) - self.x - Px.snap(4px);
+        width: (root.more-shown ? more-btn.x : close-btn.x) - self.x - Px.snap(4px);
         height: Px.snap(24px);
         background: Theme.ground;
         border-radius: Theme.radius-sm;
@@ -587,23 +591,20 @@ component WebBar inherits Rectangle {
             }
         }
     }
-    open-in-btn := OpenInButton {
-        x: (root.draw-shown ? draw-btn.x : close-btn.x) - Px.snap(4px) - self.width;
-        y: (parent.height - self.height) / 2;
-        visible: root.open-in-shown;
-        text: root.open-in;
-        short: "Open";
-        compact: root.width < 440px;
-        clicked => { root.open-in-clicked(); }
-    }
-    draw-btn := WebButton {
+    more-btn := WebButton {
         x: close-btn.x - Px.snap(4px) - self.width;
         y: (parent.height - self.height) / 2;
-        visible: root.draw-shown;
-        path: Glyphs.point-arrow;
-        label: root.draw-active ? "Stop drawing the arrow" : "Draw arrow";
-        on: root.draw-active;
-        activated => { root.draw-arrow(); }
+        visible: root.more-shown;
+        path: Glyphs.more-vertical;
+        label: "More";
+        on: root.more-open;
+        activated => {
+            root.more-tip("", 0px, 0px, 0px, 0px);
+            root.more-clicked(self.absolute-position.x + self.width, self.absolute-position.y, self.absolute-position.y + self.height);
+        }
+        hovered(on) => {
+            root.more-tip(on ? "More" : "", self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+        }
     }
     close-btn := WebButton {
         x: parent.width - self.width - Px.snap(8px);
@@ -965,11 +966,22 @@ export component PanelSlot inherits Rectangle {
     in property <bool> draw-on;
     in property <bool> draw-active;
     callback draw-arrow();
+    // On a web page it is a row of the bar's More menu (rule 1389), so `draw-visible` says it is offered there and
+    // `draw-x/y/w` are the More button's; on a mini-app it is the header's own button.
     property <bool> draw-shown: root.draw-on && root.kind == 3 && root.width >= 200px;
     out property <bool> draw-visible: root.open && root.draw-shown;
-    out property <length> draw-x: root.bar-only ? web-bar.draw-x : head-draw-btn.absolute-position.x;
-    out property <length> draw-y: root.bar-only ? web-bar.draw-y : head-draw-btn.absolute-position.y;
-    out property <length> draw-w: root.bar-only ? web-bar.draw-w : head-draw-btn.width;
+    out property <length> draw-x: root.bar-only ? web-bar.more-x : head-draw-btn.absolute-position.x;
+    out property <length> draw-y: root.bar-only ? web-bar.more-y : head-draw-btn.absolute-position.y;
+    out property <length> draw-w: root.bar-only ? web-bar.more-w : head-draw-btn.width;
+    // The web bar's More button (rule 1389): pressed while its menu is open, a click with the button's right edge, top
+    // and foot in the window (the menu drops from there), and its tooltip.
+    in property <bool> web-more-open;
+    callback web-more-clicked(length, length, length);
+    callback web-more-tip(string, length, length, length, length);
+    out property <bool> web-more-visible: root.open && root.bar-only && web-bar.more-visible;
+    out property <length> web-more-x: web-bar.more-x;
+    out property <length> web-more-y: web-bar.more-y;
+    out property <length> web-more-w: web-bar.more-w;
     // The view control (a markdown file, in any of its views): Compiled 0, Markdown 1, Code 2, and a pick.
     in property <bool> md-file;
     in property <int> md-view;
@@ -987,7 +999,8 @@ export component PanelSlot inherits Rectangle {
     property <length> head-device: root.kind == 5 && root.device-controls ? 5 * Px.snap(24px) + 4 * Px.snap(2px) + Px.snap(10px) : 0px;
     property <length> head-slow: root.kind == 5 && root.device-slow != "" ? slow-mark.width + Px.snap(6px) : 0px;
     // "Open in" (rule 1388): the words ("" hides it), the narrow panel's word, and a press. In the header it is the
-    // leftmost of the controls on the right; on a web page it sits in the bar.
+    // leftmost of the controls on the right; on a web page it is a row of the bar's More menu (rule 1389), and
+    // `open-in-visible/x/w` then say it is offered there and give the More button.
     in property <string> open-in;
     in property <string> open-in-short;
     callback open-in-clicked();
@@ -1002,9 +1015,9 @@ export component PanelSlot inherits Rectangle {
         : 0;
     property <bool> head-open-shown: root.head-open-mode > 0;
     property <length> head-open: root.head-open-shown ? head-open-btn.width + Px.snap(6px) : 0px;
-    out property <bool> open-in-visible: root.open && (root.bar-only ? web-bar.open-in-visible : root.head-open-shown);
-    out property <length> open-in-x: root.bar-only ? web-bar.open-in-x : head-open-btn.absolute-position.x;
-    out property <length> open-in-w: root.bar-only ? web-bar.open-in-w : head-open-btn.width;
+    out property <bool> open-in-visible: root.open && (root.bar-only ? root.open-in != "" && web-bar.more-visible : root.head-open-shown);
+    out property <length> open-in-x: root.bar-only ? web-bar.more-x : head-open-btn.absolute-position.x;
+    out property <length> open-in-w: root.bar-only ? web-bar.more-w : head-open-btn.width;
     property <length> head-extra: root.head-rest + root.head-open;
     callback wrap-toggled();
     callback close();
@@ -1248,10 +1261,10 @@ export component PanelSlot inherits Rectangle {
             url: root.web-url;
             notice: root.sub;
             open-in: root.open-in;
-            open-in-clicked => { root.open-in-clicked(); }
             draw-shown: root.draw-shown;
-            draw-active: root.draw-active;
-            draw-arrow => { root.draw-arrow(); }
+            more-open: root.web-more-open;
+            more-clicked(r, t, b) => { root.web-more-clicked(r, t, b); }
+            more-tip(s, x, y, w, h) => { root.web-more-tip(s, x, y, w, h); }
             loading: root.web-loading;
             can-back: root.web-can-back;
             can-forward: root.web-can-forward;

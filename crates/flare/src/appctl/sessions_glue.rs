@@ -116,18 +116,21 @@ impl AppCtl {
     /// Whether the bar shows "Draw arrow", and pressed: the front tab has an agent and a web page or a mini-app (never a
     /// plugin's page) is up in its panel, with no pop-up over it.
     pub(super) fn push_draw_arrow(&self, app: &crate::AppWindow, front: Option<&str>) {
-        let on = self.web.draw_offered()
-            && front.is_some_and(|t| {
-                self.hub.agent_here(t)
-                    && self
-                        .panels
-                        .snap(t)
-                        .is_some_and(|s| s.open && (s.kind == "web" || s.kind == "app"))
-                    && self.web.has_tab(t)
-                    && !self.web.popup_open(t)
-            });
-        app.set_panel_draw_on(on);
+        app.set_panel_draw_on(front.is_some_and(|t| self.draw_arrow_offered(t)));
         app.set_panel_draw_active(front.is_some_and(|t| self.web.drawing(t)));
+    }
+
+    /// Whether "Draw arrow" is offered for the tab's panel now (the header's button, or the web bar's More menu row,
+    /// rule 1389): see `push_draw_arrow`.
+    pub(super) fn draw_arrow_offered(&self, tab: &str) -> bool {
+        self.web.draw_offered()
+            && self.hub.agent_here(tab)
+            && self
+                .panels
+                .snap(tab)
+                .is_some_and(|s| s.open && (s.kind == "web" || s.kind == "app"))
+            && self.web.has_tab(tab)
+            && !self.web.popup_open(tab)
     }
 
     /// The terminal menu's row: the grid selection the menu was opened over goes to the tab's agent, and the

@@ -421,7 +421,8 @@ fn the_panel_has_no_ask_agent_button_and_draw_arrow_stays() {
         assert!(!text.contains("text: \"Ask agent\""), "{name}");
         assert!(!text.contains("panel-ask-agent"), "{name}");
     }
-    assert!(panel.contains("draw-btn := WebButton"));
+    // "Draw arrow" stays: a row of the web bar's More menu (rule 1389) and the mini-app header's own button.
+    assert!(panel.contains("more-btn := WebButton"));
     assert!(panel.contains("head-draw-btn := WebButton"));
 }
 
