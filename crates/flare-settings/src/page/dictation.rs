@@ -490,7 +490,7 @@ mod tests {
     use super::*;
     use crate::kv::PrefStore;
     use crate::look::LookStore;
-    use crate::page::{DiagInfo, GlassSupport, ThemeColours};
+    use crate::page::{DiagInfo, ThemeColours};
     use crate::verb::VerbState;
 
     fn face(_: &str) -> String {
@@ -510,7 +510,6 @@ mod tests {
             home: String::new(),
             version: "0.0.0".to_string(),
             copyright: String::new(),
-            glass: GlassSupport::Ok,
             diag: DiagInfo {
                 verbose: false,
                 dir: String::new(),

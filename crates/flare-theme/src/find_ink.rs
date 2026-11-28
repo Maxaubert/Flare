@@ -63,7 +63,7 @@ mod tests {
     fn every_preset_reads_its_foreground_on_a_match_and_on_the_active_match() {
         for p in presets() {
             let t = resolve_preset(p);
-            let chrome = chrome_tokens(&t, 1.0, p.accent, WindowEdges::Hairline, None, None);
+            let chrome = chrome_tokens(&t, p.accent, WindowEdges::Hairline, None, None);
             let accent = &chrome.vars["--p-accent-solid"];
             let ink = find_ink(&t.background, &t.foreground, accent);
             let fg = normalize_color(&t.foreground, "#ffffff");

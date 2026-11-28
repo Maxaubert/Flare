@@ -34,8 +34,8 @@ use flare_settings::layout::{
 use flare_settings::look::LookStore;
 use flare_settings::page::dictation::{GpuRow, ModelRow, ModelState, Vendor};
 use flare_settings::page::{
-    BlockModel, Control, DiagInfo, DictationPage, GlassSupport, PageEnv, PageModel, RowModel,
-    SectionModel, ThemeColours, build_page,
+    BlockModel, Control, DiagInfo, DictationPage, PageEnv, PageModel, RowModel, SectionModel,
+    ThemeColours, build_page,
 };
 use flare_settings::pages::{DEFAULT_PAGE, PAGES};
 use flare_settings::picker::{CodeField, Rect};
@@ -142,7 +142,6 @@ pub struct SettingsDeps {
     #[allow(dead_code)]
     pub clipboard: Rc<dyn Fn(&str)>,
     pub shell_list: Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>,
-    pub glass: Rc<dyn Fn() -> GlassSupport>,
     pub face_of: Rc<dyn Fn(&str) -> String>,
     pub theme_colours: Rc<dyn Fn() -> ThemeColours>,
     pub agent_colours: Rc<dyn Fn() -> [String; 3]>,
@@ -1614,7 +1613,6 @@ impl SettingsCtl {
             home: self.home.clone(),
             version: self.deps.version.clone(),
             copyright: self.deps.copyright.clone(),
-            glass: (self.deps.glass)(),
             diag,
             diag_marked: self.marked(),
             // The GPU card is offered only where it can work: the pack is NVIDIA's (answered once per process).
@@ -2494,8 +2492,8 @@ impl SettingsCtl {
             label,
             value,
             stored,
-            // The theme's Background is a colour only (owner, 2026-10-13: the See-through slider is the
-            // only way to make the window see-through), so its popover has no Alpha bar.
+            // The theme's Background is a colour only (owner, 2026-10-13: a colour never makes the window
+            // see-through; the window is solid), so its popover has no Alpha bar.
             range: flare_theme::colour_contrast::AlphaRange {
                 alpha: key != "bg",
                 alpha_min: 0.0,
@@ -3053,7 +3051,7 @@ pub fn agent_colours_in_force(prefs: &PrefStore) -> [String; 3] {
     use flare_theme::resolve::preset_accent;
     let look = LookStore::new(prefs.clone());
     let snap = look.input_snapshot();
-    let applied = apply_look(&snap.as_input(false));
+    let applied = apply_look(&snap.as_input());
     let accent = preset_accent(
         &applied.theme_id,
         &applied.theme_id,
@@ -3188,7 +3186,6 @@ mod tests {
             },
             clipboard: Rc::new(|_: &str| {}),
             shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
-            glass: Rc::new(|| GlassSupport::Ok),
             face_of: Rc::new(|_: &str| String::new()),
             theme_colours: Rc::new(|| ThemeColours {
                 accent: "#fe8f34".into(),

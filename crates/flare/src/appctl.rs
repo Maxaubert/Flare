@@ -433,7 +433,7 @@ fn push_frame(app: &AppWindow, p: MarkPhase, icon: &IconPhase, pulse: f32) {
 fn compute_marks(prefs: &PrefStore) -> UiMarks {
     let store = LookStore::new(prefs.clone());
     let snap = store.input_snapshot();
-    let look = apply_look(&snap.as_input(false));
+    let look = apply_look(&snap.as_input());
     let accent = preset_accent(
         &look.theme_id,
         &look.theme_id,
@@ -6135,8 +6135,6 @@ impl ChordTarget for Target<'_> {
             return;
         }
         if let Some(app) = self.0.app() {
-            // The UI turns solid and the backdrop comes off before the OS is asked (D7).
-            crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());
             let w = app.window();
             w.set_fullscreen(!w.is_fullscreen());
         }

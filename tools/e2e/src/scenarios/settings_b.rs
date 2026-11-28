@@ -881,13 +881,13 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
         return Ok(());
     }
 
-    // PT: the Appearance page runs its rows in this order.
+    // PT: the Appearance page runs its rows in this order (less PT's See-through row: the see-through
+    // window was removed on 2026-11-28).
     let want = [
         "tab-layout",
         "tab-switch",
         "window-edges",
         "term-theme",
-        "term-acrylic",
         "window-background",
         "window-secondary",
         "window-accent",

@@ -176,15 +176,6 @@ pub struct PageModel {
     pub sections: Vec<SectionModel>,
 }
 
-/// What the running Windows and renderer can do for the glass rows (M4's checks).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GlassSupport {
-    Ok,
-    NeedsWindows11,
-    NeedsWindows11Update,
-    NeedsGraphicsRenderer,
-}
-
 /// The diagnostics switch and its folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagInfo {
@@ -210,7 +201,6 @@ pub struct PageEnv<'a> {
     pub home: String,
     pub version: String,
     pub copyright: String,
-    pub glass: GlassSupport,
     pub diag: DiagInfo,
     pub diag_marked: bool,
     pub nvidia: bool,
@@ -410,7 +400,6 @@ pub(crate) mod test_env {
             home: String::new(),
             version: version.to_string(),
             copyright: copyright.to_string(),
-            glass: GlassSupport::Ok,
             diag,
             diag_marked,
             nvidia: false,
@@ -441,7 +430,6 @@ pub(crate) mod test_env {
             home: String::new(),
             version: "0.0.0".to_string(),
             copyright: String::new(),
-            glass: GlassSupport::Ok,
             diag: DiagInfo {
                 verbose: false,
                 dir: String::new(),
@@ -478,7 +466,6 @@ pub(crate) mod test_env {
             home: String::new(),
             version: "0.0.0".to_string(),
             copyright: String::new(),
-            glass: GlassSupport::Ok,
             diag: DiagInfo {
                 verbose: false,
                 dir: String::new(),

@@ -38,17 +38,7 @@ console.log('picked grounds: snap keys', Object.keys(grounds).length, 'oracle ke
 const s2 = parseSnap(readFileSync(join(pt, 'src/renderer/src/lib/__snapshots__/chromeTheme.opacity.test.ts.snap'), 'utf8'))
 const k2 = Object.keys(s2)
 console.log('opacity snapshot entries:', k2.length, k2.slice(0, 3))
-const sweep = j('chrome_alpha_sweep.json')
-let bad = 0
-for (const id of ['pt-default', 'prism', 'dracula', 'paper']) {
-  const key = k2.find((k) => k.includes(`${id}: every N`))
-  const snap = s2[key]
-  for (let n = 30; n <= 100; n += 1) {
-    const { ['--p-accent-solid']: _a, ['--p-switch-knob']: _k, ...rest } = sweep[id][n]
-    if (!same(rest, snap[n])) { bad += 1; if (bad < 4) console.log('DIFF', id, n) }
-  }
-}
-console.log('alpha sweep diffs:', bad)
+
 const chrome = j('chrome_presets.json')
 let bad2 = 0
 for (const [id, v] of Object.entries(chrome)) {

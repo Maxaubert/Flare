@@ -3,8 +3,8 @@
 //! `core/renderer/lib/lookApply.ts` (`oncePerFrame`), regression rule 65 (the redraw nudge), decision D13.
 //!
 //! One place reads the settings and wears them: the Slint chrome and the grid through `chrome_apply`, and
-//! the DWM material through `WindowMaterial`, in the order of decision D7 (the backdrop first when glass
-//! turns on, the UI first when it turns off). Many changes in one turn are applied once.
+//! the window frame (its edge and its dark or light) through `WindowFrame`. Many changes in one turn are
+//! applied once. The window is solid: the see-through window was removed on 2026-11-28.
 
 // Reached from the window's start-up and the headless scenes; some helpers are for the tests and M7.
 #![allow(dead_code)]
@@ -24,14 +24,12 @@ use flare_theme::reports::{
     NUDGE_AFTER_MS, NUDGE_HOLD_MS, THEME_REPORTS_OFF, ThemeReports, nudge_widths, theme_push,
 };
 use flare_theme::retired::live_theme_id;
-use flare_theme::see_through::SEE_THROUGH_TOP;
 
 use crate::AppWindow;
-use crate::backend::BackendOutcome;
 use crate::chrome_apply::{apply_chrome, apply_to_host};
 pub use crate::config::LookOverrides;
+use crate::frame_ctl::WindowFrame;
 use crate::host::GridHost;
-use crate::material_ctl::{Order, WindowMaterial, order_for};
 use flare_render::grid::CaretShape;
 
 /// The Caret shape setting's word as the grid draws it (rule 1233); an unknown word is the block.
@@ -54,53 +52,20 @@ pub trait LookUi {
     fn caret(&mut self, _shape: CaretShape, _blink: bool) {}
 }
 
-/// The material side: the frost behind a see-through window and the border.
-pub trait LookMaterial {
-    /// A window handle exists and the material is attached.
-    fn attached(&self) -> bool;
-    /// The build has the backdrop call.
-    fn supported(&self) -> bool;
+/// The frame side: the window edge and the dark or light frame, both following the solid ground.
+pub trait LookFrame {
     fn set_solid_ground(&mut self, hex: &str, edges: WindowEdges, now: Instant);
-    fn set_glass(&mut self, on: bool, now: Instant);
-    /// What the material wears now: false when the OS refused the backdrop or full screen holds it off.
-    fn glass_on(&self) -> bool;
-    /// The backdrop comes off before the window goes full screen (D7).
-    fn before_fullscreen(&mut self);
-    /// The window was maximised, restored, moved or went full screen: the edge goes flat and a held-off
-    /// backdrop comes back.
+    /// The window was maximised, restored, moved or went full screen: the edge goes flat or comes back.
     fn on_window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant);
 }
 
-/// The window material shared with the window's own timer and state callbacks.
-pub type SharedMaterial = Rc<RefCell<Option<WindowMaterial>>>;
+/// The window frame shared with the window's own timer and state callbacks.
+pub type SharedFrame = Rc<RefCell<Option<WindowFrame>>>;
 
-impl LookMaterial for SharedMaterial {
-    fn attached(&self) -> bool {
-        self.borrow().is_some()
-    }
-    fn supported(&self) -> bool {
-        self.borrow()
-            .as_ref()
-            .is_some_and(WindowMaterial::supported)
-    }
+impl LookFrame for SharedFrame {
     fn set_solid_ground(&mut self, hex: &str, edges: WindowEdges, now: Instant) {
         if let Some(m) = self.borrow_mut().as_mut() {
             m.set_solid_ground(hex, edges, now);
-        }
-    }
-    fn set_glass(&mut self, on: bool, now: Instant) {
-        if let Some(m) = self.borrow_mut().as_mut() {
-            m.set_glass(on, now);
-        }
-    }
-    fn glass_on(&self) -> bool {
-        self.borrow().as_ref().is_some_and(WindowMaterial::glass_on)
-    }
-    fn before_fullscreen(&mut self) {
-        if let Ok(mut m) = self.try_borrow_mut()
-            && let Some(m) = m.as_mut()
-        {
-            m.before_fullscreen();
         }
     }
     fn on_window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant) {
@@ -246,14 +211,8 @@ pub struct LookCtl {
     store: LookStore,
     overrides: LookOverrides,
     ui: Box<dyn LookUi>,
-    material: Option<Box<dyn LookMaterial>>,
-    shared: Option<SharedMaterial>,
-    /// The window was created transparent on the GPU renderer (decision D8).
-    outcome_glass: bool,
-    /// What the UI last wore: glass only when the material wore it too.
-    was_glass: bool,
-    /// What the settings last asked of the material.
-    was_wanted: bool,
+    frame: Option<Box<dyn LookFrame>>,
+    shared: Option<SharedFrame>,
     last_light: bool,
     queued: Arc<AtomicBool>,
     scheduler: Arc<dyn Fn() + Send + Sync>,
@@ -264,36 +223,28 @@ pub struct LookCtl {
 }
 
 impl LookCtl {
-    /// The controller for this window. `material` is the slot the window shares with its own timer;
-    /// it stays empty until [`LookCtl::attach_material`] (no OS window exists before `show()`).
+    /// The controller for this window. `frame` is the slot the window shares with its own timer;
+    /// it stays empty until [`LookCtl::attach_frame`] (no OS window exists before `show()`).
     pub fn new(
         app: &AppWindow,
         store: LookStore,
         host: Rc<RefCell<GridHost>>,
-        material: SharedMaterial,
-        outcome: &BackendOutcome,
+        frame: SharedFrame,
         overrides: LookOverrides,
     ) -> Self {
         let ui = SlintUi {
             weak: slint::ComponentHandle::as_weak(app),
             host,
         };
-        let mut c = Self::with_parts(
-            Box::new(ui),
-            store,
-            outcome.glass_possible,
-            overrides,
-            Arc::new(schedule_on_ui),
-        );
-        c.shared = Some(material);
+        let mut c = Self::with_parts(Box::new(ui), store, overrides, Arc::new(schedule_on_ui));
+        c.shared = Some(frame);
         c
     }
 
-    /// The same from its parts (tests use fakes for the UI, the material and the scheduler).
+    /// The same from its parts (tests use fakes for the UI, the frame and the scheduler).
     pub fn with_parts(
         ui: Box<dyn LookUi>,
         store: LookStore,
-        glass_possible: bool,
         overrides: LookOverrides,
         scheduler: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
@@ -301,11 +252,8 @@ impl LookCtl {
             store,
             overrides,
             ui,
-            material: None,
+            frame: None,
             shared: None,
-            outcome_glass: glass_possible,
-            was_glass: false,
-            was_wanted: false,
             last_light: false,
             queued: Arc::new(AtomicBool::new(false)),
             scheduler,
@@ -381,19 +329,6 @@ impl LookCtl {
         }
     }
 
-    /// Glass can be used at all: the window is transparent and, once attached, the build has the call.
-    fn glass_possible(&self) -> bool {
-        self.outcome_glass && self.material.as_ref().is_none_or(|m| m.supported())
-    }
-
-    fn glass_usable(&self) -> bool {
-        self.outcome_glass
-            && self
-                .material
-                .as_ref()
-                .is_some_and(|m| m.attached() && m.supported())
-    }
-
     /// The stored look with the one-run overrides laid over it (they write nothing).
     fn snapshot(&self) -> LookSnapshot {
         let mut s = self.store.input_snapshot();
@@ -401,9 +336,7 @@ impl LookCtl {
         if let Some(t) = &o.theme {
             s.theme_id = live_theme_id(t).to_string();
         }
-        if let Some(n) = o.see_through {
-            s.see_through = n.min(SEE_THROUGH_TOP);
-        }
+
         if let Some(c) = &o.accent {
             s.accent = Some(c.clone());
         }
@@ -421,45 +354,24 @@ impl LookCtl {
 
     /// What the window wears now, from the store and the overrides.
     pub fn current_look(&self) -> AppliedLook {
-        apply_look(&self.snapshot().as_input(self.glass_usable()))
+        apply_look(&self.snapshot().as_input())
     }
 
-    /// The same look with the ground opaque: what the window wears while the material is not glass.
-    fn opaque_look(&self) -> AppliedLook {
-        apply_look(&self.snapshot().as_input(false))
-    }
-
-    /// Reads the settings and wears them: the UI and the material, in the order the glass change needs.
-    /// While no material is attached the window stays opaque (no translucent frame without a backdrop),
-    /// and the UI wears glass only when the material does: a refused backdrop or a full screen leaves
-    /// the window solid (rule 74).
+    /// Reads the settings and wears them: the UI, then the frame (once attached).
     pub fn apply_now(&mut self) {
         self.queued.store(false, Ordering::SeqCst);
         let look = self.current_look();
         let now = Instant::now();
-        let wanted_changed = look.glass != self.was_wanted;
-        let material_first = order_for(self.was_glass, look.glass) == Order::MaterialThenUi;
-        if material_first {
-            self.apply_material(&look, wanted_changed, now);
-        }
-        let worn_glass = look.glass && self.material.as_ref().is_some_and(|m| m.glass_on());
-        let worn = if look.glass && !worn_glass {
-            self.opaque_look()
-        } else {
-            look.clone()
-        };
-        self.ui.apply(&worn);
+        self.ui.apply(&look);
         self.ui.caret(
             caret_shape(self.store.caret_shape()),
             self.store.caret_blink(),
         );
-        if !material_first {
-            self.apply_material(&look, wanted_changed, now);
+        if let Some(f) = self.frame.as_mut() {
+            f.set_solid_ground(&look.solid_ground, look.edges, now);
         }
-        self.was_glass = worn_glass;
-        self.was_wanted = look.glass;
-        self.last_light = worn.light;
-        self.theme_to_tabs(&worn, now);
+        self.last_light = look.light;
+        self.theme_to_tabs(&look, now);
     }
 
     /// Hands the new colours to every live tab's colour queries, tells each program that asked the new
@@ -499,64 +411,24 @@ impl LookCtl {
     pub fn nudge_timer_running(&self) -> bool {
         self.nudge_timer.running()
     }
-    fn apply_material(&mut self, look: &AppliedLook, wanted_changed: bool, now: Instant) {
-        if let Some(m) = self.material.as_mut() {
-            m.set_solid_ground(&look.solid_ground, look.edges, now);
-            if wanted_changed {
-                m.set_glass(look.glass, now);
-            }
-        }
-    }
-
-    /// Before the window goes full screen: the UI turns solid FIRST, then the backdrop comes off (D7).
-    pub fn before_fullscreen(&mut self) {
-        if self.material.is_none() {
-            return;
-        }
-        if self.was_glass {
-            let opaque = self.opaque_look();
-            self.ui.apply(&opaque);
-            self.was_glass = false;
-        }
-        if let Some(m) = self.material.as_mut() {
-            m.before_fullscreen();
-        }
-    }
-
-    /// The window was maximised, restored, moved or went full screen. Going full screen turns the UI
-    /// solid before the backdrop leaves; when the backdrop comes back the UI follows it.
+    /// The window was maximised, restored, moved or went full screen: the frame's edge follows.
     pub fn window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant) {
-        if self.material.is_none() {
-            return;
-        }
-        if fullscreen && self.was_glass {
-            let opaque = self.opaque_look();
-            self.ui.apply(&opaque);
-            self.was_glass = false;
-        }
-        let after = {
-            let Some(m) = self.material.as_mut() else {
-                return;
-            };
-            m.on_window_state(maximised, fullscreen, now);
-            m.glass_on()
-        };
-        if after != self.was_glass {
-            self.apply_now();
+        if let Some(f) = self.frame.as_mut() {
+            f.on_window_state(maximised, fullscreen, now);
         }
     }
 
-    /// The window has a handle: keep the material and apply again (glass turning on goes backdrop first).
-    pub fn attach_material(&mut self, m: WindowMaterial) {
+    /// The window has a handle: keep the frame and apply again.
+    pub fn attach_frame(&mut self, f: WindowFrame) {
         if let Some(shared) = self.shared.clone() {
-            *shared.borrow_mut() = Some(m);
+            *shared.borrow_mut() = Some(f);
             self.attach_port(Box::new(shared));
         }
     }
 
-    /// The same for any material port (tests attach a fake).
-    pub fn attach_port(&mut self, m: Box<dyn LookMaterial>) {
-        self.material = Some(m);
+    /// The same for any frame port (tests attach a fake).
+    pub fn attach_port(&mut self, f: Box<dyn LookFrame>) {
+        self.frame = Some(f);
         self.apply_now();
     }
 
@@ -648,7 +520,6 @@ impl LookCtl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RendererChoice;
     use crate::host::{GridPainter, GridSource};
     use crate::ui_harness::{Frame, Harness};
     use flare_render::glyph::FakeGlyphs;
@@ -667,35 +538,15 @@ mod tests {
         }
     }
 
-    struct FakeMat {
+    struct FakeFrame {
         log: Log,
-        supported: bool,
-        chrome_calls: Rc<Cell<usize>>,
-        on: bool,
-        refuse: bool,
-        wanted: bool,
+        grounds: Rc<RefCell<Vec<String>>>,
         flat: Rc<Cell<bool>>,
     }
-    impl LookMaterial for FakeMat {
-        fn attached(&self) -> bool {
-            true
-        }
-        fn supported(&self) -> bool {
-            self.supported
-        }
-        fn set_solid_ground(&mut self, _hex: &str, _edges: WindowEdges, _now: Instant) {
-            self.chrome_calls.set(self.chrome_calls.get() + 1);
-        }
-        fn set_glass(&mut self, on: bool, _now: Instant) {
-            self.log.borrow_mut().push("material");
-            self.wanted = on;
-            self.on = on && !self.refuse;
-        }
-        fn glass_on(&self) -> bool {
-            self.on
-        }
-        fn before_fullscreen(&mut self) {
-            self.on = false;
+    impl LookFrame for FakeFrame {
+        fn set_solid_ground(&mut self, hex: &str, _edges: WindowEdges, _now: Instant) {
+            self.log.borrow_mut().push("frame");
+            self.grounds.borrow_mut().push(hex.to_string());
         }
         fn on_window_state(&mut self, maximised: bool, fullscreen: bool, _now: Instant) {
             self.flat.set(maximised || fullscreen);
@@ -704,7 +555,6 @@ mod tests {
             } else {
                 "state:windowed"
             });
-            self.on = self.wanted && !fullscreen && !self.refuse;
         }
     }
 
@@ -712,44 +562,25 @@ mod tests {
         Arc::new(|| {})
     }
 
-    fn ctl_with(
-        glass_possible: bool,
-        overrides: LookOverrides,
-    ) -> (LookCtl, PrefStore, LookStore, Log) {
+    fn ctl_with(overrides: LookOverrides) -> (LookCtl, PrefStore, LookStore, Log) {
         let prefs = PrefStore::memory();
         let store = LookStore::new(prefs.clone());
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let c = LookCtl::with_parts(
             Box::new(FakeUi(log.clone())),
             store.clone(),
-            glass_possible,
             overrides,
             noop_scheduler(),
         );
         (c, prefs, store, log)
     }
 
-    fn fake_mat(log: &Log) -> Box<dyn LookMaterial> {
-        Box::new(FakeMat {
-            log: log.clone(),
-            supported: true,
-            chrome_calls: Rc::new(Cell::new(0)),
-            on: false,
-            refuse: false,
-            wanted: false,
-            flat: Rc::new(Cell::new(false)),
-        })
-    }
-
     #[test]
     fn overrides_beat_the_store_and_write_nothing() {
-        let (mut c, _, store, _) = ctl_with(
-            false,
-            LookOverrides {
-                theme: Some("nord".into()),
-                ..LookOverrides::default()
-            },
-        );
+        let (mut c, _, store, _) = ctl_with(LookOverrides {
+            theme: Some("nord".into()),
+            ..LookOverrides::default()
+        });
         store.set_theme_id("dracula");
         assert_eq!(c.current_look().theme_id, "nord");
         c.apply_now();
@@ -765,7 +596,6 @@ mod tests {
         let mut c = LookCtl::with_parts(
             Box::new(FakeUi(Rc::new(RefCell::new(Vec::new())))),
             LookStore::new(prefs),
-            false,
             LookOverrides::default(),
             Arc::new(move || {
                 n2.fetch_add(1, Ordering::SeqCst);
@@ -782,151 +612,53 @@ mod tests {
     }
 
     #[test]
-    fn the_order_follows_the_glass_change() {
-        let (mut c, _, store, log) = ctl_with(true, LookOverrides::default());
-        c.attach_port(fake_mat(&log));
-        log.borrow_mut().clear();
-        store.set_see_through(40);
-        c.apply_now();
-        assert_eq!(*log.borrow(), vec!["material", "ui"]);
-        log.borrow_mut().clear();
-        store.set_see_through(0);
-        c.apply_now();
-        assert_eq!(*log.borrow(), vec!["ui", "material"]);
-        store.set_see_through(40);
-        c.apply_now();
-        log.borrow_mut().clear();
-        store.set_see_through(20);
-        c.apply_now();
-        assert_eq!(*log.borrow(), vec!["ui"]);
-    }
-
-    #[test]
-    fn no_glass_without_a_possible_surface() {
-        let (mut c, _, store, log) = ctl_with(false, LookOverrides::default());
-        c.attach_port(fake_mat(&log));
-        log.borrow_mut().clear();
-        store.set_see_through(40);
-        c.apply_now();
-        assert_eq!(*log.borrow(), vec!["ui"]);
-        let look = c.current_look();
-        assert!(!look.glass);
-        assert_eq!(
-            look.chrome.vars["--p-bg"].len(),
-            7,
-            "{}",
-            look.chrome.vars["--p-bg"]
-        );
-    }
-
-    #[test]
-    fn glass_waits_for_the_window_handle() {
-        let (mut c, _, store, log) = ctl_with(true, LookOverrides::default());
-        store.set_see_through(40);
-        c.apply_now();
-        let look = c.current_look();
-        assert_eq!(
-            look.chrome.vars["--p-bg"].len(),
-            7,
-            "opaque before the handle"
-        );
-        assert_eq!(*log.borrow(), vec!["ui"]);
-        log.borrow_mut().clear();
-        c.attach_port(fake_mat(&log));
-        assert_eq!(*log.borrow(), vec!["material", "ui"]);
-        let look = c.current_look();
-        assert_eq!(look.chrome.vars["--p-bg"].len(), 9);
-        assert!(
-            look.chrome.vars["--p-bg"].ends_with("99"),
-            "{}",
-            look.chrome.vars["--p-bg"]
-        );
-    }
-
-    /// A UI that records the ground it was given.
-    struct GroundUi(Rc<RefCell<Vec<String>>>);
-    impl LookUi for GroundUi {
-        fn apply(&mut self, look: &AppliedLook) {
-            self.0.borrow_mut().push(look.chrome.vars["--p-bg"].clone());
-        }
-    }
-
-    #[test]
-    fn a_refused_backdrop_leaves_the_window_solid() {
-        let prefs = PrefStore::memory();
-        let store = LookStore::new(prefs);
+    fn the_ui_then_the_frame_wear_the_solid_ground() {
+        let (mut c, _, store, log) = ctl_with(LookOverrides::default());
         let grounds = Rc::new(RefCell::new(Vec::new()));
-        let mut c = LookCtl::with_parts(
-            Box::new(GroundUi(grounds.clone())),
-            store.clone(),
-            true,
-            LookOverrides::default(),
-            noop_scheduler(),
-        );
-        let log: Log = Rc::new(RefCell::new(Vec::new()));
-        c.attach_port(Box::new(FakeMat {
+        // Before the window has a handle only the UI is told.
+        c.apply_now();
+        assert_eq!(*log.borrow(), vec!["ui"]);
+        log.borrow_mut().clear();
+        c.attach_port(Box::new(FakeFrame {
             log: log.clone(),
-            supported: true,
-            chrome_calls: Rc::new(Cell::new(0)),
-            on: false,
-            refuse: true,
-            wanted: false,
+            grounds: grounds.clone(),
             flat: Rc::new(Cell::new(false)),
         }));
-        store.set_see_through(40);
+        assert_eq!(*log.borrow(), vec!["ui", "frame"]);
+        store.set_theme_id("paper");
         c.apply_now();
-        let last = grounds.borrow().last().cloned().unwrap();
-        assert_eq!(last.len(), 7, "opaque after a refusal: {last}");
-        assert!(!c.was_glass);
-        // Another change does not ask the OS again and stays solid.
-        log.borrow_mut().clear();
-        store.set_see_through(50);
-        c.apply_now();
-        assert!(log.borrow().is_empty(), "{:?}", log.borrow());
-        assert_eq!(grounds.borrow().last().unwrap().len(), 7);
+        let look = c.current_look();
+        assert_eq!(grounds.borrow().last(), Some(&look.solid_ground));
+        assert_eq!(look.chrome.vars["--p-bg"], look.solid_ground);
+        assert_eq!(c.mode(), Mode::Light);
     }
 
     #[test]
-    fn full_screen_reaches_the_page_and_the_edge_goes_flat() {
-        let prefs = PrefStore::memory();
-        let store = LookStore::new(prefs);
-        let grounds = Rc::new(RefCell::new(Vec::new()));
-        let mut c = LookCtl::with_parts(
-            Box::new(GroundUi(grounds.clone())),
-            store.clone(),
-            true,
-            LookOverrides::default(),
-            noop_scheduler(),
-        );
-        let log: Log = Rc::new(RefCell::new(Vec::new()));
+    fn an_old_see_through_level_leaves_the_window_solid() {
+        // The see-through window was removed on 2026-11-28: a profile that turned it on wears the solid look.
+        let (c, prefs, _, _) = ctl_with(LookOverrides::default());
+        let (fresh, _, _, _) = ctl_with(LookOverrides::default());
+        prefs.set("flare.term.seeThrough", "40");
+        assert_eq!(c.current_look(), fresh.current_look());
+        assert_eq!(c.current_look().chrome.vars["--p-bg"].len(), 7);
+    }
+
+    #[test]
+    fn full_screen_reaches_the_frame_and_the_edge_goes_flat() {
+        let (mut c, _, _, log) = ctl_with(LookOverrides::default());
         let flat = Rc::new(Cell::new(false));
-        store.set_see_through(40);
-        c.attach_port(Box::new(FakeMat {
+        c.attach_port(Box::new(FakeFrame {
             log: log.clone(),
-            supported: true,
-            chrome_calls: Rc::new(Cell::new(0)),
-            on: false,
-            refuse: false,
-            wanted: false,
+            grounds: Rc::new(RefCell::new(Vec::new())),
             flat: flat.clone(),
         }));
-        assert!(c.was_glass);
-        assert_eq!(grounds.borrow().last().unwrap().len(), 9, "glass worn");
         let t0 = Instant::now();
-        // Entering full screen: the material hears it, the edge is flat, the page turns solid.
-        let before = grounds.borrow().len();
         c.window_state(false, true, t0);
-        assert!(log.borrow().contains(&"state:full"), "{:?}", log.borrow());
+        assert_eq!(log.borrow().last(), Some(&"state:full"));
         assert!(flat.get(), "the edge is flat in full screen");
-        assert!(!c.was_glass);
-        assert!(grounds.borrow().len() > before, "the page was told");
-        assert_eq!(grounds.borrow().last().unwrap().len(), 7, "solid page");
-        // Leaving it: the material hears that too, the edge is back, glass returns to the page.
         c.window_state(false, false, t0);
         assert_eq!(log.borrow().last(), Some(&"state:windowed"));
         assert!(!flat.get(), "the edge is drawn again");
-        assert!(c.was_glass);
-        assert_eq!(grounds.borrow().last().unwrap().len(), 9, "glass back");
     }
 
     struct FakeTab {
@@ -995,7 +727,7 @@ mod tests {
     }
     #[test]
     fn a_mode_change_pushes_once_then_nudges_one_column_and_back() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let tab = FakeTab::new(true, Mode::Dark);
         let dynamic: Rc<dyn ThemePushTarget> = tab.clone();
         let t0 = Instant::now();
@@ -1015,7 +747,7 @@ mod tests {
 
     #[test]
     fn no_push_while_reports_are_off_and_none_for_the_same_mode() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let t0 = Instant::now();
         let none: Rc<dyn ThemePushTarget> = Rc::new(NoReports);
         c.push_theme(&[none], Mode::Light, t0);
@@ -1047,7 +779,7 @@ mod tests {
 
     #[test]
     fn a_theme_change_pushes_one_report_to_each_reporting_tab() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let a = FakeTab::new(true, Mode::Dark);
         let b = FakeTab::new(true, Mode::Dark);
         let t0 = Instant::now();
@@ -1062,7 +794,7 @@ mod tests {
 
     #[test]
     fn a_tab_that_never_asked_gets_neither_report_nor_nudge() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let quiet = FakeTab::new(false, Mode::Dark);
         let t0 = Instant::now();
         c.push_theme(&tab_set(&[&quiet]), Mode::Light, t0);
@@ -1074,7 +806,7 @@ mod tests {
 
     #[test]
     fn the_nudge_is_never_a_key() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let tab = FakeTab::new(true, Mode::Dark);
         let t0 = Instant::now();
         c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
@@ -1090,7 +822,7 @@ mod tests {
     #[test]
     fn several_switches_in_a_row_give_one_nudge() {
         // PT termReplyHandlers.ts: a push clears the pending nudge and schedules one anew.
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let tab = FakeTab::new(true, Mode::Dark);
         let t0 = Instant::now();
         c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
@@ -1109,7 +841,7 @@ mod tests {
 
     #[test]
     fn a_switch_during_the_hold_leaves_the_tab_at_its_full_width() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let tab = FakeTab::new(true, Mode::Dark);
         let t0 = Instant::now();
         c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
@@ -1134,7 +866,7 @@ mod tests {
     fn two_switches_closer_than_the_hold_leave_the_tab_at_its_full_width() {
         // Two nudges of one tab, the second narrowing while the first holds, would each restore the
         // width it found: the first 80, the second 79, and the tab would stay a column narrower.
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let tab = FakeTab::new(true, Mode::Dark);
         let t0 = Instant::now();
         c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
@@ -1154,7 +886,7 @@ mod tests {
 
     #[test]
     fn no_report_when_the_mode_did_not_change() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         assert_eq!(mode_of_preset("pt-default"), Mode::Dark);
         assert_eq!(mode_of_preset("nord"), Mode::Dark);
         let tab = FakeTab::new(true, mode_of_preset("pt-default"));
@@ -1165,7 +897,7 @@ mod tests {
 
     #[test]
     fn fawn_tells_light_once_and_back_to_default_tells_dark() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let tab = FakeTab::new(true, mode_of_preset("pt-default"));
         let t0 = Instant::now();
         c.push_theme(&tab_set(&[&tab]), mode_of_preset("fawn"), t0);
@@ -1183,7 +915,7 @@ mod tests {
 
     #[test]
     fn no_timer_runs_when_no_nudge_is_due() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         c.arm_timer();
         assert!(!c.nudge_timer_running());
         let quiet = FakeTab::new(false, Mode::Dark);
@@ -1194,7 +926,7 @@ mod tests {
 
     #[test]
     fn an_applied_look_reaches_every_tab_the_app_lists() {
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let tab = FakeTab::new(true, Mode::Light);
         let listed = Rc::clone(&tab);
         LookCtl::set_tab_source(Rc::new(move || {
@@ -1229,7 +961,7 @@ mod tests {
         });
         assert!(tab.reports().on);
         tab.set_colours("#3d2a1f", "#e6d8c0");
-        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let (mut c, _, _, _) = ctl_with(LookOverrides::default());
         let t0 = Instant::now();
         c.push_theme(&[Rc::clone(&tab)], Mode::Light, t0);
         // The report reaches the pty as itself.
@@ -1252,14 +984,6 @@ mod tests {
             flare_settings::custom_theme::CUSTOM_KEY,
             r##"{"bg":"#111111","fg":"#eeeeee","cursor":"#ffffff","ansi":{}}"##,
         );
-    }
-
-    fn outcome() -> BackendOutcome {
-        BackendOutcome {
-            effective: RendererChoice::Software,
-            fallback_reason: None,
-            glass_possible: false,
-        }
     }
 
     #[derive(Default)]
@@ -1297,7 +1021,6 @@ mod tests {
                 store,
                 host.clone(),
                 Rc::new(RefCell::new(None)),
-                &outcome(),
                 LookOverrides::default(),
             );
             ctl.apply_now();

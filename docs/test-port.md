@@ -83,7 +83,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-settings | `core/renderer/lib/prefStore.test.ts` | port | enum and bool prefs, defaults, byte-for-byte keys, listeners, blocked store |
 | flare-settings | `core/renderer/lib/recentRoots.pins.test.ts` | port | pin toggle, order, pins outlive history |
 | flare-settings | `core/renderer/lib/recentRoots.test.ts` | port | cap 12, dedupe, parent labels, storage nonsense |
-| flare-theme | `core/renderer/lib/seeThrough.test.ts` | port | default levels 0xb9 dark and 0xd1 light, light by luminance (M4 D3: moved from flare-settings to flare-theme, where the default levels feed `ground_alpha`); used by the PT import |
+| flare-theme | `core/renderer/lib/seeThrough.test.ts` | dropped 2026-11-28 | was ported (default levels 0xb9 dark and 0xd1 light, light by luminance); dropped with the see-through window (parity DIFF-30) |
 | flare-settings | `core/renderer/lib/termLook.test.ts` | port (split) | prefs, custom parse, indicator, ground alpha and applyCustomExtras in flare-settings (T16); font steps and faces in flare-theme (T8); Prism host-config branches dropped; duplicate "colours with alpha" block merged; rainbow and the switches are M6 (D9); the split is reworded in M4 (M4 ledger) |
 | flare-settings | `core/renderer/lib/termPrefs.test.ts` | port | saved shell id, undefined until chosen, in the Flare settings file |
 | flare-settings | `core/renderer/settings/fields.test.ts` | port | colour commit rules: nothing typed, same colour, typed alpha |
@@ -104,7 +104,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-settings | `src/renderer/src/lib/edgesPrefs.test.ts` | port | edges store, validation, change listener |
 | flare-settings | `src/renderer/src/lib/newTabPrefs.test.ts` | port | new-tab mode and folder persistence |
 | flare-settings (`import/legacy`) | `src/renderer/src/lib/opacityMigration.test.ts` | port | one-time import of PT Opacity N into the alpha byte |
-| flare-settings (`import/legacy`) | `src/renderer/src/lib/seeThroughMigration.test.ts` | port | one-time import of PT switch and alpha into a see-through level |
+| flare-settings (`import/legacy`) | `src/renderer/src/lib/seeThroughMigration.test.ts` | changed 2026-11-28 | the PT switch, alpha and level now import as nothing, every ground opaque (parity DIFF-30) |
 | flare-settings | `src/renderer/src/lib/sidebarPrefs.test.ts` | port | open or collapsed, width 150 to 420, initial 220, slide flag |
 | flare-settings | `src/renderer/src/lib/tabLayoutPrefs.test.ts` | port | vertical default in Flare (Max, 2026-11-11; PT: horizontal), unknown reads vertical, a stored horizontal is kept, listeners |
 | flare-settings | `src/renderer/src/lib/tabSwitchPrefs.test.ts` | port | In order default, unknown reads In order, listeners |
@@ -165,7 +165,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-win | `src/main/dwmHelper.test.ts` | port (partial) | COLORREF arithmetic ported; the native-buffer handle read is dropped (an `isize` is handed over, no helper process); the "-Command not -EncodedCommand" launch test dropped (Flare calls DWM in process) |
 | flare-win | `src/main/e2eClipboard.test.ts` | port | in-memory clipboard stand-in under the test flag, re-expressed as a trait |
 | flare-win | `src/main/edgeWatch.test.ts` | port | cursor reading at the window edge, far-cursor watch for reveal zones |
-| flare-win | `src/main/material.test.ts` | port | Windows 11 build check, validBg, isLightBg for frost; the Electron mock is dropped |
+| flare-win | `src/main/material.test.ts` | dropped 2026-11-28, but validBg and isLightBg | the build check and the state machine went with the see-through window (parity DIFF-30); validBg and isLightBg stay in `window_edge.rs` for the edge |
 | flare-win | `src/main/shellVerb.test.ts` | port | HKCU keys, %1 vs %V, label by REG_SZ, pointsAt; key name and label per decision O4 |
 | flare-win | `src/main/shellVerbParity.test.ts` | port | uninstaller deletes every key the app writes, checked against Flare's installer script |
 | flare-win | `src/main/shellVerbRelabel.test.ts` | port | stale-label detection and label-only rewrite |
@@ -563,8 +563,8 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `reviewSettings` | 19 | `scenarios/settings_b.rs`, `review_settings` | 21 | 3 | ok |
 | `colourPicker` | 46 | `scenarios/settings_c.rs`, `colour_picker` | 47 | 1 | ok |
 | `pickedGround` | 3 | `scenarios/settings_c.rs`, `picked_ground` | 4 | 0 | ok |
-| `opacityAlpha` | 19 | `scenarios/settings_c.rs`, `opacity_alpha` | 19 | 2 | ok |
-| `seeThrough` | 22 | `scenarios/settings_c.rs`, `see_through` | 22 | 2 | ok |
+| `opacityAlpha` | 19 | `scenarios/settings_c.rs`, `opacity_alpha` | 11 | 8 | ok |
+| `seeThrough` | 22 | retired 2026-11-28: the see-through window was removed (Liquid Glass on the Mac comes later) | - | 0 | retired |
 | `themeCards` | 7 | `scenarios/settings_d.rs`, `theme_cards` | 18 | 0 | ok |
 | `edges` | 25 | `scenarios/settings_d.rs`, `edges` | 25 | 1 | ok |
 | `accent` | 33 | `scenarios/settings_d.rs`, `accent` | 32 | 2 | ok |

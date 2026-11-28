@@ -106,8 +106,7 @@ component TitleButton inherits Rectangle {
         commands: root.commands;
         fill: transparent;
         stroke: ta.has-hover ? (root.danger ? #ffffff : (root.on-secondary ? Theme.secondary-text : Theme.text)) : (root.on-secondary ? Theme.secondary-icon : Theme.icon);
-        // Under glass the stroke is at least two device pixels (audit V7), so it never anti-aliases away.
-        stroke-width: max(root.stroke-units * root.icon-size / 24, Theme.glyph-stroke-floor * 1phx);
+        stroke-width: root.stroke-units * root.icon-size / 24;
         stroke-line-cap: round;
         stroke-line-join: round;
     }
@@ -309,7 +308,8 @@ export component AppWindow inherits Window {
     in property <length> caption-gap: 0px;
     title: "Flare";
     no-frame: !root.native-caption;
-    background: Theme.window-clear;
+    // The window is solid: its clear colour is the theme's ground (PT's setBackgroundColor).
+    background: Theme.ground-solid;
     preferred-width: 1000px;
     preferred-height: 640px;
     min-width: 560px;

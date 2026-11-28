@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use flare_settings::kv::PrefStore;
 use flare_settings::look::LookStore;
-use flare_settings::page::{GlassSupport, ThemeColours};
+use flare_settings::page::ThemeColours;
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use flare_tabs::tabs::Os;
 use slint::{ComponentHandle, Model};
@@ -107,7 +107,6 @@ fn fx_full(
         open_path: Rc::new(|_: &Path| {}),
         clipboard: Rc::new(|_: &str| {}),
         shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
-        glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|_: &str| String::new()),
         theme_colours: Rc::new(|| ThemeColours {
             accent: String::new(),
@@ -1300,8 +1299,6 @@ fn paint_select(h: &Harness<crate::SelectPreview>, id: &str) {
         accent: None,
         secondary: None,
         edges: DEFAULT_WINDOW_EDGES,
-        see_through: 0,
-        glass_possible: false,
     });
     let tok = |n: &str| colour(&l.chrome.vars[n]);
     let t = h.comp.global::<crate::Theme>();
@@ -1413,8 +1410,6 @@ fn paint_app(h: &Harness<AppWindow>, id: &str) {
         accent: None,
         secondary: None,
         edges: DEFAULT_WINDOW_EDGES,
-        see_through: 0,
-        glass_possible: false,
     });
     crate::chrome_apply::apply_chrome(&h.comp, &l);
     h.advance(0);

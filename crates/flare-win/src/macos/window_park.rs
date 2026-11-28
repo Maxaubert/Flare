@@ -431,7 +431,7 @@ pub fn park(view: isize) {
     if !is_held() {
         return;
     }
-    let Some(window) = crate::glass::window_of(view, mtm) else {
+    let Some(window) = crate::ns_window::window_of(view, mtm) else {
         return;
     };
     NSApplication::sharedApplication(mtm)
@@ -472,7 +472,7 @@ pub fn unpark(view: isize) {
         // Its shadow stays as it is: a window may have asked for none (the dictation widget does).
         window.setAnimationBehavior(objc2_app_kit::NSWindowAnimationBehavior::Default);
     }
-    if let Some(window) = crate::glass::window_of(view, mtm) {
+    if let Some(window) = crate::ns_window::window_of(view, mtm) {
         window.setAlphaValue(1.0);
         window.setIgnoresMouseEvents(false);
         window.setHasShadow(true);
@@ -537,7 +537,7 @@ pub fn report(view: isize) -> ParkReport {
     let Some(mtm) = MainThreadMarker::new() else {
         return ParkReport::default();
     };
-    let Some(window) = crate::glass::window_of(view, mtm) else {
+    let Some(window) = crate::ns_window::window_of(view, mtm) else {
         return ParkReport::default();
     };
     let app = NSApplication::sharedApplication(mtm);

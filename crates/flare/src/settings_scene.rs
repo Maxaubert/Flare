@@ -1,7 +1,7 @@
 //! The Settings scene for headless captures and tests (M7 Task 51).
 //!
 //! `--scene settings` draws the Settings tab in one fixed state: a fixed fake environment (the
-//! shells, the Explorer verb, the version, the glass, the log folder, no NVIDIA) over a fixed
+//! shells, the Explorer verb, the version, the log folder, no NVIDIA) over a fixed
 //! in-memory store, so a Flare image and a Prism Terminal image show the same thing. Nothing here
 //! reads or writes a profile folder: the store is `PrefStore::memory()`, the diagnostics control
 //! is a fake, and no path under the user's data folder is named.
@@ -17,7 +17,6 @@ use std::sync::Arc;
 use flare_settings::kv::PrefStore;
 use flare_settings::layout::{Metrics, is_narrow, rail_width};
 use flare_settings::look::LookStore;
-use flare_settings::page::GlassSupport;
 use flare_settings::tab_layout::{TabLayout, set_tab_layout};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use flare_settings::window_colours::set_window_edges;
@@ -95,7 +94,6 @@ pub fn deps(prefs: &PrefStore, post: Post, clock: Rc<dyn Fn() -> u64>) -> Settin
                 .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
                 .collect()
         }),
-        glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|id: &str| {
             flare_theme::fonts::font_families(id)
                 .into_iter()
@@ -104,7 +102,7 @@ pub fn deps(prefs: &PrefStore, post: Post, clock: Rc<dyn Fn() -> u64>) -> Settin
         }),
         theme_colours: {
             let prefs = prefs.clone();
-            Rc::new(move || flare_settings::page::appearance::theme_colours(&look, &prefs, false))
+            Rc::new(move || flare_settings::page::appearance::theme_colours(&look, &prefs))
         },
         agent_colours: {
             let prefs = prefs.clone();

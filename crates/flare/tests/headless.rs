@@ -434,8 +434,6 @@ fn the_find_scene_shows_the_match_fill() {
         accent: None,
         secondary: None,
         edges: flare_theme::edges::DEFAULT_WINDOW_EDGES,
-        see_through: 0,
-        glass_possible: false,
     });
     let rgb = |hex: &str| {
         let n = u32::from_str_radix(&hex[1..7], 16).expect("a hex colour");

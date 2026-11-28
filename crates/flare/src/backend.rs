@@ -1,45 +1,58 @@
 //! Picks Slint's renderer at start: the GPU renderer (femtovg-wgpu) with a software fallback.
-//! On Windows 11 22H2 and later with the GPU renderer the window is created transparent on a
-//! DirectComposition swapchain, so the See-through slider works without a restart (decision D8).
+//!
+//! The main window is always solid (the see-through window was removed on 2026-11-28). On Windows 11
+//! 22H2 and later with the GPU renderer the instance still presents through DirectComposition, so the
+//! dictation widget, the one window with per-pixel alpha, gets its rounded, shadowed card: only the
+//! visual swapchain offers a non-opaque alpha mode (material spike E0, 2026-10-17).
 
 use crate::config::RendererChoice;
-use flare_win::material::backdrop_ok_here;
 use flare_win::os_build::{OsVersion, os_version};
+
+/// Windows 11 22H2: the build the alpha surface was measured on (decision D6). Older builds keep the
+/// dictation card on a flat ground.
+pub const ALPHA_SURFACE_BUILD: u32 = 22621;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BackendOutcome {
     pub effective: RendererChoice,
     pub fallback_reason: Option<String>,
-    /// The window was created transparent on the GPU renderer, so the See-through slider can work.
-    pub glass_possible: bool,
 }
 
-/// What the window is created with so that glass can ever be used. A transparent window cannot be
-/// made later, and only the DirectComposition swapchain offers a non-opaque alpha mode.
+/// Whether the renderer's surfaces can carry per-pixel alpha (the dictation widget's card). Decided at
+/// start: only the DirectComposition swapchain offers a non-opaque alpha mode, and it is the instance's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GlassPlan {
-    pub transparent: bool,
-    pub visual_swapchain: bool,
+pub struct AlphaPlan {
+    pub alpha_surface: bool,
 }
 
-impl GlassPlan {
-    pub const NONE: GlassPlan = GlassPlan {
-        transparent: false,
-        visual_swapchain: false,
+impl AlphaPlan {
+    pub const NONE: AlphaPlan = AlphaPlan {
+        alpha_surface: false,
     };
 }
 
-/// Both true iff the GPU renderer is chosen, the build has the backdrop call and glass is not off.
-/// macOS always has the backdrop (an `NSVisualEffectView`, `flare_win::glass`).
-pub fn glass_plan(choice: RendererChoice, v: OsVersion, disabled: bool) -> GlassPlan {
-    let on = choice == RendererChoice::Gpu && backdrop_ok_here(v) && !disabled;
-    GlassPlan {
-        transparent: on,
-        visual_swapchain: on,
+/// Whether this machine's build has the alpha surface. macOS: always (any `NSWindow` may be clear); `v`
+/// is not a Windows build there.
+fn alpha_surface_ok_here(v: OsVersion) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = v;
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        v.build >= ALPHA_SURFACE_BUILD
     }
 }
 
-/// True only for the value "1" of FLARE_NO_GLASS.
+/// On iff the GPU renderer is chosen, the build has the alpha surface and it is not switched off.
+pub fn alpha_plan(choice: RendererChoice, v: OsVersion, disabled: bool) -> AlphaPlan {
+    AlphaPlan {
+        alpha_surface: choice == RendererChoice::Gpu && alpha_surface_ok_here(v) && !disabled,
+    }
+}
+
+/// True only for the value "1" of FLARE_NO_GLASS (the old name is kept: it turns the alpha surface off).
 pub fn glass_disabled(env: Option<&str>) -> bool {
     env == Some("1")
 }
@@ -49,15 +62,10 @@ pub fn gpu_forced_to_fail(v: Option<&str>) -> bool {
     v == Some("1")
 }
 
-fn outcome(
-    effective: RendererChoice,
-    plan: GlassPlan,
-    fallback_reason: Option<String>,
-) -> BackendOutcome {
+fn outcome(effective: RendererChoice, fallback_reason: Option<String>) -> BackendOutcome {
     BackendOutcome {
         effective,
         fallback_reason,
-        glass_possible: effective == RendererChoice::Gpu && plan.transparent,
     }
 }
 
@@ -76,7 +84,7 @@ pub fn select_backend_with(
     e2e: bool,
     prewarm: Option<Prewarm>,
 ) -> Result<BackendOutcome, slint::PlatformError> {
-    let plan = glass_plan(
+    let plan = alpha_plan(
         choice,
         os_version(),
         glass_disabled(std::env::var("FLARE_NO_GLASS").ok().as_deref()),
@@ -90,25 +98,21 @@ pub fn select_backend_with(
 fn select_renderer(
     choice: RendererChoice,
     e2e: bool,
-    plan: GlassPlan,
+    plan: AlphaPlan,
     prewarm: Option<Prewarm>,
 ) -> Result<BackendOutcome, slint::PlatformError> {
     match choice {
         RendererChoice::Software => {
-            select_software(e2e, GlassPlan::NONE)?;
-            Ok(outcome(RendererChoice::Software, GlassPlan::NONE, None))
+            select_software(e2e, AlphaPlan::NONE)?;
+            Ok(outcome(RendererChoice::Software, None))
         }
         RendererChoice::Gpu => match try_gpu(e2e, plan, prewarm) {
-            Ok(()) => Ok(outcome(RendererChoice::Gpu, plan, None)),
+            Ok(()) => Ok(outcome(RendererChoice::Gpu, None)),
             Err(e) => {
                 let reason = e.to_string();
                 log::warn!("GPU renderer unavailable: {reason}; using software");
-                select_software(e2e, GlassPlan::NONE)?;
-                Ok(outcome(
-                    RendererChoice::Software,
-                    GlassPlan::NONE,
-                    Some(reason),
-                ))
+                select_software(e2e, AlphaPlan::NONE)?;
+                Ok(outcome(RendererChoice::Software, Some(reason)))
             }
         },
     }
@@ -119,7 +123,7 @@ fn select_renderer(
 /// device were built on another thread while the app started and Slint is handed them.
 fn try_gpu(
     e2e: bool,
-    plan: GlassPlan,
+    plan: AlphaPlan,
     prewarm: Option<Prewarm>,
 ) -> Result<(), slint::PlatformError> {
     if gpu_forced_to_fail(std::env::var("FLARE_FORCE_GPU_FAIL").ok().as_deref()) {
@@ -139,7 +143,7 @@ fn try_gpu(
 /// the software fallback with its own reason), otherwise Slint's own creation.
 fn gpu_configuration(
     prewarm: Option<Prewarm>,
-    plan: GlassPlan,
+    plan: AlphaPlan,
 ) -> Result<slint::wgpu_30::WGPUConfiguration, slint::PlatformError> {
     match prewarm {
         Some(p) => {
@@ -162,11 +166,11 @@ fn gpu_configuration(
     }
 }
 
-/// The DX12 options of the instance. With a glass plan the presentation system is DirectComposition.
+/// The DX12 options of the instance. With the alpha surface the presentation system is DirectComposition.
 /// Slint's `Automatic` path and the prewarm both build their instance from this.
-pub fn instance_options(plan: GlassPlan) -> slint::wgpu_30::wgpu::BackendOptions {
+pub fn instance_options(plan: AlphaPlan) -> slint::wgpu_30::wgpu::BackendOptions {
     let mut options = slint::wgpu_30::wgpu::BackendOptions::from_env_or_default();
-    if plan.visual_swapchain {
+    if plan.alpha_surface {
         options.dx12.presentation_system = slint::wgpu_30::wgpu::Dx12SwapchainKind::DxgiFromVisual;
     }
     options
@@ -174,7 +178,7 @@ pub fn instance_options(plan: GlassPlan) -> slint::wgpu_30::wgpu::BackendOptions
 
 /// Slint's wgpu settings with `device_required_limits` raised from its WebGL2 default (2048 px
 /// textures) to wgpu's defaults (8192 px). Regression rule 130.
-fn gpu_settings(plan: GlassPlan) -> slint::wgpu_30::WGPUSettings {
+fn gpu_settings(plan: AlphaPlan) -> slint::wgpu_30::WGPUSettings {
     let mut settings = slint::wgpu_30::WGPUSettings::default();
     settings.device_required_limits = slint::wgpu_30::wgpu::Limits::default();
     settings.backend_options = instance_options(plan);
@@ -204,7 +208,7 @@ impl Prewarm {
     }
 }
 
-/// The glass plan of a run that will open a window on the GPU renderer, or None when no prewarm is
+/// The alpha plan of a run that will open a window on the GPU renderer, or None when no prewarm is
 /// wanted: software (flag or env), a forced GPU failure, or an argument list that never reaches the
 /// window (a bad flag, or a mode that makes its own device or none).
 fn prewarm_plan(
@@ -213,7 +217,7 @@ fn prewarm_plan(
     force_fail: Option<&str>,
     no_glass: Option<&str>,
     os: OsVersion,
-) -> Option<GlassPlan> {
+) -> Option<AlphaPlan> {
     if gpu_forced_to_fail(force_fail) {
         return None;
     }
@@ -229,7 +233,7 @@ fn prewarm_plan(
     if args.renderer != RendererChoice::Gpu || !opens_window {
         return None;
     }
-    Some(glass_plan(args.renderer, os, glass_disabled(no_glass)))
+    Some(alpha_plan(args.renderer, os, glass_disabled(no_glass)))
 }
 
 /// Starts building the GPU device on a worker thread, straight after `ship_ctl::bootstrap()` and
@@ -252,8 +256,8 @@ pub fn take(p: Prewarm) -> Result<Prepared, String> {
         .unwrap_or_else(|_| Err("the GPU prewarm thread panicked".into()))
 }
 
-/// The backends the prewarm instance starts. Without `WGPU_BACKEND` that is DX12 alone: the glass
-/// swapchain (`DxgiFromVisual`) is DX12-only, and an instance that also starts Vulkan loads the
+/// The backends the prewarm instance starts. Without `WGPU_BACKEND` that is DX12 alone: the alpha
+/// surface's swapchain (`DxgiFromVisual`) is DX12-only, and an instance that also starts Vulkan loads the
 /// Vulkan and OpenGL driver stacks of every GPU in the PC (about 32 MB of private memory, M10 Task
 /// 66). On macOS it is Metal alone, the only native backend there. A named choice is kept, without
 /// OpenGL as Slint's own `Automatic` path leaves it out (`mask_backends`); a choice that would leave
@@ -270,7 +274,7 @@ fn prewarm_backends(named: Option<wgpu::Backends>) -> wgpu::Backends {
 
 /// Builds the instance, the high-performance adapter and the device the way Slint's `Automatic`
 /// path does, except that no window surface exists yet to ask the adapter about.
-fn build_prepared(plan: GlassPlan) -> Result<Prepared, String> {
+fn build_prepared(plan: AlphaPlan) -> Result<Prepared, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: prewarm_backends(wgpu::Backends::from_env()),
         flags: wgpu::InstanceFlags::from_build_config().with_env(),
@@ -301,18 +305,18 @@ fn build_prepared(plan: GlassPlan) -> Result<Prepared, String> {
         queue,
     })
 }
-/// ONE attributes hook, installed whenever the window must start transparent or under `--e2e`
-/// (where it is created inactive and off the taskbar, so a test run never takes the foreground).
-/// The winit backend creates the window at `show()`, so the hook is the only place to ask.
+/// ONE attributes hook: the dictation widget's own attributes, the Mac chrome, and under `--e2e` the
+/// main window created inactive and off the taskbar (so a test run never takes the foreground). The
+/// main window is never created transparent: it is solid. The winit backend creates the window at
+/// `show()`, so the hook is the only place to ask.
 fn with_window_attributes(
     selector: slint::BackendSelector,
     e2e: bool,
-    plan: GlassPlan,
+    plan: AlphaPlan,
 ) -> slint::BackendSelector {
     // The dictation widget (M8 Task 26) is a second window made by the same backend: it asks whether its surface has alpha
     // and, while it is being made, gets its own attributes from this one hook.
-    crate::dictation_widget::set_alpha_surface(plan.transparent);
-    let transparent = plan.transparent;
+    crate::dictation_widget::set_alpha_surface(plan.alpha_surface);
     #[cfg(target_os = "macos")]
     let selector = with_mac_e2e_event_loop(selector, e2e);
     selector.with_winit_window_attributes_hook(move |attributes| {
@@ -321,10 +325,6 @@ fn with_window_attributes(
         }
         #[cfg(target_os = "macos")]
         let attributes = mac_chrome_attributes(attributes);
-        if !e2e && !transparent {
-            return attributes;
-        }
-        let attributes = attributes.with_transparent(transparent);
         if e2e {
             e2e_attributes(attributes)
         } else {
@@ -401,7 +401,7 @@ pub fn e2e_attributes(
 }
 
 /// Slint's software renderer. Must not be combined with `require_wgpu_30`.
-fn select_software(e2e: bool, plan: GlassPlan) -> Result<(), slint::PlatformError> {
+fn select_software(e2e: bool, plan: AlphaPlan) -> Result<(), slint::PlatformError> {
     with_window_attributes(slint::BackendSelector::new(), e2e, plan)
         .backend_name("winit".into())
         .renderer_name("software".into())
@@ -461,27 +461,26 @@ mod tests {
     }
 
     #[test]
-    fn glass_plan_needs_the_gpu_and_the_22h2_backdrop() {
-        let on = GlassPlan {
-            transparent: true,
-            visual_swapchain: true,
+    fn the_alpha_plan_needs_the_gpu_and_the_22h2_build() {
+        let on = AlphaPlan {
+            alpha_surface: true,
         };
-        assert_eq!(glass_plan(RendererChoice::Gpu, v(22621), false), on);
-        // The Windows builds without the backdrop call; a Mac has the glass whatever `v` says.
+        assert_eq!(alpha_plan(RendererChoice::Gpu, v(22621), false), on);
+        // The older Windows builds keep the flat card; a Mac has the alpha surface whatever `v` says.
         let old_build = if cfg!(target_os = "macos") {
             on
         } else {
-            GlassPlan::NONE
+            AlphaPlan::NONE
         };
-        assert_eq!(glass_plan(RendererChoice::Gpu, v(22620), false), old_build);
-        assert_eq!(glass_plan(RendererChoice::Gpu, v(19045), false), old_build);
+        assert_eq!(alpha_plan(RendererChoice::Gpu, v(22620), false), old_build);
+        assert_eq!(alpha_plan(RendererChoice::Gpu, v(19045), false), old_build);
         assert_eq!(
-            glass_plan(RendererChoice::Software, v(26300), false),
-            GlassPlan::NONE
+            alpha_plan(RendererChoice::Software, v(26300), false),
+            AlphaPlan::NONE
         );
         assert_eq!(
-            glass_plan(RendererChoice::Gpu, v(26300), true),
-            GlassPlan::NONE
+            alpha_plan(RendererChoice::Gpu, v(26300), true),
+            AlphaPlan::NONE
         );
     }
 
@@ -493,26 +492,25 @@ mod tests {
     }
 
     #[test]
-    fn the_outcome_says_glass_is_possible_only_on_the_gpu_with_a_transparent_window() {
-        let on = glass_plan(RendererChoice::Gpu, v(26300), false);
-        assert!(outcome(RendererChoice::Gpu, on, None).glass_possible);
-        // A forced GPU failure builds the software selection with the empty plan.
-        let o = outcome(RendererChoice::Software, GlassPlan::NONE, Some("x".into()));
-        assert!(!o.glass_possible);
-        // Even a transparent plan is no glass when the effective renderer is software.
-        assert!(!outcome(RendererChoice::Software, on, None).glass_possible);
+    fn the_main_window_is_never_created_transparent() {
+        // The see-through window was removed on 2026-11-28: the attributes hook never asks for a
+        // transparent main window (only the dictation widget's own attributes carry alpha).
+        let src = include_str!("backend.rs");
+        let from = src.find("fn with_window_attributes").expect("the hook");
+        let to = src[from..].find("\n}").expect("its end") + from;
+        assert!(!src[from..to].contains(".with_transparent("));
     }
 
     #[test]
     fn the_visual_swapchain_is_asked_for_only_with_a_plan() {
         use slint::wgpu_30::wgpu::Dx12SwapchainKind;
-        let on = glass_plan(RendererChoice::Gpu, v(26300), false);
+        let on = alpha_plan(RendererChoice::Gpu, v(26300), false);
         assert!(matches!(
             gpu_settings(on).backend_options.dx12.presentation_system,
             Dx12SwapchainKind::DxgiFromVisual
         ));
         assert!(!matches!(
-            gpu_settings(GlassPlan::NONE)
+            gpu_settings(AlphaPlan::NONE)
                 .backend_options
                 .dx12
                 .presentation_system,
@@ -527,7 +525,7 @@ mod tests {
         let default_max = slint::wgpu_30::WGPUSettings::default()
             .device_required_limits
             .max_texture_dimension_2d;
-        let ours = gpu_settings(GlassPlan::NONE)
+        let ours = gpu_settings(AlphaPlan::NONE)
             .device_required_limits
             .max_texture_dimension_2d;
         assert!(default_max < 3840, "Slint's default changed: {default_max}");
@@ -553,19 +551,19 @@ mod tests {
     }
 
     #[test]
-    fn the_prewarm_instance_options_match_the_glass_plan() {
+    fn the_prewarm_instance_options_match_the_alpha_plan() {
         use slint::wgpu_30::wgpu::Dx12SwapchainKind;
-        let on = glass_plan(RendererChoice::Gpu, v(26300), false);
+        let on = alpha_plan(RendererChoice::Gpu, v(26300), false);
         let plan = prewarm_plan(&argv(&[]), None, None, None, v(26300)).unwrap();
         assert_eq!(plan, on);
         assert!(matches!(
             instance_options(plan).dx12.presentation_system,
             Dx12SwapchainKind::DxgiFromVisual
         ));
-        let no_glass = prewarm_plan(&argv(&[]), None, None, Some("1"), v(26300)).unwrap();
-        assert_eq!(no_glass, GlassPlan::NONE);
+        let no_alpha = prewarm_plan(&argv(&[]), None, None, Some("1"), v(26300)).unwrap();
+        assert_eq!(no_alpha, AlphaPlan::NONE);
         assert!(!matches!(
-            instance_options(no_glass).dx12.presentation_system,
+            instance_options(no_alpha).dx12.presentation_system,
             Dx12SwapchainKind::DxgiFromVisual
         ));
     }
@@ -573,14 +571,14 @@ mod tests {
     #[test]
     fn a_failed_prewarm_is_the_software_fallback_with_its_reason() {
         let p = Prewarm::spawn(|| Err("no adapter on the fake".to_string())).unwrap();
-        let e = gpu_configuration(Some(p), GlassPlan::NONE).unwrap_err();
+        let e = gpu_configuration(Some(p), AlphaPlan::NONE).unwrap_err();
         assert!(e.to_string().contains("no adapter on the fake"), "{e}");
         let panicking = Prewarm::spawn(|| panic!("boom")).unwrap();
-        let e = gpu_configuration(Some(panicking), GlassPlan::NONE).unwrap_err();
+        let e = gpu_configuration(Some(panicking), AlphaPlan::NONE).unwrap_err();
         assert!(e.to_string().contains("panicked"), "{e}");
         // No prewarm: Slint creates its own.
         assert!(matches!(
-            gpu_configuration(None, GlassPlan::NONE),
+            gpu_configuration(None, AlphaPlan::NONE),
             Ok(slint::wgpu_30::WGPUConfiguration::Automatic(_))
         ));
     }
@@ -588,7 +586,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_prewarm_instance_starts_dx12_alone_unless_a_backend_is_named() {
-        // Slint's own device path avoids GL, and the glass swapchain is DX12-only: an instance
+        // Slint's own device path avoids GL, and the alpha swapchain is DX12-only: an instance
         // that also starts Vulkan and OpenGL loads every GPU driver stack for nothing.
         assert_eq!(prewarm_backends(None), wgpu::Backends::DX12);
         // A named choice is kept, minus OpenGL; an OpenGL-only choice is kept whole.
@@ -623,7 +621,7 @@ mod tests {
     }
     #[test]
     fn the_prewarmed_device_has_the_raised_limits() {
-        match build_prepared(GlassPlan::NONE) {
+        match build_prepared(AlphaPlan::NONE) {
             Ok(p) => assert!(
                 p.device.limits().max_texture_dimension_2d >= 8192,
                 "{}",

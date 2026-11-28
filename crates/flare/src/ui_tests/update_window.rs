@@ -746,7 +746,7 @@ mod scales {
         assert_eq!(rects(&h), fresh(1.25), "2.25 -> 1.25");
     }
 
-    fn look(id: &str, see_through: u8, glass_possible: bool) -> AppliedLook {
+    fn look(id: &str) -> AppliedLook {
         apply_look(&LookInput {
             theme_id: id,
             custom: None,
@@ -755,8 +755,6 @@ mod scales {
             accent: None,
             secondary: None,
             edges: DEFAULT_WINDOW_EDGES,
-            see_through,
-            glass_possible,
         })
     }
 
@@ -782,7 +780,7 @@ mod scales {
     #[test]
     fn the_look_on_the_dark_and_the_light_theme_keeps_contrast() {
         for id in ["pt-default", "paper"] {
-            let l = look(id, 0, false);
+            let l = look(id);
             let h = harness(1.0);
             paint(&h, &l);
             open(&h);
@@ -810,8 +808,8 @@ mod scales {
     }
 
     #[test]
-    fn a_translucent_window_does_not_make_the_window_translucent() {
-        let l = look("pt-default", 40, true);
+    fn the_update_window_is_opaque() {
+        let l = look("pt-default");
         let c = colour(&token(&l, "--p-side-flat"));
         for s in [1.0_f32, 1.5, 2.25] {
             let h = harness(s);

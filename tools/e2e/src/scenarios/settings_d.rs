@@ -14,10 +14,10 @@
 //!   clicked: each edge word is written to settings.json and the app is launched again, and the
 //!   check reads what the window then paints. The row's `value` (the pressed word) is read as PT's
 //!   `aria-pressed`.
-//! - The DWM border is never applied under --e2e (`material_ctl`), so "main was told" reads
+//! - The DWM border is never applied under --e2e (`frame_ctl`), so "main was told" reads
 //!   `window.edge`, the border the controller computes for the same ground and word.
-//! - The See-through slider is GPU only (settings_c's SOFTWARE_SKIP), so the see-through halves of
-//!   `accent` are skipped on the software renderer with that reason, never passed.
+//! - The window is solid (the see-through window was removed on 2026-11-28), so PT's two `accent`
+//!   checks under a see-through window are skipped with that reason, never passed.
 //! - No check here reads a painted pixel of a segment or a button, so none is claimed.
 
 use std::collections::BTreeMap;
@@ -31,8 +31,6 @@ use crate::ctx::{App, Ctx, Launch};
 /// A css rectangle: x, y, width, height.
 type R = (f64, f64, f64, f64);
 
-/// The reason the See-through halves of `accent` are skipped on the software renderer.
-const SOFTWARE_SKIP: &str = "the See-through slider is GPU only (the software renderer disables it, settings_c's SOFTWARE_SKIP); this runs on the GPU renderer";
 /// The tolerance for an alpha, the same one PT's `near` uses.
 const NEAR: f64 = 0.004;
 /// PT's black and white ink, as the knob rule compares them.
@@ -1244,9 +1242,9 @@ pub fn accent(ctx: &mut Ctx) -> Result<(), String> {
         format!("and its label reads on the composite (PROXY {reads:.1}:1)"),
     );
 
-    // Under a see-through window (the slider is GPU only): skipped on software, never passed.
-    ctx.skip(SOFTWARE_SKIP);
-    ctx.skip(SOFTWARE_SKIP);
+    // PT's two checks under a see-through window have no twin: the window is solid (2026-11-28).
+    ctx.skip("under a see-through window Save is opaque: the window is solid since 2026-11-28");
+    ctx.skip("and its label reads on it: the window is solid since 2026-11-28");
 
     // The settings controls keep their own fills: none of them is the accent.
     let after_control = tok(&mut app, "control");
@@ -1304,9 +1302,9 @@ pub fn accent(ctx: &mut Ctx) -> Result<(), String> {
         "and it is the first card in the wall",
     );
 
-    // BACKGROUND AND ACCENT SIT RIGHT UNDER THE THEME WALL, after See-through.
+    // BACKGROUND AND ACCENT SIT RIGHT UNDER THE THEME WALL (the See-through row went on 2026-11-28).
     let order = page_rows(&mut app);
-    let at = order.iter().position(|id| id == "term-acrylic");
+    let at = order.iter().position(|id| id == "term-theme");
     let in_order = at.is_some_and(|i| {
         order.get(i + 1).map(String::as_str) == Some("window-background")
             && order.get(i + 2).map(String::as_str) == Some("window-secondary")
@@ -1315,7 +1313,7 @@ pub fn accent(ctx: &mut Ctx) -> Result<(), String> {
     ctx.ok(
         in_order,
         format!(
-            "See-through, Background, Secondary and Accent come right after the theme wall ({})",
+            "Background, Secondary and Accent come right after the theme wall ({})",
             order.join(" > ")
         ),
     );
@@ -1386,7 +1384,7 @@ pub fn accent(ctx: &mut Ctx) -> Result<(), String> {
         format!("there it flips to black: white would read {pale_r:.2}:1"),
     );
     // Back to PT Default first: the switch asks about the picked accent and Discard lets it go (PT's
-    // accent scenario does the same), so the accent the deep checks pick is not the see-through one.
+    // accent scenario does the same), so the accent the deep checks pick is not the hex8 one.
     pick_card(&mut app, "pt-default");
     // The picked accent is a change to save: the switch asks, and Discard lets it go.
     fill_row_colour(&mut app, "window-accent", "#2a2c30");
