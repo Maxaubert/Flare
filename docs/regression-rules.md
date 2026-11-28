@@ -6184,7 +6184,7 @@ open, and the sidebar's New tab arrow lights only for its own dropdown (`!menu-b
 `menus_ui::web_more_rows`, in order: "Open in browser" only for an http or https page (`launcher::open_in` gives a
 `Url`), sent to `open_url` as rule 1388 says; "Draw arrow" only where it is offered (`draw_arrow_offered` and the 200 px
 room rule), which says "Stop drawing the arrow" while the mode is on. A row with nothing to do is left out, and the
-button hides with no row left. Each row carries its action (`WEB_MORE_*`), never its words: a pick of "Draw arrow"
+button hides with no row left, and in a panel under 200 px wide (so the address field keeps room to read). Each row carries its action (`WEB_MORE_*`), never its words: a pick of "Draw arrow"
 first lets the page show live again (the menu made it a still, and a still cannot be drawn on) and starts the mode only
 when it is off; "Stop drawing the arrow" ends it only when it is still on, since the menu over the page may have ended
 it already (rule 256). Keys: those of Flare's other menus (Escape closes it, and so does a click outside). The panel
@@ -6194,7 +6194,7 @@ header's "Open in" and a mini-app's header "Draw arrow" button are not changed. 
 `crates/flare/src/appctl/launcher_glue.rs` (`web_more_clicked`, `web_more_picked`),
 `crates/flare/src/appctl/sessions_glue.rs` (`draw_arrow_offered`). Held by
 `the_web_more_menu_lists_only_what_it_can_do` and `glyph_paths_match_the_slint_file` (`menus_ui.rs`),
-`the_more_button_shows_only_while_its_menu_has_a_row`, `the_address_field_gives_up_only_the_more_buttons_room` and
+`the_more_button_shows_only_while_its_menu_has_a_row`, `the_more_button_gives_way_in_a_very_narrow_panel`, `the_address_field_gives_up_only_the_more_buttons_room` and
 `the_more_button_calls_back_with_its_edges` (`ui_tests/panel.rs`), `the_web_bars_more_glyph_draws_at_full_size_at_every_scale`
 (`ui_tests/icons_misc.rs`), `the_more_menu_drops_under_its_button_and_opens_the_page_in_the_browser`,
 `escape_closes_the_more_menu_and_opens_nothing`, `the_more_button_has_a_tooltip_left_of_it`,

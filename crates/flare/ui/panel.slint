@@ -481,7 +481,8 @@ component WebBar inherits Rectangle {
     callback more-clicked(length, length, length);
     // Its tooltip ("More"): the text, or "" when the pointer left, and the button's box in the window.
     callback more-tip(string, length, length, length, length);
-    property <bool> more-shown: root.open-in != "" || root.draw-shown;
+    // Below 200 px (the draw mode's room rule) it gives way, so the address field keeps room to read.
+    property <bool> more-shown: root.width >= 200px && (root.open-in != "" || root.draw-shown);
     out property <bool> more-visible: root.more-shown;
     out property <length> more-x: more-btn.absolute-position.x;
     out property <length> more-y: more-btn.absolute-position.y;

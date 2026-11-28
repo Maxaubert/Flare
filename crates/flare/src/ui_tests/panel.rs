@@ -1326,6 +1326,35 @@ fn the_address_field_gives_up_only_the_more_buttons_room() {
     }
 }
 
+/// Rule 1389: in a very narrow panel the More button gives way (below 200 px, the draw mode's room rule) and never
+/// squeezes the address field to nothing or lies over the back, forward and reload buttons.
+#[test]
+fn the_more_button_gives_way_in_a_very_narrow_panel() {
+    for s in SCALES {
+        for css_w in [360u32, 400, 440, 480, 560, 700] {
+            let h = window_at(s, css_w);
+            h.comp.set_panel_share(0.15);
+            open_web(&h);
+            h.comp.set_panel_open_in("Open in browser".into());
+            h.advance(0);
+            let slot_w = h.comp.get_panel_slot_w();
+            let shown = h.comp.get_panel_web_more_visible();
+            assert_eq!(shown, slot_w >= 200.0, "{css_w} ({slot_w} px) at scale {s}");
+            if shown {
+                let field_x = h.comp.get_panel_web_field_x();
+                assert!(
+                    h.comp.get_panel_web_field_w() > 40.0,
+                    "the address stays usable, {css_w} ({slot_w} px) at scale {s}"
+                );
+                assert!(
+                    h.comp.get_panel_web_more_x() > field_x,
+                    "{css_w} at scale {s}"
+                );
+            }
+        }
+    }
+}
+
 /// Rule 1389: a click on the More button calls back with the button's right edge, top and foot (the menu drops from
 /// there); it never presses "Draw arrow" itself.
 #[test]
