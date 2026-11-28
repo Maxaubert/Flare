@@ -735,6 +735,9 @@ pub fn viewer_session(
         Err(e) => return fail(e),
     };
     let host_name = clean_name(field("name"));
+    // The host's own name is its computer name (`Me::this_computer`): when it is one DNS label, `<name>.local` is where
+    // the machine is looked for if its address changes (rule 1373).
+    let hostname = crate::machine_follow::local_name(&host_name);
     let machine_name = if host_name.is_empty() {
         name.to_string()
     } else {
@@ -761,6 +764,7 @@ pub fn viewer_session(
         key: Some(ctx.files.key_path().to_string_lossy().into_owned()),
         known_hosts: Some(known.to_string_lossy().into_owned()),
         host_key: Some(host_key.key.clone()),
+        hostname,
     };
     match old {
         Some(i) => list[i] = machine,

@@ -327,6 +327,96 @@ fn the_pointer_and_the_keys_reach_the_dialog_and_never_what_is_behind() {
     }
 }
 
+/// Rule 1373: a machine that cannot be reached is the whole sentence under the list, wrapped (never cut), in the error
+/// ink, with Try again at its right inside the box, above Cancel and Open here, at every scale in both looks; Try again
+/// answers a click, and is not there (nor clickable) without an error.
+#[test]
+fn a_machine_that_cannot_be_reached_shows_the_whole_line_and_try_again() {
+    let line = "Cannot reach Maxs-Mac-Mini. Check that it is on and on this network.";
+    for look in ["pt-default", "paper"] {
+        for s in SCALES {
+            let what = format!("{look} at {s}");
+            let h = harness(s);
+            paint(&h, look);
+            h.comp.set_rows(rows(&[]));
+            h.comp.set_selected(-1);
+            h.comp.set_path("".into());
+            open(&h);
+            let (rx, ry, rw, rh) = (
+                h.comp.get_retry_x(),
+                h.comp.get_retry_y(),
+                h.comp.get_retry_w(),
+                h.comp.get_retry_h(),
+            );
+            // No error: no Try again to press.
+            h.click(rx + rw / 2.0, ry + rh / 2.0);
+            assert_eq!(
+                h.comp.get_retries(),
+                0,
+                "{what}: no Try again without an error"
+            );
+            h.comp.set_cancels(0);
+            h.comp.set_opens(0);
+            h.comp.set_error(line.into());
+            h.advance(0);
+            h.render();
+            let f = h.render();
+            let theme = h.comp.global::<crate::Theme>();
+            let (bx, by, bw, bh) = (
+                h.comp.get_box_x(),
+                h.comp.get_box_y(),
+                h.comp.get_box_w(),
+                h.comp.get_box_h(),
+            );
+            let (rx, ry, rw, rh) = (
+                h.comp.get_retry_x(),
+                h.comp.get_retry_y(),
+                h.comp.get_retry_w(),
+                h.comp.get_retry_h(),
+            );
+            let (ly, lh) = (h.comp.get_list_y(), h.comp.get_list_h());
+            let (ey, eh) = (h.comp.get_error_y(), h.comp.get_error_h());
+            assert!(
+                rx + rw <= bx + bw - 19.0 && rx > bx + bw / 2.0,
+                "{what}: Try again sits at the right, inside the box"
+            );
+            assert!(
+                ry >= ly + lh && ry + rh <= h.comp.get_open_y() && ry + rh <= by + bh,
+                "{what}: Try again sits between the list and the buttons"
+            );
+            // The sentence is longer than its room on one line: it wraps to two, never cut.
+            assert!(eh >= 28.0, "{what}: the line wraps ({eh})");
+            let err = if theme.get_light() {
+                [0xc4_u8, 0x28, 0x2e]
+            } else {
+                [0xff_u8, 0x8a, 0x8d]
+            };
+            let lx = h.comp.get_list_x();
+            let ink_rows = |y0: f32, y1: f32| {
+                f.count_where(
+                    (lx * s) as u32,
+                    (y0 * s) as u32,
+                    (rx * s) as u32,
+                    (y1 * s) as u32,
+                    |p| near(p, err.map(f32::from), 40.0),
+                )
+            };
+            assert!(
+                ink_rows(ey, ey + eh / 2.0) > 0 && ink_rows(ey + eh / 2.0, ey + eh) > 0,
+                "{what}: both lines are drawn in the error ink"
+            );
+            h.click(rx + rw / 2.0, ry + rh / 2.0);
+            assert_eq!(h.comp.get_retries(), 1, "{what}: Try again");
+            assert_eq!(
+                h.comp.get_cancels(),
+                0,
+                "{what}: a press on it is no press outside"
+            );
+            assert_eq!(h.comp.get_behind_clicks(), 0);
+        }
+    }
+}
+
 /// The crumbs: a click on a live one goes there; the last (the folder shown) and a `…` go nowhere.
 #[test]
 fn a_crumb_goes_to_its_folder_and_the_last_goes_nowhere() {

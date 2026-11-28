@@ -22,6 +22,13 @@ impl AppCtl {
         self.rfolder_lister = lister;
     }
 
+    /// How long the dialog waits for one listing before it says the machine cannot be reached (rule 1373):
+    /// `remote_folder::LIST_LIMIT`, shorter in a test.
+    #[cfg(test)]
+    pub fn set_folder_limit(&mut self, limit: std::time::Duration) {
+        self.rfolder_limit = limit;
+    }
+
     /// Opens the folder browser on `machine` (its id), at the host's home.
     pub(crate) fn open_remote_folder(&mut self, machine: &str) {
         let Some(m) = self.machines.iter().find(|m| m.id == machine).cloned() else {
@@ -48,12 +55,14 @@ impl AppCtl {
             Arc::clone(&self.rfolder_lister),
             Arc::clone(&self.deps.post),
         );
-        let (machine, name) = (b.machine.clone(), b.name.clone());
+        let (machine, name, limit) = (b.machine.clone(), b.name.clone(), self.rfolder_limit);
+        // Rule 1373: the dialog hears within `limit` whatever the link does; a late listing still comes.
         let r = std::thread::Builder::new()
             .name("flare-remote-ls".into())
             .spawn(move || {
-                let m = crate::remote_folder::answer(&*lister, &machine, &name, &ask);
-                post(UiMsg::RemoteFolder(m));
+                crate::remote_folder::answer_in_time(lister, &machine, &name, &ask, limit, &|m| {
+                    post(UiMsg::RemoteFolder(m));
+                });
             });
         if let Err(e) = r {
             log::warn!("could not start the folder list worker: {e}");
@@ -126,6 +135,11 @@ impl AppCtl {
 
     pub(super) fn rfolder_home(&mut self) {
         self.rfolder_step_with(Browser::home);
+    }
+
+    /// Try again (rule 1373): the failed folder asked once more.
+    pub(super) fn rfolder_retry(&mut self) {
+        self.rfolder_step_with(Browser::retry);
     }
 
     pub(super) fn rfolder_crumb(&mut self, i: i32) {

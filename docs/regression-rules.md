@@ -4891,7 +4891,8 @@ worker; the home is asked with no `path` (an older host answers too), and the ho
 home. Only the newest ask's answer is taken, and none after the dialog closed. The host's answer is never trusted: a
 safe path, at most `LS_MAX` names, no name with a separator, a control or invisible character, `.` or `..`. Crumbs,
 children and roots follow the host's path rules on any viewer (`PathRules::of_host`; `C:` goes to `C:\`). A machine
-that does not answer is one line in the dialog, in Settings > Machines' words ("Not answering"). The agent never lists
+that does not answer is one line in the dialog (since rule 1373: "Cannot reach <name>. Check that it is on and on this
+network." with Try again; other failures in Settings > Machines' words). The agent never lists
 a folder on another machine: no pipe grant but the link's reaches `remote.*`. Held by
 `the_folder_browser_wears_the_dialog_look_at_every_scale_in_both_looks`,
 `the_pointer_and_the_keys_reach_the_dialog_and_never_what_is_behind` and
@@ -6170,3 +6171,44 @@ and none in a bar under 280 px. Held by `open_in_sends_a_page_to_the_browser_and
 `an_app_name_is_cleaned_and_capped_and_a_bare_exe_is_no_name` (`launcher.rs`), `the_app_name_is_asked_only_for_a_plain_extension`
 and `a_text_file_has_a_default_app_with_a_name` (`flare-win` `openers.rs`), `open_in_hands_a_file_to_its_default_app` and
 `open_in_browser_sends_the_page_address`, `open_in_follows_a_page_the_browser_went_to` and `open_in_takes_only_the_room_the_title_can_spare` (`launcher_tests.rs`), and `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale` (`ui_tests/icons_misc.rs`). Source: Max, 2026-11-24.
+
+## Remote machines: found again after an address change (2026-11-25)
+
+1373. **A paired machine whose address changed is found again, and followed only when it proves its pinned key.**
+Max, 2026-11-25: the router moved the Mac Mini from the address pairing saved (`.242`, then `.251`, then `.76`), and
+the folder browser on it stayed on "Loading..." with nothing to say. Pairing now also saves the host's `.local` name
+(`hostname` in `machines.json`) when its computer name is one DNS label. A link to a paired machine
+(`machine_follow::connect`, inside `SshConnector`, so a remote tab, its reconnects and the folder browser all follow)
+first checks the saved address with one TCP connect of at most 3 s (`PROBE_WAIT`); when nothing is there, or ssh could
+not reach it, find it, or met another key there, it asks the network itself (mDNS through `mdns-sd`, at most 3 s, never
+the system's resolver, whose cache held the old address) for the saved `hostname`, `<name>.local` and the name the
+host's Flare answers while Computer sharing is on (`pairing::mdns_host`). ssh runs at each new address with
+`HostKeyAlias=<the saved address's pin>`, `CheckHostIP=no`, Flare's known-hosts file only and strict checking, so ssh
+itself proves the key; a name, an announcement or an address is never proof. Only after that proof is the key pinned
+for the new address and `machines.json`'s entry (same id, same `host_key`, read strict, written whole) given the new
+address. A computer with another key is never followed: "Its identity changed. Pair again". A machine with no pinned
+key (an `~/.ssh/config` alias) is never followed. A move onto an address another paired machine is saved at with
+another key is never saved (review, 2026-11-25): replacing that pin would let the other machine's next link open this
+computer under its name; the link still runs and the next one follows again. A refusal from the host's Flare at a new
+address (after ssh proved the key) is the answer shown, not "Not answering". Nothing in the code names a particular
+machine. Held by `the_same_key_at_a_new_address_is_followed`, `another_key_at_a_new_address_is_refused`,
+`the_saved_address_is_used_when_it_answers_and_nothing_else_is_tried_otherwise`,
+`names_addresses_and_the_alias_are_read_plainly`, `a_proven_move_is_saved_and_pinned`,
+`a_move_onto_another_machines_address_is_not_saved` and `a_refusal_at_the_new_address_is_the_answer`
+(`machine_follow.rs`).
+Checked by hand 2026-11-25 with Windows' OpenSSH 9.5: `HostKeyAlias` set to a pin's pattern (`addr` and
+`[addr]:port`) passes the key check at another address with the same key, and fails it with another key.
+
+1374. **The folder browser never shows "Loading..." forever.** Each listing runs on a link thread of its own; when no
+answer came within `remote_folder::LIST_LIMIT` (20 s) the dialog says "Cannot reach <name>. Check that it is on and on
+this network." at once. A machine that does not answer or cannot be found says the same line. A listing that comes
+later is still taken (a host that started its Flare slowly); a late failure never replaces the line. The line sits
+under the list in the error ink and wraps (never cut, the name can be long), with the plain Dialog button "Try again"
+at its right, inside the box above Cancel and Open here, in every look and scale. Try again asks the failed folder once
+more as a new ask (Back still leads where it did); it does nothing while an ask runs. It has no tooltip (a labelled
+button). Held by `an_ask_with_no_answer_in_time_is_the_cannot_reach_line_and_a_late_listing_is_taken`,
+`try_again_asks_the_failed_folder_again`, `an_answer_is_a_listing_or_one_line` (`remote_folder.rs`),
+`a_machine_that_cannot_be_reached_shows_the_whole_line_and_try_again` (`ui_tests/remote_folder.rs`),
+`a_link_that_never_answers_ends_in_the_cannot_reach_line_not_loading_forever` and
+`a_machine_that_does_not_answer_is_one_line_and_a_late_answer_is_dropped` (`ui_tests/term.rs`). Source: Max,
+2026-11-25.

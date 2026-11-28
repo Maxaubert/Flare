@@ -553,6 +553,8 @@ pub struct AppCtl {
     rfolder: Option<crate::remote_folder::Browser>,
     rfolder_seq: u64,
     rfolder_lister: Arc<dyn crate::remote_folder::FolderLister>,
+    /// How long one listing may take before the dialog says the machine cannot be reached (rule 1373).
+    rfolder_limit: Duration,
     /// A remote tab's fitted conversation view (remote sessions PR 7).
     rconvo: remote_glue::RemoteConvoView,
     /// The host's own fitted view of a tab a remote viewer sizes (rule 1211).
@@ -1163,6 +1165,7 @@ impl AppCtl {
             rfolder: None,
             rfolder_seq: 0,
             rfolder_lister: Arc::new(crate::remote_folder::NoLister),
+            rfolder_limit: crate::remote_folder::LIST_LIMIT,
             rconvo: remote_glue::RemoteConvoView::default(),
             hconvo: remote_glue::HostConvoView::default(),
             source_id: None,
@@ -1577,6 +1580,7 @@ impl AppCtl {
             .rfolder_step(down));
         bind!(app, rc, on_rfolder_open_here, |c| c.rfolder_open_here());
         bind!(app, rc, on_rfolder_cancel, |c| c.rfolder_cancel());
+        bind!(app, rc, on_rfolder_retry, |c| c.rfolder_retry());
         bind!(
             app,
             rc,

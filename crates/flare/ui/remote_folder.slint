@@ -2,7 +2,7 @@
 // the Dialog look (side-flat box, hairline edge, 20 px in, the 14.5 px title, Cancel and the accent button). The bar:
 // Back and Home (icon buttons with tips), then the crumbs, the machine's name first. The list: folders first, files
 // dimmed and never picked; a click picks a folder and the footer names the folder Open here opens, a double-click goes
-// into it. A machine that does not answer is one line under the list. Escape or a press outside is Cancel, Enter is
+// into it. A machine that does not answer is one line under the list with Try again at its right (rule 1373). Escape or a press outside is Cancel, Enter is
 // Open here, Up and Down pick, Backspace is Back. Rust holds the state (`remote_folder.rs`) and the host's names; this
 // draws them. Never the OS dialog.
 import { Theme, Px, SettingsFixed } from "theme.slint";
@@ -80,6 +80,8 @@ export component RemoteFolder inherits Rectangle {
     callback step(bool);
     callback open-here();
     callback cancel();
+    // Try again, under a failed listing (rule 1373).
+    callback retry();
     callback tip(string, length, length, length, length);
 
     property <length> row-h: 28px;
@@ -108,7 +110,12 @@ export component RemoteFolder inherits Rectangle {
     out property <length> cancel-w: cancel-btn.width;
     out property <length> cancel-h: cancel-btn.height;
     out property <length> error-y: err.absolute-position.y;
+    out property <length> error-h: err.height;
     out property <bool> error-shown: root.error != "";
+    out property <length> retry-x: retry-btn.absolute-position.x;
+    out property <length> retry-y: retry-btn.absolute-position.y;
+    out property <length> retry-w: retry-btn.width;
+    out property <length> retry-h: retry-btn.height;
     out property <bool> loading-shown: root.loading;
     out property <length> scrolled: flick.content-y;
     out property <bool> keys-held: fs.has-focus;
@@ -394,16 +401,27 @@ export component RemoteFolder inherits Rectangle {
                     color: Theme.dim;
                 }
             }
-            err := Text {
+            // Why the last listing failed, and Try again (rule 1373): the line wraps (a machine's name can be long) and
+            // the button sits at its right, the plain Dialog button.
+            err-row := HorizontalLayout {
                 visible: root.error != "";
-                height: root.error != "" ? 26px : 0px;
-                text: root.error;
-                vertical-alignment: bottom;
-                font-family: Theme.font-ui;
-                font-size: 12px;
-                color: Theme.light ? SettingsFixed.error-light : SettingsFixed.error-dark;
-                overflow: elide;
-                accessible-role: AccessibleRole.text;
+                height: root.error != "" ? self.preferred-height : 0px;
+                padding-top: 8px;
+                spacing: 12px;
+                err := Text {
+                    horizontal-stretch: 1;
+                    text: root.error;
+                    vertical-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    color: Theme.light ? SettingsFixed.error-light : SettingsFixed.error-dark;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                }
+                retry-btn := DialogButton {
+                    label: "Try again";
+                    clicked => { root.retry(); }
+                }
             }
             Rectangle { height: 14px; }
             HorizontalLayout {
@@ -456,6 +474,7 @@ export component RemoteFolderPreview inherits Window {
     in-out property <int> steps;
     in-out property <int> opens;
     in-out property <int> cancels;
+    in-out property <int> retries;
     in-out property <int> behind-clicks;
     in-out property <string> tip-text;
     out property <length> box-x: dlg.box-x;
@@ -480,7 +499,12 @@ export component RemoteFolderPreview inherits Window {
     out property <length> cancel-w: dlg.cancel-w;
     out property <length> cancel-h: dlg.cancel-h;
     out property <length> error-y: dlg.error-y;
+    out property <length> error-h: dlg.error-h;
     out property <bool> error-shown: dlg.error-shown;
+    out property <length> retry-x: dlg.retry-x;
+    out property <length> retry-y: dlg.retry-y;
+    out property <length> retry-w: dlg.retry-w;
+    out property <length> retry-h: dlg.retry-h;
     out property <length> scrolled: dlg.scrolled;
     out property <bool> keys-held: dlg.keys-held;
     out property <length> crumbs-x: dlg.crumbs-x;
@@ -512,6 +536,7 @@ export component RemoteFolderPreview inherits Window {
         step(down) => { root.steps += down ? 1 : -1; }
         open-here => { root.opens += 1; }
         cancel => { root.cancels += 1; }
+        retry => { root.retries += 1; }
         tip(t, x, y, w, h) => { root.tip-text = t; }
     }
 }

@@ -191,6 +191,8 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     assert_eq!(m.host.as_deref(), Some("192.0.2.139"));
     assert_eq!(m.user.as_deref(), Some("max"));
     assert_eq!(m.port, None);
+    // Rule 1373: "Max's PC" is no host name, so no `.local` name is saved (a one-label name is: `machine_follow`).
+    assert_eq!(m.hostname, None);
     assert_eq!(
         m.flare,
         r"C:\Users\Max\AppData\Local\Flare\current\Flare.exe"

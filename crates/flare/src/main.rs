@@ -46,6 +46,7 @@ mod link_bases;
 mod live;
 mod look_ctl;
 mod mac_menu;
+mod machine_follow;
 mod machines;
 mod machines_page;
 mod mark_colours;

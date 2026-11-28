@@ -3351,3 +3351,22 @@ Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to
   225 percent).
 - **Not yet.** A Mac lookup of the default app's name; an e2e scenario of its own (the window tests run the real
   controller and window headless).
+
+## Remote machines: found again after an address change, and no endless Loading, 2026-11-25
+
+Max, 2026-11-25: the router gave the paired Mac Mini a new address, Flare kept the old one, and "Choose a folder on
+Maxs-Mac-Mini" stayed on "Loading..." with nothing to say. Rules 1373 and 1374.
+
+- **A linked machine is found again.** When a paired machine's saved address does not answer (one 3 s check), Flare
+  asks the network (mDNS) for its `.local` names: the one saved at pairing (new `hostname` field), `<name>.local`, and
+  the name its Flare answers while Computer sharing is on. At a new address ssh must prove the SSH host key pinned at
+  pairing (`HostKeyAlias` to the old pin, strict checking); only then is the new address pinned and saved in
+  `machines.json`. A computer there with another key is never used: "Its identity changed. Pair again". Every remote
+  tab, its reconnects and the folder browser go through it (`machine_follow`).
+- **The folder browser always ends.** After 20 s with no answer, or when the machine cannot be reached, the dialog says
+  "Cannot reach <name>. Check that it is on and on this network." under the list, with a Try again button. A listing
+  that comes later is still shown.
+- **Not yet.** Settings > Machines' Test and the Preview tunnel still use the saved address as it is (they follow once
+  a tab or the folder browser has saved the new one). A machine with no pinned key (an `~/.ssh/config` alias) is not
+  followed. Real hardware: checked by hand only that Windows' OpenSSH 9.5 passes `HostKeyAlias` with the right key and
+  fails it with another.

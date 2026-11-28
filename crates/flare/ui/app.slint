@@ -1133,6 +1133,7 @@ export component AppWindow inherits Window {
     callback rfolder-step(bool);
     callback rfolder-open-here();
     callback rfolder-cancel();
+    callback rfolder-retry();
     callback tip-request(string, length, length, length, length);
     callback bar-double-clicked();
     callback title-pressed();
@@ -2192,6 +2193,7 @@ export component AppWindow inherits Window {
             step(d) => { root.rfolder-step(d); }
             open-here => { root.rfolder-open-here(); }
             cancel => { root.rfolder-cancel(); }
+            retry => { root.rfolder-retry(); }
             tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
         }
         // A plugin's question sits under the close question: that one is answered first.
