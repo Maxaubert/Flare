@@ -996,7 +996,7 @@ work.** Rules 37 and 38 for a remote tab. Closing the tab (`kill`) sends `remote
 close does (rule 48), and is still taken to the host when the link was down. The quit (`kill_all`, through
 `PtyProcess::leave`) and a dropped pty only send `remote.detach`; a broken link only waits (1 s, doubling to 30 s) and
 attaches again from the output number it read, no byte twice. `tabs.json` keeps a remote tab as `remote: {machine,
-host_tab, last_seq}` (no agent: the host owns the resume); `last_seq` alone is no reason to write the file. The restore
+host_tab, last_seq}` (its agent for the icon only, rule 1390: the host owns the resume and the session); `last_seq` alone is no reason to write the file. The restore
 never stats the host's folder, attaches to `host_tab` (a new tab only when the host never answered), starts from
 `remote.snapshot` since this machine's screen is empty, and counts as touched (`AgentHub::on_remote_tab`). A host tab
 that is gone ends the tab as a shell that exits. A shape it does not know reads as a local tab (rule 40). Native:
@@ -6171,3 +6171,44 @@ and none in a bar under 280 px. Held by `open_in_sends_a_page_to_the_browser_and
 `an_app_name_is_cleaned_and_capped_and_a_bare_exe_is_no_name` (`launcher.rs`), `the_app_name_is_asked_only_for_a_plain_extension`
 and `a_text_file_has_a_default_app_with_a_name` (`flare-win` `openers.rs`), `open_in_hands_a_file_to_its_default_app` and
 `open_in_browser_sends_the_page_address`, `open_in_follows_a_page_the_browser_went_to` and `open_in_takes_only_the_room_the_title_can_spare` (`launcher_tests.rs`), and `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale` (`ui_tests/icons_misc.rs`). Source: Max, 2026-11-24.
+
+1390. **A remote tab holds the agent its host names, idle or not: its icon, its prompt keys and its saved kind.** Every
+`remote.status` names the host tab's agent (`kind`). `AgentHub::on_remote_status` applies it before its early returns
+(`drive_remote_agent`): `Indicator::set_remote_agent` sets the tab's kind and membership whatever the state word is
+(an idle Claude after a reconnect wears its icon, a Codex named later replaces it), and `arm::arm_on_host` arms the tab
+as that agent, as one the poll saw, so Flare's prompt keys work in a remote Claude tab (Ctrl+A, Shift and Ctrl+Shift
+with the arrows, cut) and a live title that names no agent never disarms it. No agent named takes the kind, the
+membership and the arm away once (`gone` only on that change), after the mark moved; a status that says working or
+asking with no agent keeps what `remote_mark` gives. A change sets the hub's `changed`, so the strip redraws.
+`tabs.json` saves the agent beside a remote tab (`{"cwd":..,"agent":..,"remote":{..}}`) for the icon ONLY: it is
+never resumed here (`plan_restore_with` drops it), brings no session, and makes a `Pending::Shell` placeholder (no
+loading ring, no resume skeleton) that wears its icon from the first frame. The restore seeds it on the attached tab
+(`AgentHub::seed_remote_agent`: kind and membership, never an arm, never `remote_agent`), and the host's first status
+sets or drops it. Native: `crates/flare-agent/src/indicator.rs` (`set_remote_agent`), `arm.rs` (`arm_on_host`),
+`crates/flare/src/agent_hub.rs`, `appctl.rs` (`restored`), `crates/flare-tabs/src/restore.rs` (`parse_tabs`,
+`tabs_json`, `peek_state`), `model.rs` (`saved`). Held by `the_hosts_status_arms_a_remote_tab_and_takes_it_back`
+(`arm.rs`), `a_remote_hosts_agent_is_the_tabs_whatever_the_state` (`indicator.rs`),
+`a_remote_tabs_host_agent_drives_its_icon_and_keys_whatever_the_state` (`agent_hub.rs`),
+`a_remote_tab_saves_its_agent_for_the_icon_and_never_resumes_it` and
+`a_broken_remote_reads_as_local_and_a_remote_never_resumes_an_agent` (`restore.rs`),
+`a_remote_tab_saves_its_host_tab_and_the_output_read` (`model.rs`),
+`a_restored_remote_tab_wears_its_saved_agent_from_the_first_frame` (`appctl.rs`) and
+`ui_tests::term::flow::a_remote_tab_wears_its_hosts_idle_agent_and_saves_it_for_the_icon`. Source: Max, 2026-11-28:
+"remote sessions continue in the terminal... but the issue is that the tab icon resets to showing that its a
+terminal tab and not a claude or codex tab".
+
+1391. **On a PC, a remote tab on a Mac gets the Mac's word keys.** When the tab in front is a remote tab whose
+machine is a Mac (`Machine.kind`, from `remote.hello`), the keys a Windows keyboard sends the shell go the Mac way
+before they cross the link (`AppCtl::front_pty_key`, `keymap::tab_pty_key`, the table `host_editing_key` by host
+system, `mac_keys::PC_WORD_KEYS_ON_MAC`): Ctrl+Backspace is ESC DEL, Ctrl+Delete ESC d, Ctrl+Left ESC b and Ctrl+Right
+ESC f, the bytes Option gives them on a Mac, which the link decodes and the host encodes back as they were. Ctrl alone
+held: Ctrl+Shift with the arrows goes as it is (the armed prompt box takes it first, rule 1390). A PC host, a local
+tab, a Mac keyboard, and a remote screen on the alternate screen (a full-screen program) get the keys as before.
+Claude's prompt box (rule 1235) reads the keys as this machine's and sends the editor keys of the system the agent
+runs on (`TermUi::prompt_key` takes `shell_os`, `AppCtl::shell_key_os`): its word delete is ESC DEL on a Mac host,
+never the PC's ^H. Native: `crates/flare-term/src/mac_keys.rs` (`pc_word_key_on_mac`), `crates/flare/src/keymap.rs`,
+`window.rs`, `appctl.rs`, `term_ui.rs`. Held by `the_windows_word_keys_are_the_macs_option_keys` (`mac_keys.rs`),
+`a_mac_hosts_shell_gets_the_macs_word_keys_from_a_pc` (`keymap.rs`) and
+`ui_tests::term::flow::a_remote_tab_on_a_mac_gets_the_macs_word_keys_from_a_pc`. Not yet: the alternate screen is
+this machine's copy of the host's modes, which a snapshot attach does not carry (rule 292). Source: Max, 2026-11-28:
+"windows shortcuts dont work like ctrl backspace, ctrl shift left arrow and so on".

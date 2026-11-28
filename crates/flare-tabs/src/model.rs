@@ -467,12 +467,13 @@ impl TabModel {
             tabs: shells
                 .iter()
                 .map(|t| match &t.remote {
-                    // The host owns a remote tab's session: no agent of this machine is saved for it.
+                    // The host owns a remote tab's session: its agent is saved for the icon only (rule 1390), never
+                    // resumed here, and no session goes with it.
                     Some(m) => {
                         let live = self.remotes.get(&t.id);
                         SavedTab {
                             cwd: t.cwd.clone(),
-                            agent: None,
+                            agent: self.agent_kind(&t.id),
                             remote: Some(SavedRemote {
                                 machine: m.id.clone(),
                                 host_tab: live.and_then(RemoteLive::host_tab),
@@ -809,8 +810,8 @@ mod tests {
 mod remote_tests {
     use super::*;
 
-    /// Rule 288: a remote tab saves its machine, its host tab and the output it read (never an agent of this machine),
-    /// and the save follows the live state the link writes.
+    /// Rule 288: a remote tab saves its machine, its host tab and the output it read, and the save follows the live
+    /// state the link writes. Rule 1390: the agent its host named is saved beside it for the icon (never a session).
     #[test]
     fn a_remote_tab_saves_its_host_tab_and_the_output_read() {
         let mut m = TabModel::empty(1);
@@ -820,9 +821,17 @@ mod remote_tests {
         let id = m.open_remote_tab(MachineTag::of_id("mac"), "/Users/max/p", live.clone());
         m.set_agent(&id, Some(AgentKind::Claude));
         assert_eq!(m.remote_of(&id).map(|t| t.id.as_str()), Some("mac"));
+        m.set_session(&id, Some(crate::restore::SESSION_NEW));
         let s = m.saved();
-        assert_eq!(s.tabs[1].agent, None);
+        assert_eq!(s.tabs[1].agent, Some(AgentKind::Claude));
+        assert_eq!(
+            s.tabs[1].session, None,
+            "the host owns a remote tab's session"
+        );
         assert_eq!(s.tabs[1].remote.as_ref().unwrap().host_tab, None);
+        m.set_agent(&id, None);
+        assert_eq!(m.saved().tabs[1].agent, None);
+        m.set_agent(&id, Some(AgentKind::Claude));
         live.set_host_tab("t9");
         live.set_seq(77);
         let s = m.saved();

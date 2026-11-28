@@ -459,6 +459,35 @@ impl Indicator {
         self.reconcile(now);
     }
 
+    /// A remote tab's host named its agent, or none (rule 1390): the tab holds that agent (its icon on the strip) whatever
+    /// the state word is, an idle Claude included, and holds none once the host names none. Also the display seed a
+    /// restored remote tab wears from `tabs.json` until its host speaks. True when the kind or the membership changed
+    /// (a kind alone is not in the marks' snapshot, so the caller is told).
+    pub fn set_remote_agent(&mut self, now: u64, tab: &str, kind: Option<DetectedAgent>) -> bool {
+        let changed = match kind {
+            Some(k) => {
+                let old = self.agent_kinds.insert(tab.to_string(), k);
+                let joined = self.agent_ids.insert(tab.to_string());
+                old != Some(k) || joined
+            }
+            None => {
+                let had = self.agent_kinds.remove(tab).is_some();
+                self.agent_ids.remove(tab) || had
+            }
+        };
+        if changed {
+            self.why(
+                tab,
+                &format!(
+                    "remote agent {}",
+                    kind.map_or("none".to_string(), |k| format!("{k:?}").to_lowercase())
+                ),
+            );
+            self.reconcile(now);
+        }
+        changed
+    }
+
     // ---- internals ----
 
     fn why(&mut self, tab: &str, why: &str) {
@@ -1346,6 +1375,31 @@ mod tests {
         h.ind.remote_mark(50, "front", RemoteMark::Working, None);
         h.ind.remote_mark(60, "front", RemoteMark::Idle, None);
         assert!(!has(h.ind.done_ids(), "front"));
+    }
+
+    /// Rule 1390: the host's named agent is the tab's whatever the state word, an idle one included; a new name
+    /// replaces the old one, the same name again changes nothing, and no name takes the agent away.
+    #[test]
+    fn a_remote_hosts_agent_is_the_tabs_whatever_the_state() {
+        let mut h = H::fronted();
+        assert!(h.ind.set_remote_agent(0, "r", Some(DetectedAgent::Claude)));
+        assert!(has(h.ind.agent_ids(), "r"));
+        assert_eq!(h.ind.agent_kind("r"), Some(DetectedAgent::Claude));
+        assert!(
+            !has(h.ind.working_ids(), "r"),
+            "an idle agent shows no work"
+        );
+        assert!(!h.ind.set_remote_agent(10, "r", Some(DetectedAgent::Claude)));
+        assert!(h.ind.set_remote_agent(20, "r", Some(DetectedAgent::Codex)));
+        assert_eq!(h.ind.agent_kind("r"), Some(DetectedAgent::Codex));
+        // Work said later keeps the host's kind (remote_mark never overwrites it with Claude).
+        h.ind.remote_mark(30, "r", RemoteMark::Working, None);
+        assert_eq!(h.ind.agent_kind("r"), Some(DetectedAgent::Codex));
+        h.ind.remote_mark(40, "r", RemoteMark::Idle, None);
+        assert!(h.ind.set_remote_agent(50, "r", None));
+        assert!(!has(h.ind.agent_ids(), "r"));
+        assert_eq!(h.ind.agent_kind("r"), None);
+        assert!(!h.ind.set_remote_agent(60, "r", None));
     }
 
     #[test]

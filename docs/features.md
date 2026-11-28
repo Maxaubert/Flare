@@ -3326,3 +3326,25 @@ Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to
   225 percent).
 - **Not yet.** A Mac lookup of the default app's name; an e2e scenario of its own (the window tests run the real
   controller and window headless).
+
+## Remote Claude and Codex tabs keep their icon and keys after a reconnect, 2026-11-28
+
+Rules 1390 and 1391. Max, 2026-11-28: the tab icon of a remote session went back to a terminal's after a reconnect,
+and the Windows editing keys did not work in a session on the Mac.
+
+- **The host's agent is the tab's.** A remote tab wears the agent its host names in every status, idle or not, so an
+  idle Claude or Codex keeps its icon after a reconnect. The tab is armed as that agent too, so Flare's prompt keys
+  (Ctrl+A, Shift and Ctrl+Shift with the arrows, cut) work in a remote Claude tab. When the agent quits on the host,
+  the icon and the keys go.
+- **The icon from the first frame.** `tabs.json` keeps a remote tab's agent for its icon only. It is never resumed
+  here and brings no session; the host's first status sets or drops it.
+- **Windows word keys on a Mac host.** From a PC, Ctrl+Backspace, Ctrl+Delete and Ctrl+Left and Right reach a Mac
+  host's shell as the Mac's Option keys (ESC DEL, ESC d, ESC b, ESC f). A full-screen program gets the keys as they
+  are. Claude's prompt box deletes a word with the host's key, ESC DEL on a Mac.
+- **Tests.** The unit tests in `arm.rs`, `indicator.rs`, `agent_hub.rs`, `restore.rs`, `model.rs`, `mac_keys.rs` and
+  `keymap.rs`, the restore test in `appctl.rs`, and the window tests
+  `a_remote_tab_wears_its_hosts_idle_agent_and_saves_it_for_the_icon` and
+  `a_remote_tab_on_a_mac_gets_the_macs_word_keys_from_a_pc` (`ui_tests/term.rs`).
+- **Not yet.** After a snapshot attach this machine does not know whether the host's screen is the alternate one
+  (rule 292), so a full-screen program there may get the Mac keys until it redraws its mode. The typing delay over the
+  link is a separate fix.

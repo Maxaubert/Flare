@@ -158,6 +158,33 @@ pub fn arm_on_poll(s: &AgentArm, present: bool, kind: Option<DetectedAgent>) -> 
     step(bare(), false, false)
 }
 
+/// A remote tab's host named its agent, or none (rule 1390). The poll is blind to a remote tab, so the host's status
+/// stands in for it: a named agent arms the tab as one the poll saw (a title that stops naming it never disarms it),
+/// and no agent takes back an armed one. Only a real change moves anything: the same word again is the same arm, so a
+/// status read every 1.5 s never says "gone" twice.
+pub fn arm_on_host(s: &AgentArm, kind: Option<DetectedAgent>) -> ArmStep {
+    match kind {
+        Some(k) => {
+            if s.here && s.kind == Some(k) && s.polled {
+                return step(s.clone(), false, false);
+            }
+            step(
+                AgentArm {
+                    here: true,
+                    kind: Some(k),
+                    polled: true,
+                    doubted: false,
+                    ..s.clone()
+                },
+                false,
+                false,
+            )
+        }
+        None if s.here => step(bare(), true, false),
+        None => step(s.clone(), false, false),
+    }
+}
+
 /// A shell prompt: nothing runs in front of it, so the arm is taken back at once.
 pub fn arm_on_prompt(s: &AgentArm) -> ArmStep {
     // Gone even with nothing armed: a program that died without its ?2031l left
@@ -185,6 +212,30 @@ mod tests {
         assert_eq!(a.kind, Some(Codex));
         let b = bare();
         assert!(!b.here && b.kind.is_none() && !b.polled && !b.titled && b.rest.is_empty());
+    }
+
+    /// Rule 1390: the host's status arms a remote tab, the same status again changes nothing, a title that stops
+    /// naming the agent leaves it armed, and no agent takes it back once.
+    #[test]
+    fn the_hosts_status_arms_a_remote_tab_and_takes_it_back() {
+        let first = arm_on_host(&bare(), Some(Claude));
+        assert!(first.arm.here && first.arm.polled && !first.gone && !first.recheck);
+        assert_eq!(first.arm.kind, Some(Claude));
+        let again = arm_on_host(&first.arm, Some(Claude));
+        assert_eq!(again.arm, first.arm);
+        assert!(!again.gone);
+        let titled = title(&first.arm, "zsh").arm;
+        assert!(
+            titled.here,
+            "a plain title never disarms what the host armed"
+        );
+        let codex = arm_on_host(&first.arm, Some(Codex));
+        assert_eq!(codex.arm.kind, Some(Codex));
+        assert!(!codex.gone);
+        let left = arm_on_host(&codex.arm, None);
+        assert!(!left.arm.here && left.gone);
+        let still = arm_on_host(&left.arm, None);
+        assert!(!still.gone, "gone is said once");
     }
 
     #[test]

@@ -2577,13 +2577,10 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     };
     // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
     // its own); what is left for the shell is typed here, the Mac way on macOS (Cmd never types).
-    let mut os = crate::keymap::app_key_os();
-    let mut option_as_meta = false;
-    kp.with_ctl(&mut |c| {
-        os = c.key_os();
-        option_as_meta = c.option_as_meta();
-    });
-    match crate::keymap::pty_key(os, ev, option_as_meta) {
+    // A remote tab's host may read the editing keys another way (rule 1391); a full-screen program gets them as is.
+    let mut key = crate::keymap::pty_key(crate::keymap::app_key_os(), ev, false);
+    kp.with_ctl(&mut |c| key = c.front_pty_key(ev, &handle));
+    match key {
         PtyKey::Event(e) => {
             handle.send_key(&e);
         }

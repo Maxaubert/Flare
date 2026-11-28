@@ -1212,10 +1212,18 @@ mod flow {
         }
 
         /// A key typed into the tab the grid shows now (the window glue's way), not the first tab's.
+        /// A key for the tab in front, typed as the window types it (`AppCtl::front_pty_key`, rule 1391).
         fn key_front(&self, ev: KeyEvent) {
             if self.ctl.borrow_mut().on_key(&ev) == KeyOutcome::Pty {
                 let front = self.slot.borrow().clone().expect("a tab in front");
-                front.send_key(&ev);
+                let key = self.ctl.borrow().front_pty_key(&ev, &front);
+                match key {
+                    flare_term::mac_keys::PtyKey::Event(e) => {
+                        front.send_key(&e);
+                    }
+                    flare_term::mac_keys::PtyKey::Text(t) => front.send_text(&t),
+                    flare_term::mac_keys::PtyKey::Nothing => {}
+                }
             }
             self.pump();
         }
@@ -3685,6 +3693,126 @@ mod flow {
             w.ctl.borrow().model().remote_of(&id).is_some(),
             "still open"
         );
+    }
+
+    /// The tab row's agent icon (0 a shell, 1 Claude, 2 Codex).
+    fn row_agent(w: &Wx, id: &str) -> i32 {
+        let rows = w.h.comp.get_tab_rows();
+        (0..rows.row_count())
+            .filter_map(|i| rows.row_data(i))
+            .find(|r| r.id == id)
+            .map_or(-1, |r| r.agent)
+    }
+
+    /// Rule 1390 (Max, 2026-11-28: "the tab icon resets to showing that its a terminal tab and not a claude or codex
+    /// tab"): a remote tab wears the agent its host names, idle or not, from the first status after an attach; the
+    /// agent is saved with the tab for its icon; once the host names none, the icon and the saved agent go.
+    #[test]
+    fn a_remote_tab_wears_its_hosts_idle_agent_and_saves_it_for_the_icon() {
+        use flare_term::remote_pty::HostStatus;
+        let w = Wx::new(1.0);
+        let (id, live) = remote_in_front(&w);
+        assert_eq!(row_agent(&w, &id), 0, "a shell before the host speaks");
+        let status = |agent: Option<&str>| HostStatus {
+            state: "idle".into(),
+            agent: agent.map(str::to_string),
+            ..HostStatus::default()
+        };
+        live.set_status(status(Some("claude")));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        w.pump_until("the Claude icon", |w| row_agent(w, &id) == 1);
+        let saved = w.ctl.borrow().model().saved();
+        let tab = saved.tabs.iter().find(|t| t.remote.is_some()).unwrap();
+        assert_eq!(tab.agent, Some(AgentKind::Claude));
+        assert_eq!(tab.session, None, "the host owns the session");
+        live.set_status(status(Some("codex")));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        w.pump_until("the Codex icon", |w| row_agent(w, &id) == 2);
+        live.set_status(status(None));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        w.pump_until("the shell icon", |w| row_agent(w, &id) == 0);
+        let saved = w.ctl.borrow().model().saved();
+        assert_eq!(
+            saved
+                .tabs
+                .iter()
+                .find(|t| t.remote.is_some())
+                .unwrap()
+                .agent,
+            None
+        );
+    }
+
+    /// What a remote tab's link took to send, waiting for `n` intents.
+    fn typed_on(io: &flare_term::remote_pty::RemoteIo, w: &Wx, n: usize) -> Vec<RemoteIntentT> {
+        let mut typed = Vec::new();
+        let t = Instant::now();
+        while typed.len() < n && t.elapsed() < Duration::from_secs(5) {
+            typed.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+            w.pump();
+        }
+        typed
+    }
+
+    type RemoteIntentT = flare_term::handle::RemoteIntent;
+
+    /// Rule 1391 (Max, 2026-11-28: "windows shortcuts dont work like ctrl backspace, ctrl shift left arrow and so
+    /// on"): on a PC, a remote tab on a Mac gets the Mac's word keys for Ctrl+Backspace and Ctrl+Left (Option+Delete
+    /// and Option+Left there), a full-screen program gets the keys as they are, and Claude's prompt box deletes a word
+    /// with the host's key (ESC DEL), not the PC's ^H.
+    #[test]
+    fn a_remote_tab_on_a_mac_gets_the_macs_word_keys_from_a_pc() {
+        use RemoteIntentT as I;
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let (id, _) = remote_in_front(&w);
+        assert_eq!(
+            w.ctl.borrow().front_host_os(),
+            Some(flare_tabs::tabs::Os::Mac)
+        );
+        let io = w.remote.made()[0].1.clone();
+        let ctrl_key = |k: &str| KeyEvent::new(k, k).ctrl();
+        w.key_front(ctrl_key("Backspace"));
+        w.key_front(ctrl_key("ArrowLeft"));
+        w.key_front(ctrl_key("ArrowRight"));
+        w.key_front(ctrl_key("Delete"));
+        let got = typed_on(&io, &w, 4);
+        assert_eq!(
+            got,
+            vec![
+                I::Key(KeyEvent::new("Backspace", "Backspace").alt()),
+                I::Key(KeyEvent::new("b", "").alt().text("b")),
+                I::Key(KeyEvent::new("f", "").alt().text("f")),
+                I::Key(KeyEvent::new("d", "").alt().text("d")),
+            ]
+        );
+        // A full-screen program has the screen: the key goes as it is.
+        let front = w.slot.borrow().clone().unwrap();
+        io.push_output(b"\x1b[?1049h");
+        w.pump_until("the alternate screen", |_| front.mode().alt_screen);
+        w.key_front(ctrl_key("ArrowLeft"));
+        assert_eq!(
+            typed_on(&io, &w, 1),
+            vec![I::Key(KeyEvent::new("ArrowLeft", "ArrowLeft").ctrl())]
+        );
+        io.push_output(b"\x1b[?1049l");
+        w.pump_until("the main screen", |_| !front.mode().alt_screen);
+        // Claude's prompt box: Ctrl+Backspace is its word delete, sent the host's way.
+        flare_settings::term_prefs::set_agent_keys(&w.prefs, true);
+        w.agent.0.set(Some(AgentKind::Claude));
+        io.push_output(claude_box("fix the thing", 15).as_bytes());
+        w.pump_until("the prompt box", |_| {
+            front.screen_tail(6).join("\n").contains("fix the thing")
+        });
+        assert_eq!(
+            w.ctl.borrow_mut().on_key(&ctrl_key("Backspace")),
+            KeyOutcome::Consumed
+        );
+        assert_eq!(
+            typed_on(&io, &w, 1),
+            vec![I::Key(KeyEvent::new("Backspace", "Backspace").alt())]
+        );
+        assert!(w.ctl.borrow().model().remote_of(&id).is_some());
     }
 
     /// Rule 1279: a remote tab opened in the host's home (`~`) takes the folder the host's first status names (the
