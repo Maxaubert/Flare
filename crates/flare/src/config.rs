@@ -17,7 +17,6 @@ pub enum RendererChoice {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LookOverrides {
     pub theme: Option<String>,
-    pub see_through: Option<u8>,
     pub font: Option<String>,
     pub font_pct: Option<u32>,
     pub accent: Option<String>,
@@ -101,7 +100,7 @@ pub struct Args {
     pub settings_find: Option<String>,
     /// `--settings-open <word>`: the overlay the settings scene leaves open.
     pub settings_open: SettingsOpen,
-    /// `--theme`, `--see-through`, `--font`, `--font-pct`, `--accent`, `--background`, `--secondary`, `--edges`.
+    /// `--theme`, `--font`, `--font-pct`, `--accent`, `--background`, `--secondary`, `--edges`.
     pub look: LookOverrides,
     /// `--serve-remote` (remote sessions PR 2): the host end of a remote link on this process's own stdio, run by ssh.
     /// Headless: no window, no single-instance lock (rule 283).
@@ -246,15 +245,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
                 })?;
             }
             "--theme" => out.look.theme = Some(value(args, &mut i, flag)?.to_string()),
-            "--see-through" => {
-                let n: u8 = value(args, &mut i, flag)?
-                    .parse()
-                    .map_err(|_| "--see-through needs a whole number from 0 to 70".to_string())?;
-                if n > 70 {
-                    return Err(format!("--see-through {n} is out of range 0..=70"));
-                }
-                out.look.see_through = Some(n);
-            }
+
             "--font" => {
                 let id = value(args, &mut i, flag)?;
                 if font_id_or_default(Some(id)) != id {
@@ -733,8 +724,6 @@ mod tests {
             &a(&[
                 "--theme",
                 "nord",
-                "--see-through",
-                "40",
                 "--font",
                 "hack",
                 "--font-pct",
@@ -755,7 +744,6 @@ mod tests {
             args.look,
             LookOverrides {
                 theme: Some("nord".into()),
-                see_through: Some(40),
                 font: Some("hack".into()),
                 font_pct: Some(120),
                 accent: Some("#e07a2f".into()),
@@ -768,7 +756,8 @@ mod tests {
             parse_args(&a(&[]), None).unwrap().look,
             LookOverrides::default()
         );
-        assert!(parse_args(&a(&["--see-through", "90"]), None).is_err());
+        // The see-through window was removed on 2026-11-28: its flag is no flag any more.
+        assert!(parse_args(&a(&["--see-through", "40"]), None).is_err());
         assert!(parse_args(&a(&["--font-pct", "55"]), None).is_err());
         assert!(parse_args(&a(&["--edges", "dotted"]), None).is_err());
         assert!(parse_args(&a(&["--theme"]), None).is_err());

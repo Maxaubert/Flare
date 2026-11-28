@@ -1,4 +1,4 @@
-//! AppKit checks that need the main thread (port phase 3): the glass, the traffic lights, the
+//! AppKit checks that need the main thread (port phase 3): the window's appearance, the traffic lights, the
 //! screens and the e2e park on a real `NSWindow` that is NEVER ordered front, in an app whose
 //! activation policy is "prohibited" (no Dock icon, never active). Nothing shows on the screen.
 //!
@@ -10,14 +10,12 @@
 #[cfg(target_os = "macos")]
 mod mac {
     use flare_win::chrome::{self, BAR_HEIGHT, LIGHTS_LEFT, LIGHTS_STEP};
-    use flare_win::dwm::Backdrop;
-    use flare_win::glass;
+    use flare_win::ns_window;
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
     use objc2_app_kit::{
         NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
-        NSApplicationActivationPolicy, NSBackingStoreType, NSUserInterfaceItemIdentification,
-        NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSWindow, NSWindowButton,
+        NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow, NSWindowButton,
         NSWindowCollectionBehavior, NSWindowStyleMask, NSWindowTitleVisibility,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
@@ -57,49 +55,15 @@ mod mac {
         MainThreadMarker::new().expect("the AppKit tests run on the main thread")
     }
 
-    fn the_glass_sits_behind_the_content_and_changes_in_place() {
+    fn the_appearance_follows_the_grounds_light_or_dark() {
         let mtm = mtm();
         let (w, view) = window(mtm);
-        assert!(glass::set_backdrop(view, Backdrop::Acrylic));
-        let g = glass::glass_view(&w).expect("a glass view");
-        assert_eq!(g.material(), NSVisualEffectMaterial::UnderWindowBackground);
-        assert_eq!(g.blendingMode(), NSVisualEffectBlendingMode::BehindWindow);
-        assert!(!w.isOpaque());
-        let content = w.contentView().expect("content");
-        // SAFETY: the window's own content view, read on the main thread.
-        let frame = unsafe { content.superview() }.expect("frame view");
-        let subs = frame.subviews();
-        let at = |v: &NSView| subs.iter().position(|s| std::ptr::eq(&*s, v));
-        assert!(at(&g) < at(&content), "the glass is below the content");
-        assert_eq!(g.frame().size, frame.bounds().size);
-        // A second call changes the material of the same view.
-        assert!(glass::set_backdrop(view, Backdrop::Mica));
-        let again = glass::glass_view(&w).expect("still there");
-        assert!(std::ptr::eq(&*again, &*g));
-        assert_eq!(again.material(), NSVisualEffectMaterial::WindowBackground);
-        assert_eq!(
-            frame
-                .subviews()
-                .iter()
-                .filter(|s| s
-                    .identifier()
-                    .is_some_and(|i| i.to_string() == glass::GLASS_ID))
-                .count(),
-            1
-        );
-        assert!(glass::set_backdrop(view, Backdrop::None));
-        assert!(glass::glass_view(&w).is_none());
-    }
-
-    fn the_frost_follows_the_grounds_light_or_dark() {
-        let mtm = mtm();
-        let (w, view) = window(mtm);
-        assert!(glass::set_dark(view, true));
+        assert!(ns_window::set_dark(view, true));
         // SAFETY: AppKit's own constant string.
         let dark = unsafe { NSAppearanceNameDarkAqua };
         let name = w.appearance().expect("an appearance").name();
         assert_eq!(*name, *dark);
-        assert!(glass::set_dark(view, false));
+        assert!(ns_window::set_dark(view, false));
         assert_ne!(*w.appearance().expect("an appearance").name(), *dark);
     }
 
@@ -1093,12 +1057,8 @@ mod mac {
             the_top_row_reaches_flare_everywhere_but_on_the_lights,
         ),
         (
-            "glass_sits_behind_the_content_and_changes_in_place",
-            the_glass_sits_behind_the_content_and_changes_in_place,
-        ),
-        (
-            "frost_follows_the_grounds_light_or_dark",
-            the_frost_follows_the_grounds_light_or_dark,
+            "appearance_follows_the_grounds_light_or_dark",
+            the_appearance_follows_the_grounds_light_or_dark,
         ),
         (
             "lights_fit_the_top_row_and_stay_there_after_a_resize",

@@ -14,7 +14,6 @@ use flare_theme::look::{AppliedLook, LookInput, apply_look};
 use flare_theme::preset::HOST_DEFAULT_THEME;
 use flare_theme::resolve::CustomPalette;
 use flare_theme::retired::live_theme_id;
-use flare_theme::see_through::{SEE_THROUGH_TOP, see_through_level};
 
 use crate::custom_theme::{
     CUSTOM_KEY, CustomTheme, palette_of, parse_custom, serialize_custom, with_ground_alpha,
@@ -28,7 +27,10 @@ use crate::window_colours::{
 const THEME_KEY: &str = "flare.term.theme";
 const FONT_KEY: &str = "flare.term.font";
 const FONT_PCT_KEY: &str = "flare.term.fontPct";
-const SEE_THROUGH_KEY: &str = "flare.term.seeThrough";
+/// The see-through level of the removed see-through window (2026-11-28). Read by nothing: an old profile that
+/// still carries it loads as if it never had it, and nothing writes it again.
+#[cfg(test)]
+const OLD_SEE_THROUGH_KEY: &str = "flare.term.seeThrough";
 const INDICATOR_KEY: &str = "flare.term.agentIndicator";
 const WORKING_KEY: &str = "flare.term.agentColor";
 const FINISHED_KEY: &str = "flare.term.agentDoneColor";
@@ -52,13 +54,11 @@ pub const CARET_SHAPES: [(&str, &str); 5] = [
     ("pill", "Pill"),
 ];
 
-/// Every key on_look_change hears (the draft is heard besides): the theme, the custom theme, see
-/// through, the font and its size, the caret, the indicator and the agent colours, the window colours,
-/// the edges.
-pub const LOOK_KEYS: [&str; 15] = [
+/// Every key on_look_change hears (the draft is heard besides): the theme, the custom theme, the font
+/// and its size, the caret, the indicator and the agent colours, the window colours, the edges.
+pub const LOOK_KEYS: [&str; 14] = [
     THEME_KEY,
     CUSTOM_KEY,
-    SEE_THROUGH_KEY,
     FONT_KEY,
     FONT_PCT_KEY,
     CARET_SHAPE.key,
@@ -123,7 +123,6 @@ pub struct Extras {
     pub indicator_color: String,
     pub done_color: String,
     pub question_color: String,
-    pub see_through: u8,
 }
 
 /// Whether the settings deviate from the selected theme's stock, and the extras in force.
@@ -143,12 +142,11 @@ pub struct LookSnapshot {
     pub accent: Option<String>,
     pub secondary: Option<String>,
     pub edges: WindowEdges,
-    pub see_through: u8,
 }
 
 impl LookSnapshot {
     /// The borrowed form `apply_look` takes.
-    pub fn as_input(&self, glass_possible: bool) -> LookInput<'_> {
+    pub fn as_input(&self) -> LookInput<'_> {
         LookInput {
             theme_id: &self.theme_id,
             custom: self.custom.as_ref(),
@@ -157,8 +155,6 @@ impl LookSnapshot {
             accent: self.accent.as_deref(),
             secondary: self.secondary.as_deref(),
             edges: self.edges,
-            see_through: self.see_through,
-            glass_possible,
         }
     }
 }
@@ -243,16 +239,6 @@ impl LookStore {
         bool_pref_set(&self.store, CARET_BLINK_KEY, on);
     }
 
-    pub fn see_through(&self) -> u8 {
-        see_through_level(self.store.get(SEE_THROUGH_KEY).as_deref())
-    }
-
-    /// Stored clamped to 0..=70.
-    pub fn set_see_through(&self, level: u8) {
-        self.store
-            .set(SEE_THROUGH_KEY, &level.min(SEE_THROUGH_TOP).to_string());
-    }
-
     /// Ring and Minimal read as themselves; anything else reads as Ring.
     pub fn agent_indicator(&self) -> AgentIndicator {
         match self.store.get(INDICATOR_KEY).as_deref() {
@@ -317,7 +303,6 @@ impl LookStore {
             indicator_color: String::new(),
             done_color: String::new(),
             question_color: String::new(),
-            see_through: 0,
         }
     }
 
@@ -328,21 +313,16 @@ impl LookStore {
         for s in COLOUR_STATES {
             self.store.remove(s.key());
         }
-        // Written, not removed: a stored level is also the sign the settings were ever set.
-        self.store.set(SEE_THROUGH_KEY, "0");
     }
 
     /// Re-applies the non-colour half of a saved Custom. The indicator's volume is NOT applied: it is how
     /// loudly a tab speaks, the owner's own (a Custom imported from Prism Terminal keeps its `indicator`
-    /// field, and picking it must not change theirs: review #77). Colours only when valid, and the
-    /// see-through level is the save's (none is 0).
+    /// field, and picking it must not change theirs: review #77). Colours only when valid.
     pub fn apply_custom_extras(&self, c: Option<&CustomTheme>) {
         let Some(c) = c else { return };
         self.write_choice(AgentColourState::Working, c.indicator_color.as_deref());
         self.write_choice(AgentColourState::Finished, c.done_color.as_deref());
         self.write_choice(AgentColourState::Question, c.question_color.as_deref());
-        let level = c.see_through.unwrap_or(0).min(SEE_THROUGH_TOP);
-        self.store.set(SEE_THROUGH_KEY, &level.to_string());
     }
 
     fn current_extras(&self) -> Extras {
@@ -350,7 +330,6 @@ impl LookStore {
             indicator_color: self.agent_colour_choice(AgentColourState::Working),
             done_color: self.agent_colour_choice(AgentColourState::Finished),
             question_color: self.agent_colour_choice(AgentColourState::Question),
-            see_through: self.see_through(),
         }
     }
 
@@ -369,7 +348,6 @@ impl LookStore {
                 indicator_color: c.indicator_color.clone().unwrap_or(d.indicator_color),
                 done_color: c.done_color.clone().unwrap_or(d.done_color),
                 question_color: c.question_color.clone().unwrap_or(d.question_color),
-                see_through: c.see_through.unwrap_or(d.see_through).min(SEE_THROUGH_TOP),
             },
             None => d,
         };
@@ -397,7 +375,6 @@ impl LookStore {
             indicator_color: keep(extras.indicator_color),
             done_color: keep(extras.done_color),
             question_color: keep(extras.question_color),
-            see_through: Some(extras.see_through),
         });
         self.set_theme_id("custom");
     }
@@ -471,13 +448,12 @@ impl LookStore {
             accent: colours.accent,
             secondary: colours.secondary,
             edges: window_edges(&self.store),
-            see_through: self.see_through(),
         }
     }
 
     /// What the window wears, from the settings in force.
-    pub fn look(&self, glass_possible: bool) -> AppliedLook {
-        apply_look(&self.input_snapshot().as_input(glass_possible))
+    pub fn look(&self) -> AppliedLook {
+        apply_look(&self.input_snapshot().as_input())
     }
 }
 
@@ -510,7 +486,6 @@ mod tests {
         assert_eq!(l.theme_id(), "pt-default");
         assert_eq!(l.font_pct(), 100);
         assert_eq!(l.font_id(), "cascadia");
-        assert_eq!(l.see_through(), 0);
     }
 
     #[test]
@@ -714,61 +689,44 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_alpha_is_the_sliders_never_the_colours() {
+    fn a_custom_ground_alpha_never_makes_the_window_see_through() {
         let (_, l) = store();
         let mut c = parse_custom(CUSTOM_JSON).unwrap();
         c.palette.bg = "#12121205".into();
         l.save_custom(&c);
         l.set_theme_id("custom");
-        l.set_see_through(70);
-        assert!((l.look(true).ground_alpha - 0.3).abs() < 1e-9);
-        l.set_see_through(0);
-        assert!((l.look(true).ground_alpha - 1.0).abs() < 1e-9);
+        assert_eq!(l.look().chrome.vars["--p-bg"].len(), 7);
     }
 
     #[test]
-    fn see_through_is_zero_by_default_and_the_window_solid() {
-        let (_, l) = store();
-        let a = l.look(true);
-        assert_eq!(l.see_through(), 0);
-        assert!(!a.glass);
-        assert!((a.ground_alpha - 1.0).abs() < 1e-9);
+    fn an_old_see_through_level_is_ignored_and_the_window_stays_solid() {
+        // The see-through window was removed on 2026-11-28: a profile that turned it on loads as a fresh one.
+        let (_, fresh) = store();
+        for level in ["40", "70", "soup", ""] {
+            let (p, l) = store();
+            p.set(OLD_SEE_THROUGH_KEY, level);
+            assert_eq!(l.look(), fresh.look(), "{level}");
+            assert_eq!(l.look().chrome.vars["--p-bg"].len(), 7, "{level}");
+            assert!(!l.setup_state().dirty, "{level}");
+        }
     }
 
     #[test]
-    fn a_level_paints_the_ground_at_one_minus_level_and_turns_glass_on() {
-        let (_, l) = store();
-        l.set_see_through(40);
-        let a = l.look(true);
-        assert!(a.glass);
-        assert!((a.ground_alpha - 0.6).abs() < 1e-9);
-        l.set_see_through(0);
-        assert!(!l.look(true).glass);
-    }
-
-    #[test]
-    fn see_through_reads_clamped_and_nonsense_as_zero() {
+    fn nothing_writes_the_old_see_through_level() {
         let (p, l) = store();
-        l.set_see_through(95);
-        assert_eq!(l.see_through(), 70);
-        assert!((l.look(true).ground_alpha - 0.3).abs() < 1e-9);
-        p.set(SEE_THROUGH_KEY, "glass");
-        assert_eq!(l.see_through(), 0);
-        p.set(SEE_THROUGH_KEY, "");
-        assert_eq!(l.see_through(), 0);
+        l.set_theme_id("dracula");
+        l.pick_preset("nord");
+        l.save_term_setup();
+        l.land_theme("custom", false);
+        assert_eq!(p.get(OLD_SEE_THROUGH_KEY), None);
+        assert!(!serialize_custom(&l.custom().unwrap()).contains("seeThrough"));
     }
 
     #[test]
-    fn a_picked_or_custom_alpha_is_no_see_through() {
+    fn a_picked_alpha_never_makes_the_window_see_through() {
         let (_, l) = store();
         BACKGROUND.set(&l.store, Some("#33333399"));
-        assert!((l.look(true).ground_alpha - 1.0).abs() < 1e-9);
-        BACKGROUND.set(&l.store, None);
-        let mut c = parse_custom(CUSTOM_JSON).unwrap();
-        c.palette.bg = "#11111180".into();
-        l.save_custom(&c);
-        l.set_theme_id("custom");
-        assert!((l.look(true).ground_alpha - 1.0).abs() < 1e-9);
+        assert_eq!(l.look().chrome.vars["--p-bg"].len(), 7);
     }
 
     #[test]
@@ -779,21 +737,6 @@ mod tests {
         let (_, l) = store();
         l.save_as_custom(&p);
         assert_eq!(l.custom().unwrap().palette.bg, "#202020");
-    }
-
-    #[test]
-    fn a_theme_pick_puts_its_own_level_back_and_a_custom_brings_its_saved_one() {
-        let (_, l) = store();
-        l.set_see_through(30);
-        l.reset_term_extras();
-        assert_eq!(l.see_through(), 0);
-        let mut c = parse_custom(CUSTOM_JSON).unwrap();
-        c.see_through = Some(25);
-        l.apply_custom_extras(Some(&c));
-        assert_eq!(l.see_through(), 25);
-        c.see_through = None;
-        l.apply_custom_extras(Some(&c));
-        assert_eq!(l.see_through(), 0);
     }
 
     #[test]
@@ -875,7 +818,7 @@ mod tests {
         l.set_draft(Some(d.clone()));
         assert_eq!(n.load(Ordering::SeqCst), 1);
         assert_eq!(l.draft(), Some(d));
-        let worn = l.look(true);
+        let worn = l.look();
         assert_ne!(
             worn.term.cursor,
             resolve_saved_theme("pt-default", None, None).cursor
@@ -889,15 +832,15 @@ mod tests {
     fn cancel_drops_the_draft_and_the_saved_theme_is_back() {
         let (_, l) = store();
         l.set_theme_id("pt-default");
-        let before = l.look(true);
+        let before = l.look();
         let mut d = palette_of("pt-default", None, "pt-default");
         d.cursor = "#ff00aa".into();
         l.set_draft(Some(d));
         l.set_draft(None);
         assert_eq!(l.draft(), None);
-        assert_eq!(l.look(true).term, before.term);
+        assert_eq!(l.look().term, before.term);
         assert_eq!(
-            l.look(true).term,
+            l.look().term,
             flare_theme::resolve::on_ground(&resolve_saved_theme("pt-default", None, None), None)
         );
     }
@@ -921,13 +864,13 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_at_zero_is_clean_a_moved_slider_is_a_change_to_save() {
+    fn a_preset_is_clean_a_picked_agent_colour_is_a_change_to_save() {
         let (_, l) = store();
         l.set_theme_id("dracula");
         assert!(!l.setup_state().dirty);
-        l.set_see_through(35);
+        l.set_agent_colour(AgentColourState::Working, "#123456");
         assert!(l.setup_state().dirty);
-        l.set_see_through(0);
+        l.set_agent_colour(AgentColourState::Working, "");
         assert!(!l.setup_state().dirty);
     }
 
@@ -942,16 +885,16 @@ mod tests {
     }
 
     #[test]
-    fn a_save_keeps_the_level_with_custom_on_an_opaque_ground_and_is_clean_afterwards() {
+    fn a_save_keeps_the_extras_with_custom_on_an_opaque_ground_and_is_clean_afterwards() {
         let (_, l) = store();
         l.set_theme_id("dracula");
-        l.set_see_through(35);
+        l.set_agent_colour(AgentColourState::Working, "#123456");
         l.save_term_setup();
         let c = l.custom().unwrap();
-        assert_eq!(c.see_through, Some(35));
+        assert_eq!(c.indicator_color.as_deref(), Some("#123456"));
         assert_eq!(c.palette.bg.len(), 7);
         assert!(!l.setup_state().dirty);
-        l.set_see_through(20);
+        l.set_agent_colour(AgentColourState::Working, "#654321");
         assert!(l.setup_state().dirty);
     }
 
@@ -1018,7 +961,7 @@ mod tests {
         let (_, l) = store();
         l.set_theme_id("dracula");
         assert!(!l.pick_needs_ask());
-        l.set_see_through(10);
+        l.set_agent_colour(AgentColourState::Finished, "#123456");
         assert!(l.pick_needs_ask());
     }
 
@@ -1040,7 +983,6 @@ mod tests {
         SECONDARY.set(&p, Some("#2a2a2a"));
         set_window_edges(&p, WindowEdges::Solid);
         l.set_theme_id("dracula");
-        l.set_see_through(30);
         let want = apply_look(&LookInput {
             theme_id: "dracula",
             custom: None,
@@ -1049,11 +991,8 @@ mod tests {
             accent: Some("#e07a2f"),
             secondary: Some("#2a2a2a"),
             edges: WindowEdges::Solid,
-            see_through: 30,
-            glass_possible: true,
         });
-        assert_eq!(l.look(true), want);
-        assert!(!l.look(false).glass);
+        assert_eq!(l.look(), want);
     }
 
     #[test]
@@ -1069,7 +1008,6 @@ mod tests {
         };
         step(&|| l.set_theme_id("nord"));
         step(&|| l.save_custom(&parse_custom(CUSTOM_JSON).unwrap()));
-        step(&|| l.set_see_through(10));
         step(&|| l.set_font_id("consolas"));
         step(&|| l.set_font_pct(110));
         step(&|| ACCENT.set(&p, Some("#112233")));

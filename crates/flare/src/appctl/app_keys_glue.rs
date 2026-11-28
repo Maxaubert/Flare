@@ -254,7 +254,7 @@ impl AppCtl {
     }
 
     /// The panel's address field takes the keys, its address selected; a page holding the keyboard lets it go first.
-    fn focus_address(&mut self) {
+    pub(super) fn focus_address(&mut self) {
         let Some(app) = self.app() else { return };
         let hwnd = crate::window::hwnd_of(&app);
         self.web.release_focus(hwnd);

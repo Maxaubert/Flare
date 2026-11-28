@@ -661,7 +661,7 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
         there && driver::save_lit(&mut app),
         "and the theme's Save changes with it",
     );
-    ctx.skip("with acrylic on, label and subtext still read: the see-through window is GPU-only (DIFF-5)");
+    ctx.skip("with acrylic on, label and subtext still read: the window is solid (the see-through window was removed on 2026-11-28)");
 
     // 900 px: still the full rail, with its names, and nothing sideways.
     resize(&mut app, 900.0, 800.0);

@@ -2,7 +2,7 @@
 //!
 //! Port of Prism Terminal's `core/shared/settingsCopy.ts`. Settings copy is plain words: letters,
 //! digits, spaces, commas and full stops only. A subtext is at most eight words and names no key.
-//! The one row that breaks the word limit on purpose is See-through (O8, decision D5).
+//! The one row that breaks the word limit on purpose is Flare hotkeys (Max's own words, rule 1262).
 
 /// A subtext is ONE short line: at most this many words.
 pub const SUB_MAX_WORDS: usize = 8;
@@ -266,16 +266,8 @@ mod tests {
     /// The row tables of the pages (Task 10).
     const ROWS: &str = include_str!("rows.rs");
 
-    /// The one subtext allowed past the word limit: See-through's nine words (O8, decision D5).
-    const SEE_THROUGH_SUB: &str = "How much of the desktop shows behind every surface.";
     /// The Flare hotkeys row's subtext, Max's own words (2026-11-14, rule 1262): longer than eight on purpose.
     const FLARE_HOTKEYS_SUB: &str = "Text box keys in agent prompts, and spare keys for tabs.";
-
-    /// The sub literal that follows the row id `term-acrylic`, the See-through row (O8).
-    fn see_through_sub(source: &str) -> Option<String> {
-        let at = source.find("\"term-acrylic\"")?;
-        settings_list_copy(&source[at..]).1.into_iter().next()
-    }
 
     /// Every settings source file under `crates/flare/ui/settings`, except `help_panel.slint`
     /// (its words are Prism Terminal's help panel copy, ported verbatim, not settings copy).
@@ -392,16 +384,11 @@ mod tests {
     }
 
     #[test]
-    fn every_subtext_of_the_tables_is_at_most_eight_words_except_the_see_through_one() {
+    fn every_subtext_of_the_tables_is_at_most_eight_words_except_the_flare_hotkeys_one() {
         let (_, subs) = settings_list_copy(ROWS);
-        let exception = see_through_sub(ROWS);
-        if let Some(e) = &exception {
-            assert_eq!(e, SEE_THROUGH_SUB, "the term-acrylic row's subtext changed");
-        }
         let long: Vec<&String> = subs
             .iter()
             .filter(|t| sub_too_long(t))
-            .filter(|t| Some(*t) != exception.as_ref())
             .filter(|t| t.as_str() != FLARE_HOTKEYS_SUB)
             .collect();
         assert!(long.is_empty(), "subtexts over eight words: {long:?}");
@@ -425,7 +412,6 @@ mod tests {
     fn the_slint_string_tables_follow_the_rules() {
         let files = slint_settings_sources();
         assert!(!files.is_empty(), "no settings ui files found");
-        let exception = see_through_sub(ROWS);
         let mut problems: Vec<String> = Vec::new();
         for (name, src) in &files {
             let (labels, subs) = settings_list_copy(src);
@@ -440,7 +426,7 @@ mod tests {
                 }
             }
             for t in &subs {
-                if sub_too_long(t) && Some(t) != exception.as_ref() {
+                if sub_too_long(t) {
                     problems.push(format!("{name}: over eight words: {t}"));
                 }
             }

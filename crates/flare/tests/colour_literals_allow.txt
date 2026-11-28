@@ -61,3 +61,4 @@ crates/flare/src/ui_tests/start.rs | #FFD000 | a stop of the icon artwork's grad
 crates/flare/src/appctl/tests/mods_tests/plugin_surfaces.rs | #175ddc | a test plugin's brand colour in its manifest, and the colour the menu row is checked to carry
 crates/flare/src/appctl/tests/mods_tests/plugin_surfaces.rs | #2a6a2a | a second test plugin's brand colour in its manifest, checked on its flyout entry
 crates/flare/src/ui_tests/settings_mods.rs | #175ddc | a test plugin's brand colour in its manifest and on its card
+crates/flare/src/headless.rs | #1f1f1f | the --scene badge sheet's fixed grey ground, a dev-only picture of the taskbar disc; never a theme value

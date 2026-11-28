@@ -187,22 +187,11 @@ are added as milestones land.
   theme. A theme pick forgets all three, except that Custom restores what it kept. Each row shows the
   theme's colour until a pick, then a plain Reset forgets it. Held by `unset_colours_follow_the_theme_exactly`,
   `custom_keeps_no_window_colours_until_save_keeps_some` and `accent_forgets_when_handed_none_and_tells_the_painter_both_times`.
-- **See-through 0 to 70.** 0 is solid and reads "Off"; other values read "N%". The desktop shows through
-  every surface with one coat at the slider value (ground alpha = 1 - level/100). Each theme's own
-  see-through is 0; Custom keeps its own. Held by `see_through_reads_clamped_and_nonsense_as_zero`,
-  `ground_alpha_is_one_minus_the_level` and `glass_paints_the_ground_once`.
-  Under glass the title buttons' and the new-tab "+" strokes are at least 2 device pixels (audit 2026-10-20,
-  V7): a 1.1 px stroke at 100% anti-aliased into two part-covered rows and dropped out on the GPU window
-  (the minimise glyph vanished, the "+" went faint). The solid window keeps each glyph's own width. Held by
-  `glyph_stroke_floor_device_px` and `the_glyph_stroke_floor_is_set_only_under_glass`.
+- **See-through 0 to 70** (removed 2026-11-28, see "The see-through window removed" below).
 - **Edges: None, Faint, Hairline (default), Solid.** The window line and the one-pixel DWM border step
   follow the ground. Nothing is stored until a choice is made. Held by `edges_are_offered_weakest_to_strongest_by_every_number`,
   `default_to_hairline_and_read_anything_else_as_it` and `apply_is_debounced_250_ms`.
-- **Acrylic on Windows 11 through DWM, GPU renderer only.** The row reads "Needs Windows 11." on builds
-  under 22000 and "Needs Windows 11 22H2." on 22000 to 22620 (decision D6); the window stays solid there.
-  Material is set before colour, so no frame shows a translucent ground without a backdrop behind it
-  (held by `order_only_material_first_when_glass_turns_on`); a failed DWM call leaves the window solid
-  (`a_failed_backdrop_call_leaves_the_window_solid`).
+- **Acrylic on Windows 11 through DWM** (removed 2026-11-28, see "The see-through window removed" below).
 - **Fonts and size belong to no theme.** Fifteen faces with fallback stacks (default Cascadia Mono),
   base 13 px, size steps 50 to 200 percent. Ctrl+wheel (Cmd+wheel and Cmd+plus, minus and 0 on the
   Mac) moves one zoom that every tab shares, between 7 and 64 px: every open tab, hidden ones included, takes the new
@@ -213,9 +202,9 @@ are added as milestones land.
   owner may overrule any of them. Q1 (see-through on the software renderer stays solid), Q2 (21H2
   reads "Needs Windows 11 22H2."), Q3 (the reference is Prism Terminal 0.58.0) and Q4 (the transparent
   DirectComposition swapchain is used from start) wait for the owner's answer.
-- **Developer flags until M7.** `--theme`, `--see-through`, `--font`, `--font-pct`, `--accent`,
-  `--background`, `--secondary` and `--edges` wear a theme for one run; F9 and Shift+F9 walk the wall,
-  F8 steps the see-through by 10 (with the F12 overlay open). The keys write the store.
+- **Developer flags until M7.** `--theme`, `--font`, `--font-pct`, `--accent`, `--background`,
+  `--secondary` and `--edges` wear a theme for one run (`--see-through` went on 2026-11-28); F9 and
+  Shift+F9 walk the wall (with the F12 overlay open). The keys write the store.
 - **Tests that hold it.** The whole workspace: 1548 run, 1548 passed, 2 skipped (M3 ended at 1107).
   `flare-theme` 235, `flare-settings` 131, `flare-win` 93, `flare` 365 (the app crate, which holds the
   look controller, the pixel tests and the screenshots). The Prism Terminal ledger is in
@@ -500,7 +489,7 @@ the icon. Every size is held to a layout test (`layout::rows_match_prism_termina
 
 - **Every row applies at once, Settings still open (owner bug 2026-10-21).** As in Prism Terminal, a change
   reaches the live window without leaving Settings: Tab position moves the tabs to the side or the top, the
-  look rows (theme, colours, see through, Panel edges) are worn, the terminal font and size reach the grid, the
+  look rows (theme, colours, Panel edges) are worn, the terminal font and size reach the grid, the
   marks and the taskbar count follow their switches, Command help goes, the key rows hold for the next key and
   Detailed logging switches. The cause was the tab view reading its own rows (the tab position, the taskbar
   count) only on its next refresh, which closing Settings caused; the controller now listens to every row key
@@ -519,8 +508,9 @@ the icon. Every size is held to a layout test (`layout::rows_match_prism_termina
 - **Neutral controls (rule 78).** Only Save changes and an ON switch wear the accent. The chosen rail page is a
   grey fill. Rendered pixels prove it (`settings_ink::no_other_settings_file_uses_the_accent_except_the_wall_and_help_marks`).
 - **Plain words (rule 79).** Every label is plain, every subtext is at most eight words and names no key. The
-  See-through row keeps Prism Terminal's nine-word subtext (decision D5, O8), the one named exception
-  (`copy_rules::every_subtext_of_the_tables_is_at_most_eight_words_except_the_see_through_one`).
+  See-through row kept Prism Terminal's nine-word subtext (decision D5, O8) until the row went on 2026-11-28;
+  the Flare hotkeys row is the one named exception now
+  (`copy_rules::every_subtext_of_the_tables_is_at_most_eight_words_except_the_flare_hotkeys_one`).
 - **One colour picker with alpha everywhere.** HEX, RGBA and HSLA with the format toggle (remembered), the three
   named sliders, before and after, Escape reverts exactly the opening value. A colour field commits only on
   Enter or on losing focus, and only with a parseable change (rule 77). Tests: `picker::*`, `settings_colour::*`.
@@ -3301,3 +3291,63 @@ Follow-ups to A1 to A6 (PR #339).
 - **Tests.** `devicePanelAndroid` (e2e, Windows and Mac), the ui_tests
   `an_android_panel_takes_touches_in_dp_and_keys`, `an_android_panel_shows_slow_still_and_asleep` and
   `a_mac_chooser_has_an_android_setup_row_that_leads_to_the_licence`, and the unit tests named in rules 1361 to 1369.
+
+## The see-through window removed, 2026-11-28
+
+Max (2026-11-28): "remove the see through window feature. I want that feature but only for mac, and it should
+be liquid glass, not just transparent or acrylic or whatever, so remove the current feature." Liquid Glass on the
+Mac comes later as its own feature; nothing here blocks it.
+
+- **Every window is solid, on Windows and macOS.** The window wears its theme ground; no surface lets the desktop
+  through. The main window is never created transparent, there is no DWM backdrop (acrylic) call and no Mac
+  `NSVisualEffectView`. Held by `the_window_sheet_is_always_opaque`, `every_theme_wears_an_opaque_ground`,
+  `the_window_ground_is_the_opaque_solid_ground` and `the_main_window_is_never_created_transparent`.
+- **Gone from Settings.** The See-through row (`term-acrylic`) is not drawn and Find does not offer it; Save as
+  Custom saves the theme and agent colours ("Saves the theme and agent colours as Custom"). Held by
+  `row_finds_by_id_and_there_is_no_see_through_row` and
+  `the_wall_sits_under_the_theme_row_and_the_window_colours_under_the_wall`.
+- **Old settings load and are ignored.** A stored `flare.term.seeThrough` is read by nothing and never written
+  again; a saved Custom's `seeThrough` field is read no more and dropped on the next save. Held by
+  `an_old_see_through_level_is_ignored_and_the_window_stays_solid`, `nothing_writes_the_old_see_through_level`,
+  `older_keys_are_read_no_more` and `an_old_see_through_level_leaves_the_window_solid`.
+- **Prism Terminal's transparency imports as nothing.** `prism.term.acrylic`, `prism.term.opacity` and
+  `prism.term.seeThrough` write nothing; a Custom loses its `acrylic`, `opacity` and `seeThrough` fields; the
+  grounds the glass touched (the Custom's own, the picked Background, the Background a Custom keeps) are written
+  opaque, their colour kept. Held by `the_legacy_keys_map_to_nothing_and_no_background_is_made_from_them`,
+  `a_saved_custom_loses_its_glass_fields_and_its_ground_goes_opaque`, `the_see_through_level_maps_to_nothing`,
+  `imported_transparency_maps_to_nothing_and_the_window_stays_solid` and
+  `an_old_see_through_profile_imports_a_solid_window`; the e2e `opacityAlpha`.
+- **What stays.** The window edge and its 250 ms border (`frame_ctl::WindowFrame`, the old window material), the
+  dark or light window frame by the ground (DWM immersive dark, the Mac's Aqua appearance), alpha in picked
+  colours, and the dictation widget's rounded card: the GPU instance still presents through DirectComposition on
+  Windows 11 22H2 and later for it alone (`AlphaPlan`, `the_alpha_plan_needs_the_gpu_and_the_22h2_build`).
+- **Removed with it.** `flare-theme`'s `see_through` module and its lift test, `flare-win`'s `material` module and
+  the DWM backdrop call, the Mac glass (`macos/glass.rs` became `macos/ns_window.rs`), the Slint `window-clear`
+  and `glyph-stroke-floor` properties, the `--see-through` flag, the e2e `seeThrough` scenario (retired in the
+  ledger), `tools/material-spike` and `tools/glass-light`. Regression rules 73, 149, 150 and 152 are retired;
+  parity DIFF-30 records the difference.
+
+## Panel launcher and "Open in", 2026-11-24
+
+Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to 1388. Mockups approved by Max
+(placement 3, icon 6).
+
+- **A way into a closed panel.** While a tab's side panel is closed, a faint round button (the Layers icon) sits in the
+  terminal's top right. Pointing at it opens a small menu: Browser (an empty page, the address field holding the
+  keys), Device (where this machine offers the device panel), Open a file... (the system Open dialog in the tab's
+  folder; the file shows in the panel as a file link's "Show in side panel" would show it) and, behind a rule, Last
+  panel (what the tab's panel showed last: a page, a device or a file). The button hides while the panel is open, and
+  wherever a panel cannot open.
+- **Hover the way Max asked.** Only the button opens the menu; where the menu would be does nothing while it is closed.
+  Crossing the 6 px gap to the menu keeps it open, and it closes 250 ms after the pointer has left both. A click opens
+  it with the keys (arrows, Home, End, Enter, Escape); a menu the pointer opened leaves every key alone, so an agent's
+  Escape is never swallowed.
+- **"Open in".** The panel header (or a web page's bar) has a labelled button: "Open in <app>" (the default app's name
+  on Windows, "default app" when it is not known), "Open in browser" for a page, "Show in Explorer" for a file a click
+  would never open. It uses the openers file links use, so nothing runs that a click would not run.
+- **Tests.** The unit tests in `launcher.rs` (the hover rules with the clock passed in, where it shows, the rows, Last
+  panel, Open in), `pick_any_file_with_a_seam_calls_done_at_once` and the app-name tests in `flare-win`, and the window
+  tests in `appctl/tests/launcher_tests.rs` (a real pointer, the keys, every row, Open in, and the corner at 100, 150 and
+  225 percent).
+- **Not yet.** A Mac lookup of the default app's name; an e2e scenario of its own (the window tests run the real
+  controller and window headless).

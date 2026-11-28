@@ -21,7 +21,7 @@ use crate::rows::{RowDef, row};
 use flare_theme::colour_contrast::AlphaRange;
 
 /// The heading's Save words, as the Appearance page's Save (`saveSetupTitle` in PT).
-const SAVE_TITLE: &str = "Saves the theme, agent colours and see-through window as Custom";
+const SAVE_TITLE: &str = "Saves the theme and agent colours as Custom";
 const SAVE_CLEAN: &str = "Nothing to save yet";
 
 /// The subtext of each indicator choice (PT's `INDICATOR_SUB`, Ring and Bar).
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
     use crate::kv::PrefStore;
     use crate::look::LookStore;
-    use crate::page::{DiagInfo, GlassSupport, ThemeColours, all_row_ids, row_of};
+    use crate::page::{DiagInfo, ThemeColours, all_row_ids, row_of};
     use crate::verb::VerbState;
 
     fn face(_: &str) -> String {
@@ -215,7 +215,6 @@ mod tests {
             home: String::new(),
             version: "0.0.0".to_string(),
             copyright: String::new(),
-            glass: GlassSupport::Ok,
             diag: DiagInfo {
                 verbose: false,
                 dir: String::new(),

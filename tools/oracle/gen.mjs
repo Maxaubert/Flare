@@ -46,13 +46,7 @@ for (const p of TERM_PRESETS) {
   }
 }
 write('chrome_presets.json', chrome)
-const alphaSweep = {}
-for (const id of ['pt-default', 'prism', 'paper', 'dracula']) {
-  const p = TERM_PRESETS.find((x) => x.id === id)
-  alphaSweep[id] = {}
-  for (let n = 30; n <= 100; n += 1) alphaSweep[id][n] = chromeTokens(resolvePreset(p), toAlpha(n)).vars
-}
-write('chrome_alpha_sweep.json', alphaSweep)
+// (chrome_alpha_sweep.json, the see-through sweep, went with the see-through window on 2026-11-28.)
 
 // 4. odds and ends with a measured answer
 write('wall_order.json', orderTermThemes(TERM_PRESETS).map((p) => p.id))

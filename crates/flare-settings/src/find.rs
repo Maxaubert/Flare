@@ -260,8 +260,8 @@ mod tests {
 
     #[test]
     fn the_index_has_46_rows_without_nvidia() {
-        // 38 rows outside dictation (Computer sharing, Add a machine, the app icon and the two caret rows among them),
-        // 8 dictation rows and From any app (the GPU row needs NVIDIA).
+        // 37 rows outside dictation (Computer sharing, Add a machine, the app icon and the two caret rows among them),
+        // 8 dictation rows and From any app (the GPU row needs NVIDIA). The See-through row went on 2026-11-28.
         let n = settings_index(&IndexEnv {
             nvidia: false,
             dictation_wired: true,
@@ -271,7 +271,7 @@ mod tests {
         // The device panel's row is drawn on macOS only.
         assert_eq!(
             n,
-            52 + usize::from(crate::page::agents::device_section_drawn())
+            51 + usize::from(crate::page::agents::device_section_drawn())
         );
         assert!(
             settings_index(&IndexEnv {
@@ -390,20 +390,6 @@ mod tests {
     #[test]
     fn nothing_found_is_an_empty_list() {
         assert!(ids("zebra").is_empty());
-    }
-
-    #[test]
-    fn find_words_the_see_through_row_as_the_page_does() {
-        let row = index_all()
-            .into_iter()
-            .find(|e| e.id == "term-acrylic")
-            .expect("term-acrylic is indexed");
-        assert_eq!(row.label, "See through window");
-        assert_eq!(
-            row.sub,
-            "How much of the desktop shows behind every surface."
-        );
-        assert!(row.keywords.unwrap_or_default().contains("see through"));
     }
 
     #[test]

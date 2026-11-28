@@ -5,7 +5,7 @@
 
 #![allow(dead_code)] // wired by AppCtl (a later task); remove this line then
 
-use crate::config::{Args, RendererChoice};
+use crate::config::Args;
 use crate::tab_host::TabHost;
 use flare_agent::close::{
     CloseTarget, close_primary_label, close_question_title, holds_window_close,
@@ -14,12 +14,9 @@ use flare_agent::kinds::DetectedAgent;
 use flare_diag::control::DiagControl;
 use flare_settings::import::run::{ImportPaths, ImportReport, run_once, should_run};
 use flare_settings::kv::PrefStore;
-use flare_settings::page::GlassSupport;
 use flare_settings::verb::DiagControlApi;
 use flare_tabs::close_flow::close_question_body;
 use flare_tabs::tabs_store::TabsStore;
-use flare_win::material::{Support, support_here};
-use flare_win::os_build::OsVersion;
 use flare_win::single_instance::{
     Acquired, Handoff, IdentitySource, InstanceGuard, InstanceNames, WindowsIdentity, acquire,
     encode_handoff, instance_names, send_handoff_with, serve,
@@ -737,19 +734,6 @@ pub fn copyright_line(licence: &str) -> String {
         .to_string()
 }
 
-/// What the glass rows may say: See-through needs the GPU renderer and Windows 11 22H2 (the DWM
-/// backdrop build); the older builds and the software renderer say why.
-pub fn glass_support(effective: RendererChoice, os: OsVersion) -> GlassSupport {
-    if effective != RendererChoice::Gpu {
-        return GlassSupport::NeedsGraphicsRenderer;
-    }
-    match support_here(os) {
-        Support::Ok => GlassSupport::Ok,
-        Support::NeedsWindows11 => GlassSupport::NeedsWindows11,
-        Support::NeedsWindows11_22H2 => GlassSupport::NeedsWindows11Update,
-    }
-}
-
 /// The help warm-up's work: builds the help catalogue and runs one search, so the first query is quick.
 /// It runs on a worker when the panel opens (M10 Task 66); nothing builds it at start.
 pub fn help_warm_work() {
@@ -1340,41 +1324,6 @@ mod m7_start_tests {
         let line = copyright_line(LICENCE);
         assert!(line.starts_with("Copyright (c) 2026"), "{line}");
         assert_eq!(copyright_line("no notice here"), "");
-    }
-
-    #[test]
-    fn glass_says_why_it_is_off() {
-        let os = |build| OsVersion {
-            major: 10,
-            minor: 0,
-            build,
-        };
-        assert_eq!(
-            glass_support(RendererChoice::Software, os(26100)),
-            GlassSupport::NeedsGraphicsRenderer
-        );
-        // A Mac always has the glass; only Windows asks for a build.
-        let mac = cfg!(target_os = "macos");
-        assert_eq!(
-            glass_support(RendererChoice::Gpu, os(19045)),
-            if mac {
-                GlassSupport::Ok
-            } else {
-                GlassSupport::NeedsWindows11
-            }
-        );
-        assert_eq!(
-            glass_support(RendererChoice::Gpu, os(22000)),
-            if mac {
-                GlassSupport::Ok
-            } else {
-                GlassSupport::NeedsWindows11Update
-            }
-        );
-        assert_eq!(
-            glass_support(RendererChoice::Gpu, os(22621)),
-            GlassSupport::Ok
-        );
     }
 
     #[cfg(windows)]

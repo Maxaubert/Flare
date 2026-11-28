@@ -10,10 +10,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use flare_render::color::{Palette, Rgba};
-use flare_render::scene::GroundPaint;
 use flare_theme::look::AppliedLook;
 use flare_theme::resolve::TermTheme;
-use flare_theme::see_through::glyph_stroke_floor_device_px;
 use slint::{Color, Global};
 
 use crate::host::GridHost;
@@ -121,18 +119,13 @@ pub fn colour(hex: &str) -> Color {
     }
 }
 
-/// Writes the look's 31 chrome tokens, light or dark, and the window's clear colour into the Slint Theme.
+/// Writes the look's 31 chrome tokens, light or dark, into the Slint Theme (the window's clear colour is
+/// `--p-bg-solid`, the solid ground).
 pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
     let theme = Theme::get(app);
     set_tokens(&theme, &|tok| {
         colour(look.chrome.vars.get(tok).map(String::as_str).unwrap_or(""))
     });
-    // PT's setBackgroundColor: solid ground, or transparent under glass.
-    let clear = if look.glass {
-        Color::from_argb_u8(0, 0, 0, 0)
-    } else {
-        colour(&look.solid_ground)
-    };
     for (tok, name) in EXTRA_TABLE {
         let c = colour(look.chrome.extra.get(tok).map(String::as_str).unwrap_or(""));
         match name {
@@ -144,8 +137,6 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
             _ => theme.set_track_off(c),
         }
     }
-    theme.set_window_clear(clear);
-    theme.set_glyph_stroke_floor(glyph_stroke_floor_device_px(look.glass));
     theme.set_light(look.light);
     // The conversation panels' diff inks are the theme's terminal green and red (stage 6).
     let pal = palette_of(&look.term);
@@ -178,15 +169,6 @@ pub fn palette_of(term: &TermTheme) -> Palette {
     Palette::new(fg, bg, cursor, bg, selection, ansi)
 }
 
-/// Under glass the UI paints the ground (the grid leaves it clear); otherwise the grid paints its own.
-pub fn ground_paint(look: &AppliedLook) -> GroundPaint {
-    if look.glass {
-        GroundPaint::ByUi
-    } else {
-        GroundPaint::InGrid
-    }
-}
-
 /// The grid's palette for a look: the theme's ([`palette_of`]) with the caret's colours (rule 1233): the accent,
 /// or the person's own cursor colour, and the ink of the glyph under a block caret.
 pub fn grid_palette(look: &AppliedLook) -> Palette {
@@ -200,11 +182,11 @@ pub fn grid_palette(look: &AppliedLook) -> Palette {
     p
 }
 
-/// Hands the grid its palette and who paints the ground (marks it dirty only on a change).
+/// Hands the grid its palette (marks it dirty only on a change).
 pub fn apply_to_host(host: &mut GridHost, look: &AppliedLook) {
     crate::term_ui::set_worn_link(&look.link_colour);
     crate::term_ui::set_worn_find(&look.find);
-    host.set_look(grid_palette(look), ground_paint(look));
+    host.set_look(grid_palette(look));
 }
 
 #[cfg(test)]
@@ -238,7 +220,7 @@ mod tests {
         }
     }
 
-    fn look_of(id: &str, see_through: u8, glass_possible: bool) -> AppliedLook {
+    fn look_of(id: &str) -> AppliedLook {
         apply_look(&LookInput {
             theme_id: id,
             custom: None,
@@ -247,8 +229,6 @@ mod tests {
             accent: None,
             secondary: None,
             edges: DEFAULT_WINDOW_EDGES,
-            see_through,
-            glass_possible,
         })
     }
 
@@ -258,7 +238,7 @@ mod tests {
 
     #[test]
     fn the_close_question_ink_is_the_applied_text_token() {
-        let look = look_of("pt-default", 0, false);
+        let look = look_of("pt-default");
         assert_eq!(ink_of(&look), look.chrome.vars["--p-text"]);
         let mut bare = look.clone();
         bare.chrome.vars.remove("--p-text");
@@ -288,7 +268,7 @@ mod tests {
 
     #[test]
     fn applying_a_theme_sets_every_slint_token() {
-        let look = look_of("paper", 0, false);
+        let look = look_of("paper");
         let h = Harness::new(1.0, 1000, 640, || {
             AppWindow::new().expect("the window builds")
         });
@@ -306,27 +286,14 @@ mod tests {
     }
 
     #[test]
-    fn the_window_clear_is_solid_or_transparent() {
+    fn the_window_ground_is_the_opaque_solid_ground() {
         let h = Harness::new(1.0, 1000, 640, || {
             AppWindow::new().expect("the window builds")
         });
-        apply_chrome(&h.comp, &look_of("pt-default", 0, true));
-        let solid = Theme::get(&h.comp).get_window_clear();
-        assert_eq!(argb(solid), argb(Theme::get(&h.comp).get_ground_solid()));
-        apply_chrome(&h.comp, &look_of("pt-default", 40, true));
-        assert_eq!(Theme::get(&h.comp).get_window_clear().alpha(), 0);
-    }
-
-    #[test]
-    fn the_glyph_stroke_floor_is_set_only_under_glass() {
-        // Audit V7: the title buttons and the new-tab + read this, so their 1 px strokes stay whole under glass.
-        let h = Harness::new(1.0, 1000, 640, || {
-            AppWindow::new().expect("the window builds")
-        });
-        apply_chrome(&h.comp, &look_of("pt-default", 0, true));
-        assert_eq!(Theme::get(&h.comp).get_glyph_stroke_floor(), 0.0);
-        apply_chrome(&h.comp, &look_of("pt-default", 40, true));
-        assert_eq!(Theme::get(&h.comp).get_glyph_stroke_floor(), 2.0);
+        apply_chrome(&h.comp, &look_of("pt-default"));
+        let solid = Theme::get(&h.comp).get_ground_solid();
+        assert_eq!(solid.alpha(), 255);
+        assert_eq!(argb(Theme::get(&h.comp).get_ground()), argb(solid));
     }
 
     #[test]
@@ -340,7 +307,7 @@ mod tests {
 
     #[test]
     fn the_grid_caret_wears_the_accent_and_the_persons_cursor_wins() {
-        let look = look_of("pt-default", 0, false);
+        let look = look_of("pt-default");
         let p = grid_palette(&look);
         assert_eq!(p.cursor, Rgba::from_hex("#fe8f34").expect("hex"));
         assert_eq!(Some(p.cursor), Rgba::from_hex(&look.caret.fill));
@@ -365,8 +332,6 @@ mod tests {
             accent: None,
             secondary: None,
             edges: DEFAULT_WINDOW_EDGES,
-            see_through: 0,
-            glass_possible: false,
         });
         assert_eq!(
             grid_palette(&own).cursor,
@@ -386,22 +351,9 @@ mod tests {
     }
 
     #[test]
-    fn ground_paint_is_by_ui_only_under_glass() {
-        assert_eq!(
-            ground_paint(&look_of("paper", 0, true)),
-            GroundPaint::InGrid
-        );
-        assert_eq!(ground_paint(&look_of("paper", 40, true)), GroundPaint::ByUi);
-        assert_eq!(
-            ground_paint(&look_of("paper", 40, false)),
-            GroundPaint::InGrid
-        );
-    }
-
-    #[test]
     fn a_rendered_window_wears_the_themes_ground() {
         for scale in [1.0_f32, 1.5, 2.25] {
-            let look = look_of("paper", 0, false);
+            let look = look_of("paper");
             let h = Harness::new(scale, 1000, 640, || {
                 AppWindow::new().expect("the window builds")
             });

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panel launcher, 10 versions</title>
+<!-- Panel launcher (2026-11-24, Max asked for 10 versions). Each frame is one tab of Flare with its side panel closed.
+     Hover a frame (or the spot it names) to see the launcher wake up. Every version opens the same three things:
+     Browser, Device, Open a file, plus Last panel. Tokens: Flare's dark look. -->
+<style>
+:root{
+  --ground:#171717;--tabs:#141414;--text:#dedacf;--soft:#c2bfb5;--dim:#929089;--dim2:#716f6a;
+  --line:#ffffff17;--divider:#ffffff12;--hover:#ffffff10;--pressed:#3d3c39;--side-flat:#1f1f1e;
+  --accent:#fe8f34;--accent-ink:#f6a25b;--on-accent:#0b0b0f;
+  --mono:"Cascadia Mono","SF Mono",Consolas,monospace;--ui:"Segoe UI",-apple-system,system-ui,sans-serif;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+::selection{background:var(--accent);color:var(--on-accent)}
+body{margin:0;background:#0b0b0b;color:var(--text);font:13px/1.4 var(--ui);padding:24px 16px 60px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:16px;font-weight:600;margin:0 0 4px}
+.lead{color:var(--dim);font-size:12.5px;margin:0 0 18px;max-width:80ch}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:22px 20px}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.cap{display:flex;gap:8px;align-items:baseline;margin:0 0 6px}
+.cap b{font-size:13px}
+.cap .n{color:var(--accent-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.cap span{color:var(--dim);font-size:12px}
+.pc{font-size:12px;color:var(--soft);margin:7px 0 0}
+.pc i{font-style:normal;color:var(--dim)}
+
+/* One tab of Flare: strip, terminal, input. */
+.f{position:relative;height:300px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--ground);display:flex;flex-direction:column}
+.strip{height:30px;background:var(--tabs);border-bottom:1px solid var(--divider);display:flex;align-items:flex-end;padding:0 6px;gap:2px;flex:none;position:relative}
+.tab{height:25px;padding:0 12px;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--dim);border-radius:5px 5px 0 0;position:relative}
+.tab.on{background:var(--ground);color:var(--text)}
+.tab .d{width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.tab .d.idle{background:var(--dim2)}
+.term{position:relative;flex:1;padding:10px 14px;font:11.5px/1.55 var(--mono);color:var(--soft);overflow:hidden}
+.term .p{color:var(--accent-ink)}.term .u{color:var(--text)}.term .m{color:var(--dim)}
+.input{position:absolute;left:12px;right:12px;bottom:10px;height:28px;border:1px solid var(--divider);border-radius:6px;background:#1b1b1a;padding:0 10px;display:flex;align-items:center;font-size:11.5px;color:var(--dim2)}
+
+svg.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.ib{width:26px;height:26px;border-radius:5px;display:grid;place-items:center;color:var(--soft)}
+.ib:hover{background:var(--hover);color:var(--text)}
+.lb{display:flex;align-items:center;gap:8px;height:28px;padding:0 10px 0 8px;border-radius:5px;font:11.5px var(--ui);color:var(--soft);white-space:nowrap}
+.lb:hover{background:var(--hover);color:var(--text)}
+.surf{background:var(--side-flat);border:1px solid var(--divider);box-shadow:0 6px 18px #0009}
+.hr{height:1px;background:var(--divider);margin:3px 4px}
+.vr{width:1px;background:var(--divider);margin:4px 2px}
+.k{font:10.5px var(--ui);color:var(--dim2);border:1px solid var(--divider);border-radius:3px;padding:0 4px;margin-left:auto}
+
+/* 1 Corner dock that fades. */
+.v1 .dock{position:absolute;top:8px;right:10px;display:flex;gap:1px;padding:3px;border-radius:8px;opacity:.3;transition:opacity .22s var(--ease)}
+.v1 .dock:hover{opacity:1}
+
+/* 2 Edge slide-out rail. */
+.v2 .zone{position:absolute;top:0;right:0;bottom:0;width:60px}
+.v2 .handle{position:absolute;top:50%;right:3px;width:4px;height:40px;margin-top:-20px;border-radius:2px;background:var(--dim2);opacity:.6;transition:opacity .2s}
+.v2 .rail{position:absolute;top:50%;right:8px;transform:translate(calc(100% + 14px),-50%);padding:4px;border-radius:9px;transition:transform .26s var(--ease)}
+.v2 .zone:hover .rail{transform:translate(0,-50%)}
+.v2 .zone:hover .handle{opacity:0}
+
+/* 3 One ghost button that blooms into a menu. */
+.v3 .g{position:absolute;top:8px;right:10px;display:flex;flex-direction:column;align-items:flex-end}
+.v3 .btn{width:26px;height:26px;border-radius:13px;display:grid;place-items:center;color:var(--soft);border:1px solid var(--divider);background:#1f1f1e99;opacity:.45;transition:opacity .2s,background .2s}
+.v3 .menu{margin-top:6px;padding:4px;border-radius:8px;transform-origin:top right;transform:scale(.92);opacity:0;pointer-events:none;transition:transform .2s var(--ease),opacity .16s}
+.v3 .g:hover .btn{opacity:1;background:var(--side-flat)}
+.v3 .g:hover .menu{transform:none;opacity:1;pointer-events:auto}
+
+/* 4 In the tab itself: icons appear inside the active tab on hover (per tab, not the title bar). */
+.v4 .tab.on{padding-right:10px}
+.v4 .tab.on .tools{display:flex;gap:0;max-width:0;overflow:hidden;opacity:0;transition:max-width .25s var(--ease),opacity .2s;margin-left:4px}
+.v4 .tab.on .tools .ib{width:20px;height:20px}
+.v4 .tab.on .tools svg{width:12px;height:12px}
+.v4 .tab.on .sep{width:1px;height:12px;background:var(--divider);opacity:0;transition:opacity .2s}
+.v4 .tab.on:hover .tools{max-width:90px;opacity:1}
+.v4 .tab.on:hover .sep{opacity:1}
+.v4 .tab.on .hintdot{width:4px;height:4px;border-radius:50%;background:var(--dim2);margin-left:4px}
+.v4 .tab.on:hover .hintdot{display:none}
+
+/* 5 Vertical strip pinned to the right edge, faint. */
+.v5 .strip5{position:absolute;top:10px;right:6px;display:flex;flex-direction:column;gap:1px;padding:3px;border-radius:8px;opacity:.28;transition:opacity .22s var(--ease)}
+.v5 .strip5:hover{opacity:1}
+
+/* 6 The panel never fully closes: it folds to a 30 px spine with the icons. */
+.v6 .main{flex:1;display:flex;min-height:0}
+.v6 .term{flex:1}
+.v6 .spine{width:30px;flex:none;border-left:1px solid var(--divider);background:#151514;display:flex;flex-direction:column;align-items:center;padding-top:6px;gap:2px;transition:width .25s var(--ease)}
+.v6 .spine .ib{width:24px;height:24px}
+.v6 .spine:hover{background:#181817}
+
+/* 7 Corner fold: a small dog-ear; hover unfolds a quarter ring of buttons. */
+.v7 .ear{position:absolute;top:0;right:0;width:150px;height:150px;pointer-events:none}
+.v7 .tri{position:absolute;top:0;right:0;width:0;height:0;border-top:18px solid #3a3936;border-left:18px solid transparent;pointer-events:auto;transition:border-width .25s var(--ease)}
+.v7 .ring{position:absolute;top:0;right:0;width:150px;height:150px;pointer-events:none}
+.v7 .ring .ib{position:absolute;opacity:0;transform:scale(.6);transition:opacity .18s,transform .25s var(--ease);background:var(--side-flat);border:1px solid var(--divider);box-shadow:0 4px 12px #0008;border-radius:50%;width:30px;height:30px}
+.v7 .ear:hover .ring .ib,.v7 .ear .tri:hover~.ring .ib{opacity:1;transform:none}
+.v7 .hot{position:absolute;top:0;right:0;width:130px;height:130px;border-radius:0 0 0 130px;pointer-events:auto}
+.v7 .hot:hover~.tri{border-top-width:34px;border-left-width:34px}
+.v7 .hot:hover~.ring .ib{opacity:1;transform:none;pointer-events:auto}
+
+/* 8 Beside the prompt: a chip at the input's right end. */
+.v8 .input{right:12px}
+.v8 .chip{position:absolute;right:16px;bottom:13px;height:22px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:11px;border:1px solid var(--divider);color:var(--dim);font:11px var(--ui)}
+.v8 .chip:hover{color:var(--text);background:var(--side-flat)}
+.v8 .pop{position:absolute;right:12px;bottom:44px;padding:4px;border-radius:8px;opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity .16s,transform .22s var(--ease)}
+.v8 .wrap8:hover .pop{opacity:1;transform:none;pointer-events:auto}
+.v8 .wrap8{position:absolute;right:0;bottom:0;width:200px;height:200px}
+
+/* 9 Hidden top bar: the top 22 px of the tab reveals a thin toolbar across. */
+.v9 .reveal{position:absolute;left:0;right:0;top:0;height:26px}
+.v9 .bar{position:absolute;left:0;right:0;top:0;height:30px;display:flex;align-items:center;justify-content:flex-end;gap:2px;padding:0 8px;background:#1d1d1ce8;border-bottom:1px solid var(--divider);transform:translateY(-100%);transition:transform .22s var(--ease);backdrop-filter:blur(6px)}
+.v9 .bar .lb{height:24px}
+.v9 .bar .t{margin-right:auto;font:11px var(--ui);color:var(--dim)}
+.v9 .reveal:hover .bar,.v9 .bar:hover{transform:none}
+.v9 .edgeline{position:absolute;left:40%;right:40%;top:2px;height:2px;border-radius:1px;background:var(--dim2);opacity:.5}
+
+/* 10 A tiny chip that opens a searchable launcher (palette). */
+.v10 .chip{position:absolute;top:8px;right:10px;height:22px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:5px;border:1px solid var(--divider);background:#1b1b1acc;color:var(--dim);font:11px var(--ui);opacity:.55;transition:opacity .2s}
+.v10 .pal{position:absolute;top:36px;right:10px;width:250px;border-radius:8px;padding:6px;opacity:0;transform:translateY(-4px);pointer-events:none;transition:opacity .16s,transform .22s var(--ease)}
+.v10 .zone10{position:absolute;top:0;right:0;width:270px;height:230px}
+.v10 .zone10:hover .chip{opacity:1;color:var(--text)}
+.v10 .zone10:hover .pal{opacity:1;transform:none;pointer-events:auto}
+.v10 .search{height:26px;border-radius:5px;border:1px solid var(--divider);background:#151514;display:flex;align-items:center;gap:6px;padding:0 8px;font:11.5px var(--ui);color:var(--dim2);margin-bottom:4px}
+.v10 .grp{font:10.5px var(--ui);color:var(--dim2);padding:4px 8px 2px}
+.v10 .lb .sub{color:var(--dim2);margin-left:auto;font-size:11px}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.5 3.8 5.3 3.8 8.5s-1.2 6-3.8 8.5M12 3.5C9.4 6 8.2 8.8 8.2 12s1.2 6 3.8 8.5"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.4"/><path d="M10.5 6h3"/></symbol>
+  <symbol id="file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4"/></symbol>
+  <symbol id="recent" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></symbol>
+  <symbol id="panel" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M14 5v14"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></symbol>
+  <symbol id="cube" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></symbol>
+</defs></svg>
+
+<div class="wrap">
+  <h1>Panel launcher: 10 versions</h1>
+  <p class="lead">Each frame is one Flare tab with its side panel closed. Hover the frame (or the spot the caption names)
+  to wake the launcher. Every version offers the same things: Browser, Device, Open a file, and Last panel. All of them
+  belong to the tab, so another tab has its own, and all of them vanish while the panel is open.</p>
+
+  <div class="grid" id="grid"></div>
+</div>
+
+<template id="term">
+  <div><span class="p">&gt;</span> <span class="u">why does the arm clip through the table?</span></div>
+  <div class="m">● Reading scene/robot_arm.glb</div>
+  <div>&nbsp;&nbsp;Joint 2 swings 38° past horizontal, so the forearm</div>
+  <div>&nbsp;&nbsp;dips below the table top (y = 0.74). I clamped it in</div>
+  <div>&nbsp;&nbsp;scene/rig.toml. Want me to check the model too?</div>
+  <div class="input">Type a message…</div>
+</template>
+
+<script>
+const I = id => `<svg class="i"><use href="#${id}"/></svg>`;
+const icons = `<span class="ib" title="Browser">${I('globe')}</span><span class="ib" title="Device">${I('phone')}</span><span class="ib" title="Open a file…">${I('file')}</span>`;
+const labels = `<span class="lb">${I('globe')}Browser</span><span class="lb">${I('phone')}Device</span><span class="lb">${I('file')}Open a file…</span><div class="hr"></div><span class="lb">${I('recent')}Last panel</span>`;
+const strip = (extra='') => `<div class="strip"><div class="tab on"><span class="d"></span>Flare · claude${extra}</div><div class="tab"><span class="d idle"></span>Sonara · claude</div></div>`;
+const term = document.getElementById('term').innerHTML;
+
+const V = [
+ {n:1, t:'Corner dock, fades', h:'hover the top right', css:'v1',
+  body:()=>`${strip()}<div class="term">${term}<div class="dock surf">${icons}<div class="vr"></div><span class="ib" title="Last panel">${I('recent')}</span></div></div>`,
+  pc:'Always in the same place, one click. <i>Covers a few characters in the top right.</i>'},
+ {n:2, t:'Edge slide-out', h:'move to the right edge', css:'v2',
+  body:()=>`${strip()}<div class="term">${term}<div class="zone"><span class="handle"></span><div class="rail surf">${labels}</div></div></div>`,
+  pc:'Covers nothing; labels have room. <i>Harder to discover; shares the edge with the scrollbar.</i>'},
+ {n:3, t:'One ghost button that blooms', h:'hover the round button', css:'v3',
+  body:()=>`${strip()}<div class="term">${term}<div class="g"><span class="btn">${I('panel')}</span><div class="menu surf">${labels}</div></div></div>`,
+  pc:'Smallest footprint that is still visible (one 26 px dot). <i>Two steps: hover, then pick.</i>'},
+ {n:4, t:'Inside the active tab', h:'hover the active tab', css:'v4',
+  body:()=>`${strip(`<span class="hintdot"></span><span class="sep"></span><span class="tools"><span class="ib">${I('globe')}</span><span class="ib">${I('phone')}</span><span class="ib">${I('file')}</span></span>`)}<div class="term">${term}</div>`,
+  pc:'Lives on the tab, so it is clearly per session, and covers no text. <i>Only for the tab you point at; tabs get wider on hover.</i>'},
+ {n:5, t:'Faint vertical strip', h:'hover the right side', css:'v5',
+  body:()=>`${strip()}<div class="term">${term}<div class="strip5 surf">${icons}<div class="hr"></div><span class="ib">${I('recent')}</span></div></div>`,
+  pc:'Like an activity bar; reads as "the panel goes here". <i>Covers a column of the last characters.</i>'},
+ {n:6, t:'The panel folds to a spine', h:'look at the right column', css:'v6',
+  body:()=>`${strip()}<div class="main"><div class="term">${term}</div><div class="spine">${icons}<div class="hr" style="width:16px"></div><span class="ib">${I('recent')}</span></div></div>`,
+  pc:'Never over the text: the terminal is 30 px narrower instead. <i>Costs 30 px of width always; that is a few columns.</i>'},
+ {n:7, t:'Corner fold', h:'hover the top right corner', css:'v7',
+  body:()=>`${strip()}<div class="term">${term}<div class="ear"><div class="hot"></div><div class="tri"></div><div class="ring">
+     <span class="ib" style="top:12px;right:60px">${I('globe')}</span><span class="ib" style="top:36px;right:46px">${I('phone')}</span>
+     <span class="ib" style="top:54px;right:25px">${I('file')}</span><span class="ib" style="top:64px;right:2px">${I('recent')}</span></div></div></div>`,
+  pc:'A tiny dog-ear, almost nothing covered; playful. <i>A new pattern to learn; small target.</i>'},
+ {n:8, t:'Beside the prompt', h:'hover the chip in the input', css:'v8',
+  body:()=>`${strip()}<div class="term">${term}<div class="wrap8"><div class="chip">${I('panel')}Panel</div><div class="pop surf">${labels}</div></div></div>`,
+  pc:'Next to where you type "check out this file". <i>Only fits tabs that show an input box (Claude); a plain shell has none.</i>'},
+ {n:9, t:'Hidden top bar', h:'hover the top edge of the tab', css:'v9',
+  body:()=>`${strip()}<div class="term">${term}<span class="edgeline"></span><div class="reveal"><div class="bar"><span class="t">Open in the side panel</span><span class="lb">${I('globe')}Browser</span><span class="lb">${I('phone')}Device</span><span class="lb">${I('file')}Open a file…</span><span class="lb">${I('recent')}Last</span></div></div></div>`,
+  pc:'Zero clutter until wanted, full labels. <i>Covers the first line while open; easy to trigger by accident.</i>'},
+ {n:10, t:'Chip that opens a launcher', h:'hover the chip', css:'v10',
+  body:()=>`${strip()}<div class="term">${term}<div class="zone10"><div class="chip">${I('panel')}Panel<span class="k">Ctrl+Shift+P</span></div><div class="pal surf">
+     <div class="search">${I('search')}Open a page, device or file…</div>
+     <div class="grp">Open</div><span class="lb">${I('globe')}Browser</span><span class="lb">${I('phone')}iPhone 18 Pro<span class="sub">booted</span></span><span class="lb">${I('file')}Open a file…</span>
+     <div class="grp">Recent in this tab</div><span class="lb">${I('cube')}robot_arm.glb<span class="sub">scene</span></span><span class="lb">${I('globe')}docs.rs/three-d</span></div></div></div>`,
+  pc:'Most powerful: search, devices and recent files in one place, and a hotkey. <i>Biggest popover; more to build.</i>'},
+];
+document.getElementById('grid').innerHTML = V.map(v=>`<div><p class="cap"><span class="n">${v.n}</span><b>${v.t}</b><span>${v.h}</span></p><div class="f ${v.css}">${v.body()}</div><p class="pc">${v.pc}</p></div>`).join('');
+// For screenshots: ?hold=1 shows every launcher in its woken state.
+if(new URLSearchParams(location.search).get('hold')){
+  const s=document.createElement('style');
+  s.textContent=`.v1 .dock,.v5 .strip5{opacity:1}.v2 .rail{transform:translate(0,-50%)}.v2 .handle{opacity:0}
+  .v3 .btn{opacity:1}.v3 .menu{transform:none;opacity:1}.v4 .tab.on .tools{max-width:90px;opacity:1}.v4 .tab.on .sep{opacity:1}.v4 .hintdot{display:none}
+  .v7 .tri{border-top-width:34px;border-left-width:34px}.v7 .ring .ib{opacity:1;transform:none}
+  .v8 .pop{opacity:1;transform:none}.v9 .bar{transform:none}.v10 .chip{opacity:1}.v10 .pal{opacity:1;transform:none}`;
+  document.head.appendChild(s);
+}
+</script>
+</body>
+</html>

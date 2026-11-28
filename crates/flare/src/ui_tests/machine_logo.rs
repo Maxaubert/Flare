@@ -170,8 +170,6 @@ fn paint(h: &Harness<MenusPreview>, id: &str) {
         accent: None,
         secondary: None,
         edges: DEFAULT_WINDOW_EDGES,
-        see_through: 0,
-        glass_possible: false,
     });
     let tok = |n: &str| colour(&l.chrome.vars[n]);
     let t = h.comp.global::<crate::Theme>();
