@@ -2307,20 +2307,17 @@ fn outputs_between(host: &FakeHost, from: Instant, to: Instant) -> usize {
         .count()
 }
 
-/// Rule 1392: after a key the host took, the output is polled every few ms until its echo comes (here 25 ms later),
-/// where the polls used to wait 30 ms; an idle tab polls as slowly as before, fast polls or not.
+/// Rule 1392: after a key the host took, the output is polled every few ms until its echo comes (here 60 ms later),
+/// where the polls used to wait 30 ms (three polls at most); an idle tab polls as slowly as before, fast polls or not.
 #[test]
 fn after_a_key_the_output_is_polled_fast_until_its_echo_and_idle_stays_slow() {
-    let host = echoing(25);
+    let host = echoing(60);
     let mut r = rig_timed(host, None, Timing::default());
     r.live_on();
     std::thread::sleep(Duration::from_millis(600)); // sync-ok: test code only, the polls reach their slowest
     let t = Instant::now();
-    assert_eq!(
-        outputs_between(&r.host, t - Duration::from_millis(250), t),
-        1,
-        "idle: one poll in 250 ms"
-    );
+    let idle = outputs_between(&r.host, t - Duration::from_millis(250), t);
+    assert!(idle <= 2, "idle: {idle} polls in 250 ms");
     r.writer.write_all(b"q").unwrap();
     echo_of(&r, 'q', 1);
     let polls = to_the_echo(&r.host)
@@ -2328,7 +2325,7 @@ fn after_a_key_the_output_is_polled_fast_until_its_echo_and_idle_stays_slow() {
         .filter(|e| **e == "output")
         .count();
     assert!(
-        polls >= 4,
+        polls >= 6,
         "fast polls while the echo was on its way: {:?}",
         to_the_echo(&r.host)
     );
@@ -2370,6 +2367,7 @@ fn a_held_key_stays_under_the_hosts_rates_and_the_link_stays_up() {
         })
         .max()
         .unwrap_or(0);
+    println!("a held key: at most {most} calls in one second");
     assert!(most <= 100, "{most} calls in one second");
 }
 

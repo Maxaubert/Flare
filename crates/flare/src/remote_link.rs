@@ -10,7 +10,7 @@
 //! Output is polled (`remote.output {since}`), never pushed, in short polls: a call at a time, 30 ms apart while
 //! output flows, up to 250 ms apart when idle, and at once when the tab typed. Rule 1392: after typing the host took,
 //! the polls come 3 ms apart until its echo arrives (100 ms at most), only while the link's call budget has room
-//! (`remote_timing`, well under the host's 100 calls a second), and the status and conversation polls wait while a key
+//! (`remote_timing`: none once the link makes 50 calls a second, half the host's 100), and the status and conversation polls wait while a key
 //! waits for its echo (half a second at most). Every call is timed by its method, and each key from when it was typed
 //! to its echo; a summary goes to the diagnostics log as a `remote-typing` line. A broken link is tried again after 1 s,
 //! then 2, 4 and so on up to 30 s, and the tab goes on from the output number it read: no byte twice. A tab that has

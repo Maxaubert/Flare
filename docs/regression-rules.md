@@ -6179,8 +6179,9 @@ and `a_text_file_has_a_default_app_with_a_name` (`flare-win` `openers.rs`), `ope
 After a `remote.input` with a key, text or a paste that the host took, the link polls `remote.output` every
 `Timing::poll_fast` (3 ms, a sleep: a condvar wait ends on Windows' 15.6 ms tick) until output comes or
 `Timing::fast_for` (100 ms) passes, where it used to wait `poll_min` (30 ms). A fast poll is made only while the link's
-`CallBudget` has room (every call spends; 50 a second, 20 at once, `remote_timing`), so the link stays under the host's
-100 calls a second and never sees `rate_limited`; the idle back-off is kept apart and never shortened. While a key waits
+`CallBudget` has room (every call spends; 50 a second, 20 at once, `remote_timing`; a spend never refuses), so fast
+polls add nothing once the link makes 50 calls a second and the other calls are as before: a held key stays under the
+host's 100 calls a second and never sees `rate_limited`. The idle back-off is kept apart and never shortened. While a key waits
 for its echo, or typing waits (`RemoteIo::typing_waits`), the status and conversation polls wait, `PUT_OFF_MAX`
 (500 ms) at most; the ask at once after an attach (rule 294) still comes. Every call over the link is timed by method
 (`Watched`), and a key from its `typed_at` to the first output after its call, sampled only after a quiet poll; a key

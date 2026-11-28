@@ -9,7 +9,8 @@
 //!
 //! The budget: the host takes at most 100 calls a second on one link (`ServerConfig::stdio`), and a refusal of a poll
 //! drops the link. Every call spends from [`CallBudget`] ([`BUDGET_RATE`] a second); a fast poll is made only while
-//! the budget has room, so the polls after typing never push the link past the host's rate.
+//! the budget has room, so fast polls add nothing once the link makes [`BUDGET_RATE`] calls a second, and the other
+//! calls go as they did before rule 1392.
 
 use flare_ctl::Method;
 use serde_json::{Map, Value, json};
