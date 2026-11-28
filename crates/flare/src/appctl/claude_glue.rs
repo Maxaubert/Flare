@@ -217,6 +217,8 @@ impl AppCtl {
         self.claude_run = run;
         self.claude_acts(acts);
         self.claude_note_done();
+        // A step on the terminal's drain can set a deadline (the Enter after "/exit"): the timer must run for it.
+        self.kick();
     }
 
     /// When the runner is due on its own.

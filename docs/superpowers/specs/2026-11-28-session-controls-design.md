@@ -60,9 +60,12 @@ A per-tab job, stepped on every drained batch of terminal events and on the cont
 
 1. **Wait for idle.** Idle: Claude here, not working, no question up (the hub's question mark or a question box on
    the screen, `looks_like_question`). A question box is busy: an Enter there would answer it.
-2. **Draft check.** If Claude's prompt box holds unsent text (`prompt_draft`), the tab is left alone: "/exit" would be
-   appended to the draft and the Enter would send it. The tab is reported as kept.
-3. **Type** `/exit`, then after 300 ms check the tab again (still open, still idle, still Claude) and press Enter.
+2. **Box check.** If Claude's prompt box holds unsent text (`prompt_text`), the tab is left alone: "/exit" would be
+   appended to the draft and the Enter would send it. The tab is reported as kept. No box on the screen (a picker, a
+   menu, an editor), or a shell prompt report after the last key (the shell is in front), also leaves it alone
+   (review 2026-11-28).
+3. **Type** `/exit`, then after 300 ms check the tab again (still open, still idle, still Claude) and press Enter
+   once the box shows exactly `/exit` (given up after 2 s more). A second pick never retypes it.
 4. **Gone.** The job ends when a new prompt report arrives after the Enter (the shell is back at its prompt), or after
    15 s (logged, given up). The poll is asked to look now.
 

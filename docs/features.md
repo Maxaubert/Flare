@@ -3309,7 +3309,8 @@ Follow-ups to A1 to A6 (PR #339).
   "End Claude session" (Claude runs there) or "Start Claude" (the shell waits at its prompt), and a "Claude sessions"
   flyout: "End all Claude sessions (N)", "Start Claude in all tabs (N)", "Restart all Claude sessions (N)" (after a
   Flare update, so plugins, hooks and MCP servers load again). An idle Claude gets `/exit` and Enter; a busy one asks
-  first (Cancel, Wait, End now; End now sends Escape first); a draft in the prompt box is never sent; Start types
+  first (Cancel, Wait, End now; End now sends Escape first); a draft in the prompt box is never sent, `/exit` goes only
+  into an empty prompt box on the screen and its Enter only once the box shows it; Start types
   `claude --resume <id>` with the tab's last session, or `claude`. Remote tabs are left out. Rules 1380 to 1383.
   Held by `claude_sessions.rs`'s tests and `appctl/tests/claude_sessions_tests.rs`. Design:
   `docs/superpowers/specs/2026-11-28-session-controls-design.md`.

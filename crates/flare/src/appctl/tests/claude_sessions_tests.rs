@@ -218,6 +218,8 @@ fn wait_ends_the_busy_claude_once_it_rests() {
     assert_eq!(written(&f, "C:\\b"), "", "nothing while it works");
     rests(&f, "C:\\b");
     f.pump_until("b's exit", |f| written(f, "C:\\b") == "/exit");
+    // The exit came from the terminal's drain, not the timer: the Enter still needs the timer running.
+    assert!(f.ctl.borrow().timer_on, "the Enter has a timer");
     boxed(&f, "C:\\b", "/exit");
     later(&f, ENTER_AFTER_MS);
     f.pump_until("b's Enter", |f| written(f, "C:\\b") == "/exit\r");
