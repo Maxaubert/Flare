@@ -6117,16 +6117,23 @@ Source: Max, 2026-11-28.
 1381. **Ending types `/exit` and a separate Enter, only into an idle Claude with an empty prompt box; starting types
 one fixed line.** The keys go through `TermHandle::session_key` (fixed words, rule 2's typed-intent pattern): `/exit`,
 then after 300 ms (`SEND_ENTER_MS`) the tab is checked again (still Claude, not working, no question box) and `\r` is
-sent. A question box is busy, since an Enter there would answer it. A draft in Claude's prompt box keeps the tab: the
-Enter would send the draft. Start types `claude --resume <id>` (the tab's last Claude session, a lower-case UUID only)
+sent only once the box shows exactly `/exit` (given up after 2 s more, with no Enter: the person may have typed). A
+question box is busy, since an Enter there would answer it. A draft in Claude's prompt box keeps the tab: the Enter
+would send the draft. No prompt box on the screen (a picker, a menu, an editor) keeps it too, and so does a shell that
+reported its prompt after the last key (the shell is in front, the agent mark is stale): `/exit` is never typed there.
+A second pick never types a second `/exit` into a tab whose first one is under way, and never drops another tab's job.
+Start types `claude --resume <id>` (the tab's last Claude session, a lower-case UUID only)
 or `claude`, then `\r`; in cmd inside the restore's `NoDefaultCurrentDirectoryInExePath` guard; nothing for a shell
 the line is not made for. Held by `the_typed_start_line_resumes_a_known_session_or_starts_a_new_claude`,
 `a_bad_id_is_never_typed`, `the_session_keys_write_only_their_fixed_words`,
 `an_idle_claude_gets_exit_then_enter_and_the_tab_stays`, `a_question_after_exit_holds_the_enter_back`,
 `a_draft_keeps_the_tab`, `end_all_types_exit_then_enter_and_keeps_every_tab`,
 `start_types_the_resume_line_of_the_last_session`, `a_draft_is_never_sent`,
-`the_last_session_outlives_the_agent_and_goes_with_the_tab` and `a_prompt_report_after_the_last_key_is_the_prompt`.
-Source: Max, 2026-11-28.
+`the_last_session_outlives_the_agent_and_goes_with_the_tab`, `a_prompt_report_after_the_last_key_is_the_prompt`,
+`prompt_text_reads_the_box_only`, `a_second_pick_leaves_the_other_jobs_alone`, `a_pick_again_never_types_exit_twice`,
+`a_shell_at_its_prompt_gets_no_exit`, `no_prompt_box_gets_no_exit`, `the_enter_waits_for_the_echo_and_never_sends_other_words`,
+`a_shell_back_at_its_prompt_gets_no_exit` and `the_enter_waits_for_the_echo`. Source: Max, 2026-11-28; review
+2026-11-28.
 
 1382. **A busy Claude asks once: Cancel, Wait (the default), End now.** "N sessions are working". Cancel does nothing,
 the idle tabs included. Wait ends each busy tab as soon as it is idle, with no time limit. End now sends Escape once
@@ -6137,7 +6144,8 @@ third button exists only for this question; downloads and app-link questions wai
 `end_now_interrupts_then_ends` and `a_third_button_is_the_default_and_tab_walks_the_row`. Source: Max, 2026-11-28.
 
 1383. **Restart starts Claude again only after the shell's next prompt report, with the session it had.** The id is
-taken before the end (the hub forgets the agent's session as it leaves). A start line typed earlier would land in
-Claude's own prompt box. A shell that does not come back in 15 s is given up, with nothing typed. Held by
-`a_restart_starts_the_same_session_at_the_next_prompt` and `restart_starts_the_same_session_at_the_next_prompt`.
-Source: Max, 2026-11-28.
+taken as `/exit` is typed (the hub forgets the agent's session as it leaves; a `/clear` under Wait named a new one). A
+start line typed earlier would land in Claude's own prompt box. A shell that does not come back in 15 s is given up,
+with nothing typed. Held by `a_restart_starts_the_same_session_at_the_next_prompt`,
+`a_restart_resumes_the_session_at_the_exit` and `restart_starts_the_same_session_at_the_next_prompt`. Source: Max,
+2026-11-28; review 2026-11-28.

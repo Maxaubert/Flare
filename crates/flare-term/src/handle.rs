@@ -843,8 +843,11 @@ impl TermHandle {
 
     /// The "Claude sessions" rows' typing (rule 1381): only the fixed words of [`SessionKey`], called only by the app's
     /// session runner. Counts as typing, so the tab's prompt is no longer fresh. False when nothing was written (a
-    /// shell the start line is not made for).
+    /// shell the start line is not made for, or a remote tab: its screen and prompt are the other machine's).
     pub fn session_key(&self, key: SessionKey<'_>) -> bool {
+        if self.is_remote() {
+            return false;
+        }
         let line;
         let bytes: &[u8] = match key {
             SessionKey::Exit => b"/exit",

@@ -69,6 +69,23 @@ pub fn prompt_draft(rows: &[String]) -> Option<bool> {
     }))
 }
 
+/// The text in Claude's prompt box (its rows between the two rules, the `❯` mark and blank rows dropped, joined by
+/// one space): `None` when no box is on the screen, `Some("")` for an empty one. The "Claude sessions" rows press the
+/// Enter after `/exit` only once the box shows exactly that (rule 1381).
+pub fn prompt_text(rows: &[String]) -> Option<String> {
+    let low = rows.iter().rposition(|r| RULE.is_match(r))?;
+    let top = rows[..low].iter().rposition(|r| RULE.is_match(r))?;
+    let parts: Vec<&str> = rows[top + 1..low]
+        .iter()
+        .map(|r| {
+            r.trim_start_matches(['❯', '>'])
+                .trim_matches(|c: char| c.is_whitespace() || c == '\u{a0}')
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    Some(parts.join(" "))
+}
+
 /// The keys that settle a question: Enter, Esc, Ctrl+C, or exactly one digit 1 to 9.
 ///
 /// A question lasts until it is answered. Turning a permission prompt down or cancelling with Esc ends
@@ -259,6 +276,30 @@ mod tests {
             Some(true)
         );
         assert_eq!(prompt_draft(&rows(&["PS C:\\w> npm test"])), None);
+    }
+
+    /// Rule 1381: the box's text, empty for an empty box, none without a box; the rows under the box (the slash
+    /// command list, the mode line) are not in it.
+    #[test]
+    fn prompt_text_reads_the_box_only() {
+        let dashes = "─".repeat(40);
+        let with = |input: &str| {
+            rows(&[
+                "● done",
+                &dashes,
+                input,
+                &dashes,
+                "  /exit   Exit the REPL",
+                "  ⏵⏵ auto mode on",
+            ])
+        };
+        assert_eq!(prompt_text(&with("❯ ")).as_deref(), Some(""));
+        assert_eq!(prompt_text(&with("❯\u{a0}/exit")).as_deref(), Some("/exit"));
+        assert_eq!(
+            prompt_text(&with("❯ fix it /exit")).as_deref(),
+            Some("fix it /exit")
+        );
+        assert_eq!(prompt_text(&rows(&["PS C:\\w> /exit"])), None);
     }
 
     #[test]

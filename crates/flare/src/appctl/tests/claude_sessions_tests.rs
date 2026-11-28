@@ -37,9 +37,27 @@ fn plain_shell(f: &Fx, cwd: &str) -> String {
     id
 }
 
-/// Claude idle in `cwd`, its session named by its hooks.
+/// Claude draws its prompt box holding `text`, as it does at rest and after each key.
+fn boxed(f: &Fx, cwd: &str, text: &str) {
+    let id = id_of(f, cwd);
+    let rule = "\u{2500}".repeat(40);
+    f.say(
+        cwd,
+        &format!("\r\n{rule}\r\n\u{276f} {text}\r\n{rule}\r\n  auto mode on"),
+    );
+    let want = text.to_string();
+    f.pump_until("the box", |f| {
+        let c = f.ctl.borrow();
+        let h = c.handle_of(&id).expect("a handle");
+        flare_agent::question::prompt_text(&h.typed_tail(flare_agent::indicator::SCREEN_TAIL_ROWS))
+            == Some(want.clone())
+    });
+}
+
+/// Claude idle in `cwd`, its session named by its hooks, its prompt box empty.
 fn idle_claude(f: &Fx, cwd: &str) -> String {
     let id = f.claude_in(cwd);
+    boxed(f, cwd, "");
     f.say(
         cwd,
         &format!("\x1b]777;flare-agent;state=done;session={SID}\x07"),
@@ -146,6 +164,8 @@ fn end_all_types_exit_then_enter_and_keeps_every_tab() {
     f.pump_until("the exits", |f| {
         written(f, "C:\\a") == "/exit" && written(f, "C:\\b") == "/exit"
     });
+    boxed(&f, "C:\\a", "/exit");
+    boxed(&f, "C:\\b", "/exit");
     later(&f, ENTER_AFTER_MS);
     f.pump_until("the Enters", |f| {
         written(f, "C:\\a") == "/exit\r" && written(f, "C:\\b") == "/exit\r"
@@ -198,6 +218,7 @@ fn wait_ends_the_busy_claude_once_it_rests() {
     assert_eq!(written(&f, "C:\\b"), "", "nothing while it works");
     rests(&f, "C:\\b");
     f.pump_until("b's exit", |f| written(f, "C:\\b") == "/exit");
+    boxed(&f, "C:\\b", "/exit");
     later(&f, ENTER_AFTER_MS);
     f.pump_until("b's Enter", |f| written(f, "C:\\b") == "/exit\r");
 }
@@ -216,6 +237,7 @@ fn end_now_interrupts_then_ends() {
     rests(&f, "C:\\a");
     later(&f, INTERRUPT_SETTLE_MS);
     f.pump_until("the exit", |f| written(f, "C:\\a") == "\x1b/exit");
+    boxed(&f, "C:\\a", "/exit");
     later(&f, ENTER_AFTER_MS);
     f.pump_until("the Enter", |f| written(f, "C:\\a") == "\x1b/exit\r");
 }
@@ -251,11 +273,16 @@ fn start_types_the_resume_line_of_the_last_session() {
 fn restart_starts_the_same_session_at_the_next_prompt() {
     let f = fx();
     f.open_tabs(&["C:\\a"]);
-    let a = idle_claude(&f, "C:\\a");
     prompt(&f, "C:\\a");
-    // A prompt report before the restart is the old one: it starts nothing.
+    // The person typed `claude` after that prompt: a prompt report before the restart is the old one.
+    let typed = crate::tab_host::HostEvent::Typed {
+        id: id_of(&f, "C:\\a"),
+    };
+    f.ctl.borrow_mut().hub.on_host_events(&[typed]);
+    let a = idle_claude(&f, "C:\\a");
     pick(&f, &a, "Restart all Claude sessions");
     f.pump_until("the exit", |f| written(f, "C:\\a") == "/exit");
+    boxed(&f, "C:\\a", "/exit");
     later(&f, ENTER_AFTER_MS);
     f.pump_until("the Enter", |f| written(f, "C:\\a") == "/exit\r");
     later(&f, 500);
@@ -274,14 +301,61 @@ fn a_draft_is_never_sent() {
     f.open_tabs(&["C:\\a"]);
     let a = idle_claude(&f, "C:\\a");
     // Claude's prompt box with unsent words, as it draws it.
-    let rule = "\u{2500}".repeat(40);
-    f.say(
-        "C:\\a",
-        &format!("\r\n{rule}\r\n\u{276f} half a thought\r\n{rule}\r\n  auto mode on"),
-    );
-    f.pump_until("the draft", |f| f.ctl.borrow().claude_facts(&a).draft);
+    boxed(&f, "C:\\a", "half a thought");
+    assert!(f.ctl.borrow().claude_facts(&a).draft());
     pick(&f, &a, END_TAB);
     later(&f, ENTER_AFTER_MS);
     assert_eq!(written(&f, "C:\\a"), "");
     assert!(f.ctl.borrow().claude_running().is_empty());
+}
+
+/// Review: the shell reported its prompt after the last key (Claude quit, its mark not yet gone): "/exit" is never
+/// typed into the shell.
+#[test]
+fn a_shell_back_at_its_prompt_gets_no_exit() {
+    let f = fx();
+    f.open_tabs(&["C:\\a"]);
+    let a = idle_claude(&f, "C:\\a");
+    prompt(&f, "C:\\a");
+    assert!(
+        f.ctl.borrow().claude_facts(&a).claude,
+        "the mark is still there"
+    );
+    pick(&f, &a, END_TAB);
+    later(&f, 1000);
+    assert_eq!(written(&f, "C:\\a"), "");
+    assert!(f.ctl.borrow().claude_running().is_empty());
+}
+
+/// Review: no prompt box on the screen (a picker or menu of Claude's): nothing is typed.
+#[test]
+fn no_prompt_box_gets_no_exit() {
+    let f = fx();
+    f.open_tabs(&["C:\\a"]);
+    let a = idle_claude(&f, "C:\\a");
+    // A picker fills the screen's tail: the box is no longer among the rows read.
+    let picker: String = (1..=20).map(|i| format!("\r\n  {i}. a model")).collect();
+    f.say("C:\\a", &format!("\r\n  Select model{picker}"));
+    f.pump_until("the box gone", |f| {
+        f.ctl.borrow().claude_facts(&a).prompt_box.is_none()
+    });
+    pick(&f, &a, END_TAB);
+    later(&f, 1000);
+    assert_eq!(written(&f, "C:\\a"), "");
+}
+
+/// Review: the Enter waits for "/exit" to show in the box; with other words there it is never pressed.
+#[test]
+fn the_enter_waits_for_the_echo() {
+    let f = fx();
+    f.open_tabs(&["C:\\a"]);
+    let a = idle_claude(&f, "C:\\a");
+    pick(&f, &a, END_TAB);
+    f.pump_until("the exit", |f| written(f, "C:\\a") == "/exit");
+    later(&f, ENTER_AFTER_MS);
+    assert_eq!(written(&f, "C:\\a"), "/exit", "no echo yet: no Enter");
+    boxed(&f, "C:\\a", "hi/exit");
+    later(&f, crate::claude_sessions::ECHO_WAIT_MS);
+    assert_eq!(written(&f, "C:\\a"), "/exit", "never sends other words");
+    assert!(f.ctl.borrow().claude_running().is_empty(), "given up");
 }

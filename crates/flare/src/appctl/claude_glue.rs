@@ -42,19 +42,27 @@ impl AppCtl {
         let here = self.hub.agent_here(id);
         let claude = here && self.hub.agent_kind(id) == Some(DetectedAgent::Claude);
         let armed = self.hub.armed_agent(id).is_some();
-        let question = self.hub.question_up(id)
-            || flare_agent::question::looks_like_question(&h.question_rows());
+        // The screen is read for a Claude tab only, and its box only when Claude is not busy (this runs on every
+        // drained batch of terminal output while a job waits).
+        let busy = claude
+            && (self.hub.working(id)
+                || self.hub.question_up(id)
+                || flare_agent::question::looks_like_question(&h.question_rows()));
+        let prompt_box = (claude && !busy)
+            .then(|| {
+                flare_agent::question::prompt_text(
+                    &h.typed_tail(flare_agent::indicator::SCREEN_TAIL_ROWS),
+                )
+            })
+            .flatten();
         TabFacts {
             id: id.to_string(),
             local: true,
             polled: self.hub.polled(id),
             claude,
             other_agent: !claude && (here || armed),
-            busy: claude && (self.hub.working(id) || question),
-            draft: claude
-                && flare_agent::question::prompt_draft(
-                    &h.typed_tail(flare_agent::indicator::SCREEN_TAIL_ROWS),
-                ) == Some(true),
+            busy,
+            prompt_box,
             at_prompt: self.hub.at_prompt(id),
             shell: h.shell_id(),
             session: self.hub.last_claude_session(id).map(str::to_string),
@@ -213,7 +221,7 @@ impl AppCtl {
 
     /// When the runner is due on its own.
     pub(super) fn claude_next_due(&self) -> Option<u64> {
-        self.claude_run.next_due()
+        self.claude_run.next_due(self.now())
     }
 
     /// The tabs the runner let go are written to the log (a kept or given-up tab is the person's to look at).
@@ -222,6 +230,7 @@ impl AppCtl {
             let word = match why {
                 Outcome::Done => "done",
                 Outcome::KeptDraft => "kept-draft",
+                Outcome::NoPrompt => "no-prompt",
                 Outcome::GaveUp => "gave-up",
                 Outcome::Gone => "gone",
             };

@@ -24,8 +24,9 @@ pub struct TabFacts {
     pub other_agent: bool,
     /// Claude works, or a question is up (an Enter there would answer it).
     pub busy: bool,
-    /// Claude's prompt box holds unsent text.
-    pub draft: bool,
+    /// The text in Claude's prompt box (`flare_agent::question::prompt_text`): None when no box is on the screen (a
+    /// picker, a menu, the transcript view, an editor: "/exit" is typed only into an empty box). Read for Claude only.
+    pub prompt_box: Option<String>,
     /// The shell reported its prompt after the last key typed in the tab.
     pub at_prompt: bool,
     /// The tab's shell (`pwsh`, `cmd`, `zsh`...), when known.
@@ -37,6 +38,12 @@ pub struct TabFacts {
 }
 
 impl TabFacts {
+    /// Claude's prompt box holds unsent text (the tests read it; the runner matches the box itself).
+    #[cfg(test)]
+    pub fn draft(&self) -> bool {
+        self.prompt_box.as_deref().is_some_and(|t| !t.is_empty())
+    }
+
     /// The start line is made for this tab's shell.
     fn can_start(&self) -> bool {
         self.shell
@@ -282,13 +289,15 @@ pub const INTERRUPT_SETTLE_MS: u64 = 800;
 pub const INTERRUPT_WAIT_MS: u64 = 60_000;
 /// After the Enter, the shell has this long to show its prompt again.
 pub const LEAVE_WAIT_MS: u64 = 15_000;
+/// "/exit" has this long to show in Claude's prompt box; the Enter is pressed only once it does.
+pub const ECHO_WAIT_MS: u64 = 2_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Phase {
     /// Waits until Claude is idle; `until` None waits as long as it takes (Wait).
     Idle { not_before: u64, until: Option<u64> },
-    /// "/exit" is typed; the Enter is due.
-    Enter { at: u64 },
+    /// "/exit" is typed; the Enter is due at `at`, once the box shows exactly "/exit", and given up at `until`.
+    Enter { at: u64, until: u64 },
     /// The Enter was pressed; waits for the shell's next prompt report.
     Leaving { after: u64, until: u64 },
 }
@@ -308,6 +317,8 @@ pub enum Outcome {
     Done,
     /// Left alone: Claude's prompt box held unsent text.
     KeptDraft,
+    /// Left alone: Claude's prompt box was not on the screen (a picker, a menu, an editor).
+    NoPrompt,
     /// Given up: it did not come to rest or the shell did not come back in time.
     GaveUp,
     /// The tab closed or stopped being a local shell.
@@ -324,11 +335,21 @@ pub struct Runner {
 
 impl Runner {
     /// Starts ending (or restarting) `tabs`. `interrupt`: a busy tab gets Escape first and has
-    /// [`INTERRUPT_WAIT_MS`] to come to rest; without it a busy tab waits as long as it takes. A tab already under way
-    /// starts over. The tabs that are idle are acted on at once (the returned acts).
+    /// [`INTERRUPT_WAIT_MS`] to come to rest; without it a busy tab waits as long as it takes. A tab still waiting for
+    /// idle starts over; one whose "/exit" is typed already keeps its job (a second "/exit" would join the first). The
+    /// tabs that are idle are acted on at once (the returned acts); other tabs' jobs are not touched.
     pub fn end(&mut self, tabs: &[TabFacts], mode: Mode, interrupt: bool, now: u64) -> Vec<Act> {
         let mut acts = Vec::new();
+        let mut fresh = Vec::new();
         for t in tabs.iter().filter(|t| t.can_end()) {
+            if self
+                .jobs
+                .get(&t.id)
+                .is_some_and(|j| !matches!(j.phase, Phase::Idle { .. }))
+            {
+                continue;
+            }
+            fresh.push(t.id.clone());
             let phase = if interrupt && t.busy {
                 acts.push(Act::Press {
                     tab: t.id.clone(),
@@ -355,7 +376,7 @@ impl Runner {
             );
         }
         let facts = |id: &str| tabs.iter().find(|t| t.id == id).cloned();
-        acts.extend(self.step(now, &facts));
+        acts.extend(self.step_ids(now, fresh, &facts));
         acts
     }
 
@@ -380,9 +401,19 @@ impl Runner {
 
     /// Moves every job on, with each tab's facts as they are now.
     pub fn step(&mut self, now: u64, facts: &dyn Fn(&str) -> Option<TabFacts>) -> Vec<Act> {
+        let ids: Vec<String> = self.jobs.keys().cloned().collect();
+        self.step_ids(now, ids, facts)
+    }
+
+    /// Moves the jobs of `ids` on.
+    fn step_ids(
+        &mut self,
+        now: u64,
+        ids: Vec<String>,
+        facts: &dyn Fn(&str) -> Option<TabFacts>,
+    ) -> Vec<Act> {
         let mut acts = Vec::new();
         let mut look = false;
-        let ids: Vec<String> = self.jobs.keys().cloned().collect();
         for id in ids {
             let Some(job) = self.jobs.get(&id).cloned() else {
                 continue;
@@ -397,8 +428,9 @@ impl Runner {
                     if now < not_before {
                         continue;
                     }
-                    if !f.claude {
-                        // Claude is gone already (the person ended it): a restart starts it at the prompt.
+                    // The shell reported its prompt after the last key: it is in front, not Claude (a stale
+                    // agent mark), so nothing is typed. Claude is gone (the person ended it): a restart starts it.
+                    if !f.claude || f.at_prompt {
                         self.leave_or_start(&id, &job, &f, now, &mut acts, true);
                         continue;
                     }
@@ -408,29 +440,49 @@ impl Runner {
                         }
                         continue;
                     }
-                    if f.draft {
+                    match f.prompt_box.as_deref() {
+                        // No box: Claude shows something else, where "/exit" would be keys of its own.
+                        None => {
+                            self.finish(&id, Outcome::NoPrompt);
+                            continue;
+                        }
                         // "/exit" would join the draft and the Enter would send it.
-                        self.finish(&id, Outcome::KeptDraft);
-                        continue;
+                        Some(t) if !t.is_empty() => {
+                            self.finish(&id, Outcome::KeptDraft);
+                            continue;
+                        }
+                        Some(_) => {}
                     }
                     acts.push(Act::Press {
                         tab: id.clone(),
                         key: Press::Exit,
                     });
-                    self.set_phase(
-                        &id,
-                        Phase::Enter {
+                    if let Some(j) = self.jobs.get_mut(&id) {
+                        // The session Claude is in now (a /clear or /resume under Wait named another one).
+                        if f.session.is_some() {
+                            j.session = f.session.clone();
+                        }
+                        j.phase = Phase::Enter {
                             at: now + ENTER_AFTER_MS,
-                        },
-                    );
+                            until: now + ENTER_AFTER_MS + ECHO_WAIT_MS,
+                        };
+                    }
                 }
-                Phase::Enter { at } => {
+                Phase::Enter { at, until } => {
                     if now < at {
                         continue;
                     }
                     // Checked again: a question that came up since would take the Enter as its answer.
-                    if !f.claude || f.busy {
+                    if !f.claude || f.busy || f.at_prompt {
                         self.finish(&id, Outcome::GaveUp);
+                        continue;
+                    }
+                    // Only once the box shows "/exit" and nothing else: the Enter must not send words the person
+                    // typed meanwhile, nor reach anything but Claude's prompt.
+                    if f.prompt_box.as_deref() != Some("/exit") {
+                        if now >= until {
+                            self.finish(&id, Outcome::GaveUp);
+                        }
                         continue;
                     }
                     acts.push(Act::Press {
@@ -525,18 +577,16 @@ impl Runner {
         self.jobs.keys().cloned().collect()
     }
 
-    /// The next time a job is due on its own (an Enter, a settle, a deadline); a job that only waits for the tab's
-    /// state (a Wait for idle) adds none: the window steps it on every drained batch of terminal events.
-    pub fn next_due(&self) -> Option<u64> {
+    /// The next time a job is due on its own (an Enter, a settle, a deadline), never one already past; a job that only
+    /// waits for the tab's state (a Wait for idle, the echo of "/exit") adds none before its deadline: the window steps
+    /// it on every drained batch of terminal events.
+    pub fn next_due(&self, now: u64) -> Option<u64> {
+        let next = |a: u64, b: u64| if now < a { a } else { b };
         self.jobs
             .values()
             .filter_map(|j| match j.phase {
-                Phase::Idle { not_before, until } => [Some(not_before), until]
-                    .into_iter()
-                    .flatten()
-                    .min()
-                    .filter(|_| until.is_some()),
-                Phase::Enter { at } => Some(at),
+                Phase::Idle { not_before, until } => until.map(|u| next(not_before, u)),
+                Phase::Enter { at, until } => Some(next(at, until)),
                 Phase::Leaving { until, .. } => Some(until),
             })
             .min()
@@ -560,6 +610,7 @@ mod tests {
             local: true,
             polled: true,
             claude: true,
+            prompt_box: Some(String::new()),
             shell: Some("pwsh".into()),
             session: Some(SID.into()),
             ..TabFacts::default()
@@ -695,9 +746,28 @@ mod tests {
             let mut v = self.0.borrow_mut();
             f(v.iter_mut().find(|t| t.id == id).expect("a tab"));
         }
+        /// Claude's box shows what the keys typed: "/exit" after the exit, empty after the Enter.
+        fn echo(&self, acts: &[Act]) {
+            for a in acts {
+                if let Act::Press { tab, key } = a {
+                    match key {
+                        Press::Exit => self.set(tab, |t| t.prompt_box = Some("/exit".into())),
+                        Press::Enter => self.set(tab, |t| t.prompt_box = Some(String::new())),
+                        Press::Interrupt => {}
+                    }
+                }
+            }
+        }
         fn step(&self, r: &mut Runner, now: u64) -> Vec<Act> {
             let tabs = self.0.borrow().clone();
-            r.step(now, &|id| tabs.iter().find(|t| t.id == id).cloned())
+            let acts = r.step(now, &|id| tabs.iter().find(|t| t.id == id).cloned());
+            self.echo(&acts);
+            acts
+        }
+        fn end(&self, r: &mut Runner, mode: Mode, interrupt: bool, now: u64) -> Vec<Act> {
+            let acts = r.end(&self.all(), mode, interrupt, now);
+            self.echo(&acts);
+            acts
         }
         fn all(&self) -> Vec<TabFacts> {
             self.0.borrow().clone()
@@ -718,10 +788,10 @@ mod tests {
         let w = World::new(vec![claude("a")]);
         let mut r = Runner::default();
         assert_eq!(
-            r.end(&w.all(), Mode::End, false, 1000),
+            w.end(&mut r, Mode::End, false, 1000),
             [press("a", Press::Exit)]
         );
-        assert_eq!(r.next_due(), Some(1000 + ENTER_AFTER_MS));
+        assert_eq!(r.next_due(1000), Some(1000 + ENTER_AFTER_MS));
         assert!(w.step(&mut r, 1000 + ENTER_AFTER_MS - 1).is_empty());
         assert_eq!(
             w.step(&mut r, 1000 + ENTER_AFTER_MS),
@@ -743,7 +813,7 @@ mod tests {
         let w = World::new(vec![claude("a"), b]);
         let mut r = Runner::default();
         assert_eq!(
-            r.end(&w.all(), Mode::End, false, 0),
+            w.end(&mut r, Mode::End, false, 0),
             [press("a", Press::Exit)],
             "no key for the busy one"
         );
@@ -769,7 +839,7 @@ mod tests {
         c.busy = true;
         let w = World::new(vec![claude("a"), b, c]);
         let mut r = Runner::default();
-        let acts = r.end(&w.all(), Mode::End, true, 0);
+        let acts = w.end(&mut r, Mode::End, true, 0);
         assert_eq!(
             acts,
             [
@@ -803,18 +873,18 @@ mod tests {
     #[test]
     fn a_draft_keeps_the_tab() {
         let mut a = claude("a");
-        a.draft = true;
+        a.prompt_box = Some("half a thought".into());
         let mut b = claude("b");
         b.busy = true;
         let w = World::new(vec![a, b]);
         let mut r = Runner::default();
         assert_eq!(
-            r.end(&w.all(), Mode::End, true, 0),
+            w.end(&mut r, Mode::End, true, 0),
             [press("b", Press::Interrupt)]
         );
         w.set("b", |t| {
             t.busy = false;
-            t.draft = true;
+            t.prompt_box = Some("the words it put back".into());
         });
         assert!(w.step(&mut r, INTERRUPT_SETTLE_MS).is_empty());
         let done = r.take_done();
@@ -827,7 +897,7 @@ mod tests {
     fn a_question_after_exit_holds_the_enter_back() {
         let w = World::new(vec![claude("a")]);
         let mut r = Runner::default();
-        r.end(&w.all(), Mode::End, false, 0);
+        w.end(&mut r, Mode::End, false, 0);
         w.set("a", |t| t.busy = true);
         assert!(w.step(&mut r, ENTER_AFTER_MS).is_empty());
         assert_eq!(r.take_done(), [("a".to_string(), Outcome::GaveUp)]);
@@ -838,7 +908,7 @@ mod tests {
     fn a_restart_starts_the_same_session_at_the_next_prompt() {
         let w = World::new(vec![claude("a")]);
         let mut r = Runner::default();
-        r.end(&w.all(), Mode::Restart, false, 0);
+        w.end(&mut r, Mode::Restart, false, 0);
         w.step(&mut r, ENTER_AFTER_MS);
         // The hub forgets the session as the agent leaves; the runner kept it.
         w.set("a", |t| t.session = None);
@@ -858,7 +928,7 @@ mod tests {
         // A shell that never comes back is given up, nothing typed.
         let w = World::new(vec![claude("b")]);
         let mut r = Runner::default();
-        r.end(&w.all(), Mode::Restart, false, 0);
+        w.end(&mut r, Mode::Restart, false, 0);
         w.step(&mut r, ENTER_AFTER_MS);
         assert!(w.step(&mut r, ENTER_AFTER_MS + LEAVE_WAIT_MS).is_empty());
         assert_eq!(r.take_done(), [("b".to_string(), Outcome::GaveUp)]);
@@ -871,7 +941,7 @@ mod tests {
         b.busy = true;
         let w = World::new(vec![b]);
         let mut r = Runner::default();
-        r.end(&w.all(), Mode::End, false, 0);
+        w.end(&mut r, Mode::End, false, 0);
         w.set("b", |t| t.local = false);
         assert!(w.step(&mut r, 10).is_empty());
         assert_eq!(r.take_done(), [("b".to_string(), Outcome::Gone)]);
@@ -911,10 +981,141 @@ mod tests {
         b.busy = true;
         let w = World::new(vec![b]);
         let mut r = Runner::default();
-        r.end(&w.all(), Mode::End, false, 0);
-        assert_eq!(r.next_due(), None);
+        w.end(&mut r, Mode::End, false, 0);
+        assert_eq!(r.next_due(0), None);
         let mut r = Runner::default();
-        r.end(&w.all(), Mode::End, true, 0);
-        assert_eq!(r.next_due(), Some(INTERRUPT_SETTLE_MS));
+        w.end(&mut r, Mode::End, true, 0);
+        assert_eq!(r.next_due(0), Some(INTERRUPT_SETTLE_MS));
+        // Past the settle, the deadline is next: a time already gone would wake the timer on every tick.
+        assert_eq!(r.next_due(INTERRUPT_SETTLE_MS + 1), Some(INTERRUPT_WAIT_MS));
+        // "/exit" typed: the Enter, then the echo's deadline.
+        let w = World::new(vec![claude("a")]);
+        let mut r = Runner::default();
+        r.end(&w.all(), Mode::End, false, 0);
+        assert_eq!(r.next_due(0), Some(ENTER_AFTER_MS));
+        assert_eq!(
+            r.next_due(ENTER_AFTER_MS + 1),
+            Some(ENTER_AFTER_MS + ECHO_WAIT_MS)
+        );
+    }
+
+    /// Review: a second pick acts on its own tabs only; the jobs already under way go on (a restart still starts).
+    #[test]
+    fn a_second_pick_leaves_the_other_jobs_alone() {
+        let w = World::new(vec![claude("a"), claude("b")]);
+        let mut r = Runner::default();
+        let only_a: Vec<TabFacts> = w.all().into_iter().filter(|t| t.id == "a").collect();
+        let acts = r.end(&only_a, Mode::Restart, false, 0);
+        w.echo(&acts);
+        w.step(&mut r, ENTER_AFTER_MS);
+        let only_b: Vec<TabFacts> = w.all().into_iter().filter(|t| t.id == "b").collect();
+        let acts = r.end(&only_b, Mode::End, false, 400);
+        assert_eq!(acts, [press("b", Press::Exit)]);
+        assert!(r.take_done().is_empty(), "a is not dropped");
+        w.left("a");
+        assert!(w.step(&mut r, 500).contains(&Act::Start {
+            tab: "a".into(),
+            shell: "pwsh".into(),
+            resume: Some(SID.into())
+        }));
+    }
+
+    /// Review: picking again while "/exit" waits for its Enter types no second "/exit".
+    #[test]
+    fn a_pick_again_never_types_exit_twice() {
+        let w = World::new(vec![claude("a")]);
+        let mut r = Runner::default();
+        assert_eq!(
+            w.end(&mut r, Mode::End, false, 0),
+            [press("a", Press::Exit)]
+        );
+        assert!(w.end(&mut r, Mode::End, false, 100).is_empty());
+        assert_eq!(
+            w.step(&mut r, ENTER_AFTER_MS),
+            [press("a", Press::Enter), Act::LookSoon]
+        );
+        assert!(w.end(&mut r, Mode::End, true, 400).is_empty());
+    }
+
+    /// Review: the shell's prompt came after the last key, so the shell is in front, not Claude (a stale agent
+    /// mark): nothing is typed; a restart types the start line there.
+    #[test]
+    fn a_shell_at_its_prompt_gets_no_exit() {
+        let mut a = claude("a");
+        a.at_prompt = true;
+        a.prompts = 1;
+        let w = World::new(vec![a]);
+        let mut r = Runner::default();
+        assert!(w.end(&mut r, Mode::End, false, 0).is_empty());
+        assert_eq!(r.take_done(), [("a".to_string(), Outcome::Done)]);
+        let acts = w.end(&mut r, Mode::Restart, false, 0);
+        assert!(
+            !acts.iter().any(|a| matches!(a, Act::Press { .. })),
+            "{acts:?}"
+        );
+        assert!(acts.iter().any(|a| matches!(a, Act::Start { .. })));
+    }
+
+    /// Review: no prompt box on the screen (a picker, a menu, an editor): "/exit" is never typed.
+    #[test]
+    fn no_prompt_box_gets_no_exit() {
+        let mut a = claude("a");
+        a.prompt_box = None;
+        let w = World::new(vec![a]);
+        let mut r = Runner::default();
+        assert!(w.end(&mut r, Mode::End, false, 0).is_empty());
+        assert_eq!(r.take_done(), [("a".to_string(), Outcome::NoPrompt)]);
+    }
+
+    /// Review: the Enter waits for "/exit" to show in the box, and is never pressed when the box shows anything
+    /// else (the person typed meanwhile) or is gone.
+    #[test]
+    fn the_enter_waits_for_the_echo_and_never_sends_other_words() {
+        let w = World::new(vec![claude("a"), claude("b"), claude("c")]);
+        let mut r = Runner::default();
+        r.end(&w.all(), Mode::End, false, 0);
+        // a: the echo is late; b: the person typed too; c: the box went.
+        w.set("b", |t| t.prompt_box = Some("/exit and more".into()));
+        w.set("c", |t| t.prompt_box = None);
+        assert!(w.step(&mut r, ENTER_AFTER_MS).is_empty());
+        w.set("a", |t| t.prompt_box = Some("/exit".into()));
+        assert_eq!(
+            w.step(&mut r, ENTER_AFTER_MS + 100),
+            [press("a", Press::Enter), Act::LookSoon]
+        );
+        assert!(w.step(&mut r, ENTER_AFTER_MS + ECHO_WAIT_MS).is_empty());
+        let done = r.take_done();
+        assert!(
+            done.contains(&("b".to_string(), Outcome::GaveUp)),
+            "{done:?}"
+        );
+        assert!(
+            done.contains(&("c".to_string(), Outcome::GaveUp)),
+            "{done:?}"
+        );
+    }
+
+    /// Review: a restart resumes the session Claude was in when "/exit" was typed, not the one at the pick.
+    #[test]
+    fn a_restart_resumes_the_session_at_the_exit() {
+        const OTHER: &str = "0f0e0d0c-2222-4333-8444-955566667777";
+        let mut a = claude("a");
+        a.busy = true;
+        let w = World::new(vec![a]);
+        let mut r = Runner::default();
+        w.end(&mut r, Mode::Restart, false, 0);
+        // Under Wait the person ran /clear: the hooks named a new session.
+        w.set("a", |t| {
+            t.session = Some(OTHER.into());
+            t.busy = false;
+        });
+        w.step(&mut r, 1000);
+        w.step(&mut r, 1000 + ENTER_AFTER_MS);
+        w.left("a");
+        assert!(w.step(&mut r, 2000).contains(&Act::Start {
+            tab: "a".into(),
+            shell: "pwsh".into(),
+            resume: Some(OTHER.into())
+        }));
     }
 }
