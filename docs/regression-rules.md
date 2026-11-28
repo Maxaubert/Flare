@@ -9,7 +9,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 ## What reaches a shell
 
 1. **Input to a shell is inert until the user acts.** Strip every ESC and C0 control except TAB, LF, CR (plus DEL and C1 CSI) before any paste; quote each dropped path with a per-shell function (PowerShell single quotes with doubling, bash escape, cmd double quotes); start Windows tools by absolute System32 path. Native: pure functions `sanitize_paste` and `quote_path` in `flare-shells`, `Command::new` with absolute paths only, one unit test per quoting rule. Source: regression-rules.md inert-input (#1, #5); core/renderer/lib/termPaste.ts; core/main/sysTools.ts.
-2. **The only commands written into a shell are the agent resume, dictated text, and (open decision O1) the idle-prompt cd line.** The resume is the shell's startup command, built from argv Flare owns, with the id validated and carried in `FLARE_RESUME_ID`; dictation is one bracketed paste with a trailing space, never Enter. Exception (M8, N30; rule 182): dictation from another app types into a RUNNING Claude prompt and presses Enter, through the checked send only; inside the Flare window dictation only pastes at the cursor and never presses Enter; words for a copy whose window was in front are only pasted. Exception (plugins phase 5, 2026-10-26): a plugin that holds `input`, which the person approved in Settings as full control, types into a tab it may see (its own, any with `tabs`, one a click gave it) through `tabs.input`: one paste the way the person's paste goes (bracketed when the program asked; a control character other than tab and line breaks is refused, not stripped; at most 4 KB; 2 a second per tab) and, when asked, one Enter 300 ms later; the tab, the plugin's generation and its `input` are checked again before each write. The agent never has it (rule 188). Native: no generic "send text to shell" path in the tab code; the pty write API takes typed intents (the plugin's is `TermHandle::plugin_input` with `PluginInput::Paste` or `PluginInput::Enter`, called only by `AppCtl::ctl_tab_input` and `AppCtl::plugin_enter`). Held for the plugin exception by `tabs_input_types_as_a_paste_with_its_checks_and_the_enter_comes_after`, `the_enter_is_not_pressed_once_the_plugin_is_off_and_a_closed_tab_takes_nothing` and `typing_is_refused_when_empty_too_long_or_holding_a_control_character`. Source: core/main/terminal.ts withResume; core/main/agentResume.ts validResume; core/renderer/lib/dictation.ts finishStop; core/shared/termCwd.ts cdCommand.
+2. **The only commands written into a shell are the agent resume, dictated text, and (open decision O1) the idle-prompt cd line.** The resume is the shell's startup command, built from argv Flare owns, with the id validated and carried in `FLARE_RESUME_ID`; dictation is one bracketed paste with a trailing space, never Enter. Exception (M8, N30; rule 182): dictation from another app types into a RUNNING Claude prompt and presses Enter, through the checked send only; inside the Flare window dictation only pastes at the cursor and never presses Enter; words for a copy whose window was in front are only pasted. Exception (plugins phase 5, 2026-10-26): a plugin that holds `input`, which the person approved in Settings as full control, types into a tab it may see (its own, any with `tabs`, one a click gave it) through `tabs.input`: one paste the way the person's paste goes (bracketed when the program asked; a control character other than tab and line breaks is refused, not stripped; at most 4 KB; 2 a second per tab) and, when asked, one Enter 300 ms later; the tab, the plugin's generation and its `input` are checked again before each write. The agent never has it (rule 188). Exception (rule 1381, 2026-11-28): the tab menu's "Claude sessions" rows, picked by the person, type only fixed words: `/exit` and a separate Enter into an idle Claude, Escape into a busy one after the person's End now, and the start line `claude [--resume <id>]` at a shell's prompt. Native: no generic "send text to shell" path in the tab code; the pty write API takes typed intents (the plugin's is `TermHandle::plugin_input` with `PluginInput::Paste` or `PluginInput::Enter`, called only by `AppCtl::ctl_tab_input` and `AppCtl::plugin_enter`; the session rows' is `TermHandle::session_key` with `SessionKey`, called only by the session runner in `appctl/claude_glue.rs`). Held for the plugin exception by `tabs_input_types_as_a_paste_with_its_checks_and_the_enter_comes_after`, `the_enter_is_not_pressed_once_the_plugin_is_off_and_a_closed_tab_takes_nothing` and `typing_is_refused_when_empty_too_long_or_holding_a_control_character`. Source: core/main/terminal.ts withResume; core/main/agentResume.ts validResume; core/renderer/lib/dictation.ts finishStop; core/shared/termCwd.ts cdCommand.
 3. **The resume id travels in the environment, and every shell of a kind has the same command line.** Defender judges each new command line inside CreateProcess (700 ms each in Prism Terminal, 3 ms when repeated). Native: set `FLARE_RESUME_ID`, clear it in the startup line before the agent starts, keep each shell kind's command line constant, spawn on a worker, measure a cold restored Claude tab on the release build. Source: regression-rules.md same-command-line (#180); core/main/terminal.ts.
 4. **A claude resume is the newest interactive session of that folder; nothing is guessed.** `--continue` once resumed the wrong conversation. Native: read each transcript's first 4096 bytes, drop a queue-operation first line or a non-cli entrypoint, no session means a plain shell; the lookup runs on a worker, 16 stats at a time. Since rule 1286 this is only the fallback for a Claude tab that saved no session of its own (a file from before the `session` key, or the hooks off); a tab with no session left now comes back as a new blank Claude, and a tab that saved one never takes another. Source: core/main/agentResume.ts; two-apps.md IT RESUMES ONLY YOUR OWN CONVERSATIONS (#87).
 5. **One Ctrl+V is one paste; one image key per agent.** The native paste and the app's paste both ran once. Native: the key handler consumes Ctrl+V and returns handled; the image key is a single lookup by agent kind (ESC v for Claude, ^V otherwise); a test asserts one pty write per key. Source: two-apps.md ONE CTRL+V IS ONE PASTE; core/renderer/lib/termPaste.ts imagePasteKey (#170).
@@ -6101,6 +6101,49 @@ NSBluetoothAlwaysUsageDescription key"), and so it would for a terminal program 
 the same key. No entitlement is needed: Flare is hardened, not sandboxed. Held by
 `the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic` (`release.rs`). Source: Max,
 2026-11-24.
+
+## Claude sessions in all tabs (2026-11-28)
+
+1380. **The "Claude sessions" rows act only on tabs they can act on, and are left out with none.** A tab's menu has
+"End Claude session" while Claude Code (not Codex or agy) runs there, "Start Claude" while the shell waits at its
+prompt with no agent, and the "Claude sessions" flyout with "End all Claude sessions (N)" and "Start Claude in all
+tabs (N)". There is no restart row (Max, 2026-11-28). A tab counts only as a local shell tab of this window with a live
+shell (never a remote or hidden one). Start needs the poll to have looked and a prompt report after the last key typed.
+A row with N = 0 is left out, the flyout with both. No tab is ever closed and no shell process is touched. Held by
+`each_row_touches_only_its_own_tabs`, `the_rows_show_counts_and_nothing_acts_on_zero_tabs`,
+`the_rows_follow_the_tabs_and_show_their_counts`, `nothing_to_act_on_shows_no_row` and `a_closed_tab_drops_its_job`.
+Source: Max, 2026-11-28.
+
+1381. **Ending types `/exit` and a separate Enter, only into an idle Claude with an empty prompt box; starting types
+one fixed line.** The keys go through `TermHandle::session_key` (fixed words, rule 2's typed-intent pattern): `/exit`,
+then after 300 ms (`SEND_ENTER_MS`) the tab is checked again (still Claude, not working, no question box) and `\r` is
+sent only once the box shows exactly `/exit` (given up after 2 s more, with no Enter: the person may have typed). A
+question box is busy, since an Enter there would answer it. A draft in Claude's prompt box keeps the tab: the Enter
+would send the draft. No prompt box on the screen (a picker, a menu, an editor) keeps it too, and so does a shell that
+reported its prompt after the last key (the shell is in front, the agent mark is stale): `/exit` is never typed there.
+A second pick never types a second `/exit` into a tab whose first one is under way, and never drops another tab's job.
+Start types `claude --resume <id>` (the tab's last Claude session, a lower-case UUID only)
+or `claude`, then `\r`; in cmd inside the restore's `NoDefaultCurrentDirectoryInExePath` guard; nothing for a shell
+the line is not made for. Held by `the_typed_start_line_resumes_a_known_session_or_starts_a_new_claude`,
+`a_bad_id_is_never_typed`, `the_session_keys_write_only_their_fixed_words`,
+`an_idle_claude_gets_exit_then_enter_and_the_tab_stays`, `a_question_after_exit_holds_the_enter_back`,
+`a_draft_keeps_the_tab`, `end_all_types_exit_then_enter_and_keeps_every_tab`,
+`start_types_the_resume_line_of_the_last_session`, `a_draft_is_never_sent`,
+`the_last_session_outlives_the_agent_and_goes_with_the_tab`, `a_prompt_report_after_the_last_key_is_the_prompt`,
+`prompt_text_reads_the_box_only`, `a_second_pick_leaves_the_other_jobs_alone`, `a_pick_again_never_types_exit_twice`,
+`a_shell_at_its_prompt_gets_no_exit`, `no_prompt_box_gets_no_exit`, `the_enter_waits_for_the_echo_and_never_sends_other_words`,
+`a_shell_back_at_its_prompt_gets_no_exit`, `the_enter_waits_for_the_echo` and
+`a_shell_that_never_comes_back_is_given_up` (an end whose shell shows no prompt in 15 s is given up). Source: Max,
+2026-11-28; review 2026-11-28.
+
+1382. **A busy Claude asks once: Cancel, Wait (the default), End now.** "N sessions are working". Cancel does nothing,
+the idle tabs included. Wait ends each busy tab as soon as it is idle, with no time limit. End now sends Escape once
+to each busy tab, looks again after 800 ms, and gives a tab 60 s to come to rest, then leaves it running. The dialog's
+third button exists only for this question; downloads and app-link questions wait behind it. Held by
+`wait_ends_each_busy_claude_when_it_next_goes_idle`, `end_now_interrupts_first_and_gives_up_on_a_turn_that_never_rests`,
+`a_busy_claude_asks_and_cancel_does_nothing`, `wait_ends_the_busy_claude_once_it_rests`,
+`end_now_interrupts_then_ends` and `a_third_button_is_the_default_and_tab_walks_the_row`. Source: Max, 2026-11-28.
+
 
 ## Panel launcher and "Open in" (2026-11-24)
 

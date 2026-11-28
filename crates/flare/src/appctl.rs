@@ -207,6 +207,7 @@ pub enum UiMsg {
 mod app_keys_glue;
 mod ask_glue;
 mod bar_glue;
+mod claude_glue;
 mod device_glue;
 mod install_glue;
 mod launcher_glue;
@@ -691,6 +692,10 @@ pub struct AppCtl {
     downloads: crate::download_ask::DownloadQueue,
     /// The app links of web pages waiting for the person's Open (rule 252).
     app_asks: crate::app_ask::AppAsks,
+    /// The "Claude sessions" rows' ends under way (rule 1381).
+    claude_run: crate::claude_sessions::Runner,
+    /// The busy Claude sessions question while it is on the dialog (rule 1382).
+    claude_ask: Option<claude_glue::ClaudeAsk>,
     /// What opens an app link after Open: a recorder until startup hands in the shell (rule 252).
     app_launcher: Rc<dyn crate::app_ask::AppLauncher>,
     /// A plugin's question in Flare's own dialog (a fill to approve, a secret to type), one at a time (the `fill`
@@ -1231,6 +1236,8 @@ impl AppCtl {
             device_gate: None,
             downloads: crate::download_ask::DownloadQueue::default(),
             app_asks: crate::app_ask::AppAsks::default(),
+            claude_run: crate::claude_sessions::Runner::default(),
+            claude_ask: None,
             app_launcher: Rc::new(crate::app_ask::RecordingLauncher::default()),
             plugin_ask: None,
             plugin_ask_seq: 0,
@@ -1563,6 +1570,7 @@ impl AppCtl {
             .overflow_query(&q));
         bind!(app, rc, on_dialog_cancel, |c| c.dialog_cancel());
         bind!(app, rc, on_dialog_confirm, |c| c.dialog_confirm());
+        bind!(app, rc, on_dialog_alt, |c| c.dialog_alt());
         bind!(app, rc, on_pask_fill, |c, choice: i32| c
             .answer_fill(choice));
         bind!(
@@ -3274,6 +3282,8 @@ impl AppCtl {
                 .into_iter()
                 .map(|r| (r, String::new()))
                 .collect();
+        // This tab's Claude row and the "Claude sessions" flyout (rule 1380).
+        self.claude_menu_rows(id, &mut rows);
         // The plugins' actions for a shell tab, one flyout under each plugin's name (plugins phase 4).
         if shell {
             self.plugin_menu_rows(id, &mut rows);
@@ -3385,6 +3395,7 @@ impl AppCtl {
                     self.open_recent(path);
                 }
             }
+            MenuKind::Tab { id, .. } if self.claude_menu_picked(&id.clone(), &path.clone()) => {}
             MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
             MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
             MenuKind::Machines => self.machine_menu_picked(&path.clone()),
@@ -4968,6 +4979,7 @@ impl AppCtl {
             self.surf7_next_due(),
             reveal,
             self.host_convo_due(),
+            self.claude_next_due(),
         ]
         .into_iter()
         .flatten()
@@ -5031,6 +5043,7 @@ impl AppCtl {
             self.sync_model_agents();
             changed = true;
         }
+        self.claude_step();
         let resuming: Vec<_> = self
             .deps
             .host
@@ -5712,6 +5725,8 @@ impl AppCtl {
             // A question has the keys: a page that holds them (Ctrl+W pressed in it) gives them back.
             if self.ask.is_some() {
                 self.web.release_focus(crate::window::hwnd_of(&app));
+                // The close question takes the dialog: a busy Claude sessions question under it goes as a Cancel.
+                self.drop_claude_ask();
             }
             match &self.ask {
                 Some(a) => {
@@ -5735,7 +5750,18 @@ impl AppCtl {
         self.refresh();
     }
 
+    /// The dialog's third button: only the busy Claude sessions question has one (Wait, rule 1382).
+    fn dialog_alt(&mut self) {
+        if self.ask.is_none() && self.claude_ask_up() {
+            self.answer_claude_ask(Some(false));
+        }
+    }
+
     fn dialog_cancel(&mut self) {
+        if self.ask.is_none() && self.claude_ask_up() {
+            self.answer_claude_ask(None);
+            return;
+        }
         if self.ask.is_none() && self.downloads.current().is_some() {
             self.answer_download(false);
             return;
@@ -5768,6 +5794,10 @@ impl AppCtl {
     }
 
     fn dialog_confirm(&mut self) {
+        if self.ask.is_none() && self.claude_ask_up() {
+            self.answer_claude_ask(Some(true));
+            return;
+        }
         if self.ask.is_none() && self.downloads.current().is_some() {
             self.answer_download(true);
             return;
@@ -6146,6 +6176,8 @@ impl AppCtl {
             self.push_term();
             self.wake_term();
         }
+        // The Claude sessions rows' ends follow the tabs' new state (rule 1381).
+        self.claude_step();
     }
 }
 
@@ -6310,6 +6342,7 @@ mod tests {
     mod app_keys_tests;
     mod arrow_tests;
     mod ask_tests;
+    mod claude_sessions_tests;
     // Rule 1118: a timer steps the slide without an OS window and on a Mac under --e2e only.
     #[test]
     fn a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run() {

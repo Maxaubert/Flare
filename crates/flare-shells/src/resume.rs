@@ -94,11 +94,106 @@ pub fn with_resume_prior(def: &ShellDef, resume: &str, prior: Option<&str>) -> L
     }
 }
 
+/// A Claude session id as Flare accepts one for a typed line: a lower-case UUID, nothing else (36 bytes, hex and four
+/// dashes in their places). The typed start line is built from it, so nothing else may reach the shell.
+fn is_typed_session_id(id: &str) -> bool {
+    let b = id.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, &c)| match i {
+            8 | 13 | 18 | 23 => c == b'-',
+            _ => c.is_ascii_digit() || (b'a'..=b'f').contains(&c),
+        })
+}
+
+/// The line the "Start Claude" rows type at a live shell's prompt (rule 1381; the Enter is the caller's): `claude
+/// --resume <id>` for a known session, else `claude`. In cmd the line runs inside the restore's guard (the current
+/// folder kept out of the program search, the user's own switch value put back after), so a `claude.cmd` in the
+/// project never runs. `None` for a shell this line is not made for (WSL, an unknown shell): nothing is typed there.
+/// An id that is not a session id is never typed: the line starts a new Claude instead.
+pub fn typed_start_line(shell_id: &str, resume: Option<&str>) -> Option<String> {
+    let prior = std::env::var(NO_CWD_EXE).ok();
+    typed_start_line_prior(shell_id, resume, prior.as_deref())
+}
+
+/// [`typed_start_line`] with the shell's own value of `NoDefaultCurrentDirectoryInExePath` given.
+pub fn typed_start_line_prior(
+    shell_id: &str,
+    resume: Option<&str>,
+    prior: Option<&str>,
+) -> Option<String> {
+    let claude = match resume.filter(|r| is_typed_session_id(r)) {
+        Some(id) => format!("claude --resume {id}"),
+        None => "claude".to_string(),
+    };
+    match shell_id {
+        "pwsh" | "powershell" | "zsh" | "bash" | "fish" => Some(claude),
+        "cmd" => {
+            let restore = match prior {
+                Some(v) if plain_switch_value(v) => format!("set {NO_CWD_EXE}={v}"),
+                _ => format!("set {NO_CWD_EXE}="),
+            };
+            Some(format!("set {NO_CWD_EXE}=1& {claude}& {restore}"))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const A: &str = "5a1d0c2e-1111-4222-8333-94445555a666";
+
+    /// Rule 1381: the typed start line is `claude` or `claude --resume <id>`, cmd's inside the search guard, and a
+    /// shell it is not made for gets none.
+    #[test]
+    fn the_typed_start_line_resumes_a_known_session_or_starts_a_new_claude() {
+        for sh in ["pwsh", "powershell", "zsh", "bash", "fish"] {
+            assert_eq!(
+                typed_start_line_prior(sh, Some(A), None).as_deref(),
+                Some(format!("claude --resume {A}").as_str()),
+                "{sh}"
+            );
+            assert_eq!(
+                typed_start_line_prior(sh, None, None).as_deref(),
+                Some("claude")
+            );
+        }
+        assert_eq!(
+            typed_start_line_prior("cmd", Some(A), None).as_deref(),
+            Some(format!("set {NO_CWD_EXE}=1& claude --resume {A}& set {NO_CWD_EXE}=").as_str())
+        );
+        assert_eq!(
+            typed_start_line_prior("cmd", None, Some("1")).as_deref(),
+            Some(format!("set {NO_CWD_EXE}=1& claude& set {NO_CWD_EXE}=1").as_str()),
+            "the user's own value goes back"
+        );
+        assert_eq!(
+            typed_start_line_prior("cmd", None, Some("x& calc")).as_deref(),
+            Some(format!("set {NO_CWD_EXE}=1& claude& set {NO_CWD_EXE}=").as_str()),
+            "a value cmd would run is not put back"
+        );
+        assert_eq!(typed_start_line_prior("wsl-Arch", Some(A), None), None);
+        assert_eq!(typed_start_line_prior("", None, None), None);
+    }
+
+    /// Rule 1381: only a session id reaches the line; anything else starts a new Claude.
+    #[test]
+    fn a_bad_id_is_never_typed() {
+        for bad in [
+            "x; rm -rf ~",
+            "5A1D0C2E-1111-4222-8333-94445555A666",
+            "5a1d0c2e-1111-4222-8333-94445555a66",
+            "5a1d0c2e-1111-4222-8333-94445555a666 & calc",
+            "",
+        ] {
+            assert_eq!(
+                typed_start_line_prior("pwsh", Some(bad), None).as_deref(),
+                Some("claude"),
+                "{bad}"
+            );
+        }
+    }
     const B: &str = "0f0e0d0c-2222-4333-8444-955566667777";
 
     fn def(id: &str, exe: &str, args: &[&str]) -> ShellDef {
