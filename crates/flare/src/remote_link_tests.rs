@@ -2412,6 +2412,56 @@ fn the_status_poll_waits_while_a_key_waits_for_its_echo() {
     );
 }
 
+/// Rule 1392: a key whose echo never comes keeps the polls fast for `fast_for` only; after that they back off as an
+/// idle tab's do.
+#[test]
+fn a_key_with_no_echo_polls_fast_only_for_a_while() {
+    let mut r = rig_timed(FakeHost::default(), None, Timing::default());
+    r.live_on();
+    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test code only, the polls reach their slowest
+    r.writer.write_all(b"q").unwrap();
+    wait_for("the key", || !lk(&r.host).input_at.is_empty());
+    let sent = *lk(&r.host).input_at.last().unwrap();
+    std::thread::sleep(Duration::from_millis(450)); // sync-ok: test code only, past the fast window
+    let fast = outputs_between(&r.host, sent, sent + Duration::from_millis(100));
+    let after = outputs_between(
+        &r.host,
+        sent + Duration::from_millis(200),
+        sent + Duration::from_millis(450),
+    );
+    assert!(fast >= 6, "fast polls right after the key: {fast}");
+    assert!(
+        after <= 5,
+        "{after} polls in 250 ms once the fast window ended"
+    );
+}
+
+/// Rule 1392: a click is no key: it has no echo to wait for, so it starts no fast polls and holds no status poll off.
+#[test]
+fn a_click_starts_no_fast_polls_and_holds_no_status_poll() {
+    let host = echoing(60);
+    lk(&host).states = Some(HashMap::new());
+    let t = Timing {
+        status_every: Duration::from_millis(5),
+        poll_fast: Duration::from_millis(1),
+        fast_for: Duration::from_secs(3),
+        ..fast()
+    };
+    let mut r = rig_timed(host, None, t);
+    r.live_on();
+    wait_for("the status polls", || r.host.calls("remote.status") >= 2);
+    r.writer.write_all(b"\x1b[<0;5;3M\x1b[<0;5;3m").unwrap();
+    wait_for("the click", || r.host.typed("h1").len() >= 2);
+    let n = r.host.calls("remote.status");
+    let t = Instant::now();
+    wait_for("the status after the click", || {
+        r.host.calls("remote.status") > n
+    });
+    // A key would hold it off for half a second (`PUT_OFF_MAX`).
+    let waited = t.elapsed();
+    assert!(waited < Duration::from_millis(250), "{waited:?}");
+}
+
 /// Rule 1392, the measurement: a key's time to its echo with the polls as they were (30 ms after typing) and as they
 /// are now (fast until the echo), over a fake link with a round trip of 2 ms and of 20 ms, and a host whose shell
 /// echoes 3 ms or 30 ms after the key. Printed, not asserted:
