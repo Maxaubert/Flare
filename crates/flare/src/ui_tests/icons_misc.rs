@@ -339,6 +339,40 @@ fn web_bar_glyphs_draw_at_full_size_at_every_scale() {
     }
 }
 
+/// The web bar's More glyph (rule 1389), as `glyphs.slint` holds it.
+const MORE_VERTICAL: &str = "M12 5a1 1 0 1 0 0 2a1 1 0 1 0 0-2zM12 11a1 1 0 1 0 0 2a1 1 0 1 0 0-2zM12 17a1 1 0 1 0 0 2a1 1 0 1 0 0-2z";
+
+fn draw_web_more(s: f32) -> Drawn {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    crate::appctl::AppCtl::push_panel_limits(&h.comp);
+    h.comp.set_panel_open(true);
+    h.comp.set_panel_kind(3);
+    h.comp.set_panel_open_in("Open in browser".into());
+    h.advance(0);
+    assert!(h.comp.get_panel_web_more_visible(), "scale {s}");
+    let f = h.render();
+    let cx = h.comp.get_panel_web_more_x() + 12.0;
+    let cy = h.comp.get_panel_web_more_y() + 12.0;
+    let r = region_around(&f, cx * s, cy * s, 8.0 * s);
+    let got = drawn(&f, r, ICON);
+    (
+        got,
+        expected_extent_px(MORE_VERTICAL, 12.0, 24.0, 2.2 * 12.0 / 24.0, s),
+    )
+}
+
+/// Rule 1389: the More button's three dots draw at their full size, in the bar's stroke, at every scale.
+#[test]
+fn the_web_bars_more_glyph_draws_at_full_size_at_every_scale() {
+    let slint = include_str!("../../ui/glyphs.slint");
+    assert!(slint.contains(&format!("more-vertical: \"{MORE_VERTICAL}\";")));
+    for s in SCALES {
+        assert_size("web more", s, draw_web_more(s));
+    }
+}
+
 // --- The conversation panel (convo.slint): the way back in a diff (10 px). ---
 
 fn convo_window(s: f32) -> Harness<AppWindow> {

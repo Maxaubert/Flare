@@ -1665,6 +1665,21 @@ impl AppCtl {
             .launcher_menu_clicked(y));
         bind!(app, rc, on_launcher_picked, |c, i: i32| c.launcher_pick(i));
         bind!(app, rc, on_panel_open_in_clicked, |c| c.panel_open_in());
+        // The web bar's More menu (rule 1389).
+        bind!(
+            app,
+            rc,
+            on_panel_web_more_clicked,
+            |c, right: f32, top: f32, foot: f32| c.web_more_clicked(right, top, foot)
+        );
+        bind!(
+            app,
+            rc,
+            on_panel_web_more_tip,
+            |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| {
+                c.tip_request_toward(&t, x, y, w, h, Some(TipSide::Left));
+            }
+        );
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
         bind!(
             app,
@@ -3299,6 +3314,19 @@ impl AppCtl {
         y: f32,
         drop: Option<f32>,
     ) {
+        self.show_menu_from(kind, rows, x, y, drop, false);
+    }
+
+    /// `show_menu_at`, and `below`: a dropdown that opens downward first (the web bar's More menu, rule 1389).
+    pub(super) fn show_menu_from(
+        &mut self,
+        kind: MenuKind,
+        rows: Vec<(MenuRowData, String)>,
+        x: f32,
+        y: f32,
+        drop: Option<f32>,
+        below: bool,
+    ) {
         self.clear_tip();
         self.term.hide_thumb();
         self.menu = Some(MenuState { kind, rows });
@@ -3307,6 +3335,7 @@ impl AppCtl {
             app.set_menu_y(y);
             app.set_menu_drop(drop.is_some());
             app.set_menu_foot(drop.unwrap_or(y));
+            app.set_menu_below(drop.is_some() && below);
         }
         self.push_menu();
         if let Some(app) = self.app() {
@@ -3326,6 +3355,11 @@ impl AppCtl {
             }
             None => app.set_menu_open(false),
         }
+        app.set_panel_web_more_open(
+            self.menu
+                .as_ref()
+                .is_some_and(|m| matches!(m.kind, MenuKind::WebMore { .. })),
+        );
     }
 
     fn close_menu_quietly(&mut self) {
@@ -3384,6 +3418,10 @@ impl AppCtl {
             MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
             MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
             MenuKind::Machines => self.machine_menu_picked(&path.clone()),
+            MenuKind::WebMore { tab } => {
+                let (tab, action) = (tab.clone(), path.clone());
+                self.web_more_picked(&tab, &action);
+            }
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
@@ -3533,16 +3571,30 @@ impl AppCtl {
 
     /// A tooltip where tips usually go: right of a vertical sidebar's items, else below.
     fn tip_request(&mut self, text: &str, x: f32, y: f32, w: f32, h: f32) {
+        self.tip_request_toward(text, x, y, w, h, None);
+    }
+
+    /// A tooltip on the side `side` asks for (still flipped when there is no room), or where tips usually go. The web
+    /// bar's More button asks for the left (rule 1389): below it is the page's own window, which would hide the tip.
+    pub(super) fn tip_request_toward(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        side: Option<TipSide>,
+    ) {
         if text.is_empty() {
             self.clear_tip();
             return;
         }
         let now = self.now();
         let side_width = self.sidebar.view(self.scale, now).width_css as f32;
-        let prefer = if self.vertical() && x < side_width {
-            TipSide::Right
-        } else {
-            TipSide::Below
+        let prefer = match side {
+            Some(s) => s,
+            None if self.vertical() && x < side_width => TipSide::Right,
+            None => TipSide::Below,
         };
         let item = BoxF {
             left: f64::from(x),

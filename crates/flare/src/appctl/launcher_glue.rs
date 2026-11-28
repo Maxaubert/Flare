@@ -2,7 +2,8 @@
 //! in `crate::launcher` (pure, with its tests); this file feeds them the pointer, the keys and the grace timer, pushes
 //! what they say into the window, and does what a row or the button asks with the calls that already exist: the web
 //! panel's `browser_open`, the device panel's `device_open`, the path a file link's "Show in side panel" takes
-//! (`show_preview_asked`), `PanelCtl::reopen`, the path openers and `open_url`.
+//! (`show_preview_asked`), `PanelCtl::reopen`, the path openers and `open_url`. The web bar's More menu (rule 1389)
+//! lives here too: its "Open in browser" is the page's "Open in".
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -487,6 +488,74 @@ impl AppCtl {
                 }
             }
             None => {}
+        }
+    }
+
+    // ---- the web bar's More menu (rule 1389) ----
+
+    /// The rows the web bar's More menu has for the tab's page now: "Open in browser" for a web address (the rules of
+    /// "Open in", rule 1388), "Draw arrow" while it is offered (rule 256, with the window's room rule).
+    fn web_more_rows(
+        &self,
+        app: &AppWindow,
+        tab: &str,
+    ) -> Vec<(crate::menus_ui::MenuRowData, String)> {
+        let snap = self.panels.snap(tab);
+        let open_in = matches!(launcher::open_in(snap.as_ref()), Some(OpenIn::Url(_)));
+        let draw = (self.draw_arrow_offered(tab) && app.get_panel_draw_visible())
+            .then(|| self.web.drawing(tab));
+        crate::menus_ui::web_more_rows(open_in, draw)
+            .into_iter()
+            .map(|(r, action)| (r, action.to_string()))
+            .collect()
+    }
+
+    /// A click on the web bar's More button: the window's shared menu drops from it (its right edge on the button's,
+    /// under its foot first), with the rows the page has now. With no row there is nothing to show.
+    pub(super) fn web_more_clicked(&mut self, right: f32, top: f32, foot: f32) {
+        let Some(tab) = self.front_id() else { return };
+        let Some(app) = self.app() else { return };
+        let rows = self.web_more_rows(&app, &tab);
+        if rows.is_empty() {
+            return;
+        }
+        self.close_overflow_quietly();
+        self.show_menu_from(
+            crate::menus_ui::MenuKind::WebMore { tab },
+            rows,
+            right,
+            top,
+            Some(foot),
+            true,
+        );
+    }
+
+    /// A row of the web bar's More menu was picked (the menu is already closed). The tab must still be in front.
+    pub(super) fn web_more_picked(&mut self, tab: &str, action: &str) {
+        use crate::menus_ui::{WEB_MORE_DRAW, WEB_MORE_OPEN, WEB_MORE_STOP_DRAW};
+        if self.front_id().as_deref() != Some(tab) {
+            return;
+        }
+        match action {
+            // Only a web address goes out, as from "Open in" (rule 1388).
+            WEB_MORE_OPEN => {
+                if let Some(OpenIn::Url(url)) = launcher::open_in(self.panels.snap(tab).as_ref()) {
+                    (self.deps.open_url)(&url);
+                }
+            }
+            // The page shows live again first (the menu over it made it a still, which cannot be drawn on), then the
+            // draw mode starts as from the old button. A mode already on stays on.
+            WEB_MORE_DRAW => {
+                self.refresh();
+                if !self.web.drawing(tab) {
+                    self.panel_draw_arrow();
+                }
+            }
+            // The menu over the page may have ended the mode already (rule 256): a stop never starts it again.
+            WEB_MORE_STOP_DRAW if self.web.drawing(tab) => {
+                self.web.toggle_draw(tab);
+            }
+            _ => {}
         }
     }
 }

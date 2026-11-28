@@ -518,6 +518,59 @@ fn the_draw_button_shows_for_an_agent_on_a_web_page_and_never_over_a_popup() {
     assert!(f.h.comp.get_panel_draw_on());
 }
 
+/// Rule 1389: "Draw arrow" is a row of the web bar's More menu, picked with real clicks. The menu over the page makes
+/// it a still, so the page is live again before the mode starts; with the mode on the row says "Stop drawing the
+/// arrow" and ends it, and never starts it again (the menu over the page may have ended it already, rule 256). On a
+/// page with no web address, "Open in browser" is left out.
+#[test]
+fn draw_arrow_starts_and_stops_from_the_more_menu() {
+    use super::launcher_tests::{open_more, pick_more};
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    claude(&f);
+    f.ctl.borrow_mut().refresh();
+    f.pump();
+    f.h.advance(0);
+    let _m = mouse(&f);
+    assert_eq!(open_more(&f), ["Open in browser", "Draw arrow"]);
+    f.pump();
+    assert_ne!(
+        f.ctl.borrow().web.phase_name(),
+        "live",
+        "the menu made the page a still"
+    );
+    pick_more(&f, "Draw arrow");
+    f.h.advance(0);
+    f.pump();
+    assert!(drawing(&f, &id), "the draw mode is on");
+    assert!(f.h.comp.get_panel_draw_active());
+    assert_eq!(f.h.comp.get_ask_note().as_str(), "", "no refusal note");
+    assert_eq!(open_more(&f), ["Open in browser", "Stop drawing the arrow"]);
+    // The menu over the page ends the mode on the agent's next turn (rule 256); the stop is then only a close.
+    agent_turn(&f, 16);
+    assert!(!drawing(&f, &id), "the menu over the page ended the mode");
+    pick_more(&f, "Stop drawing the arrow");
+    f.h.advance(0);
+    f.pump();
+    assert!(!drawing(&f, &id), "the draw mode ended");
+    assert!(!f.h.comp.get_menu_open());
+    // A page with no web address: only Draw arrow.
+    let rx = ask(
+        &f,
+        CtlOp::BrowserOpen {
+            tab: id.clone(),
+            url: "about:blank".into(),
+        },
+    );
+    finish(&fake(&slot), &id, "about:blank");
+    f.pump();
+    let _ = rx.try_recv();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(open_more(&f), ["Draw arrow"]);
+}
+
 #[test]
 fn the_person_drags_an_arrow_and_its_frame_is_typed_unsent() {
     let (f, _h, shell) = live(Opts::default());

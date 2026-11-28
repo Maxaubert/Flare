@@ -511,6 +511,16 @@ export component AppWindow inherits Window {
     out property <length> panel-draw-x: panel-slot.draw-x;
     out property <length> panel-draw-y: panel-slot.draw-y;
     out property <length> panel-draw-w: panel-slot.draw-w;
+    // The web bar's More button (rule 1389): a vertical three-dot button whose menu (the shared `menu`, dropped from
+    // the button) holds "Open in browser" and "Draw arrow". Pressed while that menu is open; a click gives the
+    // button's right edge, top and foot; its tooltip goes left of it, over the bar (below it is the page's window).
+    in property <bool> panel-web-more-open;
+    callback panel-web-more-clicked(length, length, length);
+    callback panel-web-more-tip(string, length, length, length, length);
+    out property <bool> panel-web-more-visible: panel-slot.web-more-visible;
+    out property <length> panel-web-more-x: panel-slot.web-more-x;
+    out property <length> panel-web-more-y: panel-slot.web-more-y;
+    out property <length> panel-web-more-w: panel-slot.web-more-w;
     // The note that says why nothing was sent or drawn (the terminal menu's "Ask agent about this selection", the arrow).
     in property <string> ask-note;
     out property <length> ask-note-x: ask-note-box.x;
@@ -767,6 +777,9 @@ export component AppWindow inherits Window {
     // its foot (ContextMenu.drop); else the menu's top-left is at the point.
     in property <bool> menu-drop;
     in property <length> menu-foot;
+    // A dropdown that opens downward first (the web bar's More menu, rule 1389; ContextMenu.below). The sidebar's New
+    // tab arrow lights only for its own dropdown, which opens upward.
+    in property <bool> menu-below;
     in property <bool> overflow-open;
     in property <[OverflowRow]> overflow-rows;
     in property <length> overflow-right;
@@ -1553,6 +1566,9 @@ export component AppWindow inherits Window {
                         draw-on: root.panel-draw-on;
                         draw-active: root.panel-draw-active;
                         draw-arrow => { root.panel-draw-arrow(); }
+                        web-more-open: root.panel-web-more-open;
+                        web-more-clicked(r, t, b) => { root.panel-web-more-clicked(r, t, b); }
+                        web-more-tip(s, x, y, w, h) => { root.panel-web-more-tip(s, x, y, w, h); }
                         convo-files: root.panel-convo-files;
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;
@@ -1810,7 +1826,7 @@ export component AppWindow inherits Window {
                     closed(a) => { root.tab-closed(a); }
                     tab-menu(a, b, c) => { root.tab-menu(a, b, c); }
                     new-tab() => { root.new-tab(); }
-                    folder-open: root.menu-open && root.menu-drop;
+                    folder-open: root.menu-open && root.menu-drop && !root.menu-below;
                     folder-menu(a, b, c) => { root.folder-menu(a, b, c); }
                     find-edited(a) => { root.side-find-edited(a); }
                     find-accepted() => { root.side-find-accepted(); }
@@ -1922,6 +1938,7 @@ export component AppWindow inherits Window {
             at-y: root.menu-y;
             drop: root.menu-drop;
             at-foot: root.menu-foot;
+            below: root.menu-below;
             picked(i) => { root.menu-picked(i); }
             trailing(i) => { root.menu-trailing(i); }
             dismissed => { root.menu-dismissed(); }

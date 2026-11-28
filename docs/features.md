@@ -2423,14 +2423,14 @@ Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 
   typing in the page, a navigation, the panel or tab closing, or after 60 s. It is drawn only where the agent's cursor may be (the page
   in front and live: not under a Flare menu, the still, another tab or a minimised window) and never over a pop-up; with a pop-up open
   the call answers "a pop-up is open, the person must finish it". The tool text says it is for steps the person must do themselves.
-- **The person points ("Draw arrow").** A button left of the close button in the web bar (and in a mini-app's header), only on a tab with an
+- **The person points ("Draw arrow").** A row of the web bar's More menu (rule 1389; before 2026-11-28 a button left of the close button) and a button in a mini-app's header, only on a tab with an
   agent, on a web page or a mini-app (never a plugin's page), and not while a pop-up is open. It puts a pad over the page: a layered
   window, every pixel at alpha 1, that catches the mouse and never takes the keyboard from the page. Press, drag and release are read on
   the 16 ms agent tick; a blue arrow follows live. On release Flare asks the browser, with no page script, what is under the head
   (`DOM.getNodeForLocation`, then `Accessibility.getPartialAXTree` for its role and name, the nearest element a look would list) and types
   this at the prompt, unsent (a Claude tab with hooks gets nothing typed and hears of the arrow in the quiet context instead, 2026-11-15,
   rule 1268): `About this arrow on <site>:`, `> points at: <role> "<name>"`, `> at: x, y in a W x H page`,
-  `> (use browser_look to see it)`. A click with no drag points at the target from up and left. Cancel: the button again, a right click,
+  `> (use browser_look to see it)`. A click with no drag points at the target from up and left. Cancel: the button again (in the web bar the row, which says "Stop drawing the arrow" while it is on), a right click,
   Escape (in the page or in Flare's window), a menu, a tab switch, a pop-up or a navigation.
 - **The agent sees the person's arrow.** It is kept for 5 minutes or until the page moves on. The next `browser_look` gets
   `user_arrow` `{from, to, ref, role, name}` (a ref is made for the element when the look did not list it) and its screenshot has the
@@ -3342,7 +3342,7 @@ Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to
   Crossing the 6 px gap to the menu keeps it open, and it closes 250 ms after the pointer has left both. A click opens
   it with the keys (arrows, Home, End, Enter, Escape); a menu the pointer opened leaves every key alone, so an agent's
   Escape is never swallowed.
-- **"Open in".** The panel header (or a web page's bar) has a labelled button: "Open in <app>" (the default app's name
+- **"Open in".** The panel header has a labelled button (a web page has it as a row of the bar's More menu, rule 1389): "Open in <app>" (the default app's name
   on Windows, "default app" when it is not known), "Open in browser" for a page, "Show in Explorer" for a file a click
   would never open. It uses the openers file links use, so nothing runs that a click would not run.
 - **Tests.** The unit tests in `launcher.rs` (the hover rules with the clock passed in, where it shows, the rows, Last
@@ -3351,3 +3351,25 @@ Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, rules 1384 to
   225 percent).
 - **Not yet.** A Mac lookup of the default app's name; an e2e scenario of its own (the window tests run the real
   controller and window headless).
+
+## The web bar's More menu, 2026-11-28
+
+Max, 2026-11-28: "make the arrow in browser, the one used to draw arrows, a 3 dot menu, and inside that menu we have
+options like open in default browser, and draw arrow, and others in the future, vertical 3 dot menu." Rule 1389.
+
+- **What it is.** A web page's bar has one icon-only button left of the close: three dots one above the other ("More",
+  with a tooltip on its left, over the bar). It replaces the bar's "Open in browser" button and its "Draw arrow"
+  button. A click drops Flare's own menu from it (the menu every other Flare menu uses, under the button with the right
+  edges together; the page shows its still under it, like under any Flare menu). The button is pressed while the menu
+  is open.
+- **The rows.** "Open in browser" (only for an http or https page, the same rules and opener as "Open in", rule 1388),
+  then "Draw arrow" (only where the draw mode is offered, rule 256), which says "Stop drawing the arrow" while it is on.
+  A row with nothing to do is left out, and the button hides when no row is left (an empty page in a tab with no
+  agent). The rows are a list (`menus_ui::web_more_rows`), so a new one is one more entry; each row carries its action,
+  so a pick never goes by its words.
+- **Keys.** The keys of Flare's other menus: Escape closes it, and a click outside closes it.
+- **Not changed.** The panel header's "Open in" for a file and a mini-app's header "Draw arrow" button stay as they were.
+- **Tests.** `menus_ui::tests::the_web_more_menu_lists_only_what_it_can_do`, `ui_tests::panel` (the button shows only
+  with a row, the field's room, the call back with its edges), `ui_tests::icons_misc` (the glyph at full size at every
+  scale), `appctl/tests/launcher_tests.rs` (the drop under the button, "Open in browser" with real clicks, Escape, the
+  tooltip on the left) and `arrow_tests::draw_arrow_starts_and_stops_from_the_more_menu`.

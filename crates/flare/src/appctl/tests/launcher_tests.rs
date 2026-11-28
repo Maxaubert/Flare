@@ -468,6 +468,145 @@ fn open_in_takes_only_the_room_the_title_can_spare() {
     assert!(!f.h.comp.get_panel_open_in_visible());
 }
 
+// ---- the web bar's More menu (rule 1389) ----
+
+fn menu_labels(f: &Fx) -> Vec<String> {
+    let rows = f.h.comp.get_menu_rows();
+    (0..rows.row_count())
+        .filter_map(|i| rows.row_data(i))
+        .map(|r| r.label.to_string())
+        .collect()
+}
+
+/// The More button's middle, in window coordinates.
+fn more_mid(f: &Fx) -> (f32, f32) {
+    let c = &f.h.comp;
+    let w = c.get_panel_web_more_w();
+    (
+        c.get_panel_web_more_x() + w / 2.0,
+        c.get_panel_web_more_y() + w / 2.0,
+    )
+}
+
+/// A real click on the web bar's More button; its menu's rows.
+pub(super) fn open_more(f: &Fx) -> Vec<String> {
+    assert!(
+        f.h.comp.get_panel_web_more_visible(),
+        "the More button shows"
+    );
+    let (x, y) = more_mid(f);
+    f.h.click(x, y);
+    f.h.advance(0);
+    assert!(f.h.comp.get_menu_open(), "its menu opened");
+    menu_labels(f)
+}
+
+/// A real click on the open menu's row with these words (rows are 28 px with a hairline between).
+pub(super) fn pick_more(f: &Fx, label: &str) {
+    let labels = menu_labels(f);
+    let i = labels
+        .iter()
+        .position(|l| l == label)
+        .unwrap_or_else(|| panic!("no {label} row in {labels:?}"));
+    let c = &f.h.comp;
+    let y = c.get_menu_panel_y() + 1.0 + i as f32 * 29.0 + 14.0;
+    f.h.click(c.get_menu_panel_x() + c.get_menu_w() / 2.0, y);
+    f.h.advance(0);
+    f.pump();
+}
+
+/// A web page up in the front tab's panel through a stand-in browser.
+fn web_page(f: &Fx, url: &str) -> String {
+    f.ctl
+        .borrow_mut()
+        .set_web_factory(Box::new(move |sink| Box::new(FakeWeb::new(sink))));
+    let id = f.ctl.borrow().front_id().unwrap();
+    assert!(f.ctl.borrow_mut().browser_open(&id, url).is_ok());
+    f.pump();
+    f.h.advance(0);
+    id
+}
+
+/// Rule 1389: the web bar's More button drops the window's menu under itself, right edges together, pressed while it
+/// is open and never lighting the sidebar's New tab arrow; "Open in browser" there sends the page to the default
+/// browser (rule 1388) and closes the menu. An empty page with no agent has no row, so no button.
+#[test]
+fn the_more_menu_drops_under_its_button_and_opens_the_page_in_the_browser() {
+    let (f, _h, _) = live(Opts::default());
+    let _ = web_page(&f, "about:blank");
+    assert!(!f.h.comp.get_panel_web_more_visible(), "nothing to offer");
+    let url = "https://flare-test.local/index.html";
+    let id = f.ctl.borrow().front_id().unwrap();
+    assert!(f.ctl.borrow_mut().browser_open(&id, url).is_ok());
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(
+        open_more(&f),
+        ["Open in browser"],
+        "no agent: no Draw arrow"
+    );
+    let c = &f.h.comp;
+    let (bx, by, bw) = (
+        c.get_panel_web_more_x(),
+        c.get_panel_web_more_y(),
+        c.get_panel_web_more_w(),
+    );
+    assert!(c.get_menu_drop() && c.get_menu_below());
+    assert!(
+        c.get_menu_panel_y() >= by + bw,
+        "under the button: {} {by} {bw}",
+        c.get_menu_panel_y()
+    );
+    assert!(
+        (c.get_menu_panel_x() + c.get_menu_w() - (bx + bw)).abs() <= 1.0,
+        "right edges together"
+    );
+    assert!(c.get_panel_web_more_open(), "pressed while open");
+    assert!(c.get_overlay_open(), "the page hides under the menu");
+    pick_more(&f, "Open in browser");
+    assert_eq!(f.log.borrow().urls.last().map(String::as_str), Some(url));
+    assert!(!f.h.comp.get_menu_open());
+    assert!(!f.h.comp.get_panel_web_more_open());
+}
+
+/// Rule 1389: the menu takes the keys the other Flare menus take: Escape closes it and does nothing else.
+#[test]
+fn escape_closes_the_more_menu_and_opens_nothing() {
+    let (f, _h, _) = live(Opts::default());
+    let _ = web_page(&f, "https://flare-test.local/index.html");
+    open_more(&f);
+    f.h.key_text(slint::SharedString::from(slint::platform::Key::Escape).as_str());
+    f.h.advance(0);
+    f.pump();
+    assert!(!f.h.comp.get_menu_open());
+    assert!(!f.h.comp.get_panel_web_more_open());
+    assert!(f.log.borrow().urls.is_empty(), "nothing was opened");
+}
+
+/// Rule 1389: the More button is icon-only, so it has a tooltip, "More", on its left over the bar (below it is the
+/// page's own window, which would hide it).
+#[test]
+fn the_more_button_has_a_tooltip_left_of_it() {
+    let (f, _h, _) = live(Opts::default());
+    let _ = web_page(&f, "https://flare-test.local/index.html");
+    let (x, y) = more_mid(&f);
+    f.h.move_to(x, y);
+    f.h.advance(0);
+    f.clock.set(f.clock.get() + 1001);
+    f.ctl.borrow_mut().tick();
+    f.h.advance(0);
+    let c = &f.h.comp;
+    assert!(c.get_tip_visible());
+    assert_eq!(c.get_tip_text().as_str(), "More");
+    assert_eq!(c.get_tip_side(), 3, "on the left");
+    assert!(c.get_tip_x() + c.get_tip_w() <= c.get_panel_web_more_x());
+    // A click opens the menu and takes the tip away.
+    f.h.click(x, y);
+    f.h.advance(0);
+    assert!(f.h.comp.get_menu_open());
+    assert!(!f.h.comp.get_tip_visible());
+}
+
 /// Rule 1388: the label follows the page the person went to, not only one an agent opened.
 #[test]
 fn open_in_follows_a_page_the_browser_went_to() {
@@ -500,12 +639,14 @@ fn open_in_follows_a_page_the_browser_went_to() {
     f.pump_until("the label", |f| {
         f.h.comp.get_panel_open_in().as_str() == "Open in browser"
     });
-    f.h.comp.invoke_panel_open_in_clicked();
+    f.h.advance(0);
+    assert_eq!(open_more(&f), ["Open in browser"]);
+    pick_more(&f, "Open in browser");
     assert_eq!(f.log.borrow().urls.last().map(String::as_str), Some(url));
 }
 
-/// Rule 1388: a web page's "Open in browser" sends the page's address to the default browser through `open_url`; an
-/// empty page has no button.
+/// Rule 1388: a web page's "Open in browser" (a row of the bar's More menu, rule 1389) sends the page's address to the
+/// default browser through `open_url`; an empty page has no row.
 #[test]
 fn open_in_browser_sends_the_page_address() {
     let (f, _h, _) = live(Opts::default());
@@ -523,8 +664,10 @@ fn open_in_browser_sends_the_page_address() {
             .is_ok()
     );
     f.pump();
+    f.h.advance(0);
     assert_eq!(f.h.comp.get_panel_open_in().as_str(), "Open in browser");
-    f.h.comp.invoke_panel_open_in_clicked();
+    assert_eq!(open_more(&f), ["Open in browser"]);
+    pick_more(&f, "Open in browser");
     assert_eq!(
         f.log.borrow().urls.last().map(String::as_str),
         Some("https://flare-test.local/index.html")
