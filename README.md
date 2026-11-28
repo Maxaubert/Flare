@@ -137,8 +137,7 @@ Development tools in `tools/`, never shipped in the installer:
   take the reference screenshots.
 - `tools/theme-matrix`: PowerShell scripts that take the theme screenshots of every theme at 100,
   150 and 225 percent, compose the contact sheets and compare the two renderers.
-- `tools/material-spike`: the Windows 11 material spike (acrylic, the z-order and the sampling); its
-  results are in `docs/material.md`.
+
 - `tools/oracle-help`: Node (v24, no install step). It generates Flare's command help catalogue and the
   search golden vectors from Prism Terminal's own help code; `node --test tools/oracle-help/` checks them.
 - `tools/pt-metrics`: Node. Measures the installed Prism Terminal's Settings page (rects and computed
@@ -157,7 +156,7 @@ Development tools in `tools/`, never shipped in the installer:
   performance baseline. Its README says how.
 - `tools/dpi-matrix`: every headless scene at every display scaling on both renderers, with a check
   script and contact sheets (M10). Its README says how.
-- `tools/m5-compare`, `tools/m9-matrix`, `tools/glass-light`, `tools/visual`: scripts that check and
+- `tools/m5-compare`, `tools/m9-matrix`, `tools/visual`: scripts that check and
   compose screenshot sets for earlier milestones and audits (contact sheets, side-by-sides, contrast).
 - `tools/fonts`: builds the `assets/selawik` fonts from Microsoft's Selawik release.
 - `tools/model-viewer`: builds `assets/three/viewer.js`, the 3D model viewer, with esbuild.

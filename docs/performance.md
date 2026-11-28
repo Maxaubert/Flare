@@ -60,7 +60,7 @@ the fonts the terminal uses (Task 62), deferrals (Task 63, a fraction of a milli
 (Task 64, about 9%), a DX12-only prewarm (Task 66, 1636 to 986 ms), the CPU-first grid (Task 65, measured,
 nothing to win). The software renderer meets the bar at 170 ms and beats Prism Terminal's 436 ms. **Owner's
 choice (Q1):** (a) accept the floor for the GPU renderer while software meets 300 ms; (b) start the window on
-the software renderer (fast start, but see-through glass needs the GPU renderer, DIFF-5, and Slint cannot
+the software renderer (fast start, but see-through glass needed the GPU renderer, DIFF-5, moot since the see-through window was removed on 2026-11-28, and Slint cannot
 change a window's renderer later); (c) a start-up splash painted by Flare's CPU painter while the GPU window
 builds (a second window; not built unless chosen).
 

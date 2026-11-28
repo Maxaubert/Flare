@@ -9,7 +9,8 @@ use crate::config::RendererChoice;
 use flare_win::os_build::{OsVersion, os_version};
 
 /// Windows 11 22H2: the build the alpha surface was measured on (decision D6). Older builds keep the
-/// dictation card on a flat ground.
+/// dictation card on a flat ground. Windows only: a Mac has the alpha surface on every release.
+#[cfg(not(target_os = "macos"))]
 pub const ALPHA_SURFACE_BUILD: u32 = 22621;
 
 #[derive(Clone, Debug, PartialEq)]
