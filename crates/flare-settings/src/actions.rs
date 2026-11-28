@@ -26,9 +26,6 @@ use crate::window_colours::{
     set_window_edges_word,
 };
 
-/// The most see-through the slider stores.
-const SEE_THROUGH_TOP: u32 = 70;
-
 /// What the user did to a control.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -245,10 +242,8 @@ fn choose(ctx: &Ctx, row: &str, option: &str) -> Vec<Effect> {
 }
 
 fn slide(ctx: &Ctx, row: &str, value: u32) {
-    match row {
-        "term-acrylic" => ctx.look.set_see_through(value.min(SEE_THROUGH_TOP) as u8),
-        "term-font" => ctx.look.set_font_pct(value),
-        _ => {}
+    if row == "term-font" {
+        ctx.look.set_font_pct(value);
     }
 }
 
@@ -381,13 +376,6 @@ mod tests {
             )
         }
 
-        fn slide(&self, row: &str, value: u32) {
-            self.go(Event::Slide {
-                row: row.into(),
-                value,
-            });
-        }
-
         fn commit(&self, row: &str, stored: &str) {
             self.go(Event::ColourCommit {
                 row: row.into(),
@@ -413,12 +401,14 @@ mod tests {
     const CUSTOM_JSON: &str = r##"{"bg":"#11111180","fg":"#eeeeee","cursor":"#ffffff","ansi":{}}"##;
 
     #[test]
-    fn a_moved_slider_is_a_change_to_save_and_back_is_clean() {
+    fn a_picked_agent_colour_is_a_change_to_save_and_back_is_clean() {
         let r = Rig::new();
         assert!(!r.dirty());
-        r.slide("term-acrylic", 20);
+        r.commit("agent-color", "#123456");
         assert!(r.dirty());
-        r.slide("term-acrylic", 0);
+        r.go(Event::Reset {
+            row: "agent-color".into(),
+        });
         assert!(!r.dirty());
     }
 
@@ -432,15 +422,15 @@ mod tests {
     }
 
     #[test]
-    fn a_save_keeps_the_level_with_custom_on_an_opaque_ground_and_is_clean_after() {
+    fn a_save_keeps_the_extras_with_custom_on_an_opaque_ground_and_is_clean_after() {
         let r = Rig::new();
-        r.slide("term-acrylic", 35);
+        r.commit("agent-color", "#123456");
         r.save();
         let c = r.look.custom().expect("saved");
-        assert_eq!(c.see_through, Some(35));
+        assert_eq!(c.indicator_color.as_deref(), Some("#123456"));
         assert_eq!(c.palette.bg.len(), 7);
         assert!(!r.dirty());
-        r.slide("term-acrylic", 20);
+        r.commit("agent-color", "#654321");
         assert!(r.dirty());
     }
 
@@ -524,7 +514,7 @@ mod tests {
     #[test]
     fn a_dirty_pick_asks_and_cancel_changes_nothing() {
         let r = Rig::new();
-        r.slide("term-acrylic", 20);
+        r.commit("agent-color", "#123456");
         let before = r.look.theme_id();
         assert_eq!(
             r.pick("dracula"),
@@ -537,18 +527,24 @@ mod tests {
         });
         assert_eq!(r.look.theme_id(), before);
         assert!(r.pending.borrow().is_none());
-        assert_eq!(r.look.see_through(), 20);
+        assert_eq!(
+            r.look.agent_colour_choice(AgentColourState::Working),
+            "#123456"
+        );
     }
 
     #[test]
     fn ask_save_as_custom_saves_then_lands() {
         let r = Rig::new();
-        r.slide("term-acrylic", 20);
+        r.commit("agent-color", "#123456");
         r.pick("dracula");
         r.go(Event::Ask {
             answer: AskAnswer::SaveAsCustom,
         });
-        assert_eq!(r.look.custom().expect("saved").see_through, Some(20));
+        assert_eq!(
+            r.look.custom().expect("saved").indicator_color.as_deref(),
+            Some("#123456")
+        );
         assert_eq!(r.look.theme_id(), "dracula");
     }
 
@@ -560,7 +556,7 @@ mod tests {
         r.save();
         let saved = r.look.custom().expect("saved").palette.bg;
         r.pick("nord");
-        r.slide("term-acrylic", 20);
+        r.commit("agent-color", "#123456");
         r.pick("custom");
         r.go(Event::Ask {
             answer: AskAnswer::SaveAsCustom,
@@ -571,8 +567,8 @@ mod tests {
             "the Custom's palette is not overwritten by nord's"
         );
         assert_eq!(
-            c.see_through,
-            Some(20),
+            c.indicator_color.as_deref(),
+            Some("#123456"),
             "the setup in force is saved with it"
         );
         assert_eq!(r.look.theme_id(), "custom");
@@ -581,13 +577,13 @@ mod tests {
     #[test]
     fn ask_discard_drops_the_unsaved_changes_and_lands() {
         let r = Rig::new();
-        r.slide("term-acrylic", 20);
+        r.commit("agent-color", "#123456");
         r.pick("dracula");
         r.go(Event::Ask {
             answer: AskAnswer::Discard,
         });
         assert_eq!(r.look.theme_id(), "dracula");
-        assert_eq!(r.look.see_through(), 0);
+        assert_eq!(r.look.agent_colour_choice(AgentColourState::Working), "");
         assert!(r.look.custom().is_none());
     }
 

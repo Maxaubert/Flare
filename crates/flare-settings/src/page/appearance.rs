@@ -4,24 +4,19 @@
 
 use flare_theme::colour_contrast::AlphaRange;
 
-use super::{
-    BlockModel, Button, Control, GlassSupport, Opt, PageEnv, PageModel, RowModel, ThemeColours,
-};
+use super::{BlockModel, Button, Control, Opt, PageEnv, PageModel, RowModel, ThemeColours};
 use crate::kv::PrefStore;
 use crate::look::LookStore;
 
 /// The Save changes title while something differs from what Custom keeps.
-pub const SAVE_TITLE: &str = "Saves the theme, agent colours and see-through window as Custom";
+pub const SAVE_TITLE: &str = "Saves the theme and agent colours as Custom";
 /// The Save changes title while nothing differs.
 pub const SAVE_CLEAN: &str = "Nothing to save yet";
-
-/// The most see-through the slider offers (PT's slider runs 0 to 70).
-const SEE_THROUGH_MAX: u32 = 70;
 
 /// The colours the theme in force gives the window, computed the way the window computes them (PT
 /// `themeColours`): the accent is measured against the picked Background when there is one. The
 /// caller stores the result in `PageEnv::theme_colours`.
-pub fn theme_colours(look: &LookStore, prefs: &PrefStore, _glass_possible: bool) -> ThemeColours {
+pub fn theme_colours(look: &LookStore, prefs: &PrefStore) -> ThemeColours {
     use crate::window_colours::{BACKGROUND, window_edges};
     use flare_theme::chrome::chrome_tokens;
     use flare_theme::resolve::{preset_accent, resolve_saved_theme};
@@ -36,8 +31,8 @@ pub fn theme_colours(look: &LookStore, prefs: &PrefStore, _glass_possible: bool)
     if let Some(bg) = BACKGROUND.get(prefs).filter(|b| !b.is_empty()) {
         picked.background = bg;
     }
-    let with_pick = chrome_tokens(&picked, 1.0, wanted.as_deref(), edges, None, None).vars;
-    let own = chrome_tokens(&theme, 1.0, wanted.as_deref(), edges, None, None).vars;
+    let with_pick = chrome_tokens(&picked, wanted.as_deref(), edges, None, None).vars;
+    let own = chrome_tokens(&theme, wanted.as_deref(), edges, None, None).vars;
     let take = |vars: &std::collections::BTreeMap<&'static str, String>, key: &str| {
         vars.get(key).cloned().unwrap_or_default()
     };
@@ -97,34 +92,6 @@ fn edge_name(word: &str) -> &'static str {
         "faint" => "Faint",
         "hairline" => "Hairline",
         _ => "Solid",
-    }
-}
-
-/// The see-through row: a 0 to 70 slider that reads Off at 0. Without glass the row is off and says why.
-fn see_through_row(env: &PageEnv) -> RowModel {
-    let table = def("term-acrylic");
-    let (value, sub) = match env.glass {
-        GlassSupport::Ok => (u32::from(env.look.see_through()), table.sub.to_string()),
-        GlassSupport::NeedsWindows11 => (0, "Needs Windows 11.".to_string()),
-        GlassSupport::NeedsWindows11Update => (0, "Needs Windows 11 22H2.".to_string()),
-        GlassSupport::NeedsGraphicsRenderer => (0, "Needs the graphics renderer.".to_string()),
-    };
-    let off = env.glass != GlassSupport::Ok;
-    let text = if value == 0 {
-        "Off".to_string()
-    } else {
-        format!("{value}%")
-    };
-    RowModel {
-        off,
-        sub,
-        control: Control::Slider {
-            value,
-            max: SEE_THROUGH_MAX,
-            text,
-            disabled: off,
-        },
-        ..row_with("term-acrylic", Control::None)
     }
 }
 
@@ -194,8 +161,8 @@ fn app_icon_row(env: &PageEnv) -> RowModel {
     }
 }
 
-/// The Appearance page: the window section, then the theme section (the wall and the see-through row
-/// under the theme row, the window's own colours under the wall).
+/// The Appearance page: the window section, then the theme section (the wall under the theme row, the
+/// window's own colours under the wall).
 pub fn build(env: &PageEnv) -> PageModel {
     use crate::tab_layout::{TabLayout, tab_layout};
     use crate::tab_switch::{TabSwitch, tab_switch};
@@ -275,7 +242,6 @@ pub fn build(env: &PageEnv) -> PageModel {
         vec![
             BlockModel::Row(theme_row),
             BlockModel::Wall,
-            BlockModel::Row(see_through_row(env)),
             BlockModel::Row(colour_row(
                 "window-background",
                 BACKGROUND.get(env.prefs),
@@ -309,8 +275,8 @@ mod tests {
     use super::*;
     use crate::custom_theme::parse_custom;
     use crate::kv::PrefStore;
-    use crate::look::LookStore;
-    use crate::page::{BlockModel, Control, DiagInfo, GlassSupport, PageEnv, ThemeColours, row_of};
+    use crate::look::{AgentColourState, LookStore};
+    use crate::page::{BlockModel, Control, DiagInfo, PageEnv, ThemeColours, row_of};
     use crate::tab_switch::{TabSwitch, set_tab_switch};
     use crate::verb::VerbState;
     use crate::window_colours::{ACCENT, BACKGROUND, WindowColours, set_custom_window_colours};
@@ -329,13 +295,8 @@ mod tests {
         }
     }
 
-    /// Runs `f` on an environment over the given stores and glass answer.
-    fn with_env<R>(
-        prefs: &PrefStore,
-        look: &LookStore,
-        glass: GlassSupport,
-        f: impl FnOnce(&PageEnv<'_>) -> R,
-    ) -> R {
+    /// Runs `f` on an environment over the given stores.
+    fn with_env<R>(prefs: &PrefStore, look: &LookStore, f: impl FnOnce(&PageEnv<'_>) -> R) -> R {
         let face_of: &dyn Fn(&str) -> String = &no_face;
         let env = PageEnv {
             prefs,
@@ -345,7 +306,6 @@ mod tests {
             home: String::new(),
             version: "0.0.0".to_string(),
             copyright: String::new(),
-            glass,
             diag: DiagInfo {
                 verbose: false,
                 dir: String::new(),
@@ -367,8 +327,8 @@ mod tests {
         (p.clone(), LookStore::new(p))
     }
 
-    fn page(prefs: &PrefStore, look: &LookStore, glass: GlassSupport) -> PageModel {
-        with_env(prefs, look, glass, build)
+    fn page(prefs: &PrefStore, look: &LookStore) -> PageModel {
+        with_env(prefs, look, build)
     }
 
     fn theme_blocks(p: &PageModel) -> &[BlockModel] {
@@ -386,7 +346,7 @@ mod tests {
     #[test]
     fn the_window_section_comes_first_then_the_theme_section() {
         let (prefs, look) = fresh();
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         let ids: Vec<&str> = p.sections.iter().map(|s| s.id).collect();
         assert_eq!(ids, vec!["window", "theme"]);
         let window: Vec<&str> = p.sections[0]
@@ -413,14 +373,14 @@ mod tests {
             Control::Icons { value, options } => (value.clone(), options.clone()),
             other => panic!("app-icon is an icon picker, not {other:?}"),
         };
-        let (value, options) = picked(&page(&prefs, &look, GlassSupport::Ok));
+        let (value, options) = picked(&page(&prefs, &look));
         assert_eq!(value, "original");
         let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
         let want: Vec<&str> = APP_ICONS.iter().map(|i| i.id).collect();
         assert_eq!(ids, want);
         assert_eq!(options[0].name, "Original, the default");
         assert_eq!(options[1].name, "Liquid Glass");
-        let r = row(&page(&prefs, &look, GlassSupport::Ok), "app-icon").clone();
+        let r = row(&page(&prefs, &look), "app-icon").clone();
         assert_eq!(r.label, "App icon");
         assert_eq!(r.sub, APP_ICON_SUB);
         if cfg!(target_os = "macos") {
@@ -444,9 +404,9 @@ mod tests {
                 option: "daybreak".to_string(),
             },
         );
-        assert_eq!(picked(&page(&prefs, &look, GlassSupport::Ok)).0, "daybreak");
+        assert_eq!(picked(&page(&prefs, &look)).0, "daybreak");
         prefs.set(KEY, "neon");
-        assert_eq!(picked(&page(&prefs, &look, GlassSupport::Ok)).0, "original");
+        assert_eq!(picked(&page(&prefs, &look)).0, "original");
     }
 
     /// Rule 1263: on Windows the App icon row's right is one labelled button that restarts Explorer, with no tooltip.
@@ -469,7 +429,7 @@ mod tests {
         );
         // The page this host builds wears its own arm.
         let (prefs, look) = fresh();
-        let r = row(&page(&prefs, &look, GlassSupport::Ok), "app-icon").clone();
+        let r = row(&page(&prefs, &look), "app-icon").clone();
         assert_eq!(r.buttons, app_icon_buttons(ShellHost::current()));
     }
 
@@ -481,26 +441,26 @@ mod tests {
             Control::Segmented { value, .. } => value.clone(),
             other => panic!("tab-layout is segmented, not {other:?}"),
         };
-        assert_eq!(value(&page(&prefs, &look, GlassSupport::Ok)), "vertical");
+        assert_eq!(value(&page(&prefs, &look)), "vertical");
         set_tab_layout(&prefs, TabLayout::Horizontal);
-        assert_eq!(value(&page(&prefs, &look, GlassSupport::Ok)), "horizontal");
+        assert_eq!(value(&page(&prefs, &look)), "horizontal");
     }
 
     #[test]
     fn tab_switching_says_what_the_choice_in_force_does() {
         let (prefs, look) = fresh();
         set_tab_switch(&prefs, TabSwitch::Order);
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         assert_eq!(row(&p, "tab-switch").sub, "The next tab along the strip.");
         set_tab_switch(&prefs, TabSwitch::Recent);
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         assert_eq!(row(&p, "tab-switch").sub, "Back to the tab you used last.");
     }
 
     #[test]
     fn edges_are_offered_weakest_to_strongest() {
         let (prefs, look) = fresh();
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         let Control::Segmented { options, .. } = &row(&p, "window-edges").control else {
             panic!("the edges row is a segmented control");
         };
@@ -520,9 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn the_wall_sits_under_the_theme_row_and_the_see_through_row_under_the_wall() {
+    fn the_wall_sits_under_the_theme_row_and_the_window_colours_under_the_wall() {
         let (prefs, look) = fresh();
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         let kinds: Vec<&str> = theme_blocks(&p)
             .iter()
             .map(|b| match b {
@@ -531,7 +491,7 @@ mod tests {
                 _ => "other",
             })
             .collect();
-        assert_eq!(kinds, vec!["Row", "Wall", "Row", "Row", "Row", "Row"]);
+        assert_eq!(kinds, vec!["Row", "Wall", "Row", "Row", "Row"]);
         let ids: Vec<&str> = theme_blocks(&p)
             .iter()
             .filter_map(|b| match b {
@@ -543,7 +503,6 @@ mod tests {
             ids,
             vec![
                 "term-theme",
-                "term-acrylic",
                 "window-background",
                 "window-secondary",
                 "window-accent",
@@ -552,70 +511,9 @@ mod tests {
     }
 
     #[test]
-    fn the_see_through_row_is_a_slider_0_to_70_reading_off_at_zero() {
-        let (prefs, look) = fresh();
-        look.set_see_through(0);
-        let p = page(&prefs, &look, GlassSupport::Ok);
-        let r = row(&p, "term-acrylic");
-        let def = crate::rows::row("term-acrylic").expect("the row exists");
-        assert_eq!(r.label, def.label);
-        assert_eq!(r.sub, "How much of the desktop shows behind every surface.");
-        assert!(!r.off);
-        assert_eq!(
-            r.control,
-            Control::Slider {
-                value: 0,
-                max: 70,
-                text: "Off".to_string(),
-                disabled: false,
-            }
-        );
-        look.set_see_through(35);
-        let p = page(&prefs, &look, GlassSupport::Ok);
-        assert_eq!(
-            row(&p, "term-acrylic").control,
-            Control::Slider {
-                value: 35,
-                max: 70,
-                text: "35%".to_string(),
-                disabled: false,
-            }
-        );
-    }
-
-    #[test]
-    fn see_through_is_disabled_and_says_why_when_glass_is_not_ok() {
-        let (prefs, look) = fresh();
-        look.set_see_through(35);
-        let cases = [
-            (GlassSupport::NeedsWindows11, "Needs Windows 11."),
-            (GlassSupport::NeedsWindows11Update, "Needs Windows 11 22H2."),
-            (
-                GlassSupport::NeedsGraphicsRenderer,
-                "Needs the graphics renderer.",
-            ),
-        ];
-        for (glass, text) in cases {
-            let p = page(&prefs, &look, glass);
-            let r = row(&p, "term-acrylic");
-            assert_eq!(r.sub, text);
-            assert!(r.off);
-            assert_eq!(
-                r.control,
-                Control::Slider {
-                    value: 0,
-                    max: 70,
-                    text: "Off".to_string(),
-                    disabled: true,
-                }
-            );
-        }
-    }
-
-    #[test]
     fn reset_shows_only_while_a_colour_is_picked_and_the_swatch_shows_the_themes_until_then() {
         let (prefs, look) = fresh();
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         let r = row(&p, "window-accent");
         assert!(!r.reset);
         assert_eq!(
@@ -630,7 +528,7 @@ mod tests {
             }
         );
         ACCENT.set(&prefs, Some("#112233"));
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         let r = row(&p, "window-accent");
         assert!(r.reset);
         assert!(matches!(
@@ -642,7 +540,7 @@ mod tests {
     #[test]
     fn ranges_are_background_and_secondary_opaque_accent_from_ten_percent() {
         let (prefs, look) = fresh();
-        let p = page(&prefs, &look, GlassSupport::Ok);
+        let p = page(&prefs, &look);
         let range_of = |id: &str| match &row(&p, id).control {
             Control::Colour { range, .. } => *range,
             other => panic!("{id} is a colour row, got {other:?}"),
@@ -658,9 +556,9 @@ mod tests {
     fn save_lights_only_when_the_setup_deviates_from_the_themes_stock() {
         let (prefs, look) = fresh();
         assert!(!save_dirty(&prefs, &look));
-        look.set_see_through(35);
+        look.set_agent_colour(AgentColourState::Working, "#123456");
         assert!(save_dirty(&prefs, &look));
-        look.set_see_through(0);
+        look.set_agent_colour(AgentColourState::Working, "");
         assert!(!save_dirty(&prefs, &look));
         // A picked Background is a window colour, not part of the terminal setup.
         BACKGROUND.set(&prefs, Some("#222222"));
@@ -691,7 +589,7 @@ mod tests {
     #[test]
     fn save_title_is_the_sentence_when_dirty_and_nothing_to_save_when_clean() {
         let (prefs, look) = fresh();
-        let clean = page(&prefs, &look, GlassSupport::Ok);
+        let clean = page(&prefs, &look);
         assert_eq!(
             row(&clean, "term-theme").control,
             Control::Save {
@@ -699,14 +597,13 @@ mod tests {
                 title: "Nothing to save yet".to_string(),
             }
         );
-        look.set_see_through(35);
-        let dirty = page(&prefs, &look, GlassSupport::Ok);
+        look.set_agent_colour(AgentColourState::Working, "#123456");
+        let dirty = page(&prefs, &look);
         assert_eq!(
             row(&dirty, "term-theme").control,
             Control::Save {
                 dirty: true,
-                title: "Saves the theme, agent colours and see-through window as Custom"
-                    .to_string(),
+                title: "Saves the theme and agent colours as Custom".to_string(),
             }
         );
     }
@@ -714,13 +611,13 @@ mod tests {
     #[test]
     fn the_swatch_colour_of_the_theme_is_computed_not_read_back() {
         let (prefs, look) = fresh();
-        let c = theme_colours(&look, &prefs, true);
+        let c = theme_colours(&look, &prefs);
         assert_eq!(c.accent, "#fe8f34");
         assert_eq!(c.background, "#171717");
         assert_eq!(c.secondary, "#0d0d0d");
         // A picked Background changes the accent only through the chrome rule.
         BACKGROUND.set(&prefs, Some("#ffffff"));
-        let picked = theme_colours(&look, &prefs, true);
+        let picked = theme_colours(&look, &prefs);
         assert_eq!(picked.background, "#171717");
         assert_ne!(picked.accent, c.accent);
     }

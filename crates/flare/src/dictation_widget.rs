@@ -298,7 +298,7 @@ pub fn inks_of(app: &crate::AppWindow) -> Inks {
 
 /// True while the widget's window is being made, so the one attributes hook knows whose attributes it is given.
 static CREATING: AtomicBool = AtomicBool::new(false);
-/// Whether the window surface can carry per-pixel alpha (the glass plan): else the card sits on a flat ground.
+/// Whether the window surface can carry per-pixel alpha (the alpha plan, `backend.rs`): else the card sits on a flat ground.
 static ALPHA_SURFACE: AtomicBool = AtomicBool::new(false);
 
 /// `backend.rs` tells the widget whether the surface the renderer makes has alpha.

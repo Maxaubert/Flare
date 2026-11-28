@@ -9,8 +9,8 @@
 //! Where Flare differs: the `clip-path`, mask-position and transition checks are CSS, and the window
 //! answers their native twins (the cut corner's pixels, the sidebar's edge at two heights while it
 //! slides, the `sliding` flag). The four "main's cursor" checks need the real mouse, which a run never
-//! moves; `flare-win::edge_watch` holds them in unit tests. The see-through checks need the GPU painter
-//! (DIFF-5) and are skipped on software.
+//! moves; `flare-win::edge_watch` holds them in unit tests. The see-through checks are skipped: the
+//! window is solid (the see-through window was removed on 2026-11-28).
 
 use std::path::Path;
 
@@ -31,8 +31,8 @@ const MAC_CAPTION: bool = cfg!(target_os = "macos");
 const NO_MARK_ON_A_MAC: &str = "the app's mark: a Mac's title row has the traffic lights in its corner and draws no mark (AppMark is hidden with the native caption, app.slint)";
 /// 125 percent.
 const DPI_125: u32 = 120;
-/// The reason every glass check is skipped on the software renderer.
-const SOFTWARE_SKIP: &str = "the software renderer paints a solid window (DIFF-5), so the see-through checks run on the GPU renderer";
+/// The reason every see-through check is skipped.
+const SOLID_SKIP: &str = "the window is solid: the see-through window was removed (2026-11-28)";
 /// The bar's height in css px.
 const BAR_H: f64 = 36.0;
 
@@ -629,10 +629,6 @@ pub fn vertical_tabs(ctx: &mut Ctx) -> Result<(), String> {
         scale_dpi: Some(96),
         ..Launch::default()
     })?;
-    let gpu = app
-        .hello()
-        .map(|h| h.renderer.to_lowercase().starts_with("gpu"))
-        .unwrap_or(false);
     send(
         &mut app,
         Request::Resize {
@@ -642,7 +638,7 @@ pub fn vertical_tabs(ctx: &mut Ctx) -> Result<(), String> {
     );
     mark_strip(ctx, &mut app);
     vertical_a(ctx, &mut app)?;
-    vertical_b(ctx, &mut app, gpu)?;
+    vertical_b(ctx, &mut app)?;
     app.close();
     Ok(())
 }
@@ -1513,7 +1509,7 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 
 /// Checks 42 to 82 of PT's scenario: pinned again, the bar beside the sidebar, the hit tests, the
 /// collapsed and slid-out looks, the zoom, Settings under the sidebar, and back to the strip.
-fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
+fn vertical_b(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let k = scale(app);
     let screen_before = ui_rect(app, "grid").map(|g| g.2).unwrap_or(0.0);
     key(app, "Ctrl+Shift+B");
@@ -1783,21 +1779,9 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
     // ---- see-through, one coat everywhere (PT 2669-2689)
     // PT: run.mjs:2696, 2699
     ctx.skip(&format!(
-        "see-through: the sidebar, the bar and the terminal each one coat: {}",
-        if gpu {
-            "not checked yet on the GPU renderer"
-        } else {
-            SOFTWARE_SKIP
-        }
+        "see-through: the sidebar, the bar and the terminal each one coat: {SOLID_SKIP}"
     ));
-    ctx.skip(&format!(
-        "see-through: the same line: {}",
-        if gpu {
-            "not checked yet on the GPU renderer"
-        } else {
-            SOFTWARE_SKIP
-        }
-    ));
+    ctx.skip(&format!("see-through: the same line: {SOLID_SKIP}"));
 
     // ---- at 125 percent, a 235 px sidebar's edge lands on a whole screen pixel (PT 2690-2725)
     let zoomed = send(
@@ -1926,12 +1910,7 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
     hold(ctx, 300);
     // PT: run.mjs:2790
     ctx.skip(&format!(
-        "collapsed and slid out, the sidebar is the window's acrylic: {}",
-        if gpu {
-            "not checked yet on the GPU renderer"
-        } else {
-            SOFTWARE_SKIP
-        }
+        "collapsed and slid out, the sidebar is the window's acrylic: {SOLID_SKIP}"
     ));
     move_to(app, 800.0, 400.0);
     hold(ctx, 500);

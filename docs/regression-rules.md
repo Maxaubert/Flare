@@ -58,7 +58,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 39. **The clear before the agent paints goes to the grid only, never the shell.** Native: the grid is cleared in renderer state; no bytes to the pty. Source: core/renderer/lib/resumeReveal.ts.
 40. **Every stored value keeps its meaning; unknowns read as the default and are never written back.** Native: typed enums with `from_str` falling back to the default, serde defaults on each field, never re-serialise an unknown value; a bool default-on reads on unless '0'; never set is not zero (`Option<T>`, default before clamp). Source: core/renderer/lib/prefStore.ts; helpPrefs.test.
 41. **Stores fail soft.** Native: load and save return `Result`; on failure keep defaults in memory and log to `flare-diag`; a crash never leaves a half-written file. Source: prefStore.test "a blocked store loses the choice".
-42. **Settings keys keep their names and meanings across the import; legacy keys are read once and removed.** Native: a versioned schema with an import map from the PT key to a Flare field; the opacity key is read only by the importer. Source: core/renderer/lib/prefStore.ts; seeThroughMigration.ts; opacityMigration.ts.
+42. **Settings keys keep their names and meanings across the import; legacy keys are read once and removed.** Native: a versioned schema with an import map from the PT key to a Flare field; the opacity and acrylic keys are read only by the importer. Since 2026-11-28 (DIFF-30) Prism Terminal's transparency maps to nothing: `prism.term.acrylic`, `prism.term.opacity` and `prism.term.seeThrough` write nothing, a Custom loses its `acrylic`, `opacity` and `seeThrough` fields and every ground the glass touched is written opaque; Flare's own old `flare.term.seeThrough` is read by nothing. Held by `the_legacy_keys_map_to_nothing_and_no_background_is_made_from_them`, `the_see_through_level_maps_to_nothing`, `imported_transparency_maps_to_nothing_and_the_window_stays_solid` and `an_old_see_through_level_is_ignored_and_the_window_stays_solid`. Source: core/renderer/lib/prefStore.ts; seeThroughMigration.ts; opacityMigration.ts.
 43. **The window position is kept only if it overlaps an attached display.** Native: test the saved rectangle against each monitor's work area (`EnumDisplayMonitors`) before applying. Source: src/main/windowState.ts.
 44. **Tab state is per session or per store, never shared across windows.** Native: the used list, walk, placeholders, recents and pins live in the window model or settings file; persist only tabs.json, window.json, recents, pins and stored choices. Source: tabs area notes.
 45. **Every tab is one shell and one folder; Settings is a tab with no shell.** Native: a tab enum (Shell or Settings), only Shell owns a pty. Source: src/renderer/src/lib/tabs.ts.
@@ -92,14 +92,14 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 
 ## Theme, chrome, settings
 
-67. **Contrast is measured, never named; floors are fixed numbers.** Light or dark comes from measured luminance (above 0.4); text 4.5:1, marks 3:1, sidebar names 7:1, name flip 2:1. Native: pure functions in `flare-theme` with the same constants, tests over every preset. Source: core/shared/ground.ts; chromeTheme.ts; termAnsi.ts. M4 tests: `every_presets_text_reads_on_its_ground`, `all_sixteen_of_every_preset_clear_the_floor_against_its_background`, `ground_mode_is_measured_never_named`, `no_source_compares_a_luminance_with_a_typed_0_4`, `light_is_measured_above_luminance_0_4`.
-68. **Alpha never reduces legibility, and alpha 1 changes nothing.** Native: composite once when the theme resolves, hand the renderer opaque or 8-digit hex only; golden snapshot tests byte for byte. Source: termTheme.legible.test; termTheme.snapshot.test. M4 tests: `a_custom_at_every_alpha_reads`, `legible_on_at_alpha_1_returns_the_pick_unchanged`, `legible_on_is_never_less_legible_than_the_opaque_pick`, `oracle_alpha_sweep`, `oracle_opaque_custom_with_a_failing_cursor`.
+67. **Contrast is measured, never named; floors are fixed numbers.** Light or dark comes from measured luminance (above 0.4); text 4.5:1, marks 3:1, sidebar names 7:1, name flip 2:1. Native: pure functions in `flare-theme` with the same constants, tests over every preset. Source: core/shared/ground.ts; chromeTheme.ts; termAnsi.ts. M4 tests: `every_presets_text_reads_on_its_ground`, `all_sixteen_of_every_preset_clear_the_floor_against_its_background`, `ground_mode_is_measured_never_named`, `no_source_compares_a_luminance_with_a_typed_0_4`.
+68. **Alpha never reduces legibility, and alpha 1 changes nothing.** Native: composite once when the theme resolves, hand the renderer opaque or 8-digit hex only; golden snapshot tests byte for byte. Source: termTheme.legible.test; termTheme.snapshot.test. M4 tests: `a_custom_at_every_alpha_reads`, `legible_on_at_alpha_1_returns_the_pick_unchanged`, `legible_on_is_never_less_legible_than_the_opaque_pick`, `oracle_opaque_custom_with_a_failing_cursor` (`oracle_alpha_sweep` went with the see-through window on 2026-11-28, DIFF-30).
 69. **A theme id is a saved setting; retired ids map to their replacement at read time.** Native: the retired map is data in `flare-theme`, used wherever the id is read and by the import. Source: core/renderer/lib/termThemeRetired.ts. M4 tests: `each_retired_goes_to_a_listed_theme_and_none_is_listed`, `retired_map_equals_the_oracle`, `a_retired_theme_reads_as_its_replacement`, `a_retired_id_is_worn_as_its_replacement`.
 70. **The theme drives the chrome, and a switch asks first.** A pick with Save changes lit shows Save as Custom, Discard, Cancel (Escape and outside press cancel); a clean pick lands at once and forgets picked Background, Secondary and Accent unless Custom. Native: a Slint popup with focus trapped; one function in `flare-settings` clears the window colours. Source: regression-rules.md theme-switch-colours.
-71. **Save as Custom saves the whole setup; font, font size, indicator and edges belong to no theme.** Native: theme state and settings state are separate structs; only the theme struct carries palette and see-through level. Source: termLook.ts resetTermExtras.
+71. **Save as Custom saves the whole setup; font, font size, indicator and edges belong to no theme.** Native: theme state and settings state are separate structs; only the theme struct carries the palette (the see-through level it also carried went on 2026-11-28, DIFF-30). Source: termLook.ts resetTermExtras.
 72. **The editor's draft is worn but not saved.** Native: a draft slot in the settings model read each frame; Cancel drops it; the editor view re-mounts with the draft. Source: termLook.ts themeDraft.
-73. **Material before colour, and acrylic needs a DWM-composited window on Windows 11.** Native: set the backdrop type first, then the ground colour (clear for glass); read both back in a test; build-number check once at start gates the slider; goes opaque before full screen. Source: regression-rules.md material-before-colour; src/main/material.ts. M4 tests: `going_glass_sets_the_frost_then_the_backdrop`, `going_glass_calls_the_frost_then_the_backdrop_and_the_ui_waits`, `order_only_material_first_when_glass_turns_on`, `leaving_glass_removes_the_backdrop`, `full_screen_goes_opaque_before_the_os_is_asked_and_back_on_settle`, `acrylic_ok_is_windows_11_and_later_by_build`.
-74. **Material and DWM calls are cosmetic.** Native: a failed call is ignored and leaves the solid window; `Result` logged to `flare-diag`, never a panic. Source: dwmHelper.ts. M4 tests: `a_failed_backdrop_call_leaves_the_window_solid`, `the_dwm_wrappers_do_not_panic_on_a_bad_handle`, `an_unsupported_build_makes_no_dwm_call`.
+73. **(RETIRED 2026-11-28, with the see-through window (Max, 2026-11-28: "remove the see through window feature. I want that feature but only for mac, and it should be liquid glass, not just transparent or acrylic or whatever, so remove the current feature"; parity DIFF-30).)** It said material before colour: the backdrop was set before the ground, read back in a test, gated by the build and taken off before full screen. There is no backdrop; the number stays so the others keep theirs. What stays: the window is solid with its theme ground on Windows and macOS (`the_window_sheet_is_always_opaque`, `the_main_window_is_never_created_transparent`).
+74. **DWM and AppKit window calls are cosmetic.** Native: a failed call (the border colour, the immersive dark frame, the Mac's Aqua appearance) is ignored and leaves the window as it was; never a panic. The backdrop half of this rule went with the see-through window on 2026-11-28 (DIFF-30). Source: dwmHelper.ts. Tests: `the_dwm_wrappers_do_not_panic_on_a_bad_handle`, `off_the_main_thread_nothing_is_touched` (macOS).
 75. **The DWM border is one pixel and only its contrast changes.** Native: `DwmSetWindowAttribute` `DWMWA_BORDER_COLOR` (34) as COLORREF 0x00BBGGRR, `DWMWA_COLOR_NONE` (-2) for none, from one debounced task (250 ms) after WM_SIZE, WM_SETTINGCHANGE or a theme change; removed when maximised or full screen. Source: regression-rules.md window-edge-hairline; windowEdge.ts. M4 tests: `apply_is_debounced_250_ms`, `a_new_apply_restarts_the_wait`, `maximised_or_full_screen_has_no_border`, `no_edges_is_no_border_whatever_the_ground`, `oracle_edge_vectors`, `colorref_has_red_in_the_low_byte`.
 76. **Edges are a setting with four words and the default is the old look.** Native: closed enum with serde default Hairline; unknown maps to Hairline. Source: src/shared/windowEdges.ts.
 77. **Settings ask nothing nobody changed.** Native: commit a colour or code field only on editing-finished with parseable text that differs from the stored value; focus traversal and Escape never write. Source: regression-rules.md settings-ask-nothing (#71); fields.test.
@@ -198,12 +198,12 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 
 ## Theme, material and fonts (M4)
 
-148. **The oracle is Prism Terminal's own code: a colour test compares exact strings against it.** Native: the fixtures in `crates/flare-theme/tests/fixtures` are written by `tools/oracle` from Prism Terminal's theme modules, and the `oracle_*` tests compare exact strings; if a Rust function disagrees with a fixture, the function is wrong, never the fixture (the one exception is the 1-unit floating-point note in the M4 plan). Pinned by `oracle_every_preset_resolves_as_it_did`, `oracle_alpha_sweep`, `oracle_every_preset_four_variants`, `presets_data_equals_the_oracle` and `retired_map_equals_the_oracle`. Source: tools/oracle/README.md; core/renderer/lib/termTheme.snapshot.test.ts.
-149. **No frame shows a translucent ground without a backdrop behind it.** Native: going glass calls the backdrop first and only then lowers the UI ground alpha; leaving glass raises the UI to opaque first and only then removes the backdrop. Pinned by `order_only_material_first_when_glass_turns_on`, `going_glass_calls_the_frost_then_the_backdrop_and_the_ui_waits`, `going_glass_sets_the_frost_then_the_backdrop` and `the_order_follows_the_glass_change`. Source: core/main/material.ts; M4 plan decision D7.
-150. **A Windows build without the backdrop makes no DWM call at all.** Native: the build number is read once at start (`RtlGetVersion`); under build 22621 the surface stays solid and no DWM call is made, so Windows 10 never sees a backdrop attribute. Pinned by `an_unsupported_build_makes_no_surface_call_at_all` (flare-win material) and `an_unsupported_build_makes_no_dwm_call` (flare material controller). Source: src/main/material.ts acrylicOk; M4 plan decision D6.
+148. **The oracle is Prism Terminal's own code: a colour test compares exact strings against it.** Native: the fixtures in `crates/flare-theme/tests/fixtures` are written by `tools/oracle` from Prism Terminal's theme modules, and the `oracle_*` tests compare exact strings; if a Rust function disagrees with a fixture, the function is wrong, never the fixture (the one exception is the 1-unit floating-point note in the M4 plan). The see-through fixtures (`chrome_alpha_sweep.json`, `chrome_levels.json`) and PT's glass variants went with the see-through window on 2026-11-28 (DIFF-30): only the solid rows are compared. Pinned by `oracle_every_preset_resolves_as_it_did`, `oracle_every_preset_solid_variants`, `oracle_edges_picks_and_levels`, `presets_data_equals_the_oracle` and `retired_map_equals_the_oracle`. Source: tools/oracle/README.md; core/renderer/lib/termTheme.snapshot.test.ts.
+149. **(RETIRED 2026-11-28, with the see-through window (Max, 2026-11-28: "remove the see through window feature. I want that feature but only for mac, and it should be liquid glass, not just transparent or acrylic or whatever, so remove the current feature"; parity DIFF-30).)** It said no frame shows a translucent ground without a backdrop behind it (the backdrop first going glass, the UI first leaving it). There is no translucent ground; the number stays so the others keep theirs.
+150. **(RETIRED 2026-11-28, with the see-through window (Max, 2026-11-28: "remove the see through window feature. I want that feature but only for mac, and it should be liquid glass, not just transparent or acrylic or whatever, so remove the current feature"; parity DIFF-30).)** It said a Windows build without the backdrop makes no DWM backdrop call. Flare makes no backdrop call on any build; the number stays so the others keep theirs.
 151. **No theme colour is typed outside the theme.** Native: colour literals of six or eight hex digits live only in `flare-theme` (the presets, the fixtures and `ground.rs`) or come from the look at run time; a scan of the app crates fails on any other `#rrggbb` literal not named in `crates/flare/tests/colour_literals_allow.txt`. Pinned by `no_theme_colour_literal_in_source` (`crates/flare/tests/colour_literals.rs`) and `no_source_file_types_the_default_ground_but_the_allowed_ones`. Source: core/renderer/lib/ground.ts; M4 plan Task 5.
-152. **The window is created transparent only when glass can be used, and the software renderer never claims glass.** Native: the transparent attribute is set at creation only when the GPU renderer is in use and the backdrop build gate passes; the software presenter has no alpha, so a see-through level there leaves the window solid and says so. Pinned by `glass_plan_needs_the_gpu_and_the_22h2_backdrop`, `the_outcome_says_glass_is_possible_only_on_the_gpu_with_a_transparent_window`, `the_visual_swapchain_is_asked_for_only_with_a_plan` and `no_glass_without_a_possible_surface`. Source: M4 plan decisions D5 and D8; docs/material.md.
-153. **An idle window wakes for the material only when something is due.** Native: the border waits 250 ms after a change (rule 75); the material arms one Slint single-shot timer at that deadline after every change and disarms it when nothing is pending, so no repeating material timer runs. The theme-report nudge (`LookCtl::tick`) follows the same rule once it is wired (docs/parity.md: deferred until `?2031h` is tracked per tab). Pinned by `the_wake_runs_only_while_the_border_is_due` and `under_e2e_the_wake_is_never_armed`. Source: M4 final review.
+152. **(RETIRED 2026-11-28, with the see-through window (Max, 2026-11-28: "remove the see through window feature. I want that feature but only for mac, and it should be liquid glass, not just transparent or acrylic or whatever, so remove the current feature"; parity DIFF-30).)** It said the window is created transparent only when glass can be used. What replaced it: the main window is never created transparent (`the_main_window_is_never_created_transparent`); on Windows 11 22H2 and later with the GPU renderer the instance still presents through DirectComposition so the dictation widget, the one window with per-pixel alpha, keeps its rounded card, and the software renderer or an older build gives the widget a flat card (`the_alpha_plan_needs_the_gpu_and_the_22h2_build`, `the_prewarm_instance_options_match_the_alpha_plan`). The number stays so the others keep theirs.
+153. **An idle window wakes for the window frame only when something is due.** Native: the border waits 250 ms after a change (rule 75); the frame (`frame_ctl::WindowFrame`, the window material until 2026-11-28) arms one Slint single-shot timer at that deadline after every change and disarms it when nothing is pending, so no repeating frame timer runs. The theme-report nudge (`LookCtl::tick`) follows the same rule once it is wired (docs/parity.md: deferred until `?2031h` is tracked per tab). Pinned by `the_wake_runs_only_while_the_border_is_due` and `under_e2e_the_wake_is_never_armed`. Source: M4 final review.
 154. **Selection, find and links work on cell boundaries and logical lines, never on strings.** A selection end is a boundary in `0..=cols` of an absolute row; a wide character is taken whole; text comes from `cell_text` and `selection_text`, and a search maps characters back to cells through the line's index. Native: `sel_machine.rs`, `sel_text.rs`, `find.rs`, tests `a_wide_character_is_taken_whole`, `wide_characters_count_two_cells`. Source: rule 21; xterm `SelectionService`.
 155. **A drop is typed, not pasted, and is inert.** Dropped paths go through `quote_paths` for the shell that RUNS in the tab (`TermHandle::shell_id`, never the requested id; nothing is typed before the shell started) and `send_text`; a refused path types nothing; no Enter, no trailing space; only over a live shell. Native: `drop_flow.rs`, tests `a_control_character_in_a_name_types_nothing`, `several_files_are_joined_by_one_space_and_never_end_in_enter`. Source: regression-rules file-drop-and-menu (#16); rule 135.
 156. **Mouse reports are bytes, not typing, and Shift gives the selection back.** A program that asked for the mouse gets press, release, motion and wheel; a right click still opens the menu; no report marks the tab typed. Native: `mouse_report.rs`, `TermHandle::write_report`, tests `a_program_that_owns_the_mouse_gets_press_release_and_motion`, `write_report_is_not_typing`. Source: xterm `MouseStateService`; rule 9.
@@ -1390,8 +1390,7 @@ Since rule 1232 the macOS UI face is the bundled Flare Selawik, not SF; Menlo st
 painter. Held by `font_catalog::macos::tests`, `glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample`,
 `tests/metal_macos.rs`, `the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named` and the `_on_macos`
 twins of the Windows pixel tests. Source: macOS port phase 2, step 4 (2026-11-08).
-1005. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
-the content.** `flare::backend::mac_chrome_attributes` makes the main window titled with a transparent titlebar, a
+1005. **macOS: the window is a native titled window under Flare's top row.** `flare::backend::mac_chrome_attributes` makes the main window titled with a transparent titlebar, a
 hidden title and a full-size content view; `no-frame` is off on macOS (`native-caption`), so Slint keeps the
 decorations on and winit never swaps the style mask (that would drop the full-size content view). Flare's own
 minimise, maximise and close buttons and the mark make way for the traffic lights, which `flare_win::chrome`
@@ -1399,13 +1398,13 @@ places in the 36 pt top row (container `CAPTION_GAP` wide, re-placed on every re
 AppKit puts them back at its own 28 pt row otherwise). AppKit passes every point of the row but the lights to
 Flare, which moves the window only by its `WindowMoveArea`s; a double click there does what System Settings says
 (`AppleActionOnDoubleClick`). Resize edges, the shadow, full screen and zoom are AppKit's (`resize_edges` installs
-nothing). The glass: `dwm::set_system_backdrop` and `set_immersive_dark` land in `flare_win::glass` on macOS, an
-`NSVisualEffectView` (`flare.glass`) put BELOW winit's content view in the frame view (never replacing it: winit
-casts `contentView` back to its own class), Acrylic as the under-window-background material, the window wearing
-dark or light Aqua by the ground. The handle for these calls is `window::native_view_of` (the `NSView`);
+nothing). `dwm::set_immersive_dark` lands in `flare_win::ns_window` on macOS: the window wears dark or light Aqua by
+the ground. The glass (an `NSVisualEffectView` behind the content) went with the see-through window on 2026-11-28
+(DIFF-30); the window is solid, and Liquid Glass comes later as its own feature. The handle for these calls is
+`window::native_view_of` (the `NSView`);
 `hwnd_of` stays Win32 only. The session end is `NSApplicationWillTerminateNotification` (Quit, log out, shut
 down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 1008). Held by `crates/flare-win/tests/appkit.rs` (a
-main-thread harness on a window that is never shown) and the `chrome`, `glass`, `session_end` and `window_park`
+main-thread harness on a window that is never shown) and the `chrome`, `ns_window`, `session_end` and `window_park`
 tests. Source: macOS port phase 3, step 1 (2026-11-08).
 1006. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
 both systems: `KeyContext::os` (`flare_term::keys::KeyOs`, default Windows) picks the modifier, so on macOS every
@@ -6144,3 +6143,73 @@ third button exists only for this question; downloads and app-link questions wai
 `a_busy_claude_asks_and_cancel_does_nothing`, `wait_ends_the_busy_claude_once_it_rests`,
 `end_now_interrupts_then_ends` and `a_third_button_is_the_default_and_tab_walks_the_row`. Source: Max, 2026-11-28.
 
+
+## Panel launcher and "Open in" (2026-11-24)
+
+Spec `docs/superpowers/specs/2026-11-24-panel-launcher-design.md`, mockups approved by Max on 2026-11-24 (placement 3
+"ghost button that blooms", icon 6 "Layers"). The rules live in `crates/flare/src/launcher.rs` (pure, the clock passed
+in); `appctl/launcher_glue.rs` feeds them and does what they say; `ui/launcher.slint` only draws.
+
+1384. **The launcher shows only where a panel could open and none is open, one button for the tab in front.** A round
+ghost button, 26 px, 8 px from the top and 10 px from the right of the terminal, the Layers icon, at 45% opacity idle
+and solid while hovered or while its menu is open. It is hidden while the tab's panel is open, while Settings or the
+start screen is in front, while the window is too narrow for a slot (`panel-fits`), and while a remote tab's fitted
+view or the resume skeleton covers the terminal, and while the find bar is open, which sits in the same corner (`launcher::shown`; opening or closing the find bar updates it at once, review fix 2026-11-24). Switching tabs or the button going away closes its
+menu. Only the button and the open menu take the pointer (the component is a bare box over the grid). The Preview chip
+moves left of it while it shows. Whole device pixels at every scale. Held by
+`the_button_shows_only_where_a_panel_could_open_and_none_is_open` (`launcher.rs`),
+`the_button_shows_while_the_tabs_panel_is_closed_and_goes_when_it_opens` and
+`the_button_and_its_menu_sit_in_the_corner_at_every_scale` and `the_button_goes_while_the_find_bar_is_open` (`appctl/tests/launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1385. **The menu opens only from the button and survives the gap; 250 ms off both closes it.** Max: "it must appear
+only when the cursor is over the button, not wherever the menu would be; and it must not disappear while the cursor
+goes from the button to the menu across the small gap". The menu opens on the pointer entering the button, a click, or
+the button's accessible action; a closed menu is not drawn and its touch area is off. One touch area covers the menu
+and the 6 px bridge above it, so the gap belongs to the menu. Leaving the button or the menu starts a 250 ms grace
+(`launcher::GRACE_MS`, the timer `panel.launcher-grace`); entering either cancels it; once it has run out with the
+pointer on neither, the menu closes. Escape and a pick close it. A menu opened by a click or the keys holds Up, Down,
+Home, End, Enter and Escape (`launcher_key`, after the context menu's Escape in `on_key`); any other key closes it and
+goes on. A menu the pointer alone opened takes no key: Escape closes it and still reaches the shell. A click on a menu
+the pointer opened gives it the keys; a click on a keyed one closes it. Held by
+`only_the_button_opens_the_menu_and_a_closed_menu_takes_no_pointer`,
+`crossing_the_gap_from_the_button_to_the_menu_keeps_it_open`,
+`off_both_for_the_grace_closes_it_and_coming_back_in_time_does_not`,
+`a_click_opens_with_the_keys_takes_the_keys_from_a_hover_and_closes_a_keyed_menu` (`launcher.rs`),
+`the_menu_opens_only_from_the_button_and_survives_the_gap` (a real pointer through the window) and
+`a_clicked_menu_holds_its_keys_and_a_hovered_one_does_not` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1386. **The rows reuse the panel's own ways in; a row with nothing to do is left out.** Browser is
+`browser_open(tab, "about:blank")` with the address field holding the keys (a new page, even when the tab hid one);
+Device is `device_open(tab, None)`, offered only where `DeviceCtl::offered()`; Open a file... is the system Open dialog
+(`flare_win::pick::pick_any_file`, parented, starting in the tab's folder; `FLARE_E2E_PICK_FILE` answers under
+`--e2e`, unset is a cancel), left out on a remote tab. The picked file is vetted again on a worker
+(`term_ui::previewable`, rules 13 and 14) and goes in as `TermMsg::Preview { asked: true }`, the path of a file link's
+"Show in side panel"; a file the panel cannot show is said in the panel, a cancel does nothing, nothing opens outside
+Flare. The menu's rows are laid out at the controller's `launcher::tops`, and a pointer's row comes from the same
+numbers (`row_at`: the padding, the rule and the bridge pick nothing). Held by `the_rows_follow_what_the_machine_and_the_tab_offer`,
+`the_pointer_picks_the_row_it_is_over_never_the_padding_or_the_rule` (`launcher.rs`),
+`pick_any_file_with_a_seam_calls_done_at_once` (`flare-win` `pick.rs`), `browser_opens_the_web_panel_in_its_new_tab_state`
+`browser_after_a_hidden_page_goes_to_an_empty_page` and `open_a_file_shows_the_picked_file_and_says_so_when_it_cannot` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1387. **Last panel brings back what the tab's closed panel showed: a page, a device or a file.** It is
+`PanelCtl::reopen` (what Ctrl+Shift+P brings back), behind a rule as the menu's last row, and shown only when
+`launcher::last_ok` holds: the panel is closed and showed a page other than `about:blank`, a device, or a file. A note
+or text handed over and the Changes view are not brought back; a mini-app or a mod's page is forgotten when its panel
+closes. Held by `last_panel_brings_back_a_page_a_device_or_a_file_and_nothing_else` (`launcher.rs`) and
+`last_panel_brings_back_what_the_tab_showed_last` (`launcher_tests.rs`). Source: Max, 2026-11-24.
+
+1388. **"Open in" hands what the panel shows to the system, through the openers links use.** A labelled button with an
+external-link icon (no tooltip): in the header, the leftmost of the controls on the right; on a web page, in the bar
+left of Draw arrow and the close. A web page (http or https only, `is_web_url`) says "Open in browser" and goes to
+`open_url`. A file on the click allowlist says "Open in <app>" when the default app's name is known, else "Open in
+default app", and goes to `open_term_path` with `OpenMode::Open` on a worker; a file not on it (rule 14) says "Show in
+Explorer" (Finder on a Mac) and is revealed, never run. No button for the device panel, the Changes view, a mini-app or
+diagram, a mod's page, text handed over, or an empty page (`launcher::open_in`). The app's name is read by
+`flare_win::openers::default_app_name` (`AssocQueryStringW`, a plain extension only) on a worker once per extension,
+never under `--e2e`, and cleaned (`clean_app_name`: no control characters, at most 32 characters, a bare `.exe` is no
+name); a Mac says "Open in default app". The header gives it only the room the title can spare (the title keeps 80 px): the full words, else "Open" or "Show", else no button; in the bar "Open" below 440 px,
+and none in a bar under 280 px. Held by `open_in_sends_a_page_to_the_browser_and_a_file_to_its_app`,
+`open_in_has_no_button_where_nothing_outside_flare_shows_it`, `the_button_names_the_app_when_known_and_shortens_when_narrow`,
+`an_app_name_is_cleaned_and_capped_and_a_bare_exe_is_no_name` (`launcher.rs`), `the_app_name_is_asked_only_for_a_plain_extension`
+and `a_text_file_has_a_default_app_with_a_name` (`flare-win` `openers.rs`), `open_in_hands_a_file_to_its_default_app` and
+`open_in_browser_sends_the_page_address`, `open_in_follows_a_page_the_browser_went_to` and `open_in_takes_only_the_room_the_title_can_spare` (`launcher_tests.rs`), and `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale` (`ui_tests/icons_misc.rs`). Source: Max, 2026-11-24.

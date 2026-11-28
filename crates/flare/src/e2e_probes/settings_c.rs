@@ -49,7 +49,7 @@ pub fn register(r: &mut ProbeRegistry) {
     r.add("picker.editor", picker_editor);
     r.add("picker.layers", picker_layers);
     r.add("picker.save", picker_save);
-    r.add("glass.paint", glass_paint);
+    r.add("ground.paint", ground_paint);
     r.add("agent.working", agent_working);
 }
 
@@ -625,9 +625,9 @@ fn picker_layers(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     }))
 }
 
-/// `glass.paint`: the window's grounds as the Slint theme holds them now, with their alpha: the
+/// `ground.paint`: the window's grounds as the Slint theme holds them now, with their alpha: the
 /// page (`--p-bg`), the title row, the tab strip, the settings rail, and the solid ground.
-fn glass_paint(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+fn ground_paint(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let t = ctx.app.global::<Theme>();
     let alpha = |c: slint::Color| f64::from(c.alpha()) / 255.0;
     let (g, ti, ta, si) = (t.get_ground(), t.get_title(), t.get_tabs(), t.get_side());
@@ -637,7 +637,6 @@ fn glass_paint(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "tabs": hex8(ta),
         "side": hex8(si),
         "solid": hex8(t.get_ground_solid()),
-        "clear": hex8(t.get_window_clear()),
         "text": hex8(t.get_text()),
         "alpha": { "ground": alpha(g), "title": alpha(ti), "tabs": alpha(ta), "side": alpha(si) },
     }))

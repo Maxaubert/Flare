@@ -119,7 +119,6 @@ fn the_token_names_are_the_chrome_tokens_minus_the_prefix() {
         .map(|d| d.name.clone())
         .collect();
     let mut expected = mapped;
-    expected.insert("window-clear".to_string());
     // Task 25: the window edge, drawn by Slint because the DWM border does not show (docs/material.md E4).
     expected.insert("edge".to_string());
     // Flare's own inks beside PT's 31 (flare_theme::chrome::FLARE_EXTRA_TOKENS).
@@ -135,17 +134,17 @@ fn the_token_names_are_the_chrome_tokens_minus_the_prefix() {
     }
     assert_eq!(
         in_colours, expected,
-        "the settable colours are the 31 chrome tokens plus window-clear and edge"
+        "the settable colours are the 31 chrome tokens plus the edge and Flare's own inks"
     );
 }
 
 #[test]
-fn window_clear_and_light_exist() {
+fn light_exists_and_no_window_transparency_property_is_left() {
     let decls = declarations(&theme_text());
-    let clear = decl(&decls, "window-clear").expect("in property <color> window-clear");
-    assert_eq!(clear.qualifier, "in");
-    assert_eq!(clear.ty, "color");
-    assert_eq!(clear.value.to_ascii_lowercase(), "#171717");
+    // The see-through window was removed on 2026-11-28: the window's clear colour is the solid ground.
+    for gone in ["window-clear", "glyph-stroke-floor"] {
+        assert!(decl(&decls, gone).is_none(), "{gone} is gone");
+    }
     let light = decl(&decls, "light").expect("in property <bool> light");
     assert_eq!(light.qualifier, "in");
     assert_eq!(light.ty, "bool");

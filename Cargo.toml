@@ -28,7 +28,6 @@ members = [
     "crates/flare-proc",
     "crates/flare-e2e-proto",
     "tools/e2e",
-    "tools/material-spike",
 ]
 
 [workspace.package]

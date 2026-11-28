@@ -1,17 +1,15 @@
-//! Settings C scenarios (Task 35): colourPicker, pickedGround, opacityAlpha, seeThrough. Each follows
-//! its Prism Terminal lines (PT: run.mjs 6014, 6289, 6350, 6460); a body says where Flare differs.
+//! Settings C scenarios (Task 35): colourPicker, pickedGround, opacityAlpha. Each follows its Prism Terminal
+//! lines (PT: run.mjs 6014, 6289, 6350); a body says where Flare differs. PT's seeThrough (6460) is retired:
+//! the see-through window was removed on 2026-11-28 (`bin/ledger.rs` RETIRED).
 //!
 //! Flare answers through the `picker.*` probes (e2e_probes/settings_c.rs: the popover, a row's
-//! control, the wall, the editor, the layers over the page), `glass.paint` (the Slint theme's
+//! control, the wall, the editor, the layers over the page), `ground.paint` (the Slint theme's
 //! grounds with their alpha), `agent.working` (the working mark's colour), the stored settings
 //! (`<profile>\settings.json`, which PT reads as localStorage) and snapshots for the pixel checks.
 //! What Slint does not export is a `ctx.skip` with its reason, never a pass.
 //!
-//! Two facts shape the glass scenarios. The software renderer paints a solid window (DIFF-5) and
-//! disables the See-through slider (`GlassSupport::NeedsGraphicsRenderer`), so what needs the slider
-//! is `skip`ped on software with that reason and runs on the GPU renderer. And the Settings tab has
-//! no shell in front, so a typed letter is consumed before Slint sees it (appctl `on_key`): the
-//! checks that type into a code field report a FLARE-DEFECT line until that is fixed.
+//! The Settings tab has no shell in front, so a typed letter is consumed before Slint sees it (appctl
+//! `on_key`): the checks that type into a code field report a FLARE-DEFECT line until that is fixed.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -28,9 +26,6 @@ type R = (f64, f64, f64, f64);
 
 /// 225 percent (96 is 100 percent): the scale the pixel checks run at.
 const DPI_225: u32 = 216;
-/// The reason every slider-dependent check is skipped on the software renderer.
-const SOFTWARE_SKIP: &str = "the software renderer paints a solid window (DIFF-5) and disables the See-through slider; this runs on the GPU renderer";
-
 // ---- small helpers -----------------------------------------------------------------------------------
 
 fn probe(app: &mut App, name: &str, arg: Value) -> Value {
@@ -87,13 +82,6 @@ fn scale_of(app: &mut App) -> f64 {
 
 fn resize(app: &mut App, w: f32, h: f32) -> bool {
     app.session.call(&Request::Resize { w, h }).is_ok()
-}
-
-/// True when the run is on the GPU renderer (the glass checks need it).
-fn on_gpu(app: &mut App) -> bool {
-    app.hello()
-        .map(|h| h.renderer.to_lowercase().starts_with("gpu"))
-        .unwrap_or(false)
 }
 
 /// The stored settings (`<profile>\settings.json`, a JSON object of strings), or empty.
@@ -1003,7 +991,7 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
         click_r(&mut app, &w["swatch"]);
         wait_picker(ctx, &mut app, true, "the Background picker to open");
     }
-    // The theme's Background is a colour only (owner, 2026-10-13: the see-through slider "only").
+    // The theme's Background is a colour only (owner, 2026-10-13); the window is solid.
     // PT: run.mjs:6244
     ctx.ok(
         state(&mut app)["alpha_on"] == json!(false),
@@ -1266,59 +1254,13 @@ pub fn picked_ground(ctx: &mut Ctx) -> Result<(), String> {
 
 // ---- opacityAlpha ----------------------------------------------------------------------------------------
 
-/// Sets a slider row to `value` by a press on its track (9 px is the bottom of the travel, 159 px
-/// the top), then checks it read back. True when the row reads `value`.
-fn set_slider(ctx: &mut Ctx, app: &mut App, id: &str, value: i64) -> bool {
-    if !reveal(ctx, app, id) {
-        return false;
-    }
-    let r = row(app, id);
-    let max = r["num_max"].as_f64().unwrap_or(70.0);
-    if let Some(c) = rect_of(&r["control"]) {
-        let x = c.0 + 9.0 + 150.0 * (value as f64 / max);
-        click_at(app, (x as f32, (c.1 + c.3 / 2.0) as f32));
-    }
-    ctx.until(&format!("{id} to read {value}"), 3_000, &mut || {
-        row(app, id)["num"].as_i64() == Some(value)
-    })
-}
-
-fn slider_num(app: &mut App, id: &str) -> i64 {
-    row(app, id)["num"].as_i64().unwrap_or(-1)
-}
-
 /// The ground token's hex8 now (`--p-bg`, as the Slint theme holds it).
 fn ground_now(app: &mut App) -> String {
-    str_of(&probe(app, "glass.paint", Value::Null), "ground").to_string()
+    str_of(&probe(app, "ground.paint", Value::Null), "ground").to_string()
 }
 
 fn open_appearance(ctx: &mut Ctx, app: &mut App) -> bool {
     open_settings(ctx, app) && goto_page(ctx, app, "appearance")
-}
-
-/// Answers the unsaved-changes question by its keys: the focus starts on Save as Custom, Shift+Tab
-/// walks to Discard, Escape cancels. `answer` is "discard", "save" or "cancel".
-fn answer_ask(ctx: &mut Ctx, app: &mut App, answer: &str) {
-    match answer {
-        "discard" => {
-            press(app, "Shift+Tab");
-            press(app, "Enter");
-        }
-        "save" => {
-            press(app, "Enter");
-        }
-        _ => {
-            press(app, "Escape");
-        }
-    }
-    ctx.until("the question to close", 4_000, &mut || {
-        state(app)["ask_open"] == json!(false)
-    });
-}
-
-fn ask_open(ctx: &mut Ctx, app: &mut App, ms: u64) -> bool {
-    // A miss is an answer ("no question opened"), so the wait records nothing.
-    ctx.poll(ms, &mut || state(app)["ask_open"] == json!(true))
 }
 
 /// Relaunches on the same profile after seeding the old app's storage in a stand-in profile
@@ -1352,59 +1294,39 @@ fn relaunch_with(
     )
 }
 
-/// PT: run.mjs:6350-6459. What the old app left, the window it was: the Opacity slider became the
-/// Background's alpha (#114) and that alpha and the switch became the see-through slider. Old
-/// storage is seeded as a stand-in profile, the app is launched on it (the import seam), and
-/// the window must be the window it was. On the software renderer the ground is solid and the slider
-/// is disabled (DIFF-5), so what paints or moves the slider is `skip`ped there.
+/// PT: run.mjs:6350-6459, changed 2026-11-28. What the old app left: its Opacity slider, its acrylic
+/// switch and its see-through level. Flare's see-through window was removed on 2026-11-28 (Liquid Glass
+/// on the Mac comes later), so the import maps all of it to nothing and the window is solid. Old storage
+/// is seeded as a stand-in profile and the app is launched on it (the import seam).
 pub fn opacity_alpha(ctx: &mut Ctx) -> Result<(), String> {
     // The first run is an empty profile (PT's first launch); it quits before the old storage is seeded.
     let mut app = launch_settings(ctx, &[], &[("FLARE_E2E_REDUCED_MOTION", "1")], None)?;
     let seed1 = [("theme", "dracula"), ("acrylic", "1"), ("opacity", "60")];
     // 1. A preset, Opacity 60, acrylic on.
     let mut app = relaunch_with(ctx, &mut app, &seed1, None)?;
-    let gpu = on_gpu(&mut app);
-    let solid = str_of(&probe(&mut app, "glass.paint", Value::Null), "solid").to_string();
-    let ground_ok = if gpu {
-        ctx.until("the ground to paint at alpha 0x99", 10_000, &mut || {
-            let g = ground_now(&mut app);
-            is_hex8(&g) && g.ends_with("99")
-        })
-    } else {
-        false
-    };
-    if gpu {
-        // PT: run.mjs:6371
-        ctx.ok(
-            ground_ok,
-            format!(
-                "a saved Opacity 60 paints the ground at alpha 0x99, as it did ({})",
-                ground_now(&mut app)
-            ),
-        );
-    } else {
-        ctx.skip(SOFTWARE_SKIP);
-    }
-    let see = pref_becomes(
-        ctx,
-        &app,
-        "flare.term.seeThrough",
-        "the see-through level to be stored",
-        &|v| v.is_some(),
-    );
-    let level = pref(&app, "flare.term.seeThrough");
-    // PT: run.mjs:6377
+    let solid = ctx.until("the ground to paint solid", 10_000, &mut || {
+        let g = ground_now(&mut app);
+        is_hex8(&g) && g.ends_with("ff")
+    });
+    // PT: run.mjs:6371 (Flare: the window is solid)
     ctx.ok(
-        see && level.as_deref() == Some("40"),
-        format!("it now lives on the slider, at 40 ({level:?})"),
+        solid,
+        format!(
+            "a saved Opacity 60 paints a solid window ({})",
+            ground_now(&mut app)
+        ),
+    );
+    let theme = settled_pref(ctx, &app, "flare.term.theme");
+    // PT: run.mjs:6377 (Flare: no level is stored)
+    ctx.ok(
+        theme.as_deref() == Some("dracula") && pref(&app, "flare.term.seeThrough").is_none(),
+        format!("the theme is imported and no see-through level is ({theme:?})"),
     );
     let picked = pref(&app, "flare.window.background");
-    // PT: run.mjs:6379
+    // PT: run.mjs:6379 (Flare: no Background is made from the old alpha)
     ctx.ok(
-        picked
-            .as_deref()
-            .is_some_and(|p| p.len() == 7 && p.eq_ignore_ascii_case(&solid[..7.min(solid.len())])),
-        format!("the Background it was carried on is opaque ({picked:?})"),
+        picked.is_none(),
+        format!("no Background is made from the old alpha ({picked:?})"),
     );
     let keys = prefs_in(&app.profile);
     // PT: run.mjs:6381
@@ -1417,25 +1339,15 @@ pub fn opacity_alpha(ctx: &mut Ctx) -> Result<(), String> {
         .as_array()
         .map(|r| r.iter().map(|x| str_of(x, "id").to_string()).collect())
         .unwrap_or_default();
-    // PT: run.mjs:6386
+    // PT: run.mjs:6386 (Flare: no See-through row either)
     ctx.ok(
-        opened && !ids.iter().any(|i| i == "term-opacity"),
-        "there is no Opacity row",
+        opened
+            && !ids
+                .iter()
+                .any(|i| i == "term-opacity" || i == "term-acrylic"),
+        "there is no Opacity row and no See-through row",
     );
-    let slider_off = row(&mut app, "term-acrylic")["off"] == json!(true);
-    if !gpu || slider_off {
-        // Everything below moves the slider or reads the painted ground, and so does the second
-        // launch: none of it can run here.
-        ctx.skip(SOFTWARE_SKIP);
-        app.close();
-        return Ok(());
-    }
-    reveal(ctx, &mut app, "term-acrylic");
-    let n = slider_num(&mut app, "term-acrylic");
-    // PT: run.mjs:6388
-    ctx.ok(n == 40, format!("the slider reads 40 ({n})"));
-    ctx.shot(&mut app, "row");
-    // The Background is a colour only now.
+    // The Background is a colour only.
     open_swatch(ctx, &mut app, "window-background");
     // PT: run.mjs:6397
     ctx.ok(
@@ -1443,61 +1355,15 @@ pub fn opacity_alpha(ctx: &mut Ctx) -> Result<(), String> {
         "the Background picker has no Alpha",
     );
     escape_picker(ctx, &mut app);
-    // The slider moves the window.
-    set_slider(ctx, &mut app, "term-acrylic", 50);
-    let moved = ctx.until("50 to take the window to half", 4_000, &mut || {
-        let g = ground_now(&mut app);
-        g.ends_with("7f") || g.ends_with("80")
-    });
-    // PT: run.mjs:6404
-    ctx.ok(
-        moved,
-        format!("50 takes the window to half ({})", ground_now(&mut app)),
-    );
-    set_slider(ctx, &mut app, "term-acrylic", 40);
-    let back = ctx.until("40 to put the window back", 4_000, &mut || {
-        let g = ground_now(&mut app);
-        is_hex8(&g) && g.ends_with("99")
-    });
-    // PT: run.mjs:6406
-    ctx.ok(back, "and 40 puts it back");
-
-    // A theme pick with a level of your own asks first.
     let save = probe(&mut app, "picker.save", Value::Null);
-    // PT: run.mjs:6409
+    // PT: run.mjs:6409 (Flare: nothing to save, the import changed nothing of the theme)
     ctx.ok(
-        save["dirty"] == json!(true),
-        "a moved slider lights Save changes, as a changed Opacity did",
+        save["dirty"] == json!(false),
+        "the import leaves nothing to save",
     );
-    pick_card(ctx, &mut app, "nord");
-    let asked = ask_open(ctx, &mut app, 3_000);
-    // PT: run.mjs:6413
-    ctx.ok(asked, "and a theme pick asks before it forgets it");
-    answer_ask(ctx, &mut app, "cancel");
-    let theme = pref(&app, "flare.term.theme");
-    // PT: run.mjs:6416
-    ctx.ok(
-        ground_now(&mut app).ends_with("99") && theme.as_deref() == Some("dracula"),
-        "Cancel keeps the theme and the see-through",
-    );
-
-    // 0 is off: the window solid.
-    set_slider(ctx, &mut app, "term-acrylic", 0);
-    let solid_now = ctx.until("the window to go solid", 4_000, &mut || {
-        let g = ground_now(&mut app);
-        is_hex8(&g) && g.ends_with("ff")
-    });
-    // PT: run.mjs:6420
-    ctx.ok(
-        solid_now,
-        format!("at 0 the window is solid ({})", ground_now(&mut app)),
-    );
-    let said = str_of(&row(&mut app, "term-acrylic"), "num_text").to_string();
-    // PT: run.mjs:6421
-    ctx.ok(said == "Off", format!("and the slider says Off ({said})"));
 
     // 2. A Custom saved at 80, left live at 60.
-    let custom = r##"{"bg":"#1d1f21","fg":"#c5c8c6","cursor":"#f0c674","ansi":{},"acrylic":true,"opacity":80}"##;
+    let custom = r##"{"bg":"#1d1f21cc","fg":"#c5c8c6","cursor":"#f0c674","ansi":{},"acrylic":true,"opacity":80,"seeThrough":20}"##;
     let seed2 = [
         ("theme", "custom"),
         ("acrylic", "1"),
@@ -1505,347 +1371,49 @@ pub fn opacity_alpha(ctx: &mut Ctx) -> Result<(), String> {
         ("custom", custom),
     ];
     let mut app = relaunch_with(ctx, &mut app, &seed2, None)?;
-    let live = ctx.until("a Custom left live at 60 to paint 60", 10_000, &mut || {
-        ground_now(&mut app) == "#1d1f2199"
-    });
-    // PT: run.mjs:6436
+    let opaque = ctx.until(
+        "the Custom's own ground to paint solid",
+        10_000,
+        &mut || ground_now(&mut app) == "#1d1f21ff",
+    );
+    // PT: run.mjs:6436 (Flare: solid)
     ctx.ok(
-        live,
+        opaque,
         format!(
-            "a Custom left live at 60 paints 60 ({})",
+            "a Custom saved see-through paints its own ground solid ({})",
             ground_now(&mut app)
         ),
     );
     let slot = custom_json(&app);
-    // PT: run.mjs:6438
+    // PT: run.mjs:6438 (Flare: the glass fields are gone)
     ctx.ok(
         slot["bg"] == json!("#1d1f21")
-            && slot["seeThrough"] == json!(20)
+            && slot.get("seeThrough").is_none()
             && slot.get("opacity").is_none()
             && slot.get("acrylic").is_none(),
-        format!(
-            "its saved 80 is its own level, 20, on an opaque ground ({})",
-            slot
-        ),
-    );
-    open_appearance(ctx, &mut app);
-    pick_card(ctx, &mut app, "custom");
-    if ask_open(ctx, &mut app, 2_000) {
-        answer_ask(ctx, &mut app, "discard");
-    }
-    let restored = ctx.until("the saved 80 to come back", 4_000, &mut || {
-        ground_now(&mut app) == "#1d1f21cc"
-    });
-    // PT: run.mjs:6447
-    ctx.ok(
-        restored,
-        format!(
-            "picking Custom again restores the saved 80 ({})",
-            ground_now(&mut app)
-        ),
+        format!("its ground is opaque and it keeps no see-through ({slot})"),
     );
     // PT: run.mjs:6448
     let live_gone = settled_pref(ctx, &app, "flare.window.background").is_none();
-    ctx.ok(live_gone, "and the live 60 went with the pick");
+    ctx.ok(live_gone, "and the live 60 made no Background");
     ctx.shot(&mut app, "custom");
-    // Leave solid: a pick of a preset puts its own 0 back.
-    pick_card(ctx, &mut app, "dracula");
-    if ask_open(ctx, &mut app, 1_500) {
-        answer_ask(ctx, &mut app, "discard");
-    }
-    app.close();
-    Ok(())
-}
-
-// ---- seeThrough ------------------------------------------------------------------------------------------
-
-/// The alpha of the device pixel `(x, y)` (css px times the scale) of the last snapshot.
-fn pixel_alpha(app: &mut App, x: f64, y: f64, k: f64) -> Option<u8> {
-    match app.session.call(&Request::Pixel {
-        x: (x * k).round().max(0.0) as u32,
-        y: (y * k).round().max(0.0) as u32,
-    }) {
-        Ok(flare_e2e_proto::Reply::Pixel { rgba }) => Some(rgba[3]),
-        _ => None,
-    }
-}
-
-/// How much of the desktop each surface hides: the strip, the top row, the settings rail and the
-/// page, from the Slint theme's tokens (1 is solid), and on the GPU renderer from the snapshot's alpha.
-fn coats(app: &mut App, tmp: &Path) -> Vec<f64> {
-    let paint = probe(app, "glass.paint", Value::Null);
-    let a = &paint["alpha"];
-    let mut out: Vec<f64> = ["tabs", "title", "side", "ground"]
-        .iter()
-        .map(|k| a[*k].as_f64().unwrap_or(-1.0))
-        // A token with no alpha at all paints no coat of its own (the settings rail leaves the
-        // ground's coat showing); the pixel read at the rail below proves the one coat there.
-        .filter(|a| *a != 0.0)
-        .collect();
-    // The pixels: one device pixel inside each surface, alpha straight from the swapchain.
-    if app.session.snapshot(&tmp.join("coats.png")).is_ok() {
-        let k = scale_of(app);
-        let grid = rect_of(&probe(app, "ui.rect", json!({ "name": "grid" })))
-            .unwrap_or((0.0, 36.0, 1000.0, 600.0));
-        let strip = rect_of(&probe(app, "ui.rect", json!({ "name": "strip" })));
-        let spots = [
-            strip.map(|s| (s.0 + s.2 - 6.0, s.1 + 12.0)),
-            Some((3.0, 3.0)),
-            Some((grid.0 + 20.0, grid.1 + grid.3 * 0.6)),
-            Some((grid.0 + 260.0, grid.1 + 6.0)),
-        ];
-        for s in spots {
-            let alpha = s.and_then(|(x, y)| pixel_alpha(app, x, y, k));
-            out.push(alpha.map_or(-1.0, |a| (f64::from(a) / 255.0 * 100.0).round() / 100.0));
-        }
-    }
-    out
-}
-
-fn all_near(v: &[f64], want: f64) -> bool {
-    !v.is_empty() && v.iter().all(|a| (a - want).abs() < 0.015)
-}
-
-/// PT: run.mjs:6460-6579. The see-through slider: the row is named and placed as in Prism Terminal, right under
-/// the wall, holds a slider (0 by default, solid), a level paints the window's ground at
-/// 1 - level/100 on every surface as one coat, the Background picker carries no Alpha and a picked
-/// colour leaves the level alone, a moved slider is a change to save, a theme pick asks and puts the
-/// theme's own 0 back, and Custom keeps its level. The software renderer disables the slider and
-/// paints solid (DIFF-5), so everything past the row's words is `skip`ped there.
-pub fn see_through(ctx: &mut Ctx) -> Result<(), String> {
-    let mut app = launch_settings(ctx, &[], &[("FLARE_E2E_REDUCED_MOTION", "1")], None)?;
-    let gpu = on_gpu(&mut app);
-    const ID: &str = "term-acrylic";
-    let tmp = ctx.ensure_world().root.clone();
-    let opened = open_appearance(ctx, &mut app);
-    let ids: Vec<String> = probe(&mut app, "settings.rows", json!({}))["rows"]
-        .as_array()
-        .map(|r| r.iter().map(|x| str_of(x, "id").to_string()).collect())
-        .unwrap_or_default();
-    let at = ids.iter().position(|i| i == "wall").unwrap_or(usize::MAX);
-    // PT: run.mjs:6505
-    ctx.ok(
-        opened
-            && ids.get(at.wrapping_add(1)).map(String::as_str) == Some(ID)
-            && ids.get(at.wrapping_add(2)).map(String::as_str) == Some("window-background"),
-        format!("the row sits right under the wall ({})", ids.join(" > ")),
-    );
-    reveal(ctx, &mut app, ID);
-    let r = row(&mut app, ID);
-    // DELIBERATE: PT's aria-label has a hyphen, but Flare's settings copy is plain words (letters, digits,
-    // spaces, commas and full stops; copy_rules.rs), so the row reads "See through window".
-    // PT: run.mjs:6506
-    ctx.ok(
-        str_of(&r, "kind") == "slider" && str_of(&r, "label") == "See through window",
-        format!(
-            "it is a slider called See through window ({} / {})",
-            str_of(&r, "kind"),
-            str_of(&r, "label")
-        ),
-    );
-    // PT: run.mjs:6507. The software renderer says why the slider is off in place of its words.
-    if gpu {
-        ctx.ok(
-            str_of(&r, "sub") == "How much of the desktop shows behind every surface.",
-            format!("with its words ({})", str_of(&r, "sub")),
-        );
-    } else {
-        ctx.skip(SOFTWARE_SKIP);
-    }
-    // PT: run.mjs:6508. A slider row has a slider and no switch: its kind is the one control.
-    ctx.ok(str_of(&r, "kind") != "switch", "and no switch any more");
-    // The tabs in the top row (the only layout since 2026-10-12): the strip is in the title row.
-    let top = probe(&mut app, "ui.rect", json!({ "name": "strip" }));
-    // PT: run.mjs:6513
-    ctx.ok(
-        rect_of(&top).is_some_and(|s| s.1 < 36.0),
-        "the tabs are in the top row",
-    );
-    if !gpu || r["off"] == json!(true) {
-        ctx.skip(SOFTWARE_SKIP);
-        app.close();
-        return Ok(());
-    }
-
-    // 0 by default: solid.
-    pick_card(ctx, &mut app, "dracula");
-    if ask_open(ctx, &mut app, 1_000) {
-        answer_ask(ctx, &mut app, "discard");
-    }
-    reveal(ctx, &mut app, ID);
-    let start = slider_num(&mut app, ID);
-    // PT: run.mjs:6519
-    ctx.ok(start == 0, format!("it starts at 0 ({start})"));
-    // PT: run.mjs:6520
-    ctx.ok(
-        ground_now(&mut app).ends_with("ff"),
-        format!("at 0 the window is solid ({})", ground_now(&mut app)),
-    );
-    // 30: the ground at 70%.
-    set_slider(ctx, &mut app, ID, 30);
-    let seventy = ctx.until("the ground to paint at 70%", 4_000, &mut || {
-        (alpha_of_hex8(&ground_now(&mut app)) - 0.7).abs() < 0.01
-    });
-    // PT: run.mjs:6524
-    ctx.ok(
-        seventy,
-        format!(
-            "at 30 the ground is painted at 70% ({})",
-            ground_now(&mut app)
-        ),
-    );
-    // EVERY SURFACE IS ONE COAT (owner, 2026-10-11): a translucent box over another translucent box
-    // is two coats, solid to the eye.
-    let mut seen = Vec::new();
-    ctx.until("every surface to show one coat at 0.7", 4_000, &mut || {
-        seen = coats(&mut app, &tmp);
-        all_near(&seen, 0.7)
-    });
-    // PT: run.mjs:6535
-    ctx.ok(
-        all_near(&seen, 0.7),
-        format!("the strip, the top row, the settings rail and its page each show the desktop through one coat at 0.7 ({seen:?})"),
-    );
-    let said = str_of(&row(&mut app, ID), "num_text").to_string();
-    // PT: run.mjs:6536
-    ctx.ok(
-        said == "30%",
-        format!("the value is said beside it ({said})"),
-    );
-    // The keys move it. The slider needs the keys: a press on its track does not hand them over
-    // (the touch area is above the focus scope), so this is the Right key to whatever has them.
-    press(&mut app, "ArrowRight");
-    let stepped = ctx.until("Right to step the slider", 2_000, &mut || {
-        slider_num(&mut app, ID) == 31
-    });
-    // PT: run.mjs:6540
-    ctx.ok(
-        stepped,
-        format!("Right steps it by one ({})", slider_num(&mut app, ID)),
-    );
-    press(&mut app, "ArrowLeft");
-    // The top is 70, the 30% floor.
-    let max = row(&mut app, ID)["num_max"].as_i64().unwrap_or(0);
-    // PT: run.mjs:6544
-    ctx.ok(max == 70, format!("it stops at 70 ({max})"));
-
-    // The Background picker has no Alpha, and a picked colour leaves the level alone.
-    open_swatch(ctx, &mut app, "window-background");
-    // PT: run.mjs:6549
-    ctx.ok(
-        state(&mut app)["alpha_on"] == json!(false),
-        "the Background picker has no Alpha",
-    );
-    escape_picker(ctx, &mut app);
-    type_code(&mut app, "window-background", "#1c2330");
-    let wears = ctx.until("a picked colour to wear the level", 4_000, &mut || {
-        let g = ground_now(&mut app);
-        g.starts_with("#1c2330") && (alpha_of_hex8(&g) - 0.7).abs() < 0.01
-    });
-    // FLARE-DEFECT: seeThrough / a picked colour wears the level / crates/flare/src/appctl.rs
-    // (`on_key`: typing into a Settings code field is consumed with no shell in front).
-    // PT: run.mjs:6556
-    ctx.ok(
-        wears,
-        format!("a picked colour wears the level ({})", ground_now(&mut app)),
-    );
-    // The Reset link sits 10 px left of the code box.
-    let code_box = row(&mut app, "window-background")["code_box"].clone();
-    if let Some(b) = rect_of(&code_box) {
-        click_at(
-            &mut app,
-            ((b.0 - 10.0 - 14.0) as f32, (b.1 + b.3 / 2.0) as f32),
-        );
-    }
-
-    // A moved slider is a change to save; a theme pick asks, then puts its own 0 back.
-    let save = probe(&mut app, "picker.save", Value::Null);
-    // PT: run.mjs:6562
-    ctx.ok(
-        save["dirty"] == json!(true),
-        "a moved slider lights Save changes",
-    );
-    pick_card(ctx, &mut app, "paper");
-    let asked = ask_open(ctx, &mut app, 3_000);
-    // PT: run.mjs:6565
-    ctx.ok(asked, "and a theme pick asks first");
-    answer_ask(ctx, &mut app, "discard");
-    let own = ctx.until(
-        "the new theme to come with its own 0, solid",
-        4_000,
-        &mut || slider_num(&mut app, ID) == 0 && ground_now(&mut app).ends_with("ff"),
-    );
-    // PT: run.mjs:6568
-    ctx.ok(
-        own,
-        format!(
-            "the new theme comes with its own 0, solid ({})",
-            ground_now(&mut app)
-        ),
-    );
-    let mut solid = Vec::new();
-    ctx.until("every surface to be solid", 4_000, &mut || {
-        solid = coats(&mut app, &tmp);
-        all_near(&solid, 1.0)
-    });
-    // PT: run.mjs:6570
-    ctx.ok(
-        all_near(&solid, 1.0),
-        format!("solid, every one of them is ({solid:?})"),
-    );
-
-    // Custom keeps its level: save at 45, leave, come back.
-    set_slider(ctx, &mut app, ID, 45);
-    // The slider sits far below the Save row: scroll it into the pane before pressing it.
-    bring_into_view(ctx, &mut app, "the Save button", &mut |a| {
-        let s = probe(a, "picker.save", Value::Null);
-        Some((s["point"]["y"].as_f64()?, s["visible"] == json!(true)))
-    });
-    let sv = probe(&mut app, "picker.save", Value::Null);
-    if let (Some(x), Some(y)) = (sv["point"]["x"].as_f64(), sv["point"]["y"].as_f64()) {
-        click_at(&mut app, (x as f32, y as f32));
-    }
-    let lit_off = ctx.until("Save changes to keep it", 4_000, &mut || {
-        probe(&mut app, "picker.save", Value::Null)["dirty"] == json!(false)
-    });
-    // PT: run.mjs:6577
-    ctx.ok(lit_off, "Save changes keeps it");
-    // The settings file is written a moment after the button goes quiet.
-    ctx.poll(4_000, &mut || custom_json(&app)["seeThrough"] == json!(45));
-    let kept = custom_json(&app)["seeThrough"].clone();
-    // PT: run.mjs:6578
-    ctx.ok(kept == json!(45), format!("as Custom's own level ({kept})"));
-    pick_card(ctx, &mut app, "dracula");
-    if ask_open(ctx, &mut app, 1_000) {
-        answer_ask(ctx, &mut app, "discard");
-    }
-    reveal(ctx, &mut app, ID);
-    // PT: run.mjs:6580
-    ctx.ok(
-        slider_num(&mut app, ID) == 0,
-        "another theme is at its own 0",
-    );
-    pick_card(ctx, &mut app, "custom");
-    if ask_open(ctx, &mut app, 1_000) {
-        answer_ask(ctx, &mut app, "discard");
-    }
-    let back = ctx.until("Custom to bring its 45 back", 4_000, &mut || {
-        slider_num(&mut app, ID) == 45
-    });
-    // PT: run.mjs:6583
-    ctx.ok(
-        back,
-        format!(
-            "and Custom brings its 45 back ({})",
-            slider_num(&mut app, ID)
-        ),
-    );
-    ctx.shot(&mut app, "see-through");
-    // Leave on a quiet preset at 0 (a pick puts it back): nothing holds the close.
-    pick_card(ctx, &mut app, "dracula");
-    if ask_open(ctx, &mut app, 1_000) {
-        answer_ask(ctx, &mut app, "discard");
-    }
+    // Prism Terminal's checks of its see-through slider have no twin: the window is solid (2026-11-28).
+    // PT: run.mjs:6388
+    ctx.skip("the slider reads 40: there is no See-through slider since 2026-11-28");
+    // PT: run.mjs:6404
+    ctx.skip("50 takes the window to half: the window is solid since 2026-11-28");
+    // PT: run.mjs:6406
+    ctx.skip("40 puts the window back: the window is solid since 2026-11-28");
+    // PT: run.mjs:6413
+    ctx.skip("a theme pick with a level of your own asks: no level is kept since 2026-11-28");
+    // PT: run.mjs:6416
+    ctx.skip("Cancel keeps the see-through: no level is kept since 2026-11-28");
+    // PT: run.mjs:6420
+    ctx.skip("at 0 the window is solid: it is always solid since 2026-11-28");
+    // PT: run.mjs:6421
+    ctx.skip("the slider says Off: there is no See-through slider since 2026-11-28");
+    // PT: run.mjs:6447
+    ctx.skip("picking Custom again restores its saved 80: a Custom keeps no see-through since 2026-11-28");
     app.close();
     Ok(())
 }

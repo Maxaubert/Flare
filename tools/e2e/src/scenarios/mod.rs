@@ -467,12 +467,6 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 180,
     },
     Scenario {
-        name: "seeThrough",
-        group: "settings_c",
-        run: settings_c::see_through,
-        limit_secs: 180,
-    },
-    Scenario {
         name: "themeCards",
         group: "settings_d",
         run: settings_d::theme_cards,

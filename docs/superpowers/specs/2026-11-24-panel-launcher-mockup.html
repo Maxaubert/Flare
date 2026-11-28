@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panel launcher mockup</title>
+<!-- Panel launcher (2026-11-24, Max): a per-tab control for the side panel while it is closed. It opens the browser,
+     the device panel or a file. Two placements: A, a small dock in the tab's top right that is see-through until the
+     pointer is on it; B, a handle on the right edge that slides out when the pointer comes near (like the collapsed
+     sidebar). Plus an "Open in" button in the panel header: a file opens in its default app, a page in the default
+     browser. Tokens are Flare's dark look (device-panel mockup, 2026-11-19). -->
+<style>
+:root{
+  --ground:#171717;--tabs:#141414;--text:#dedacf;--soft:#c2bfb5;--dim:#929089;--dim2:#716f6a;
+  --line:#ffffff17;--divider:#ffffff12;--hover:#ffffff0f;--control:#1e1e1d;--pressed:#3d3c39;
+  --accent:#fe8f34;--accent-ink:#f6a25b;--on-accent:#0b0b0f;--side-flat:#1f1f1e;--side:#121212;
+  --mono:"Cascadia Mono","SF Mono",Consolas,monospace;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+.dock,.zone{font-family:"Segoe UI",-apple-system,system-ui,sans-serif}
+::selection{background:var(--accent);color:var(--on-accent)}
+:focus-visible{outline:1.5px solid var(--accent);outline-offset:1px}
+body{margin:0;background:#0b0b0b;color:var(--text);font:13px/1.4 "Segoe UI",-apple-system,system-ui,sans-serif;padding:24px 16px 60px}
+.wrap{max-width:1120px;margin:0 auto}
+h1{font-size:16px;font-weight:600;margin:0 0 4px}
+.lead{color:var(--dim);font-size:12.5px;margin:0 0 16px;max-width:78ch}
+.controls{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.seg{display:flex;border:1px solid var(--divider);border-radius:5px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:6px 12px;font-size:12px;color:var(--soft)}
+.seg button[aria-pressed=true]{background:var(--pressed);color:var(--text)}
+.seg button:hover{background:var(--hover)}
+.hint{font-size:12px;color:var(--dim)}
+.reset{all:unset;cursor:pointer;font-size:12px;color:var(--accent-ink)}
+
+/* The window: tab strip on top, the tab's terminal, and the panel slot when open. */
+.win{position:relative;height:600px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--ground);display:flex;flex-direction:column;box-shadow:0 18px 40px #0009}
+.strip{height:36px;background:var(--tabs);display:flex;align-items:flex-end;padding:0 8px;gap:2px;border-bottom:1px solid var(--divider);flex:none}
+.tab{all:unset;cursor:pointer;height:30px;padding:0 14px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);border-radius:6px 6px 0 0}
+.tab:hover{color:var(--soft);background:var(--hover)}
+.tab[aria-selected=true]{background:var(--ground);color:var(--text)}
+.tab .d{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.tab .d.idle{background:var(--dim2)}
+.caption{margin-left:auto;display:flex;gap:14px;padding:0 6px 10px;color:var(--dim2)}
+.caption i{width:10px;height:10px;border:1.4px solid currentColor;border-radius:1px;display:block}
+.main{flex:1;display:flex;min-height:0}
+.term{position:relative;flex:1;min-width:0;padding:14px 18px;font:12.5px/1.55 var(--mono);color:var(--soft);overflow:hidden}
+.term .p{color:var(--accent-ink)}
+.term .u{color:var(--text)}
+.term .m{color:var(--dim)}
+.term .lk{color:#8ab4f8;text-decoration:underline;text-underline-offset:2px}
+.term .input{position:absolute;left:18px;right:18px;bottom:14px;border:1px solid var(--divider);border-radius:6px;padding:8px 10px;color:var(--text);background:#1b1b1a}
+.term .input .ph{color:var(--dim2)}
+.term .input .ref{color:var(--accent-ink)}
+.caret{display:inline-block;width:7px;height:14px;background:var(--text);vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* Variant A: the dock. See-through when the pointer is elsewhere, solid on hover or keyboard focus. */
+.dock{position:absolute;top:10px;right:12px;display:flex;gap:2px;padding:3px;border-radius:8px;background:var(--side-flat);border:1px solid var(--divider);box-shadow:0 4px 14px #0007;opacity:.32;transition:opacity .22s cubic-bezier(.16,1,.3,1),transform .22s cubic-bezier(.16,1,.3,1);z-index:3}
+.dock:hover,.dock:focus-within,.dock.held{opacity:1}
+.dock .sep{width:1px;margin:4px 2px;background:var(--divider)}
+
+/* Variant B: the edge handle and its slide-out rail. A 56 px zone at the right edge wakes it. */
+.zone{position:absolute;top:0;right:0;bottom:0;width:56px;z-index:3}
+.handle{position:absolute;top:50%;right:3px;width:4px;height:44px;margin-top:-22px;border-radius:2px;background:var(--dim2);opacity:.55;transition:opacity .2s}
+.rail{position:absolute;top:50%;right:8px;transform:translate(calc(100% + 12px),-50%);display:flex;flex-direction:column;gap:2px;padding:4px;border-radius:9px;background:var(--side-flat);border:1px solid var(--divider);box-shadow:-6px 8px 22px #000a;transition:transform .26s cubic-bezier(.16,1,.3,1)}
+.zone:hover .rail,.zone:focus-within .rail,.zone.held .rail{transform:translate(0,-50%)}
+.zone:hover .handle,.zone.held .handle{opacity:0}
+.rail .lbl{all:unset;cursor:pointer;display:flex;align-items:center;gap:9px;height:30px;padding:0 12px 0 8px;border-radius:6px;font:12px "Segoe UI",-apple-system,system-ui,sans-serif;color:var(--soft);white-space:nowrap}
+.rail .lbl:hover{background:var(--hover);color:var(--text)}
+.rail .lbl svg{width:15px;height:15px}
+.rail hr{border:0;border-top:1px solid var(--divider);margin:3px 4px}
+
+.ib{all:unset;cursor:pointer;width:28px;height:28px;border-radius:5px;display:grid;place-items:center;color:var(--soft);position:relative}
+.ib:hover{background:var(--hover);color:var(--text)}
+svg.i{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+/* Icon-only controls get a tooltip (labeled ones do not). */
+.ib[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:34px;right:0;white-space:nowrap;background:#262624;color:var(--text);font:12px "Segoe UI",system-ui,sans-serif;padding:4px 8px;border-radius:4px;border:1px solid var(--divider);box-shadow:0 4px 12px #0008;pointer-events:none}
+
+/* The panel slot: splitter hairline on the left, a 32 px header, the body. */
+.panel{width:44%;flex:none;border-left:1px solid var(--divider);display:none;flex-direction:column;background:var(--ground);animation:in .24s cubic-bezier(.16,1,.3,1)}
+@keyframes in{from{transform:translateX(18px);opacity:0}}
+.panel.on{display:flex}
+.head{height:32px;border-bottom:1px solid var(--divider);display:flex;align-items:center;padding:0 6px 0 10px;gap:2px;flex:none}
+.head .title{font-size:12px;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.head .sub{font-size:11.5px;color:var(--dim);margin-right:6px;white-space:nowrap}
+.head .ib{width:24px;height:24px}
+.head .ib svg{width:14px;height:14px}
+.head .vsep{width:1px;height:14px;background:var(--divider);margin:0 3px}
+.openin{all:unset;cursor:pointer;height:22px;padding:0 9px;border-radius:4px;border:1px solid var(--divider);font-size:11.5px;color:var(--soft);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.openin:hover{background:var(--hover);color:var(--text)}
+.openin svg{width:12px;height:12px}
+.addr{flex:1;min-width:0;height:22px;border-radius:4px;background:#1f1f1e;border:1px solid var(--divider);display:flex;align-items:center;padding:0 8px;font-size:11.5px;color:var(--soft);overflow:hidden;white-space:nowrap;margin:0 4px}
+.body{flex:1;min-height:0;position:relative;overflow:hidden}
+.toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);background:#262624;border:1px solid var(--divider);border-radius:6px;padding:7px 12px;font-size:12px;color:var(--text);box-shadow:0 6px 18px #0009;opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+.toast.show{opacity:1}
+
+/* Page in the browser panel. */
+.page{position:absolute;inset:0;background:#f7f6f2;color:#1d1c1a;padding:22px 24px;font-size:12.5px}
+.page h3{margin:0 0 8px;font-size:17px}
+.page .bar{height:9px;border-radius:3px;background:#dedbd2;margin:8px 0}
+.page .bar.s{width:62%}.page .bar.m{width:84%}
+.page .blk{height:110px;border-radius:6px;background:linear-gradient(135deg,#e6dccb,#cdd6dc);margin:14px 0}
+/* The new-tab state of the browser panel. */
+.newtab{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--dim);font-size:12.5px}
+.search{width:72%;height:30px;border-radius:6px;border:1px solid var(--divider);background:#1f1f1e;display:flex;align-items:center;padding:0 10px;color:var(--dim2);font-size:12px}
+
+/* Device chooser. */
+.state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.line{font-size:12.5px;color:var(--dim)}
+.list{width:250px;border:1px solid var(--divider);border-radius:5px;overflow:hidden}
+.list .r{all:unset;cursor:pointer;display:flex;align-items:center;height:34px;padding:0 10px;gap:8px;border-top:1px solid var(--divider);font-size:12.5px;width:100%;box-sizing:border-box}
+.list .r:first-child{border-top:none}
+.list .r:hover{background:var(--hover)}
+.list .os{color:var(--dim);font-size:11.5px;margin-left:auto}
+.list .dot{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.list .dot.off{background:var(--dim2)}
+
+/* 3D model view. */
+.model{position:absolute;inset:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 40%,#232321,#151514 70%);perspective:700px}
+.cube{width:110px;height:110px;position:relative;transform-style:preserve-3d;animation:spin 9s linear infinite}
+.cube div{position:absolute;inset:0;border:1.5px solid #fe8f34aa;background:#fe8f3410}
+.cube .f1{transform:translateZ(55px)}.cube .f2{transform:rotateY(180deg) translateZ(55px)}
+.cube .f3{transform:rotateY(90deg) translateZ(55px)}.cube .f4{transform:rotateY(-90deg) translateZ(55px)}
+.cube .f5{transform:rotateX(90deg) translateZ(55px)}.cube .f6{transform:rotateX(-90deg) translateZ(55px)}
+@keyframes spin{to{transform:rotateX(-22deg) rotateY(360deg)}}
+.cube{transform:rotateX(-22deg)}
+.foot{position:absolute;left:0;right:0;bottom:0;padding:7px 12px;font-size:11.5px;color:var(--dim);background:#171717e6;border-top:1px solid var(--divider);display:flex;gap:12px;align-items:center}
+.foot .mention{all:unset;cursor:pointer;margin-left:auto;color:var(--accent-ink);font-size:11.5px}
+.foot .mention:hover{text-decoration:underline;text-underline-offset:2px}
+
+/* The system file picker, drawn plainly: Flare does not draw it, Windows does. */
+.picker{position:absolute;inset:0;background:#0007;display:none;place-items:center;z-index:5}
+.picker.on{display:grid}
+.dlg{width:430px;background:#202020;border:1px solid #ffffff22;border-radius:8px;box-shadow:0 18px 50px #000c;overflow:hidden}
+.dlg .t{height:34px;display:flex;align-items:center;padding:0 12px;font-size:12px;color:var(--soft);border-bottom:1px solid var(--divider)}
+.dlg .t .x{margin-left:auto;color:var(--dim)}
+.dlg .path{padding:8px 12px;font-size:11.5px;color:var(--dim);border-bottom:1px solid var(--divider)}
+.dlg .f{all:unset;cursor:pointer;display:flex;gap:10px;align-items:center;height:30px;padding:0 12px;font-size:12.5px;width:100%;box-sizing:border-box}
+.dlg .f:hover{background:#ffffff10}
+.dlg .f .k{margin-left:auto;color:var(--dim);font-size:11.5px}
+.dlg .note{padding:8px 12px;font-size:11.5px;color:var(--dim2);border-top:1px solid var(--divider)}
+.ftype{width:16px;height:16px}
+
+.notes{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+.notes section{border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.notes h2{font-size:13px;margin:0 0 6px}
+.notes p,.notes li{color:var(--soft);font-size:12.5px;margin:0 0 6px}
+.notes ul{padding-left:18px;margin:0}
+.notes b{color:var(--text)}
+@media (max-width:820px){.notes{grid-template-columns:1fr}.panel{width:58%}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.5 3.8 5.3 3.8 8.5s-1.2 6-3.8 8.5M12 3.5C9.4 6 8.2 8.8 8.2 12s1.2 6 3.8 8.5"/></symbol>
+    <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.4"/><path d="M10.5 6h3"/></symbol>
+    <symbol id="file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4"/></symbol>
+    <symbol id="recent" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="close" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
+    <symbol id="back" viewBox="0 0 24 24"><path d="M14.5 6.5L9 12l5.5 5.5"/></symbol>
+    <symbol id="fwd" viewBox="0 0 24 24"><path d="M9.5 6.5L15 12l-5.5 5.5"/></symbol>
+    <symbol id="reload" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5M19 4.5V8h-3.5"/></symbol>
+    <symbol id="ext" viewBox="0 0 24 24"><path d="M13.5 4.5h6v6M19.5 4.5L11 13M17 14v5.5H4.5V7H10"/></symbol>
+    <symbol id="home" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7M6 9.5V20h12V9.5M10 20v-5h4v5"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24"><path d="M5.5 11h13v9.5h-13zM8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="rot" viewBox="0 0 24 24"><path d="M20 8V3.5M20 8h-4.5M19.4 8A8 8 0 1 0 20 13"/></symbol>
+    <symbol id="cube" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></symbol>
+    <symbol id="img" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 16l4.5-4.5 4 4 2.5-2.5L20 18"/><circle cx="15.5" cy="9.5" r="1.4"/></symbol>
+    <symbol id="doc" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M9 12h6M9 15.5h6M9 8.5h3"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <h1>Panel launcher: a way into the side panel while it is closed</h1>
+  <p class="lead">Each tab has its own launcher, because the panel is per tab. It only shows while that tab's panel is
+  closed, and disappears the moment the panel opens. Pick a placement, then click through: Browser, Device, and Open
+  file (a 3D model here). The panel header gets an <b>Open in</b> button.</p>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Placement">
+      <button id="vA" aria-pressed="true">A · Corner dock (fades)</button>
+      <button id="vB" aria-pressed="false">B · Edge slide-out</button>
+    </div>
+    <span class="hint" id="vhint">Move the pointer onto the dock in the top right: it turns solid. Off it, it is 32% so the text under it still reads.</span>
+    <button class="reset" id="reset">Reset</button>
+  </div>
+
+  <div class="win" id="win">
+    <div class="strip" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-tab="0"><span class="d"></span>Flare · claude</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="1"><span class="d idle"></span>Sonara · claude</button>
+      <div class="caption"><i></i><i></i><i></i></div>
+    </div>
+    <div class="main">
+      <div class="term" id="term">
+        <div><span class="p">&gt;</span> <span class="u">why does the robot arm clip through the table in the scene?</span></div>
+        <div class="m">● Reading scene/robot_arm.glb and scene/layout.json</div>
+        <div>&nbsp;&nbsp;The arm's base sits at y = 0.00, but the table top in layout.json is at</div>
+        <div>&nbsp;&nbsp;y = 0.74. Joint 2 swings down 38° past horizontal, so the forearm dips</div>
+        <div>&nbsp;&nbsp;below 0.74 for about a third of the motion. Two ways to fix it:</div>
+        <div>&nbsp;&nbsp;1. Clamp joint 2 to −20° in <span class="lk">⟦scene/rig.toml:41⟧</span></div>
+        <div>&nbsp;&nbsp;2. Raise the base onto the table (y = 0.74) and keep the full swing</div>
+        <div class="m">● Wrote scene/rig.toml (+3 −1)</div>
+        <div>&nbsp;&nbsp;I clamped it. Want me to check the model itself for other overlaps?</div>
+        <div class="input" id="input"><span id="typed"></span><span class="caret"></span> <span class="ph" id="ph">Type a message…</span></div>
+
+        <!-- Variant A: corner dock -->
+        <div class="dock" id="dock" role="toolbar" aria-label="Open in the side panel">
+          <button class="ib" data-act="browser" data-tip="Browser"><svg class="i"><use href="#globe"/></svg></button>
+          <button class="ib" data-act="device" data-tip="Device"><svg class="i"><use href="#phone"/></svg></button>
+          <button class="ib" data-act="file" data-tip="Open a file…"><svg class="i"><use href="#file"/></svg></button>
+          <span class="sep"></span>
+          <button class="ib" data-act="recent" data-tip="Reopen the last panel"><svg class="i"><use href="#recent"/></svg></button>
+        </div>
+
+        <!-- Variant B: edge handle + slide-out rail -->
+        <div class="zone" id="zone" hidden>
+          <span class="handle"></span>
+          <div class="rail" role="toolbar" aria-label="Open in the side panel">
+            <button class="lbl" data-act="browser"><svg class="i"><use href="#globe"/></svg>Browser</button>
+            <button class="lbl" data-act="device"><svg class="i"><use href="#phone"/></svg>Device</button>
+            <button class="lbl" data-act="file"><svg class="i"><use href="#file"/></svg>Open a file…</button>
+            <hr>
+            <button class="lbl" data-act="recent"><svg class="i"><use href="#recent"/></svg>Last panel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="panel">
+        <div class="head" id="head"></div>
+        <div class="body" id="pbody"><div class="toast" id="toast"></div></div>
+      </div>
+    </div>
+
+    <div class="picker" id="picker">
+      <div class="dlg" role="dialog" aria-label="Open">
+        <div class="t">Open <span class="x">✕</span></div>
+        <div class="path">This PC › Documents › Claude › Github › Flare › scene</div>
+        <button class="f" data-file="robot_arm.glb"><svg class="i ftype"><use href="#cube"/></svg>robot_arm.glb<span class="k">3D model · 2.4 MB</span></button>
+        <button class="f" data-file="table_render.png"><svg class="i ftype"><use href="#img"/></svg>table_render.png<span class="k">PNG · 840 KB</span></button>
+        <button class="f" data-file="layout.json"><svg class="i ftype"><use href="#doc"/></svg>layout.json<span class="k">JSON · 6 KB</span></button>
+        <div class="note">Windows' own Open dialog (macOS: the Finder sheet). Starts in this tab's folder.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <section>
+      <h2>A · Corner dock</h2>
+      <ul>
+        <li><b>Where:</b> the tab's top right, where the panel would open. Four icon buttons, each with a tooltip.</li>
+        <li><b>Idle:</b> 32% so the terminal text under it stays readable. On hover or keyboard focus it is solid.</li>
+        <li><b>Plus:</b> always findable, one click. <b>Minus:</b> it still sits over the top-right characters of the grid.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>B · Edge slide-out</h2>
+      <ul>
+        <li><b>Where:</b> a thin handle on the right edge. Near the edge (56 px) the rail slides out with labels.</li>
+        <li><b>Idle:</b> only the handle shows, so it covers no text at all. Same feel as the collapsed sidebar.</li>
+        <li><b>Plus:</b> nothing in the way, room for labels. <b>Minus:</b> less discoverable, and the right edge is also where the scrollbar lives.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Open in (panel header)</h2>
+      <ul>
+        <li><b>A file</b> (image, text, 3D model): "Open in" hands it to the system's default app for that type.</li>
+        <li><b>A web page:</b> "Open in browser" opens the same address in the default browser (Zen here).</li>
+        <li>Device panel: no Open in (nothing outside Flare shows it).</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Ideas to discuss</h2>
+      <ul>
+        <li><b>Mention to Claude</b> (file footer): puts <code>⟦scene/robot_arm.glb⟧</code> into the prompt, so "check out this model" needs no typing of paths.</li>
+        <li>Drag a file from Explorer onto the launcher to open it in the panel.</li>
+        <li>"Last panel" reopens whatever the tab showed last (a page, a device, a file).</li>
+        <li>A hotkey to show the launcher, and a Settings switch to hide it.</li>
+      </ul>
+    </section>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const tabs = [{panel:null},{panel:null}];
+let cur = 0, variant = 'A', last = [null, null];
+const icon = id => `<svg class="i"><use href="#${id}"/></svg>`;
+const closeBtn = `<span class="vsep"></span><button class="ib" data-tip="Close panel" onclick="closePanel()">${icon('close')}</button>`;
+
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toast.h); toast.h=setTimeout(()=>t.classList.remove('show'),1800); }
+
+function render(){
+  const p = tabs[cur].panel;
+  $('#panel').classList.toggle('on', !!p);
+  // The launcher shows only while this tab's panel is closed.
+  $('#dock').hidden = !!p || variant !== 'A';
+  $('#zone').hidden = !!p || variant !== 'B';
+  if(!p) return;
+  const head = $('#head'), body = $('#pbody'), keep = $('#toast');
+  body.innerHTML = ''; body.appendChild(keep);
+  if(p.kind==='browser'){
+    if(!p.url){
+      head.innerHTML = `<button class="ib" data-tip="Back">${icon('back')}</button><button class="ib" data-tip="Forward">${icon('fwd')}</button><div class="addr">Search or type an address</div>${closeBtn}`;
+      body.insertAdjacentHTML('afterbegin',`<div class="newtab"><div class="search">Search Google or type an address</div><div style="cursor:pointer;color:var(--accent-ink)" onclick="go()">docs.rs/three-d (try a page)</div></div>`);
+    } else {
+      head.innerHTML = `<button class="ib" data-tip="Back">${icon('back')}</button><button class="ib" data-tip="Forward">${icon('fwd')}</button><button class="ib" data-tip="Reload">${icon('reload')}</button><div class="addr">${p.url}</div><button class="openin" onclick="toast('Opened in Zen (your default browser)')">${icon('ext')}Open in browser</button>${closeBtn}`;
+      body.insertAdjacentHTML('afterbegin',`<div class="page"><h3>three-d 0.19</h3><div class="bar m"></div><div class="bar s"></div><div class="blk"></div><div class="bar m"></div><div class="bar s"></div><div class="bar m"></div></div>`);
+    }
+  } else if(p.kind==='device'){
+    head.innerHTML = `<span class="title">Device</span>${closeBtn}`;
+    body.insertAdjacentHTML('afterbegin',`<div class="state"><div class="line">Pick a device to start</div><div class="list">
+      <button class="r" onclick="toast('Booting iPhone 18 Pro…')"><span class="dot"></span>iPhone 18 Pro<span class="os">iOS 27.2</span></button>
+      <button class="r" onclick="toast('Booting iPad Air…')"><span class="dot off"></span>iPad Air 13″<span class="os">iPadOS 27.2</span></button>
+      <button class="r" onclick="toast('Starting Pixel 9…')"><span class="dot off"></span>Pixel 9<span class="os">Android 16</span></button></div></div>`);
+  } else if(p.kind==='file'){
+    head.innerHTML = `<span class="title">${p.name}</span><span class="sub">scene</span><button class="openin" onclick="toast('Opened in 3D Viewer (the default app for .glb)')">${icon('ext')}Open in 3D Viewer</button>${closeBtn}`;
+    body.insertAdjacentHTML('afterbegin',`<div class="model"><div class="cube"><div class="f1"></div><div class="f2"></div><div class="f3"></div><div class="f4"></div><div class="f5"></div><div class="f6"></div></div></div>
+      <div class="foot">Drag to turn · scroll to zoom<button class="mention" onclick="mention('${p.name}')">Mention to Claude</button></div>`);
+  }
+}
+function open(kind){
+  if(kind==='file'){ $('#picker').classList.add('on'); return; }
+  if(kind==='recent'){ if(last[cur]){ tabs[cur].panel = {...last[cur]}; render(); } else { flashHint('Nothing opened in this tab yet.'); } return; }
+  tabs[cur].panel = {kind}; render();
+}
+function go(){ tabs[cur].panel.url='https://docs.rs/three-d/latest/three_d/'; render(); }
+window.closePanel = () => { last[cur] = tabs[cur].panel; tabs[cur].panel = null; render(); };
+window.go = go;
+window.mention = name => { $('#typed').innerHTML = `check out this model <span class="ref">⟦scene/${name}⟧</span> `; $('#ph').hidden = true; toast('Added to the prompt'); };
+function flashHint(t){ const h=$('#vhint'), o=h.textContent; h.textContent=t; setTimeout(()=>h.textContent=o,1600); }
+
+document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',()=>open(b.dataset.act)));
+document.querySelectorAll('.dlg .f').forEach(f=>f.addEventListener('click',()=>{ $('#picker').classList.remove('on'); tabs[cur].panel={kind:'file',name:f.dataset.file.endsWith('.glb')?f.dataset.file:'robot_arm.glb'}; render(); }));
+$('.dlg .x').addEventListener('click',()=>$('#picker').classList.remove('on'));
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-selected', x===t));
+  cur = +t.dataset.tab; render();
+}));
+function setVariant(v){
+  variant=v; $('#vA').setAttribute('aria-pressed',v==='A'); $('#vB').setAttribute('aria-pressed',v==='B');
+  $('#vhint').textContent = v==='A' ? 'Move the pointer onto the dock in the top right: it turns solid. Off it, it is 32% so the text under it still reads.'
+                                    : 'Move the pointer to the right edge of the terminal: the rail slides out. Away from the edge only a thin handle shows.';
+  render();
+}
+$('#vA').onclick=()=>setVariant('A'); $('#vB').onclick=()=>setVariant('B');
+$('#reset').onclick=()=>{ tabs.forEach(t=>t.panel=null); last=[null,null]; $('#typed').innerHTML=''; $('#ph').hidden=false; setVariant(variant); };
+// For screenshots: ?v=B&hold=1 keeps the launcher solid / slid out; ?open=file|browser|device opens that panel.
+const q = new URLSearchParams(location.search);
+if(q.get('v')) setVariant(q.get('v'));
+if(q.get('hold')){ $('#dock').classList.add('held'); $('#zone').classList.add('held'); }
+if(q.get('open')){ const k=q.get('open'); if(k==='file'){ tabs[0].panel={kind:'file',name:'robot_arm.glb'}; } else if(k==='web'){ tabs[0].panel={kind:'browser',url:'https://docs.rs/three-d/latest/three_d/'}; } else { tabs[0].panel={kind:k}; } render(); }
+if(q.get('picker')) $('#picker').classList.add('on');
+render();
+</script>
+</body>
+</html>

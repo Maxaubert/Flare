@@ -633,12 +633,103 @@ fn the_plugin_notices_close_cross_draws_at_full_size_at_every_scale() {
     }
 }
 
+// --- The panel launcher (launcher.slint, rule 1384) and "Open in" (panel.slint, rule 1388). ---
+
+/// The launcher's Layers glyph and the panel header's external-link glyph.
+const LAYERS: &str = "M12 4l8 4-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4";
+const EXTERNAL: &str = "M13.5 4.5h6v6M19.5 4.5L11 13M17 14v5.5H4.5V7H10";
+
+/// The window with the launcher up and its menu open on one row (Browser), lit (so the button is solid).
+fn launcher_window(s: f32) -> Harness<AppWindow> {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    crate::appctl::AppCtl::push_panel_limits(&h.comp);
+    let row = crate::LauncherRow {
+        label: "Browser".into(),
+        icon: crate::launcher::Item::Browser.icon().into(),
+        top: 4.0,
+        rule: false,
+    };
+    h.comp
+        .set_launcher_rows(ModelRc::new(VecModel::from(vec![row])));
+    h.comp.set_launcher_menu_h(36.0);
+    h.comp.set_launcher_shown(true);
+    h.comp.set_launcher_open(true);
+    // The button's fade in (200 ms) is over.
+    h.advance(400);
+    h
+}
+
+fn draw_launcher_button(s: f32) -> Drawn {
+    let h = launcher_window(s);
+    let f = h.render();
+    let w = h.comp.get_launcher_button_w();
+    let cx = h.comp.get_launcher_button_x() + w / 2.0;
+    let cy = h.comp.get_launcher_button_y() + w / 2.0;
+    // Inside the round button's border at every corner of the region.
+    let r = region_around(&f, cx * s, cy * s, 8.0 * s);
+    let got = drawn(&f, r, super::icons_tabs::TEXT);
+    (
+        got,
+        expected_extent_px(LAYERS, 14.0, 24.0, 1.6 * 14.0 / 24.0, s),
+    )
+}
+
+fn draw_launcher_row_icon(s: f32) -> Drawn {
+    let h = launcher_window(s);
+    let f = h.render();
+    // The row is 4 px in from the menu, its icon's 14 px box 8 px into the row; the row is 28 px high from `top`.
+    let cx = h.comp.get_launcher_menu_x() + 4.0 + 8.0 + 7.0;
+    let cy = h.comp.get_launcher_menu_y() + 4.0 + 14.0;
+    let r = region_around(&f, cx * s, cy * s, 9.0 * s);
+    let got = drawn(&f, r, super::icons_tabs::TEXT_SOFT);
+    (
+        got,
+        expected_extent_px(
+            crate::launcher::Item::Browser.icon(),
+            14.0,
+            24.0,
+            1.6 * 14.0 / 24.0,
+            s,
+        ),
+    )
+}
+
+fn draw_open_in(s: f32) -> Drawn {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    crate::appctl::AppCtl::push_panel_limits(&h.comp);
+    h.comp.set_panel_open(true);
+    h.comp.set_panel_kind(1);
+    h.comp.set_panel_open_in("Open in default app".into());
+    h.comp.set_panel_open_in_short("Open".into());
+    h.advance(0);
+    let f = h.render();
+    // The glyph's 12 px box is 9 px into the 22 px button, which sits in the middle of the 32 px header.
+    let cx = h.comp.get_panel_open_in_x() + 9.0 + 6.0;
+    let cy = h.comp.get_panel_slot_top() + 16.0;
+    let r = region_around(&f, cx * s, cy * s, 7.0 * s);
+    let got = drawn(&f, r, super::icons_tabs::TEXT_SOFT);
+    (got, expected_extent_px(EXTERNAL, 12.0, 24.0, 1.0, s))
+}
+
+#[test]
+fn the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("launcher layers", s, draw_launcher_button(s));
+        assert_size("launcher row icon", s, draw_launcher_row_icon(s));
+        assert_size("open in", s, draw_open_in(s));
+    }
+}
+
 // --- The scan: every stroked path in the top-level ui files is either a hairline rule or a glyph with a size test. ---
 
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 17] = [
+const SIZED: [(&str, usize); 18] = [
     // `the_folder_browsers_back_home_and_file_glyphs_draw_at_full_size_at_every_scale`: Back and Home share one.
     ("remote_folder.slint", 2),
     // `the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale`, and the check and the spinner:
@@ -657,7 +748,10 @@ const SIZED: [(&str, usize); 17] = [
     ("update.slint", 1),
     ("dictation_pill.slint", 1),
     ("dictation_widget.slint", 1),
-    ("panel.slint", 2),
+    // The third is "Open in" (rule 1388): `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale`.
+    ("panel.slint", 3),
+    // The Layers glyph and a row's icon (rule 1384), the same test.
+    ("launcher.slint", 2),
     // The badge glyph (plugins phase 1): `ui_tests::decor::every_badge_glyph_draws_at_full_size_at_every_scale`.
     ("decor.slint", 1),
     // The notice's close cross (rule 1275): `the_plugin_notices_close_cross_draws_at_full_size_at_every_scale`.
