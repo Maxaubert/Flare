@@ -200,6 +200,8 @@ pub enum UiMsg {
     RemoteFolder(crate::remote_folder::FolderMsg),
     /// The device panel's source has events waiting, or a boot's second passed (issue #248).
     Device(DeviceMsg),
+    /// The panel launcher's workers (2026-11-24): a picked file the panel cannot show, a default app's name.
+    Launcher(launcher_glue::LauncherMsg),
 }
 
 mod app_keys_glue;
@@ -207,6 +209,7 @@ mod ask_glue;
 mod bar_glue;
 mod device_glue;
 mod install_glue;
+mod launcher_glue;
 mod mods_glue;
 mod notice_glue;
 mod plugins_glue;
@@ -700,6 +703,8 @@ pub struct AppCtl {
     plugin_notices: crate::plugin_notice::Notices,
     /// The prompt hook's `panel.state` calls that wait for a page's selection (rule 1268), by the read's id.
     quiet_reads: quiet_glue::QuietReads,
+    /// The panel launcher and the panel header's "Open in" (2026-11-24, `launcher_glue`).
+    launcher: launcher_glue::LauncherState,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
     /// The key being handled is one the page's key filter handed back (macOS): it never goes to the page again.
@@ -1229,6 +1234,7 @@ impl AppCtl {
             plugin_ask_ended: None,
             plugin_notices: crate::plugin_notice::Notices::default(),
             quiet_reads: quiet_glue::QuietReads::default(),
+            launcher: launcher_glue::LauncherState::default(),
             panel_focus_seen: false,
             key_from_page: false,
             panel_front_seen: None,
@@ -1649,6 +1655,16 @@ impl AppCtl {
         bind!(app, rc, on_preview_chip_clicked, |c| c
             .preview_chip_clicked());
         bind!(app, rc, on_rconvo_take_over, |c| c.remote_convo_take_over());
+        // The panel launcher and "Open in" (2026-11-24, `launcher_glue`).
+        bind!(app, rc, on_launcher_hover, |c, zone: i32, on: bool| c
+            .launcher_hover(zone, on));
+        bind!(app, rc, on_launcher_clicked, |c| c.launcher_clicked());
+        bind!(app, rc, on_launcher_menu_moved, |c, y: f32| c
+            .launcher_menu_moved(y));
+        bind!(app, rc, on_launcher_menu_clicked, |c, y: f32| c
+            .launcher_menu_clicked(y));
+        bind!(app, rc, on_launcher_picked, |c, i: i32| c.launcher_pick(i));
+        bind!(app, rc, on_panel_open_in_clicked, |c| c.panel_open_in());
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
         bind!(
             app,
@@ -2113,6 +2129,9 @@ impl AppCtl {
 
         self.push_term();
         self.update_skeleton(now);
+        // The panel launcher and "Open in" follow the panel of the tab in front (2026-11-24), after the skeleton (the
+        // launcher hides under it).
+        self.sync_launcher(&app);
         self.update_clock();
         self.update_badge();
         // What changed on the tabs since the last refresh goes to the plugins that listen (one round a refresh).
@@ -3634,6 +3653,8 @@ impl AppCtl {
         let Some(app) = self.app() else { return };
         let fs = self.term.find_state();
         app.set_find_open(fs.open);
+        // The panel launcher shares the find bar's corner and goes while it is open (rule 1384).
+        self.launcher_find_changed(&app, fs.open);
         if app.get_find_query().as_str() != fs.query {
             app.set_find_query(fs.query.as_str().into());
         }
@@ -5099,6 +5120,10 @@ impl AppCtl {
             self.close_menu();
             return KeyOutcome::Consumed;
         }
+        // The panel launcher's open menu (rule 1385): a keyed one holds its keys; Escape closes any.
+        if let Some(out) = self.launcher_key(ev) {
+            return out;
+        }
         // Escape while the person draws an arrow ends the draw mode and goes nowhere else (rule 256).
         if ev.pressed
             && ev.key == "Escape"
@@ -5794,6 +5819,7 @@ impl AppCtl {
             UiMsg::Reopen(r) => self.reopened(r),
             UiMsg::RemoteFolder(m) => self.rfolder_answered(m),
             UiMsg::Device(m) => self.device_msg(m),
+            UiMsg::Launcher(m) => self.launcher_msg(m),
             UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::Machines(list) => self.set_machines(list),
             UiMsg::HostConvo(read) => self.on_host_convo(read),
@@ -6296,6 +6322,7 @@ mod tests {
     mod ctl_socket_tests;
     mod device_input_tests;
     mod key_release_tests;
+    mod launcher_tests;
     mod md_tests;
     mod mods_tests;
     mod page_keys_tests;

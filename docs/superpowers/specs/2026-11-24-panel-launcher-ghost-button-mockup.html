@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghost button launcher</title>
+<!-- Panel launcher, version 3 picked (Max, 2026-11-24): one ghost button in the tab's top right that blooms into a
+     menu. Rules from Max: the menu opens only while the pointer is on the button (not anywhere the menu would be),
+     and it must not close while the pointer crosses the small gap from the button to the menu. Below: 10 icons for
+     the button. -->
+<style>
+:root{
+  --ground:#171717;--tabs:#141414;--text:#dedacf;--soft:#c2bfb5;--dim:#929089;--dim2:#716f6a;
+  --line:#ffffff17;--divider:#ffffff12;--hover:#ffffff10;--side-flat:#1f1f1e;
+  --accent:#fe8f34;--accent-ink:#f6a25b;--on-accent:#0b0b0f;
+  --mono:"Cascadia Mono","SF Mono",Consolas,monospace;--ui:"Segoe UI",-apple-system,system-ui,sans-serif;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+::selection{background:var(--accent);color:var(--on-accent)}
+:focus-visible{outline:1.5px solid var(--accent);outline-offset:2px}
+body{margin:0;background:#0b0b0b;color:var(--text);font:13px/1.4 var(--ui);padding:24px 16px 60px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:16px;font-weight:600;margin:0 0 4px}
+h2{font-size:13.5px;font-weight:600;margin:30px 0 4px}
+.lead{color:var(--dim);font-size:12.5px;margin:0 0 14px;max-width:84ch}
+.lead b{color:var(--soft)}
+
+.f{position:relative;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--ground);display:flex;flex-direction:column}
+.big{height:380px}
+.strip{height:30px;background:var(--tabs);border-bottom:1px solid var(--divider);display:flex;align-items:flex-end;padding:0 6px;gap:2px;flex:none}
+.tab{height:25px;padding:0 12px;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--dim);border-radius:5px 5px 0 0}
+.tab.on{background:var(--ground);color:var(--text)}
+.tab .d{width:5px;height:5px;border-radius:50%;background:var(--accent)}.tab .d.idle{background:var(--dim2)}
+.term{position:relative;flex:1;padding:10px 14px;font:11.5px/1.55 var(--mono);color:var(--soft);overflow:hidden}
+.term .p{color:var(--accent-ink)}.term .u{color:var(--text)}.term .m{color:var(--dim)}
+.input{position:absolute;left:12px;right:12px;bottom:10px;height:28px;border:1px solid var(--divider);border-radius:6px;background:#1b1b1a;padding:0 10px;display:flex;align-items:center;font-size:11.5px;color:var(--dim2)}
+
+svg.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* The launcher. Only the button and (once open) the menu take the pointer; the empty area around them does not. */
+.g{position:absolute;top:8px;right:10px;width:0;height:0}
+.btn{all:unset;position:absolute;top:0;right:0;width:26px;height:26px;border-radius:13px;display:grid;place-items:center;
+  color:var(--soft);border:1px solid var(--divider);background:#1f1f1e99;opacity:.45;cursor:pointer;
+  transition:opacity .2s,background .2s,color .2s}
+.btn svg{width:14px;height:14px}
+.g.open .btn,.btn:hover,.btn:focus-visible{opacity:1;background:var(--side-flat);color:var(--text)}
+.menu{position:absolute;top:32px;right:0;padding:4px;border-radius:8px;background:var(--side-flat);border:1px solid var(--divider);
+  box-shadow:0 6px 18px #0009;transform-origin:top right;transform:scale(.94) translateY(-2px);opacity:0;visibility:hidden;
+  transition:transform .2s var(--ease),opacity .14s,visibility 0s linear .2s}
+/* The bridge: an invisible strip over the 6 px gap, part of the menu, so crossing it never counts as leaving. */
+.menu::before{content:"";position:absolute;left:0;right:0;top:-8px;height:8px}
+.g.open .menu{transform:none;opacity:1;visibility:visible;transition:transform .2s var(--ease),opacity .14s,visibility 0s}
+.lb{all:unset;display:flex;align-items:center;gap:8px;height:28px;padding:0 12px 0 8px;border-radius:5px;font:11.5px var(--ui);color:var(--soft);white-space:nowrap;cursor:pointer;width:100%;box-sizing:border-box}
+.lb:hover,.lb:focus-visible{background:var(--hover);color:var(--text)}
+.hr{height:1px;background:var(--divider);margin:3px 4px}
+.log{position:absolute;left:14px;bottom:46px;font:11px var(--ui);color:var(--dim2)}
+
+/* The icon choices. */
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}
+@media (max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
+.small{height:220px}
+.small .term{font-size:10.5px}
+.cap{display:flex;gap:6px;align-items:baseline;margin:0 0 6px;font-size:12px}
+.cap .n{color:var(--accent-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.cap span{color:var(--dim)}
+.zoom{display:flex;gap:10px;align-items:center;margin-top:8px;color:var(--dim);font-size:11.5px}
+.zoom .z{width:34px;height:34px;border-radius:17px;display:grid;place-items:center;background:var(--side-flat);border:1px solid var(--divider);color:var(--text)}
+.zoom .z svg{width:18px;height:18px}
+.zoom .z.faint{opacity:.45;background:#1f1f1e99;color:var(--soft)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.5 3.8 5.3 3.8 8.5s-1.2 6-3.8 8.5M12 3.5C9.4 6 8.2 8.8 8.2 12s1.2 6 3.8 8.5"/></symbol>
+  <symbol id="phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.4"/><path d="M10.5 6h3"/></symbol>
+  <symbol id="file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4"/></symbol>
+  <symbol id="recent" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <!-- Ten icons for the button. -->
+  <symbol id="b1" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M14 5v14"/></symbol>
+  <symbol id="b2" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M14 5v14"/><path d="M16 8.5h2.5M16 11h2.5M16 13.5h2.5" stroke-width="1.4"/></symbol>
+  <symbol id="b3" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M15 5v14"/><path d="M11 9.5L8.5 12l2.5 2.5"/></symbol>
+  <symbol id="b4" viewBox="0 0 24 24"><path d="M12 7v10M7 12h10"/></symbol>
+  <symbol id="b5" viewBox="0 0 24 24"><circle cx="8" cy="8" r="1.6"/><circle cx="16" cy="8" r="1.6"/><circle cx="8" cy="16" r="1.6"/><circle cx="16" cy="16" r="1.6"/></symbol>
+  <symbol id="b6" viewBox="0 0 24 24"><path d="M12 4l8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4M4 16l8 4 8-4"/></symbol>
+  <symbol id="b7" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><rect x="12" y="11" width="6" height="5" rx="1"/></symbol>
+  <symbol id="b8" viewBox="0 0 24 24"><path d="M13.5 7.5L9 12l4.5 4.5M18 7.5L13.5 12l4.5 4.5"/></symbol>
+  <symbol id="b9" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M15 5v14"/><path d="M8 12h3.5M9.75 10.25v3.5"/></symbol>
+  <symbol id="b10" viewBox="0 0 24 24"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 16v4M16.5 18h4" stroke-width="1.4"/></symbol>
+</defs></svg>
+
+<div class="wrap">
+  <h1>Ghost button: opens only from the button, survives the gap</h1>
+  <p class="lead">Hover the round button in the top right. <b>Hovering where the menu would be does nothing</b>: the
+  menu takes no pointer while it is closed. Move down into the menu: the 6 px gap is covered by an invisible bridge,
+  and leaving starts a 250 ms grace, so a slightly loose path does not close it. It closes when the pointer is off both
+  for 250 ms, on Escape, or after a pick. Click works too (touch and keyboard: Enter opens, arrows move).</p>
+
+  <div class="f big" id="demo">
+    <div class="strip"><div class="tab on"><span class="d"></span>Flare · claude</div><div class="tab"><span class="d idle"></span>Sonara · claude</div></div>
+    <div class="term">
+      <div><span class="p">&gt;</span> <span class="u">why does the arm clip through the table?</span></div>
+      <div class="m">● Reading scene/robot_arm.glb</div>
+      <div>&nbsp;&nbsp;Joint 2 swings 38° past horizontal, so the forearm dips below the table</div>
+      <div>&nbsp;&nbsp;top (y = 0.74). I clamped it in scene/rig.toml. Want me to check the model?</div>
+      <div class="log" id="log">Closed</div>
+      <div class="input">Type a message…</div>
+      <div class="g" data-launcher>
+        <button class="btn" aria-haspopup="menu" aria-expanded="false" aria-label="Open in the side panel"><svg class="i"><use href="#b1"/></svg></button>
+        <div class="menu" role="menu">
+          <button class="lb" role="menuitem"><svg class="i"><use href="#globe"/></svg>Browser</button>
+          <button class="lb" role="menuitem"><svg class="i"><use href="#phone"/></svg>Device</button>
+          <button class="lb" role="menuitem"><svg class="i"><use href="#file"/></svg>Open a file…</button>
+          <div class="hr"></div>
+          <button class="lb" role="menuitem"><svg class="i"><use href="#recent"/></svg>Last panel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Ten icons for the button</h2>
+  <p class="lead">Each frame is live: hover its button. Below each, the icon at 2× solid and at its idle 45%.</p>
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+const ICONS = [
+  ['b1','Panel split','the panel shape itself'],
+  ['b2','Panel with lines','a panel that holds content'],
+  ['b3','Panel, pull out','an arrow out of the right side'],
+  ['b4','Plus','add something to the side'],
+  ['b5','Four dots','a menu of things'],
+  ['b6','Layers','stack of things to open'],
+  ['b7','Picture in picture','a window beside your window'],
+  ['b8','Double chevron','pull the panel open'],
+  ['b9','Panel plus','add to the panel'],
+  ['b10','Sparkle','quick tools, playful'],
+];
+const menuHTML = document.querySelector('#demo .menu').outerHTML;
+document.getElementById('grid').innerHTML = ICONS.map(([id,name,why],k)=>`
+  <div><p class="cap"><span class="n">${k+1}</span><b>${name}</b></p>
+  <div class="f small"><div class="strip"><div class="tab on"><span class="d"></span>Flare</div></div>
+    <div class="term"><div><span class="p">&gt;</span> <span class="u">check the model</span></div><div class="m">● Reading robot_arm.glb</div>
+    <div class="g" data-launcher><button class="btn" aria-haspopup="menu" aria-expanded="false" aria-label="Open in the side panel"><svg class="i"><use href="#${id}"/></svg></button>${menuHTML}</div></div></div>
+  <div class="zoom"><span class="z"><svg class="i"><use href="#${id}"/></svg></span><span class="z faint"><svg class="i"><use href="#${id}"/></svg></span>${why}</div></div>`).join('');
+
+// Hover intent: opens only from the button; the menu keeps it open; a 250 ms grace covers loose paths.
+const GRACE = 250;
+document.querySelectorAll('[data-launcher]').forEach(g=>{
+  const btn = g.querySelector('.btn'), menu = g.querySelector('.menu'), log = g.closest('#demo') && document.getElementById('log');
+  let t = null;
+  const say = s => { if(log) log.textContent = s; };
+  const open = why => { clearTimeout(t); if(!g.classList.contains('open')){ g.classList.add('open'); btn.setAttribute('aria-expanded','true'); say('Open ('+why+')'); } };
+  const close = () => { clearTimeout(t); g.classList.remove('open'); btn.setAttribute('aria-expanded','false'); say('Closed'); };
+  const later = () => { clearTimeout(t); t = setTimeout(close, GRACE); say('Leaving… closes in 250 ms unless you come back'); };
+  btn.addEventListener('pointerenter', ()=>open('pointer on the button'));
+  btn.addEventListener('pointerleave', later);
+  // The menu only counts while open (closed it is visibility:hidden, so it gets no pointer at all).
+  menu.addEventListener('pointerenter', ()=>{ if(g.classList.contains('open')) open('pointer in the menu'); });
+  menu.addEventListener('pointerleave', later);
+  btn.addEventListener('click', ()=> g.classList.contains('open') ? close() : open('click'));
+  btn.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key==='ArrowDown'){ e.preventDefault(); open('keyboard'); menu.querySelector('.lb').focus(); } });
+  menu.addEventListener('keydown', e=>{
+    const items=[...menu.querySelectorAll('.lb')], i=items.indexOf(document.activeElement);
+    if(e.key==='ArrowDown'){e.preventDefault();items[(i+1)%items.length].focus();}
+    if(e.key==='ArrowUp'){e.preventDefault();items[(i-1+items.length)%items.length].focus();}
+    if(e.key==='Escape'){close();btn.focus();}
+  });
+  menu.querySelectorAll('.lb').forEach(b=>b.addEventListener('click',()=>{ say('Picked: '+b.textContent.trim()+' (the panel opens; the button hides)'); g.classList.remove('open'); btn.setAttribute('aria-expanded','false'); }));
+});
+// For screenshots: ?hold=1 opens every launcher.
+if(new URLSearchParams(location.search).get('hold')) document.querySelectorAll('[data-launcher]').forEach(g=>g.classList.add('open'));
+</script>
+</body>
+</html>

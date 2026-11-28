@@ -35,6 +35,7 @@ import { PanelSlot, DeviceRow, DeviceTrailPoint } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
 import { RemoteConvoLine, RemoteConvoView } from "remote_convo.slint";
 import { PreviewChip } from "devchip.slint";
+import { PanelLauncher, LauncherRow } from "launcher.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview, StagedToast } from "update.slint";
 
 export { Theme, Px, Motion, SettingsFixed } from "theme.slint";
@@ -379,6 +380,33 @@ export component AppWindow inherits Window {
     out property <length> panel-convo-list-row-h: panel-slot.convo-list-row-h;
     callback panel-convo-select(string);
     callback panel-convo-open(string);
+    // The panel launcher (2026-11-24, rules 1384 to 1386): the ghost button over the front tab's terminal while its
+    // panel is closed, and its menu. The controller (`appctl/launcher_glue.rs`) sets all of it.
+    in property <bool> launcher-shown;
+    in property <bool> launcher-open;
+    in property <[LauncherRow]> launcher-rows;
+    in property <int> launcher-hot: -1;
+    in property <length> launcher-menu-h;
+    callback launcher-hover(int, bool);
+    callback launcher-clicked();
+    callback launcher-menu-moved(length);
+    callback launcher-menu-clicked(length);
+    callback launcher-picked(int);
+    out property <length> launcher-button-x: launcher.button-x;
+    out property <length> launcher-button-y: launcher.button-y;
+    out property <length> launcher-button-w: launcher.button-w;
+    out property <length> launcher-menu-x: launcher.menu-x;
+    out property <length> launcher-menu-y: launcher.menu-y;
+    out property <length> launcher-menu-w: launcher.menu-w;
+    out property <length> launcher-menu-hh: launcher.menu-hh;
+    out property <bool> launcher-lit: launcher.button-lit;
+    // The panel header's "Open in" button (rule 1388): its words ("" hides it) and a press.
+    in property <string> panel-open-in;
+    in property <string> panel-open-in-short;
+    callback panel-open-in-clicked();
+    out property <bool> panel-open-in-visible: panel-slot.open-in-visible;
+    out property <length> panel-open-in-x: panel-slot.open-in-x;
+    out property <length> panel-open-in-w: panel-slot.open-in-w;
     // The Preview chip (stage 7): "localhost:5173" while the front tab has a local dev server to offer, else empty.
     in property <string> preview-chip-label;
     // The full origin the chip opens, as its tooltip.
@@ -1423,14 +1451,33 @@ export component AppWindow inherits Window {
                             take-over => { root.rconvo-take-over(); }
                         }
                         // The "Preview" chip of a local dev server the tab started (stage 7).
+                        // Left of the panel launcher while that shows (Claude's call, 2026-11-24: both live in this corner).
                         preview-chip := PreviewChip {
-                            x: parent.width - self.width - Px.snap(20px);
+                            x: parent.width - self.width - (root.launcher-shown ? Px.snap(10px + 26px + 8px) : Px.snap(20px));
                             y: Px.snap(8px);
                             visible: root.preview-chip-label != "";
                             label: root.preview-chip-label;
                             tip-text: root.preview-chip-tip;
                             tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                             clicked => { root.preview-chip-clicked(); }
+                        }
+                        // The panel launcher, over the terminal's top right (rule 1384). Only its button and its open
+                        // menu take the pointer.
+                        launcher := PanelLauncher {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            shown: root.launcher-shown;
+                            open: root.launcher-open;
+                            rows: root.launcher-rows;
+                            hot: root.launcher-hot;
+                            menu-h: root.launcher-menu-h;
+                            hover(z, on) => { root.launcher-hover(z, on); }
+                            clicked => { root.launcher-clicked(); }
+                            menu-moved(y) => { root.launcher-menu-moved(y); }
+                            menu-clicked(y) => { root.launcher-menu-clicked(y); }
+                            picked(i) => { root.launcher-picked(i); }
                         }
                     }
                     // The plugin's session bar under the terminal (plugins phase 6): a line, the plugin's page (a
@@ -1500,6 +1547,9 @@ export component AppWindow inherits Window {
                         md-file: root.panel-md;
                         md-view: root.panel-md-view;
                         md-view-picked(i) => { root.panel-md-view-picked(i); }
+                        open-in: root.panel-open-in;
+                        open-in-short: root.panel-open-in-short;
+                        open-in-clicked => { root.panel-open-in-clicked(); }
                         draw-on: root.panel-draw-on;
                         draw-active: root.panel-draw-active;
                         draw-arrow => { root.panel-draw-arrow(); }

@@ -354,6 +354,52 @@ component WebButton inherits Rectangle {
     }
 }
 
+// "Open in" (2026-11-24, rule 1388): what the panel shows, outside Flare (a file in its default app, a page in the
+// default browser). Labelled, so it has no tooltip; an external-link glyph, 12 px. `short` is the narrow panel's word.
+component OpenInButton inherits Rectangle {
+    in property <string> text;
+    in property <string> short;
+    in property <bool> compact;
+    callback clicked();
+    property <string> shown-text: root.compact ? root.short : root.text;
+    width: Px.snap(9px + 12px + 6px + words.preferred-width + 9px);
+    height: Px.snap(22px);
+    border-radius: Theme.radius-button;
+    border-width: Px.hair();
+    border-color: Theme.divider;
+    background: ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    Path {
+        x: Px.snap(9px) - self.stroke-width / 2;
+        y: (parent.height - 12px) / 2 - self.stroke-width / 2;
+        width: 12px + self.stroke-width;
+        height: 12px + self.stroke-width;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M13.5 4.5h6v6M19.5 4.5L11 13M17 14v5.5H4.5V7H10";
+        fill: transparent;
+        stroke: ta.has-hover ? Theme.text : Theme.text-soft;
+        stroke-width: 2 * 12px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    words := Text {
+        x: Px.snap(9px + 12px + 6px);
+        height: parent.height;
+        vertical-alignment: center;
+        text: root.shown-text;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        color: ta.has-hover ? Theme.text : Theme.text-soft;
+    }
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 // The view control over a markdown file (2026-11-10): Compiled, Markdown or Code, the one on show pressed. Flare's own
 // chrome in the header, drawn outside the page. Shorter words when the panel is narrow.
 component MdViewSwitch inherits Rectangle {
@@ -430,6 +476,14 @@ component WebBar inherits Rectangle {
     out property <length> draw-w: draw-btn.width;
     out property <length> close-x: close-btn.absolute-position.x;
     out property <length> close-w: close-btn.width;
+    // "Open in browser" (rule 1388), left of "Draw arrow" and the close: "" hides it. It gives way below 280 px, and
+    // says only "Open" below 440 px, so the address keeps room to read.
+    in property <string> open-in;
+    callback open-in-clicked();
+    property <bool> open-in-shown: root.open-in != "" && root.width >= 280px;
+    out property <bool> open-in-visible: root.open-in-shown;
+    out property <length> open-in-x: open-in-btn.absolute-position.x;
+    out property <length> open-in-w: open-in-btn.width;
     public function focus-address() { input.focus(); input.select-all(); }
 
     // The field shows the address of the page unless it is being typed in.
@@ -467,7 +521,7 @@ component WebBar inherits Rectangle {
     field := Rectangle {
         x: Px.snap(8px + 3 * (24px + 2px) + 4px);
         y: (parent.height - self.height) / 2;
-        width: (root.draw-shown ? draw-btn.x : close-btn.x) - self.x - Px.snap(4px);
+        width: (root.open-in-shown ? open-in-btn.x : root.draw-shown ? draw-btn.x : close-btn.x) - self.x - Px.snap(4px);
         height: Px.snap(24px);
         background: Theme.ground;
         border-radius: Theme.radius-sm;
@@ -532,6 +586,15 @@ component WebBar inherits Rectangle {
                 overflow: elide;
             }
         }
+    }
+    open-in-btn := OpenInButton {
+        x: (root.draw-shown ? draw-btn.x : close-btn.x) - Px.snap(4px) - self.width;
+        y: (parent.height - self.height) / 2;
+        visible: root.open-in-shown;
+        text: root.open-in;
+        short: "Open";
+        compact: root.width < 440px;
+        clicked => { root.open-in-clicked(); }
     }
     draw-btn := WebButton {
         x: close-btn.x - Px.snap(4px) - self.width;
@@ -923,7 +986,26 @@ export component PanelSlot inherits Rectangle {
     // rule before the close) and the slow mark.
     property <length> head-device: root.kind == 5 && root.device-controls ? 5 * Px.snap(24px) + 4 * Px.snap(2px) + Px.snap(10px) : 0px;
     property <length> head-slow: root.kind == 5 && root.device-slow != "" ? slow-mark.width + Px.snap(6px) : 0px;
-    property <length> head-extra: root.head-wrap + root.head-draw + root.head-md + root.head-device + root.head-slow;
+    // "Open in" (rule 1388): the words ("" hides it), the narrow panel's word, and a press. In the header it is the
+    // leftmost of the controls on the right; on a web page it sits in the bar.
+    in property <string> open-in;
+    in property <string> open-in-short;
+    callback open-in-clicked();
+    // The header's room decides its words: the full words when they fit beside the other controls with the title keeping
+    // `head-title-min`, else the short word, else no button (the title always keeps its room).
+    property <length> head-rest: root.head-wrap + root.head-draw + root.head-md + root.head-device + root.head-slow;
+    property <length> head-title-min: Px.snap(80px);
+    property <length> head-room: root.width - Px.snap(12px) - Px.snap(8px) - close-btn.width - Px.snap(8px) - root.head-rest - (root.sub == "" ? 0px : Px.snap(sub-text.preferred-width + 10px)) - root.head-title-min;
+    property <int> head-open-mode: root.open-in == "" || root.bar-only ? 0
+        : root.head-room >= Px.snap(36px + open-full-probe.preferred-width) + Px.snap(6px) ? 2
+        : root.head-room >= Px.snap(36px + open-short-probe.preferred-width) + Px.snap(6px) ? 1
+        : 0;
+    property <bool> head-open-shown: root.head-open-mode > 0;
+    property <length> head-open: root.head-open-shown ? head-open-btn.width + Px.snap(6px) : 0px;
+    out property <bool> open-in-visible: root.open && (root.bar-only ? web-bar.open-in-visible : root.head-open-shown);
+    out property <length> open-in-x: root.bar-only ? web-bar.open-in-x : head-open-btn.absolute-position.x;
+    out property <length> open-in-w: root.bar-only ? web-bar.open-in-w : head-open-btn.width;
+    property <length> head-extra: root.head-rest + root.head-open;
     callback wrap-toggled();
     callback close();
     callback escape();
@@ -1123,6 +1205,28 @@ export component PanelSlot inherits Rectangle {
                 }
                 slow-ta := TouchArea {}
             }
+            // The words "Open in" would take, measured (never drawn), for the room rule above.
+            open-full-probe := Text {
+                visible: false;
+                text: root.open-in;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+            }
+            open-short-probe := Text {
+                visible: false;
+                text: root.open-in-short;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+            }
+            head-open-btn := OpenInButton {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-rest - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.head-open-shown;
+                text: root.open-in;
+                short: root.open-in-short;
+                compact: root.head-open-mode == 1;
+                clicked => { root.open-in-clicked(); }
+            }
             close-btn := PanelClose {
                 x: parent.width - self.width - Px.snap(8px);
                 y: (parent.height - self.height) / 2;
@@ -1143,6 +1247,8 @@ export component PanelSlot inherits Rectangle {
             visible: root.bar-only;
             url: root.web-url;
             notice: root.sub;
+            open-in: root.open-in;
+            open-in-clicked => { root.open-in-clicked(); }
             draw-shown: root.draw-shown;
             draw-active: root.draw-active;
             draw-arrow => { root.draw-arrow(); }
