@@ -1304,7 +1304,8 @@ pub fn accent(ctx: &mut Ctx) -> Result<(), String> {
 
     // BACKGROUND AND ACCENT SIT RIGHT UNDER THE THEME WALL (the See-through row went on 2026-11-28).
     let order = page_rows(&mut app);
-    let at = order.iter().position(|id| id == "term-theme");
+    // The page lists the wall as `wall` between the theme row and the colours.
+    let at = order.iter().position(|id| id == "wall");
     let in_order = at.is_some_and(|i| {
         order.get(i + 1).map(String::as_str) == Some("window-background")
             && order.get(i + 2).map(String::as_str) == Some("window-secondary")
