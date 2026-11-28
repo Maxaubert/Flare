@@ -292,7 +292,7 @@ task is the authority). Dropped = not ported, with the reason. The last column n
 | `core/renderer/lib/colourFormat.test.ts` | 4 | flare-settings, M7 | with the picker | none |
 | `core/renderer/settings/theme/useTermSetup.test.ts` | 4 | flare-settings, T16 | all 4 | none |
 | `src/renderer/src/lib/chromeTheme.test.ts` | 30 | flare-theme, T12 | all (the `index.css` fallbacks test becomes T22's `every_chrome_token_is_an_in_property_with_its_pt_default`; "reads anything it does not know as the default" is T6's `default_to_hairline_and_read_anything_else_as_it`) | the row's "21 cases" becomes "30 cases" |
-| `src/renderer/src/lib/chromeTheme.opacity.test.ts` | 2 | flare-theme, T12 | `oracle_alpha_sweep`, `oracle_every_preset_four_variants` (verified equal to PT's `.snap`, 0 differences) | none |
+| `src/renderer/src/lib/chromeTheme.opacity.test.ts` | 2 | flare-theme, T12 | `oracle_every_preset_solid_variants` (the solid rows; verified equal to PT's `.snap`, 0 differences). `oracle_alpha_sweep` and the see-through variants went with the see-through window on 2026-11-28 (DIFF-30) | none |
 | `src/renderer/src/lib/sidebarGround.test.ts` | 2 | flare-theme, T7 and T12 | both | none |
 | `src/renderer/src/lib/accentLift.test.ts` | 4 | flare-theme, T7 (2, as 3 tests) and T12 (2) | all 4 | none |
 | `src/renderer/src/lib/switchAccent.test.ts` | 2 | flare-theme, T12 | both | none |

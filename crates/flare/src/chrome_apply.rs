@@ -126,7 +126,6 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
     set_tokens(&theme, &|tok| {
         colour(look.chrome.vars.get(tok).map(String::as_str).unwrap_or(""))
     });
-
     for (tok, name) in EXTRA_TABLE {
         let c = colour(look.chrome.extra.get(tok).map(String::as_str).unwrap_or(""));
         match name {
@@ -138,7 +137,6 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
             _ => theme.set_track_off(c),
         }
     }
-
     theme.set_light(look.light);
     // The conversation panels' diff inks are the theme's terminal green and red (stage 6).
     let pal = palette_of(&look.term);

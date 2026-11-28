@@ -755,7 +755,7 @@ export component ColourPopover inherits Rectangle {
             }
         }
 
-        // The alpha bar: only when the colour has an alpha; faded and inert when acrylic is off.
+        // The alpha bar: only when the colour has an alpha; faded and inert when the colour takes no alpha (`alpha-disabled`).
         alp := FocusScope {
             x: root.alpha-x;
             y: root.alpha-y;

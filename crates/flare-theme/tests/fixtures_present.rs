@@ -1,4 +1,5 @@
-//! The oracle fixtures are present and have Prism Terminal's counts (Task 2). The see-through ones\n//! (chrome_alpha_sweep.json, chrome_levels.json) went with the see-through window on 2026-11-28.
+//! The oracle fixtures are present and have Prism Terminal's counts (Task 2). The see-through ones
+//! (chrome_alpha_sweep.json, chrome_levels.json) went with the see-through window on 2026-11-28.
 
 use std::fs;
 use std::path::PathBuf;
