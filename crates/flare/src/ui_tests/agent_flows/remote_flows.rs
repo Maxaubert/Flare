@@ -462,6 +462,35 @@ fn a_working_hidden_session_holds_the_host_awake_with_no_follower() {
     assert!(f.ctl.borrow().holds_awake());
 }
 
+/// Rule 1392: the host holds App Nap off from the first remote viewer that follows one of its tabs to the last one gone,
+/// one hold for all of them, and holds no sleep off for it (only work does, rule 1302).
+#[test]
+fn the_host_holds_app_nap_off_while_a_remote_viewer_follows_a_tab() {
+    let f = Fx::new();
+    f.tabs(&["C:\\work"]);
+    let (host, awake) = serving(&f);
+    let nap = flare_win::app_nap::FakeNoNap::new();
+    f.ctl.borrow_mut().set_no_nap(Arc::new(nap.clone()));
+    let id = hidden(&f, "C:\\there");
+    assert_eq!(nap.held(), 0, "a session nobody follows holds nothing");
+    attach(&f, &id, 7, None);
+    assert_eq!(nap.held(), 1, "the first follower");
+    assert!(f.ctl.borrow().holds_no_nap());
+    attach(&f, &id, 8, None);
+    assert_eq!(
+        (nap.held(), nap.taken()),
+        (1, 1),
+        "one hold for every follower"
+    );
+    assert_eq!(awake.held(), 0, "following holds no sleep off");
+    assert!(host.gone(7).is_empty(), "one viewer still follows");
+    assert_eq!(nap.held(), 1);
+    assert_eq!(host.gone(8), std::slice::from_ref(&id));
+    ask(&f, CtlOp::RemoteRelease { tab: id.clone() }).expect("the release");
+    assert_eq!(nap.held(), 0, "the last follower went");
+    assert!(!f.ctl.borrow().holds_no_nap());
+}
+
 /// Rule 1302: the quit ask counts a hidden session at work and names it "<folder> (for <opener>)".
 #[test]
 fn the_quit_ask_names_a_working_hidden_session_for_its_opener() {

@@ -8,7 +8,11 @@
 //! `flare --serve-remote` of another profile (`FLARE_E2E_REMOTE_COMMAND`), never a real ssh.
 //!
 //! Output is polled (`remote.output {since}`), never pushed, in short polls: a call at a time, 30 ms apart while
-//! output flows, up to 250 ms apart when idle, and at once when the tab typed. A broken link is tried again after 1 s,
+//! output flows, up to 250 ms apart when idle, and at once when the tab typed. Rule 1392: after typing the host took,
+//! the polls come 3 ms apart until its echo arrives (100 ms at most), only while the link's call budget has room
+//! (`remote_timing`, well under the host's 100 calls a second), and the status and conversation polls wait while a key
+//! waits for its echo (half a second at most). Every call is timed by its method, and each key from when it was typed
+//! to its echo; a summary goes to the diagnostics log as a `remote-typing` line. A broken link is tried again after 1 s,
 //! then 2, 4 and so on up to 30 s, and the tab goes on from the output number it read: no byte twice. A tab that has
 //! shown nothing of the host yet (a new tab, or one brought back by a restart) starts from `remote.snapshot`, as does
 //! one whose number fell out of the host's ring (`gap`). What a reconnect catches up on is the past: the agent's
@@ -29,6 +33,7 @@
 //! link only detach (rule 288). Every wait here is on this worker: a dead link never holds the UI thread, a close or
 //! the quit (rule 28).
 
+use crate::remote_timing::LinkWatch;
 use base64::Engine as _;
 use flare_ctl::framing::Wire;
 use flare_ctl::remote::{
@@ -50,7 +55,7 @@ use flare_term::remote_pty::{
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Why a call over the link failed.
@@ -906,6 +911,10 @@ pub struct Timing {
     pub poll_min: Duration,
     /// Between polls when idle.
     pub poll_max: Duration,
+    /// Between polls while a key the host took waits for its echo (rule 1392).
+    pub poll_fast: Duration,
+    /// How long after typing the polls stay fast when no echo comes; zero: never fast.
+    pub fast_for: Duration,
     pub backoff_min: Duration,
     pub backoff_max: Duration,
     /// One call's time: a poll, typing, a size, an attach (the host's default 15 s).
@@ -932,6 +941,8 @@ impl Default for Timing {
         Self {
             poll_min: Duration::from_millis(30),
             poll_max: Duration::from_millis(250),
+            poll_fast: Duration::from_millis(3),
+            fast_for: Duration::from_millis(100),
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(30),
             call: Duration::from_secs(15),
@@ -1004,6 +1015,7 @@ impl PtySpawner for RemoteSpawner {
             styled_on: true,
             mouse_on: true,
             pace: MotionPace::default(),
+            watch: Arc::new(Mutex::new(LinkWatch::new(Instant::now()))),
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -1073,6 +1085,36 @@ struct Worker {
     mouse_on: bool,
     /// The pace of the tab's mouse motion (rule 1317).
     pace: MotionPace,
+    /// The link's timings and call budget (rule 1392), shared with the [`Watched`] link that records every call.
+    watch: Arc<Mutex<LinkWatch>>,
+}
+
+/// How long the status and conversation polls wait at most while a key waits for its echo (rule 1392).
+pub const PUT_OFF_MAX: Duration = Duration::from_millis(500);
+
+/// A link whose every call is timed into the tab's [`LinkWatch`] (rule 1392).
+struct Watched {
+    link: Box<dyn Link>,
+    watch: Arc<Mutex<LinkWatch>>,
+}
+
+fn watch_of(w: &Mutex<LinkWatch>) -> std::sync::MutexGuard<'_, LinkWatch> {
+    w.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Link for Watched {
+    fn call(
+        &mut self,
+        method: Method,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, LinkError> {
+        let t = Instant::now();
+        let r = self.link.call(method, params, timeout);
+        let now = Instant::now();
+        watch_of(&self.watch).call(method, now.saturating_duration_since(t), now);
+        r
+    }
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -1422,8 +1464,14 @@ impl Worker {
             }
             return Err(Step::Ended);
         }
-        let mut link = match self.connector.connect(&self.spec.machine) {
-            Ok(l) => l,
+        let mut link: Box<dyn Link> = match self.connector.connect(&self.spec.machine) {
+            Ok(l) => {
+                watch_of(&self.watch).new_link(Instant::now());
+                Box::new(Watched {
+                    link: l,
+                    watch: Arc::clone(&self.watch),
+                })
+            }
             Err(e) => {
                 log::warn!("remote link to {}: {e}", self.spec.machine);
                 if self.fresh
@@ -1811,11 +1859,28 @@ impl Worker {
         }
     }
 
-    /// The live polls: typing and sizes as they come, output in short polls.
+    /// The live polls: typing and sizes as they come, output in short polls, fast while a key waits for its echo
+    /// (rule 1392).
     fn pump(&mut self, link: &mut dyn Link, tab: &str) -> Step {
         let mut idle = self.t.poll_min;
+        // The slow polls' wait, kept apart from the fast one so a fast poll never shortens the idle back-off.
+        let mut slow = self.t.poll_min;
+        // Until when the polls are fast: a key the host took and whose echo has not come yet.
+        let mut fast_until: Option<Instant> = None;
+        // Since when the status and conversation polls wait for a key's echo.
+        let mut put_off: Option<Instant> = None;
+        // The next wait is a fast poll's.
+        let mut fast_wait = false;
         loop {
-            let out = self.io.take_outgoing(idle);
+            let out = if fast_wait {
+                // A condvar's wait on Windows ends on the system's tick (about 15.6 ms), so a 3 ms wait would take five
+                // times its length; a sleep keeps its time. Typing that comes meanwhile waits for it: 3 ms at most.
+                std::thread::sleep(idle); // sync-ok: the tab's link worker, a few ms between fast polls
+                self.io.take_outgoing(Duration::ZERO)
+            } else {
+                self.io.take_outgoing(idle)
+            };
+            fast_wait = false;
             if let Some(how) = out.leaving {
                 let m = match how {
                     Leaving::Close => Method::RemoteClose,
@@ -1835,9 +1900,27 @@ impl Worker {
                     return self.failed(e);
                 }
             }
+            // When the first key of this take was typed (a mouse event is no key: it has no echo to wait for).
+            let key_at = out
+                .intents
+                .iter()
+                .zip(&out.typed_at)
+                .filter(|(i, _)| !matches!(i, RemoteIntent::Mouse(_)))
+                .map(|(_, at)| *at)
+                .min();
             let typed = self.pace.pace(out.intents, Instant::now());
-            if let Err(e) = self.send_typing(link, tab, typed, &mut busy) {
-                return self.failed(e);
+            match self.send_typing(link, tab, typed, &mut busy) {
+                Ok(true) => {
+                    let now = Instant::now();
+                    if !self.t.fast_for.is_zero() {
+                        fast_until = Some(now + self.t.fast_for);
+                    }
+                    if let Some(at) = key_at {
+                        watch_of(&self.watch).sent(at, now);
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => return self.failed(e),
             }
             // File work (remote sessions PR 6) comes after the typing asked before it, so a dropped file's path is
             // pasted where the person was typing.
@@ -1865,15 +1948,31 @@ impl Worker {
                 }
                 Ok(v) => {
                     let data = b64(&v);
-                    if !data.is_empty() {
+                    let got = !data.is_empty();
+                    if got {
                         busy = true;
                         self.io.push_output(&self.strip.feed(&data, false));
+                        // The key's echo (or what it made) is in: the polls go back to their pace.
+                        fast_until = None;
                     }
+                    watch_of(&self.watch).output(got, Instant::now());
                     self.spec.live.set_seq(v["to"].as_u64().unwrap_or(since));
                 }
                 Err(e) => return self.failed(e),
             }
-            if let Err(e) = self.poll_status(link, tab) {
+            // Rule 1392: while a key waits for its echo, or typing waits to be sent, the status and conversation polls
+            // wait (half a second at most), so typing never queues behind them. Asked before `due`, which spends the
+            // slot.
+            let now = Instant::now();
+            let key_waits = fast_until.is_some_and(|u| now < u) || self.io.typing_waits();
+            let hold_polls =
+                key_waits && put_off.is_none_or(|t| now.saturating_duration_since(t) < PUT_OFF_MAX);
+            if hold_polls {
+                put_off.get_or_insert(now);
+            } else {
+                put_off = None;
+            }
+            if !hold_polls && let Err(e) = self.poll_status(link, tab) {
                 return self.failed(e);
             }
             // A click or a key took the live terminal back on this screen (remote sessions PR 7): this tab's size goes
@@ -1888,7 +1987,7 @@ impl Worker {
             {
                 return self.failed(e);
             }
-            if let Err(e) = self.poll_convo(link, tab) {
+            if !hold_polls && let Err(e) = self.poll_convo(link, tab) {
                 return self.failed(e);
             }
             // Rule 1307: the restart line, once the found session's screen is quiet.
@@ -1902,11 +2001,28 @@ impl Worker {
                     .as_bytes(),
                 );
             }
-            idle = if busy {
+            slow = if busy {
                 self.t.poll_min
             } else {
-                next_backoff(idle, self.t.poll_max)
+                next_backoff(slow, self.t.poll_max)
             };
+            idle = slow;
+            // Rule 1392: fast while a key waits for its echo, and only while the link's budget has room.
+            let now = Instant::now();
+            if fast_until.is_some_and(|u| now >= u) {
+                fast_until = None;
+            }
+            if fast_until.is_some() {
+                let mut w = watch_of(&self.watch);
+                if w.fast_room(now) && self.t.poll_fast < idle {
+                    w.fast_poll();
+                    idle = self.t.poll_fast;
+                    fast_wait = true;
+                }
+            }
+            if let Some(fields) = watch_of(&self.watch).report(now) {
+                flare_diag::writer::main().write("app", "remote-typing", fields);
+            }
             // A motion held for its pace goes when its time comes, not at the next idle poll (rule 1317).
             if let Some(due) = self.pace.due(Instant::now()) {
                 idle = idle.min(due.max(Duration::from_millis(1)));
@@ -1916,14 +2032,16 @@ impl Worker {
 
     /// The typing as `remote.input` calls. A host that knows no mouse intent (an older Flare, rule 1317) refuses the
     /// call whole: the call goes again without them, and this link sends none after. Any other refusal is logged and
-    /// that call's typing dropped, as before; a broken link or a gone tab is handed back.
+    /// that call's typing dropped, as before; a broken link or a gone tab is handed back. True when the host took a
+    /// call with a key, text or a paste in it: something whose echo the polls can wait for (rule 1392).
     fn send_typing(
         &mut self,
         link: &mut dyn Link,
         tab: &str,
         mut typed: Vec<RemoteIntent>,
         busy: &mut bool,
-    ) -> Result<(), LinkError> {
+    ) -> Result<bool, LinkError> {
+        let mut keyed = false;
         if !self.mouse_on {
             typed.retain(|i| !matches!(i, RemoteIntent::Mouse(_)));
         }
@@ -1941,7 +2059,10 @@ impl Worker {
                     json!({"tab": tab, "intents": intents_json(&batch)}),
                     self.t.call,
                 ) {
-                    Ok(_) => break,
+                    Ok(_) => {
+                        keyed |= batch.iter().any(|i| !matches!(i, Intent::Mouse(_)));
+                        break;
+                    }
                     Err(LinkError::Refused(e)) if self.mouse_on && refuses_mouse(&e) => {
                         log::info!("remote.input: an older host without mouse intents");
                         self.mouse_on = false;
@@ -1958,7 +2079,7 @@ impl Worker {
                 }
             }
         }
-        Ok(())
+        Ok(keyed)
     }
 }
 

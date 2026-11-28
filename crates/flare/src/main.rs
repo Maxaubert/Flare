@@ -76,6 +76,7 @@ mod remote_folder;
 mod remote_host;
 mod remote_link;
 mod remote_status;
+mod remote_timing;
 mod remote_tunnel;
 mod scrollbar;
 mod serve_remote;

@@ -4,6 +4,7 @@
 //! double-click metrics.
 
 pub mod agent_cursor;
+pub mod app_nap;
 pub mod argv;
 pub mod ax_caret;
 #[cfg(target_os = "macos")]

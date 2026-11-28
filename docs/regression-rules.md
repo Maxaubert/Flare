@@ -6171,3 +6171,29 @@ and none in a bar under 280 px. Held by `open_in_sends_a_page_to_the_browser_and
 `an_app_name_is_cleaned_and_capped_and_a_bare_exe_is_no_name` (`launcher.rs`), `the_app_name_is_asked_only_for_a_plain_extension`
 and `a_text_file_has_a_default_app_with_a_name` (`flare-win` `openers.rs`), `open_in_hands_a_file_to_its_default_app` and
 `open_in_browser_sends_the_page_address`, `open_in_follows_a_page_the_browser_went_to` and `open_in_takes_only_the_room_the_title_can_spare` (`launcher_tests.rs`), and `the_launchers_glyphs_and_open_in_draw_at_full_size_at_every_scale` (`ui_tests/icons_misc.rs`). Source: Max, 2026-11-24.
+
+
+## Remote tabs: faster typing (2026-11-28)
+
+1392. **A remote tab polls fast after typing until its echo, times every call, and its host stays out of App Nap.**
+After a `remote.input` with a key, text or a paste that the host took, the link polls `remote.output` every
+`Timing::poll_fast` (3 ms, a sleep: a condvar wait ends on Windows' 15.6 ms tick) until output comes or
+`Timing::fast_for` (100 ms) passes, where it used to wait `poll_min` (30 ms). A fast poll is made only while the link's
+`CallBudget` has room (every call spends; 50 a second, 20 at once, `remote_timing`), so the link stays under the host's
+100 calls a second and never sees `rate_limited`; the idle back-off is kept apart and never shortened. While a key waits
+for its echo, or typing waits (`RemoteIo::typing_waits`), the status and conversation polls wait, `PUT_OFF_MAX`
+(500 ms) at most; the ask at once after an attach (rule 294) still comes. Every call over the link is timed by method
+(`Watched`), and a key from its `typed_at` to the first output after its call, sampled only after a quiet poll; a key
+with no output in 2 s is no echo. A `remote-typing` diagnostics line holds the summary (counts and p50, p95, max in ms;
+numbers only, rule 110) every 10 s while there was typing or after 200 keys, and none for a window with no key. The
+stdio wire's nap wakes when its reader thread gets bytes (`Wire::wait_ready`; other wires sleep as before). On a Mac
+host, while any tab has a remote follower the window holds one `NSProcessInfo` activity
+(`UserInitiatedAllowingIdleSystemSleep | LatencyCritical`, `flare_win::app_nap`) and drops it with the last follower;
+idle sleep stays the keep-awake's (rules 296, 1302); under `--e2e` a counter stands in. Held by
+`after_a_key_the_output_is_polled_fast_until_its_echo_and_idle_stays_slow`,
+`a_held_key_stays_under_the_hosts_rates_and_the_link_stays_up`, `the_status_poll_waits_while_a_key_waits_for_its_echo`
+(`remote_link_tests.rs`), the tests in `remote_timing.rs`, `typing_waits_is_seen_without_taking_it` (`remote_pty.rs`),
+`a_nap_ends_when_bytes_come_or_the_stream_ends` (`flare-ctl` `stdio.rs`), the tests in `flare-win` `app_nap.rs` (the
+options checked on macOS only) and `the_host_holds_app_nap_off_while_a_remote_viewer_follows_a_tab`
+(`ui_tests/agent_flows/remote_flows.rs`). Source: Max, 2026-11-28 ("when i type since it uses ssh, theres a big
+delay"; step 1 approved: measure and quick wins, no push protocol).

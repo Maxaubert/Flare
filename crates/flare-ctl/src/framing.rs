@@ -1,7 +1,7 @@
 //! JSON-lines framing over any byte pipe, with a size cap, a deadline and a stop flag.
 //!
-//! Reads never block in the OS: the reader asks the wire how many bytes are ready and sleeps a few
-//! milliseconds when there are none. That is what lets a worker thread honour a deadline, notice a
+//! Reads never block in the OS: the reader asks the wire how many bytes are ready and naps a few
+//! milliseconds when there are none (`Wire::wait_ready`: a sleep, or a wait that ends when bytes come). That is what lets a worker thread honour a deadline, notice a
 //! stop request, and lets another thread write to the same pipe handle meanwhile (a synchronous
 //! Windows handle serialises its calls, so a parked `ReadFile` would hold every writer out).
 
@@ -17,6 +17,11 @@ pub trait Wire {
     fn poll_read(&self, buf: &mut [u8]) -> io::Result<Option<usize>>;
     /// Writes every byte or fails.
     fn write_all(&self, bytes: &[u8]) -> io::Result<()>;
+    /// The reader's nap when nothing was ready: waits up to `max`, and may return early once bytes are ready. The
+    /// default sleeps `max`. A wire with a reader thread of its own wakes at once (`StdioWire`, rule 1392).
+    fn wait_ready(&self, max: Duration) {
+        std::thread::sleep(max); // sync-ok: a channel worker thread, never the UI thread
+    }
 }
 
 #[derive(Debug)]
@@ -148,7 +153,7 @@ impl LineReader {
                     if !self.has_partial() {
                         idle().map_err(ReadError::Io)?;
                     }
-                    std::thread::sleep(nap); // sync-ok: a channel worker thread, never the UI thread
+                    wire.wait_ready(nap);
                     nap = (nap * 2).min(POLL_MAX);
                 }
                 Ok(Some(got)) => {

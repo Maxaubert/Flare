@@ -720,6 +720,10 @@ pub struct AppCtl {
     /// (rule 296). None in a run that serves none.
     keep_awake: Option<Arc<dyn flare_win::keep_awake::KeepAwake>>,
     awake_hold: Option<flare_win::keep_awake::Hold>,
+    /// What keeps this app out of App Nap while it serves a remote session, and the hold while it does (rule 1392).
+    /// None in a run that serves none.
+    no_nap: Option<Arc<dyn flare_win::app_nap::NoNap>>,
+    nap_hold: Option<flare_win::app_nap::NapHold>,
     /// Remote sessions (PR 6): this run's copies of the host files remote tabs' links fetched (rule 303).
     remote_copies: Arc<crate::remote_files::Copies>,
     /// The staged build of an installed copy (install when idle); None for any other run.
@@ -1244,6 +1248,8 @@ impl AppCtl {
             keep_awake: None,
             remote_copies: Arc::new(crate::remote_files::Copies::in_temp()),
             awake_hold: None,
+            no_nap: None,
+            nap_hold: None,
             mods: None,
             staged: None,
         };
