@@ -18,9 +18,9 @@ log.workspace = true
 # old on 2026-11-22; prost 0.14.4 (2026-06-07) likewise (0.14.5 and 0.14.6 are under two weeks old).
 tonic = { version = "=0.14.9", default-features = false, features = ["codegen", "channel"] }
 tonic-prost = { version = "=0.14.9", default-features = false }
-prost = { version = "=0.14.4", default-features = false, features = ["std", "derive"] }
+prost = { version = "=0.14.6", default-features = false, features = ["std", "derive"] }
 # One small runtime for the client's streams: the version already in the lockfile.
-tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std"] }
 # The held input stream's sender as a request stream (tonic uses the same crate). 0.1.19 is from 2026-07-22.
 tokio-stream = { version = "=0.1.19", default-features = false }
 # The emu host's guard and its children's flags (rule 1053).

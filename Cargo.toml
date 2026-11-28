@@ -59,7 +59,7 @@ resvg = { version = "=0.48.1", default-features = false }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }
 pollster = "=1.0.3"
 # The Android device panel maps each emulator's frame region (rule 1364): the version Slint's font stack already pulls in.
-memmap2 = "=0.9.11"
+memmap2 = "=0.9.12"
 bytemuck = { version = "=1.25.2", features = ["derive"] }
 log = "=0.4.35"
 env_logger = "=0.11.12"
@@ -99,7 +99,7 @@ dispatch2 = "=0.3.1"
 # is fetched by cef-dll-sys's build script into `$CEF_PATH/<version>` (set it to ~/Library/Caches/flare-cef) or the
 # target dir, never the repo. macOS only: no other target pulls either crate.
 cef = { version = "=156.2.0", default-features = false, features = ["sandbox"] }
-cef-dll-sys = { version = "=156.2.0", default-features = false, features = ["sandbox"] }
+cef-dll-sys = { version = "=156.7.0", default-features = false, features = ["sandbox"] }
 # The window server's list (the screen rule's evidence in the CEF tests): the version objc2-app-kit already pulls in.
 objc2-core-graphics = "=0.3.2"
 objc2-core-foundation = "=0.3.2"
@@ -130,7 +130,7 @@ zip = { version = "=9.8.1", default-features = false, features = ["deflate"] }
 # Android setup (Android plan PR A2b, rule 1361): Google's package lists are read with roxmltree, the copy usvg already
 # brings into flare.exe (Cargo.lock). Its default options refuse a DOCTYPE, so no entity is ever expanded. The SHA-1 of
 # each download (the lists give only SHA-1) and of the licence text: sha1_smol, already in the lockfile (download-cef).
-roxmltree = { version = "=0.21.1", default-features = false, features = ["std", "positions"] }
+roxmltree = { version = "=0.21.2", default-features = false, features = ["std", "positions"] }
 sha1_smol = { version = "=1.0.1", default-features = false }
 # Machine pairing PR 3 (2026-11-14): the 6-digit code is a SPAKE2 password (RFC 9382; RustCrypto PAKEs, the crate Magic
 # Wormhole uses; 0.4.0 is from 2023-07), the confirmed key is split with HKDF and checked with HMAC (SHA-256, the sha2
