@@ -16,7 +16,7 @@
               "working",
               "+sid"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -29,7 +29,7 @@
             "args": [
               "--hook-context"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -45,7 +45,7 @@
               "--hook-context",
               "--session-start"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -64,7 +64,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "working"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -83,7 +83,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "working"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -97,7 +97,7 @@
               "--hook-context",
               "--folder"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -116,7 +116,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "working"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -135,7 +135,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "working"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -154,7 +154,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "working"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -173,7 +173,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "question"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -192,7 +192,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "question"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -211,7 +211,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "question"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -228,7 +228,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "question"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -245,7 +245,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "question"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -265,7 +265,7 @@
               "done",
               "+sid"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -285,7 +285,7 @@
               "failed",
               "rate_limit"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -303,7 +303,7 @@
               "failed",
               "overloaded"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -321,7 +321,7 @@
               "failed",
               "authentication_failed"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -339,7 +339,7 @@
               "failed",
               "oauth_org_not_allowed"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -357,7 +357,7 @@
               "failed",
               "account_on_hold"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -375,7 +375,7 @@
               "failed",
               "billing_error"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -393,7 +393,7 @@
               "failed",
               "invalid_request"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -411,7 +411,7 @@
               "failed",
               "model_not_found"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -429,7 +429,7 @@
               "failed",
               "server_error"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -447,7 +447,7 @@
               "failed",
               "max_output_tokens"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -465,7 +465,7 @@
               "failed",
               "cloud_credential_error"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -483,7 +483,7 @@
               "failed",
               "unknown"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -500,7 +500,7 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "failed"
             ],
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
