@@ -263,7 +263,7 @@ mod tests {
         use flare_theme::resolve::resolve_preset;
         for p in presets() {
             let theme = resolve_preset(p);
-            let chrome = chrome_tokens(&theme, 1.0, None, WindowEdges::Hairline, None, None);
+            let chrome = chrome_tokens(&theme, None, WindowEdges::Hairline, None, None);
             assert_eq!(ground_mode(&theme.background), chrome.mode, "{}", p.id);
         }
     }

@@ -16,10 +16,7 @@ use flare_settings::import::ldb;
 use flare_settings::import::run::{self, ATTEMPTS_KEY, DONE_KEY, ImportPaths, Origin, Status};
 use flare_settings::kv::{FileBackend, PrefStore};
 use flare_settings::look::LookStore;
-use flare_theme::colour::opaque;
-use flare_theme::ground::DEFAULT_GROUND;
 use flare_theme::preset::HOST_DEFAULT_THEME;
-use flare_theme::resolve::resolve_saved_theme;
 use rusty_leveldb::compressor::SnappyCompressor;
 use rusty_leveldb::{CompressorId, DB, Options};
 
@@ -175,7 +172,6 @@ fn a_pt_stable_profile_becomes_a_flare_profile_before_the_first_paint() {
     let expect = [
         ("flare.term.theme", "custom"),
         ("flare.term.fontPct", "130"),
-        ("flare.term.seeThrough", "0"),
         ("flare.window.edges", "faint"),
         ("flare.window.tabLayout", "vertical"),
         ("flare.window.sidebar", "open"),
@@ -203,6 +199,7 @@ fn a_pt_stable_profile_becomes_a_flare_profile_before_the_first_paint() {
             "tabWidth",
             "titleBar",
             "dictation.mic",
+            "seeThrough",
             "prism.",
         ] {
             assert!(!key.contains(retired), "{key} must not be imported");
@@ -235,11 +232,10 @@ fn the_applied_look_equals_prism_terminals() {
         &serialize_custom(&parse_custom(CUSTOM_JSON).unwrap()),
     );
     hand.set("flare.term.fontPct", "130");
-    hand.set("flare.term.seeThrough", "0");
     hand.set("flare.window.edges", "faint");
 
-    let imported = LookStore::new(open_store(d.path())).look(false);
-    let by_hand = LookStore::new(hand).look(false);
+    let imported = LookStore::new(open_store(d.path())).look();
+    let by_hand = LookStore::new(hand).look();
     assert_eq!(imported.chrome.vars, by_hand.chrome.vars);
     assert_eq!(imported.term, by_hand.term);
     assert_eq!(imported, by_hand);
@@ -292,7 +288,9 @@ fn tabs_are_never_imported() {
 }
 
 #[test]
-fn an_old_unmigrated_profile_with_acrylic_and_opacity_is_folded() {
+fn an_old_see_through_profile_imports_a_solid_window() {
+    // The see-through window was removed on 2026-11-28: the old acrylic switch, its opacity and the
+    // see-through level map to nothing, and no Background is made from them.
     let a = tempfile::tempdir().unwrap();
     let t = tempfile::tempdir().unwrap();
     let d = tempfile::tempdir().unwrap();
@@ -303,6 +301,8 @@ fn an_old_unmigrated_profile_with_acrylic_and_opacity_is_folded() {
             ("prism.term.theme", "dracula"),
             ("prism.term.acrylic", "1"),
             ("prism.term.opacity", "60"),
+            ("prism.term.seeThrough", "40"),
+            ("prism.window.background", "#28293680"),
         ],
     );
     let prefs = open_store(d.path());
@@ -312,22 +312,22 @@ fn an_old_unmigrated_profile_with_acrylic_and_opacity_is_folded() {
 
     let on_disk = saved(d.path());
     assert_eq!(
-        on_disk.get("flare.term.seeThrough").map(String::as_str),
-        Some("40")
+        on_disk.get("flare.term.theme").map(String::as_str),
+        Some("dracula")
     );
-    let ground = resolve_saved_theme("dracula", None, None).background;
-    let expected = opaque(&ground, DEFAULT_GROUND);
-    assert_eq!(expected.len(), 7, "the opaque ground is six digits");
     assert_eq!(
         on_disk.get("flare.window.background").map(String::as_str),
-        Some(expected.as_str())
+        Some("#282936"),
+        "a picked Background keeps its colour, opaque"
     );
     for key in on_disk.keys() {
         assert!(
-            !key.contains("opacity") && !key.contains("acrylic"),
+            !key.contains("opacity") && !key.contains("acrylic") && !key.contains("seeThrough"),
             "{key}"
         );
     }
+    let look = LookStore::new(open_store(d.path())).look();
+    assert_eq!(look.chrome.vars["--p-bg"], "#282936");
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn a_garbage_local_storage_is_skipped_not_fatal_and_flare_starts_with_defaults()
     prefs.flush();
     let store = LookStore::new(open_store(d.path()));
     assert_eq!(store.theme_id(), HOST_DEFAULT_THEME);
-    let _ = store.look(false);
+    let _ = store.look();
 
     // A value no encoding reads is skipped and reported; the rest of the profile still imports.
     let b = tempfile::tempdir().unwrap();

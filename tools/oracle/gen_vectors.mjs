@@ -118,13 +118,7 @@ write('edge_vectors.json', ['#0b0b0f', '#f4f4f4', '#171717', '#ffffff', '#000000
 const preset = (id) => TERM_PRESETS.find((x) => x.id === id)
 write('chrome_edges.json', Object.fromEntries(['pt-default', 'paper', 'dracula'].map((id) => [id, Object.fromEntries(['hairline', 'faint', 'solid', 'none'].map((e) => [e, chromeTokens(resolvePreset(preset(id)), 1, preset(id).accent, e).vars]))])))
 
-// the see-through slider: paintChrome hands chromeTokens the ground alpha 1 - level / 100 (termLook.ts termGroundAlpha)
-const levels = {}
-for (const id of ['pt-default', 'paper', 'volt', 'dracula']) {
-  levels[id] = {}
-  for (const level of [0, 1, 10, 25, 30, 50, 69, 70]) levels[id][level] = chromeTokens(resolvePreset(preset(id)), 1 - level / 100, preset(id).accent).vars
-}
-write('chrome_levels.json', levels)
+// (chrome_levels.json, the see-through slider levels, went with the see-through window on 2026-11-28.)
 
 const t0 = resolvePreset(preset('pt-default'))
 const picksRows = []

@@ -22,7 +22,6 @@ pub const MAIN_PROFILE_FOLDER: &str = "PrismTerminal";
 use flare_theme::colour::{ColourFormat, canonical_stored};
 use flare_theme::fonts::{font_id_or_default, font_pct_from};
 use flare_theme::retired::live_theme_id;
-use flare_theme::see_through::see_through_level;
 use serde_json::Value;
 
 use crate::agent_prefs::{
@@ -66,8 +65,6 @@ pub enum Check {
     FontId,
     /// A number from 50 to 200, written as the step the font reader gives.
     FontPct,
-    /// A number, clamped to 0 to 70 and rounded by the see-through reader.
-    SeeThroughLevel,
     /// `minimal` and `ring` as they are; `off` and `full` become `ring`.
     IndicatorWord,
     /// `folder` and `ask` both become `folder`: Flare has no ask mode (2026-10-27).
@@ -128,11 +125,6 @@ pub const RULES: &[Rule] = &[
         from: "prism.term.fontPct",
         to: "flare.term.fontPct",
         check: Check::FontPct,
-    },
-    Rule {
-        from: "prism.term.seeThrough",
-        to: "flare.term.seeThrough",
-        check: Check::SeeThroughLevel,
     },
     Rule {
         from: "prism.term.agentIndicator",
@@ -329,7 +321,7 @@ pub const RULES: &[Rule] = &[
     },
 ];
 
-/// The two legacy keys. Read by `legacy.rs` only, folded into `seeThrough` and the Custom, never written.
+/// The two legacy keys. Dropped by `legacy.rs` (Flare's window is solid), never written.
 pub const LEGACY_KEYS: [&str; 2] = ["prism.term.acrylic", "prism.term.opacity"];
 
 /// Keys Prism Terminal removed, with the reason.
@@ -340,7 +332,13 @@ pub const RETIRED_KEYS: [(&str, &str); 3] = [
 ];
 
 /// Keys dropped on purpose, with the reason.
-pub const DROPPED_KEYS: [(&str, &str); 1] = [("prism.dictation.mic", "device ids are Chromium's")];
+pub const DROPPED_KEYS: [(&str, &str); 2] = [
+    ("prism.dictation.mic", "device ids are Chromium's"),
+    (
+        "prism.term.seeThrough",
+        "Flare's window is solid: the see-through window was removed (2026-11-28)",
+    ),
+];
 
 /// What one source key comes to.
 #[derive(Debug, PartialEq, Eq)]
@@ -422,10 +420,7 @@ fn candidate(check: &Check, raw: &str) -> Option<String> {
                 .contains(&n)
                 .then(|| font_pct_from(Some(raw)).to_string())
         }
-        Check::SeeThroughLevel => {
-            finite(raw)?;
-            Some(see_through_level(Some(raw)).to_string())
-        }
+
         Check::IndicatorWord => match raw {
             "minimal" => Some("minimal".to_string()),
             "ring" | "off" | "full" => Some("ring".to_string()),
@@ -471,7 +466,6 @@ fn read_back(to: &str, s: &PrefStore) -> Option<String> {
         "flare.term.custom" => look().custom().map(|c| serialize_custom(&c)),
         "flare.term.font" => Some(look().font_id().to_string()),
         "flare.term.fontPct" => Some(look().font_pct().to_string()),
-        "flare.term.seeThrough" => Some(look().see_through().to_string()),
         "flare.term.agentIndicator" => Some(
             match look().agent_indicator() {
                 AgentIndicator::Minimal => "minimal",
@@ -620,13 +614,13 @@ fn hotkey(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The table as Appendix D lists its source keys, in order.
-    const APPENDIX_D: [&str; 43] = [
+    /// The table as Appendix D lists its source keys, in order (less `prism.term.seeThrough`, dropped with
+    /// the see-through window on 2026-11-28).
+    const APPENDIX_D: [&str; 42] = [
         "prism.term.theme",
         "prism.term.custom",
         "prism.term.font",
         "prism.term.fontPct",
-        "prism.term.seeThrough",
         "prism.term.agentIndicator",
         "prism.term.agentColor",
         "prism.term.agentDoneColor",
@@ -689,7 +683,7 @@ mod tests {
     #[test]
     fn the_rule_table_is_appendix_d() {
         let froms: Vec<&str> = RULES.iter().map(|r| r.from).collect();
-        assert_eq!(RULES.len(), 43);
+        assert_eq!(RULES.len(), 42);
         assert_eq!(froms, APPENDIX_D.to_vec());
     }
 
@@ -712,11 +706,12 @@ mod tests {
 
     #[test]
     fn a_custom_theme_is_reserialised_through_the_modules_reader() {
-        let raw = r##"{"bg":"#121212","fg":"#dedacf","cursor":"#dedacf","acrylic":true,"opacity":0.9,"font":"comic","fontPct":150}"##;
+        let raw = r##"{"bg":"#121212","fg":"#dedacf","cursor":"#dedacf","acrylic":true,"opacity":0.9,"seeThrough":40,"font":"comic","fontPct":150}"##;
         let value = written("prism.term.custom", raw).expect("a valid custom theme writes");
         assert!(value.contains("#121212"));
         assert!(!value.contains("acrylic"));
         assert!(!value.contains("opacity"));
+        assert!(!value.contains("seeThrough"));
         assert!(!value.contains("comic"));
         assert!(!value.contains("fontPct"));
         assert!(skipped("prism.term.custom", "{nope"));
@@ -862,16 +857,15 @@ mod tests {
     }
 
     #[test]
-    fn see_through_is_clamped_and_junk_is_skipped() {
-        assert_eq!(
-            written("prism.term.seeThrough", "40").as_deref(),
-            Some("40")
-        );
-        assert_eq!(
-            written("prism.term.seeThrough", "99").as_deref(),
-            Some("70")
-        );
-        assert!(skipped("prism.term.seeThrough", "soup"));
+    fn the_see_through_level_maps_to_nothing() {
+        // The see-through window was removed on 2026-11-28: an imported level is dropped, whatever it says.
+        for raw in ["0", "40", "99", "soup"] {
+            assert!(
+                matches!(map_one("prism.term.seeThrough", raw), Mapped::Dropped(_)),
+                "{raw}"
+            );
+        }
+        assert!(RULES.iter().all(|r| r.to != "flare.term.seeThrough"));
     }
 
     #[test]

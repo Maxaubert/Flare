@@ -17,8 +17,8 @@ use flare_settings::actions::{Event, SaveFrom};
 use flare_settings::custom_theme::serialize_custom;
 use flare_settings::kv::PrefStore;
 use flare_settings::look::LookStore;
+use flare_settings::page::ThemeColours;
 use flare_settings::page::appearance;
-use flare_settings::page::{GlassSupport, ThemeColours};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use flare_settings::wall::{self, CardData};
 use flare_settings::window_colours::{ACCENT, BACKGROUND, SECONDARY, custom_window_colours};
@@ -74,7 +74,6 @@ fn fx_at(scale: f32) -> Fx {
         },
         clipboard: Rc::new(|_: &str| {}),
         shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
-        glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|_: &str| String::new()),
         theme_colours: Rc::new(|| ThemeColours {
             accent: "#fe8f34".into(),
@@ -223,7 +222,7 @@ impl Fx {
     /// The accent the window wears now (the chrome token the window's theme reads).
     fn applied_accent(&self) -> String {
         self.look
-            .look(false)
+            .look()
             .chrome
             .vars
             .get("--p-accent")
@@ -234,7 +233,7 @@ impl Fx {
     /// The accent-on text the window wears on an accent fill.
     fn applied_on_accent(&self) -> String {
         self.look
-            .look(false)
+            .look()
             .chrome
             .vars
             .get("--p-on-accent")
@@ -515,7 +514,8 @@ fn a_clean_pick_lands_a_dirty_pick_asks_discard_drops_cancel_keeps_at(f: &Fx) {
     assert!(!f.b().get_ask_open(), "no question when nothing changed");
     assert_eq!(f.look.theme_id(), first);
     // A dirty pick asks first.
-    f.b().invoke_row_slide("term-acrylic".into(), 20);
+    f.look
+        .set_agent_colour(flare_settings::look::AgentColourState::Working, "#102030");
     f.pump();
     f.b().invoke_wall_pick(second.as_str().into());
     f.pump();
@@ -526,14 +526,24 @@ fn a_clean_pick_lands_a_dirty_pick_asks_discard_drops_cancel_keeps_at(f: &Fx) {
     f.pump();
     assert!(!f.b().get_ask_open());
     assert_eq!(f.look.theme_id(), first, "Cancel keeps the theme");
-    assert_eq!(f.look.see_through(), 20, "Cancel keeps the see-through");
+    assert_eq!(
+        f.look
+            .agent_colour_choice(flare_settings::look::AgentColourState::Working),
+        "#102030",
+        "Cancel keeps the agent colour"
+    );
     // Discard drops the changes and lands the pick.
     f.b().invoke_wall_pick(second.as_str().into());
     f.pump();
     f.b().invoke_ask_answered(1);
     f.pump();
     assert_eq!(f.look.theme_id(), second, "Discard lands the pick");
-    assert_eq!(f.look.see_through(), 0, "and drops the change");
+    assert_eq!(
+        f.look
+            .agent_colour_choice(flare_settings::look::AgentColourState::Working),
+        "",
+        "and drops the change"
+    );
 }
 
 fn the_switch_question_says_where_its_three_buttons_are_at(f: &Fx) {
@@ -547,7 +557,8 @@ fn the_switch_question_says_where_its_three_buttons_are_at(f: &Fx) {
         .map(|c| c.id)
         .find(|id| *id != first && *id != f.look.theme_id())
         .expect("a third theme");
-    f.b().invoke_row_slide("term-acrylic".into(), 20);
+    f.look
+        .set_agent_colour(flare_settings::look::AgentColourState::Working, "#102030");
     f.pump();
     f.b().invoke_wall_pick(second.as_str().into());
     f.pump();
@@ -644,50 +655,6 @@ fn secondary_sits_above_accent_a_pick_lights_save_save_keeps_it_with_custom_anot
         "Custom brings it back"
     );
     assert_eq!(BACKGROUND.get(&f.prefs), None);
-}
-
-fn the_see_through_row_is_a_slider_starting_at_zero_stepping_by_one_and_stopping_at_70_at(f: &Fx) {
-    // e2e seeThrough.
-    f.page("appearance");
-    let row = f.row("term-acrylic").expect("the see-through row");
-    assert_eq!(row.num, 0, "starts at zero");
-    assert_eq!(row.num_max, 70, "the top is 70");
-    f.b().invoke_row_slide("term-acrylic".into(), 1);
-    f.pump();
-    assert_eq!(f.look.see_through(), 1, "one step");
-    f.b().invoke_row_slide("term-acrylic".into(), 100);
-    f.pump();
-    assert_eq!(f.look.see_through(), 70, "stops at 70");
-    f.b().invoke_row_slide("term-acrylic".into(), 30);
-    f.pump();
-    assert_eq!(
-        f.row("term-acrylic").expect("row").num_text.as_str(),
-        "30%",
-        "the value reads 30%"
-    );
-    assert!(f.save_lit(), "a moved slider lights Save");
-    // A pick asks, Cancel keeps the see-through.
-    let other = f.other_card();
-    f.b().invoke_wall_pick(other.as_str().into());
-    f.pump();
-    assert!(f.b().get_ask_open(), "a pick asks");
-    f.b().invoke_ask_answered(0);
-    f.pump();
-    assert_eq!(f.look.see_through(), 30, "Cancel keeps it");
-    // Save as Custom keeps the 45, and the theme picked after lands with 0.
-    f.b().invoke_row_slide("term-acrylic".into(), 45);
-    f.pump();
-    f.b().invoke_wall_pick(other.as_str().into());
-    f.pump();
-    f.b().invoke_ask_answered(2);
-    f.pump();
-    assert_eq!(
-        f.look.custom().and_then(|c| c.see_through),
-        Some(45),
-        "Save as Custom keeps 45"
-    );
-    assert_eq!(f.look.theme_id(), other, "the pick lands");
-    assert_eq!(f.look.see_through(), 0, "another theme is 0");
 }
 
 fn row_buttons_and_pressed_segments_ignore_the_accent_an_on_switch_wears_it_and_a_hex8_accent_gives_a_see_through_fill_at(
@@ -911,13 +878,6 @@ fn a_red_accent_lights_save_with_white_text_and_a_near_black_red_is_lifted() {
 fn secondary_sits_above_accent_a_pick_lights_save_save_keeps_it_with_custom_another_theme_forgets_it_custom_brings_it_back()
  {
     every_scale(secondary_sits_above_accent_a_pick_lights_save_save_keeps_it_with_custom_another_theme_forgets_it_custom_brings_it_back_at);
-}
-
-#[test]
-fn the_see_through_row_is_a_slider_starting_at_zero_stepping_by_one_and_stopping_at_70() {
-    every_scale(
-        the_see_through_row_is_a_slider_starting_at_zero_stepping_by_one_and_stopping_at_70_at,
-    );
 }
 
 #[test]

@@ -143,8 +143,6 @@ mod tests {
             accent: None,
             secondary: None,
             edges: WindowEdges::Hairline,
-            see_through: 0,
-            glass_possible: false,
         })
     }
 

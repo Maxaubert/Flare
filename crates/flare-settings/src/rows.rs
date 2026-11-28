@@ -4,7 +4,8 @@
 //! diagnosticsOptions,dictationOptions}.ts` and `components/settings/appOptions.ts`. The label,
 //! subtext and keywords of every row are copied from there (Appendix C of the M7 plan); the keys
 //! are Flare's own (`flare.*`, decision O10). The Explorer row reads "Add to the Explorer menu"
-//! (D5). Only the See-through row's subtext breaks the eight-word rule, on purpose (O8).
+//! (D5). Only the Flare hotkeys row's subtext breaks the eight-word rule, on purpose (rule 1262). The
+//! See-through row went with the see-through window on 2026-11-28.
 //!
 //! Every row carries the storage keys its module reads and writes. `ROW_ORDER` is the draw order
 //! of the 47 rows; within each section the order follows the tables.
@@ -53,7 +54,7 @@ pub struct RowDef {
 }
 
 /// The rows of the terminal list, in PT's order (the marks row is separate; see `MARK_OPTIONS`).
-pub const TERMINAL_OPTIONS: [RowDef; 15] = [
+pub const TERMINAL_OPTIONS: [RowDef; 14] = [
     RowDef {
         id: "term-shell",
         label: "Default shell",
@@ -194,19 +195,6 @@ pub const TERMINAL_OPTIONS: [RowDef; 15] = [
         keywords: "colors palette scheme dark light preset custom",
         keys: &["flare.term.theme", "flare.term.custom"],
         kind: RowKind::Theme,
-        source: Source::Terminal,
-        only_nvidia: false,
-    },
-    RowDef {
-        id: "term-acrylic",
-        label: "See through window",
-        sub: "How much of the desktop shows behind every surface.",
-        section: "theme",
-        page: "appearance",
-        icon: "glass",
-        keywords: "acrylic transparent glass blur mica see through",
-        keys: &["flare.term.seeThrough"],
-        kind: RowKind::Range,
         source: Source::Terminal,
         only_nvidia: false,
     },
@@ -786,13 +774,12 @@ pub const APP_OPTIONS: [RowDef; 24] = [
 ];
 
 /// The row ids in draw order (Appendix C, the `#` column), with Flare's own rows where their pages draw them.
-pub const ROW_ORDER: [&str; 54] = [
+pub const ROW_ORDER: [&str; 53] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
     "app-icon",
     "term-theme",
-    "term-acrylic",
     "window-background",
     "window-secondary",
     "window-accent",
@@ -905,21 +892,21 @@ mod tests {
     #[test]
     fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 54);
+        assert_eq!(ids.len(), 53);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 54);
+        assert_eq!(distinct.len(), 53);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
 
     #[test]
     fn each_core_option_has_unique_keys_under_flare_term() {
-        assert_eq!(TERMINAL_OPTIONS.len(), 15);
+        assert_eq!(TERMINAL_OPTIONS.len(), 14);
         let mut keys: Vec<&str> = Vec::new();
         for r in TERMINAL_OPTIONS.iter().chain(MARK_OPTIONS.iter()) {
             for k in r.keys {
@@ -998,7 +985,6 @@ mod tests {
                 "agent-failed-on=flare.term.agentFailedOn",
                 "agent-hooks=flare.term.agentHooks",
                 "term-theme=flare.term.theme+flare.term.custom",
-                "term-acrylic=flare.term.seeThrough",
                 "agent-color=flare.term.agentColor",
                 "agent-done-color=flare.term.agentDoneColor",
                 "agent-question-color=flare.term.agentQuestionColor",
@@ -1018,7 +1004,7 @@ mod tests {
                 "diag-mark=",
             ]
         );
-        assert_eq!(core.len(), 30);
+        assert_eq!(core.len(), 29);
 
         let app: Vec<String> = APP_OPTIONS.iter().map(store_line).collect();
         assert_eq!(
@@ -1106,9 +1092,9 @@ mod tests {
                 r.id,
                 copy_problem(r.sub)
             );
-            if r.id == "term-acrylic" || r.id == "agent-keys" {
-                // The two rows over the word limit, on purpose: See-through (O8, decision D5) and Flare hotkeys, whose
-                // words are Max's own (2026-11-14, rule 1262).
+            if r.id == "agent-keys" {
+                // The one row over the word limit, on purpose: Flare hotkeys, whose words are Max's own (2026-11-14,
+                // rule 1262).
                 assert!(sub_too_long(r.sub));
             } else {
                 assert!(
@@ -1202,10 +1188,12 @@ mod tests {
     }
 
     #[test]
-    fn row_finds_by_id_and_the_see_through_label_is_plain_copy() {
-        let acrylic = row("term-acrylic").expect("term-acrylic is a row");
-        assert_eq!(acrylic.label, "See through window");
-        assert_eq!(acrylic.kind, RowKind::Range);
+    fn row_finds_by_id_and_there_is_no_see_through_row() {
+        assert!(
+            row("term-acrylic").is_none(),
+            "the see-through window was removed"
+        );
+        assert!(all_rows().all(|r| !r.keys.contains(&"flare.term.seeThrough")));
         assert_eq!(
             row("explorer-verb").map(|r| r.kind),
             Some(RowKind::Registry)

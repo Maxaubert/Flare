@@ -103,10 +103,16 @@ pub enum Port {
 }
 
 /// The PT scenarios Flare retired as a deliberate difference, with the reason.
-const RETIRED: &[(&str, &str)] = &[(
-    "pathLinks",
-    "retired 2026-11-11: Flare guesses no file paths; `markerLinks` checks the file links by marker",
-)];
+const RETIRED: &[(&str, &str)] = &[
+    (
+        "pathLinks",
+        "retired 2026-11-11: Flare guesses no file paths; `markerLinks` checks the file links by marker",
+    ),
+    (
+        "seeThrough",
+        "retired 2026-11-28: the see-through window was removed (Liquid Glass on the Mac comes later)",
+    ),
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
@@ -453,21 +459,22 @@ mod tests {
     }
 
     #[test]
-    fn the_flare_ports_are_the_74_scenarios_of_all() {
+    fn the_flare_ports_are_the_73_scenarios_of_all() {
         // 70 before M8, plus the five dictation scenarios (Tasks 29 to 31), none waiting any more, less pathLinks,
-        // retired on 2026-11-11 (Flare guesses no file paths).
+        // retired on 2026-11-11 (Flare guesses no file paths), and seeThrough, retired on 2026-11-28 (the
+        // see-through window was removed).
         let rows = ledger(&scenarios_dir());
         let ported = rows
             .iter()
             .filter(|r| matches!(r.port, Port::Flare { .. }))
             .count();
-        assert_eq!(ported, 74);
+        assert_eq!(ported, 73);
         let retired: Vec<&str> = rows
             .iter()
             .filter(|r| matches!(r.port, Port::Retired(_)))
             .map(|r| r.name.as_str())
             .collect();
-        assert_eq!(retired, ["pathLinks"]);
+        assert_eq!(retired, ["pathLinks", "seeThrough"]);
     }
 
     #[test]

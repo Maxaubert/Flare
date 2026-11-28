@@ -259,7 +259,6 @@ mod tests {
             indicator_color: None,
             done_color: None,
             question_color: None,
-            see_through: None,
         });
     }
 

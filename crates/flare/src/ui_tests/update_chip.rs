@@ -608,7 +608,7 @@ mod scales {
         }
     }
 
-    fn look(id: &str, see_through: u8, glass_possible: bool) -> AppliedLook {
+    fn look(id: &str) -> AppliedLook {
         apply_look(&LookInput {
             theme_id: id,
             custom: None,
@@ -617,8 +617,6 @@ mod scales {
             accent: None,
             secondary: None,
             edges: DEFAULT_WINDOW_EDGES,
-            see_through,
-            glass_possible,
         })
     }
 
@@ -644,7 +642,7 @@ mod scales {
     #[test]
     fn the_look_on_the_dark_and_the_light_theme_keeps_contrast() {
         for id in ["pt-default", "paper"] {
-            let l = look(id, 0, false);
+            let l = look(id);
             let h = harness(1.0);
             paint(&h, &l);
             h.comp
@@ -676,8 +674,8 @@ mod scales {
     }
 
     #[test]
-    fn a_translucent_window_does_not_make_the_notice_translucent() {
-        let l = look("pt-default", 40, true);
+    fn the_notice_and_the_chip_are_opaque() {
+        let l = look("pt-default");
         for s in [1.0_f32, 1.5, 2.25] {
             let h = harness(s);
             paint(&h, &l);

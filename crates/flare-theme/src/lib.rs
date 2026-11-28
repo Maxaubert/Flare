@@ -22,7 +22,6 @@ pub mod presets_data;
 pub mod reports;
 pub mod resolve;
 pub mod retired;
-pub mod see_through;
 pub mod sidebar;
 
 #[cfg(test)]

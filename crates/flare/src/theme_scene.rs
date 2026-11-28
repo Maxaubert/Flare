@@ -12,7 +12,6 @@ use flare_theme::fonts::{base_font_px, font_families, font_id_or_default, font_p
 use flare_theme::look::{AppliedLook, LookInput, apply_look};
 use flare_theme::preset::{HOST_DEFAULT_THEME, find_preset, presets};
 use flare_theme::retired::live_theme_id;
-use flare_theme::see_through::SEE_THROUGH_TOP;
 
 use crate::config::LookOverrides;
 use crate::host::GridSource;
@@ -72,9 +71,8 @@ pub fn valid_theme_ids() -> Vec<&'static str> {
 }
 
 /// What the scene wears: pt-default and the defaults with the one-run overrides over them.
-/// `glass_possible` lets `--see-through` show (the picture then carries the ground's alpha).
 /// An id that names no theme is an error that lists the valid ones.
-pub fn scene_look(o: &LookOverrides, glass_possible: bool) -> Result<AppliedLook, String> {
+pub fn scene_look(o: &LookOverrides) -> Result<AppliedLook, String> {
     let id = o.theme.as_deref().unwrap_or(HOST_DEFAULT_THEME);
     if find_preset(live_theme_id(id)).is_none() {
         return Err(format!(
@@ -90,8 +88,6 @@ pub fn scene_look(o: &LookOverrides, glass_possible: bool) -> Result<AppliedLook
         accent: o.accent.as_deref(),
         secondary: o.secondary.as_deref(),
         edges: o.edges.unwrap_or(DEFAULT_WINDOW_EDGES),
-        see_through: o.see_through.unwrap_or(0).min(SEE_THROUGH_TOP),
-        glass_possible,
     }))
 }
 
@@ -114,8 +110,7 @@ mod tests {
 
     /// The whole bytes of `docs/theme-sample.txt`.
     const SAMPLE_FILE: &str = include_str!("../../../docs/theme-sample.txt");
-    /// A backdrop colour behind a see-through window.
-    const BACKDROP: [u8; 3] = [0x33, 0x66, 0x99];
+
     /// The line (zero based) and first column of the sixteen blocks in the sample.
     const BLOCK_ROW: usize = 5;
     const BLOCK_COL: usize = 9;
@@ -227,18 +222,6 @@ mod tests {
         [c[0], c[1], c[2], 255]
     }
 
-    /// `over` (straight alpha) composited on an opaque `under`, rounded.
-    fn composite(over: [u8; 4], under: [u8; 3]) -> [u8; 4] {
-        let a = f64::from(over[3]) / 255.0;
-        let ch = |o: u8, u: u8| (f64::from(o) * a + f64::from(u) * (1.0 - a)).round() as u8;
-        [
-            ch(over[0], under[0]),
-            ch(over[1], under[1]),
-            ch(over[2], under[2]),
-            255,
-        ]
-    }
-
     /// Every colour the sample shows, against what the theme resolved to.
     fn assert_scene(s: &Scene, look: &AppliedLook, tol: u8, label: &str) -> Geometry {
         let frame = s.render();
@@ -296,7 +279,7 @@ mod tests {
         let Some((s, args)) = scene(theme, scale, painter, &[]) else {
             return;
         };
-        let look = scene_look(&args.look, true).expect("the theme is valid");
+        let look = scene_look(&args.look).expect("the theme is valid");
         let label = format!("{theme} at {scale} on {}", painter.flag());
         assert_scene(&s, &look, painter.tolerance(), &label);
     }
@@ -328,16 +311,13 @@ mod tests {
         let Some((s, args)) = scene("pt-default", 1.5, Painter::Cpu, &[]) else {
             return;
         };
-        let before_look = scene_look(&args.look, true).expect("pt-default");
+        let before_look = scene_look(&args.look).expect("pt-default");
         let before = assert_scene(&s, &before_look, 0, "pt-default");
         let before_frame = s.render();
-        let nord = scene_look(
-            &LookOverrides {
-                theme: Some("nord".into()),
-                ..LookOverrides::default()
-            },
-            true,
-        )
+        let nord = scene_look(&LookOverrides {
+            theme: Some("nord".into()),
+            ..LookOverrides::default()
+        })
         .expect("nord");
         s.wear(&nord);
         let after = assert_scene(&s, &nord, 0, "nord after the switch");
@@ -352,52 +332,6 @@ mod tests {
             rgba_of(&after_frame, s.phys.0, red),
             "the red block changed colour"
         );
-    }
-
-    #[test]
-    fn glass_paints_the_ground_once() {
-        for painter in [Painter::Cpu, Painter::Gpu] {
-            let Some((s, args)) = scene("pt-default", 1.0, painter, &["--see-through", "40"])
-            else {
-                continue;
-            };
-            let look = scene_look(&args.look, true).expect("pt-default");
-            assert!(look.glass, "level 40 is glass");
-            let frame = s.render();
-            let w = s.phys.0;
-            let g = geometry_of(&s);
-            // The blank cell is the ground at its alpha: one coat, not two.
-            let ground = hex(&look.chrome.vars["--p-bg"]);
-            let want = composite(ground, BACKDROP);
-            let pixel = rgba_of(&frame, w, g.blank);
-            // The frame is straight alpha, rounded down from premultiplied: two levels of slack on
-            // the colour. The alpha is the proof of one coat (two coats would be 0.84, not 0.6).
-            assert!(
-                pixel[3].abs_diff(ground[3]) <= 1,
-                "{}: blank cell alpha {} is not the ground alpha {}",
-                painter.flag(),
-                pixel[3],
-                ground[3]
-            );
-            let got = composite(pixel, BACKDROP);
-            assert!(
-                near(got, want, 2),
-                "{}: blank cell over the backdrop {got:?}, want {want:?}",
-                painter.flag()
-            );
-            // A block stays opaque.
-            let block = rgba_of(&frame, w, g.blocks[1]);
-            assert_eq!(block[3], 255, "{}: the red block is opaque", painter.flag());
-            assert!(
-                near(
-                    block,
-                    opaque(look.term.ansi_at(1).expect("red")),
-                    painter.tolerance()
-                ),
-                "{}: red block {block:?}",
-                painter.flag()
-            );
-        }
     }
 
     #[test]
@@ -434,13 +368,10 @@ mod tests {
 
     #[test]
     fn an_unknown_theme_names_the_valid_ids() {
-        let err = scene_look(
-            &LookOverrides {
-                theme: Some("nope".into()),
-                ..LookOverrides::default()
-            },
-            false,
-        )
+        let err = scene_look(&LookOverrides {
+            theme: Some("nope".into()),
+            ..LookOverrides::default()
+        })
         .expect_err("nope is not a theme");
         assert!(err.contains("nope"));
         for id in valid_theme_ids() {
@@ -453,13 +384,10 @@ mod tests {
     #[test]
     fn a_retired_id_is_worn_as_its_replacement() {
         let (old, new) = flare_theme::presets_data::RETIRED[0];
-        let look = scene_look(
-            &LookOverrides {
-                theme: Some(old.into()),
-                ..LookOverrides::default()
-            },
-            false,
-        )
+        let look = scene_look(&LookOverrides {
+            theme: Some(old.into()),
+            ..LookOverrides::default()
+        })
         .expect("a retired id still wears");
         assert_eq!(look.theme_id, new);
     }

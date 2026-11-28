@@ -19,7 +19,7 @@ use flare_settings::find::{IndexEnv, settings_index};
 use flare_settings::help_prefs::help_enabled;
 use flare_settings::kv::PrefStore;
 use flare_settings::look::LookStore;
-use flare_settings::page::{GlassSupport, ThemeColours};
+use flare_settings::page::ThemeColours;
 use flare_settings::pages::PAGES;
 use flare_settings::rows::{ROW_ORDER, row};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
@@ -79,7 +79,6 @@ fn fx() -> Fx {
         open_path: Rc::new(|_: &Path| {}),
         clipboard: Rc::new(|_: &str| {}),
         shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
-        glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|_: &str| String::new()),
         theme_colours: Rc::new(|| ThemeColours {
             accent: "#fe8f34".into(),
@@ -229,8 +228,8 @@ fn the_index_has_31_rows_on_this_pc() {
     let device = usize::from(flare_settings::page::agents::device_section_drawn());
     assert_eq!(
         n,
-        49 + device,
-        "the 39 rows of the other pages (no Mark colours with Ring, Computer sharing, Add a machine, the app icon and the two caret rows among them) and the 9 dictation rows"
+        48 + device,
+        "the 38 rows of the other pages (no Mark colours with Ring, Computer sharing, Add a machine, the app icon and the two caret rows among them; no See-through row since 2026-11-28) and the 9 dictation rows"
     );
     assert!(n >= 30, "PT's own gate says at least 30");
 }

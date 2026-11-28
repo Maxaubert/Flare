@@ -39,8 +39,7 @@ use flare_win::window_state::WindowStateStore;
 use slint::{ComponentHandle, Global};
 
 use crate::appctl::{AppCtl, Deps, Post, TermPorts, UiMsg};
-use crate::backend::BackendOutcome;
-use crate::config::{LookOverrides, RendererChoice};
+use crate::config::LookOverrides;
 use crate::font_ctl::FontCtl;
 use crate::host::{GridHost, GridPainter};
 use crate::look_ctl::LookCtl;
@@ -133,17 +132,11 @@ impl Fx {
         grid.borrow_mut()
             .resize((648.0 * scale) as u32, (264.0 * scale) as u32, scale);
         let look_due = Arc::new(AtomicBool::new(false));
-        let outcome = BackendOutcome {
-            effective: RendererChoice::Software,
-            fallback_reason: None,
-            glass_possible: false,
-        };
         let look = LookCtl::new(
             &h.comp,
             LookStore::new(prefs.clone()),
             grid.clone(),
             Rc::new(RefCell::new(None)),
-            &outcome,
             LookOverrides::default(),
         )
         .with_scheduler({

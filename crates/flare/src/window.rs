@@ -53,6 +53,7 @@ use crate::backend::BackendOutcome;
 use crate::config::{Args, RendererChoice};
 use crate::e2e;
 use crate::font_ctl::FontCtl;
+use crate::frame_ctl::{SlintWake, WindowFrame};
 use crate::host::{GridHost, GridPainter};
 use crate::ime::{CaretFollower, ime_area};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
@@ -60,13 +61,11 @@ use crate::live::{
     LiveSource, ScrollPhase, WheelAccum, WheelGate, WheelStep, cell_at, wheel_is_terminals,
 };
 use crate::look_ctl::LookCtl;
-use crate::material_ctl::{SlintWake, WindowMaterial};
 use crate::memory::process_memory;
 use crate::startup::{Profile, RaiseStep, raise_plan};
 use crate::tab_host::TabHost;
 use crate::{AppWindow, HelpBridge};
 use flare_term::mac_keys::PtyKey;
-use flare_win::os_build::os_version;
 
 /// How long the state files wait before they are written (Prism Terminal's debounce).
 const SAVE_DELAY: Duration = Duration::from_millis(400);
@@ -396,8 +395,8 @@ fn present_geom(app: &AppWindow) -> crate::pulse_watch::PresentGeom {
     }
 }
 
-/// The window's native handle for the window-level calls (park, material, chrome): the HWND on
-/// Windows, the content `NSView` on macOS (`flare_win::glass`, `chrome` and `window_park` take
+/// The window's native handle for the window-level calls (park, frame, chrome): the HWND on
+/// Windows, the content `NSView` on macOS (`flare_win::ns_window`, `chrome` and `window_park` take
 /// that). Everything that needs a real HWND keeps `hwnd_of`.
 pub(crate) fn native_view_of(app: &AppWindow) -> Option<isize> {
     app.window()
@@ -562,16 +561,16 @@ fn park_e2e_window_when_ready(app: &AppWindow) -> Rc<slint::Timer> {
     timer
 }
 
-/// The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window.
+/// The window frame (Task 25): the edge and the dark or light frame. It needs the handle of the window.
 /// Returns false when there is no handle yet (nothing is attached then).
-fn attach_window_material(
+fn attach_window_frame(
     app: &AppWindow,
-    material: &Rc<RefCell<Option<WindowMaterial>>>,
+    frame: &Rc<RefCell<Option<WindowFrame>>>,
     look: &Rc<RefCell<LookCtl>>,
     e2e: bool,
 ) -> bool {
     let now = Instant::now();
-    let Some(mut m) = WindowMaterial::new(app, os_version(), e2e) else {
+    let Some(mut m) = WindowFrame::new(app, e2e) else {
         return false;
     };
     // The handle exists: the frameless window gets its resize edges and corners (winit gives it no
@@ -584,32 +583,31 @@ fn attach_window_material(
             log::warn!("the traffic lights could not be placed in the top row");
         }
     }
-    // No polling: the material arms a one-shot wake only while the border is due.
-    m.set_wake(Box::new(SlintWake::new(Rc::downgrade(material))), now);
+    // No polling: the frame arms a one-shot wake only while the border is due.
+    m.set_wake(Box::new(SlintWake::new(Rc::downgrade(frame))), now);
     m.on_window_state(
         app.window().is_maximized(),
         app.window().is_fullscreen(),
         now,
     );
-    // A saved see-through level becomes glass only now: the backdrop first, then the ground.
     if let Ok(mut l) = look.try_borrow_mut() {
-        l.attach_material(m);
+        l.attach_frame(m);
     }
     true
 }
 
-/// Attaches the window material as soon as the window has a handle (looking as often as the
+/// Attaches the window frame as soon as the window has a handle (looking as often as the
 /// `--e2e` park timer does). Keep the returned timer alive for the run.
-fn attach_material_when_ready(
+fn attach_frame_when_ready(
     app: &AppWindow,
-    material: &Rc<RefCell<Option<WindowMaterial>>>,
+    frame: &Rc<RefCell<Option<WindowFrame>>>,
     look: &Rc<RefCell<LookCtl>>,
     e2e: bool,
 ) -> Rc<slint::Timer> {
     let timer = Rc::new(slint::Timer::default());
     let weak_timer = Rc::downgrade(&timer);
     let weak = app.as_weak();
-    let (material, look) = (material.clone(), look.clone());
+    let (frame, look) = (frame.clone(), look.clone());
     let mut polls = 0u32;
     timer.start(
         slint::TimerMode::Repeated,
@@ -621,10 +619,10 @@ fn attach_material_when_ready(
             match decision {
                 HandlePoll::Wait => return,
                 HandlePoll::Found(_) => {
-                    attach_window_material(&app, &material, &look, e2e);
+                    attach_window_frame(&app, &frame, &look, e2e);
                 }
                 HandlePoll::GiveUp => {
-                    log::warn!("the window never got a handle, so it has no glass");
+                    log::warn!("the window never got a handle, so its edge follows no theme");
                 }
             }
             if let Some(t) = weak_timer.upgrade() {
@@ -739,7 +737,7 @@ fn observe(window: &slint::Window) -> Observed {
 }
 
 /// The Settings controller's ports (Task 41), made real in Task 44: the diagnostics control on the
-/// profile folder, the glass support of this window and the copyright line of the licence.
+/// profile folder and the copyright line of the licence.
 #[allow(clippy::too_many_arguments)] // one call site; each port is a different thing
 fn settings_deps(
     app: &AppWindow,
@@ -748,7 +746,6 @@ fn settings_deps(
     profile: PathBuf,
     open_url: Rc<dyn Fn(&str)>,
     e2e_on: bool,
-    glass: flare_settings::page::GlassSupport,
     verb: Arc<dyn flare_settings::verb::ExplorerVerb>,
 ) -> crate::settings_ctl::SettingsDeps {
     let look = LookStore::new(prefs.clone());
@@ -815,7 +812,6 @@ fn settings_deps(
                 .map(|d| (d.id.clone(), d.name.clone()))
                 .collect()
         }),
-        glass: Rc::new(move || glass),
         face_of: Rc::new(|id: &str| {
             flare_theme::fonts::font_families(id)
                 .into_iter()
@@ -824,7 +820,7 @@ fn settings_deps(
         }),
         theme_colours: {
             let prefs = prefs.clone();
-            Rc::new(move || flare_settings::page::appearance::theme_colours(&look, &prefs, false))
+            Rc::new(move || flare_settings::page::appearance::theme_colours(&look, &prefs))
         },
         agent_colours: {
             let prefs = prefs.clone();
@@ -1685,7 +1681,6 @@ fn run_window_with(
         // The Settings controller (Task 41). Task 44 swaps the stand-ins (the diagnostics control,
         // the shell list) for the real ones.
         {
-            let glass = crate::startup::glass_support(effective, flare_win::os_build::os_version());
             let sdeps = settings_deps(
                 &app,
                 &prefs,
@@ -1693,7 +1688,6 @@ fn run_window_with(
                 inst.profile.dir.clone(),
                 backends.open_url(),
                 e2e_on,
-                glass,
                 Arc::new(flare_win::verb_switch::RegistryVerb::new(switch)),
             );
             let settings = crate::settings_ctl::SettingsCtl::new(&app, sdeps);
@@ -1916,7 +1910,7 @@ fn run_window_with(
             CloseDecision::Close => CloseRequestResponse::HideWindow,
         })
     });
-    let material: Rc<RefCell<Option<WindowMaterial>>> = Rc::new(RefCell::new(None));
+    let window_frame: Rc<RefCell<Option<WindowFrame>>> = Rc::new(RefCell::new(None));
     let key_path: Option<Rc<KeyPath>> = ctl.as_ref().map(|rc| {
         install_window_filter(
             &app,
@@ -1925,7 +1919,7 @@ fn run_window_with(
                 front: front.clone(),
                 host: host.clone(),
                 initial: initial.clone(),
-                material: material.clone(),
+                window_frame: window_frame.clone(),
                 caret: caret.clone(),
                 e2e: parked,
                 background_parked: background_parked.clone(),
@@ -2003,7 +1997,7 @@ fn run_window_with(
     }
 
     // The look (Task 26): the first frame wears the saved theme, opaque (no flash of the default), because
-    // the controller applies BEFORE the show. The window material needs a handle, so it joins after.
+    // the controller applies BEFORE the show. The window frame needs a handle, so it joins after.
     let look_prefs = stores
         .as_ref()
         .map_or_else(PrefStore::memory, |(_, _, p, _, _)| p.clone());
@@ -2012,8 +2006,7 @@ fn run_window_with(
             &app,
             LookStore::new(look_prefs),
             host.clone(),
-            material.clone(),
-            &outcome,
+            window_frame.clone(),
             args.look.clone(),
         );
         if sample {
@@ -2156,13 +2149,13 @@ fn run_window_with(
     if !sample {
         app.window().with_winit_window(|w| w.set_ime_allowed(true));
     }
-    // The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window,
+    // The window frame (Task 25): the edge and the dark or light frame. It needs the handle of the window,
     // so it is made after the show; the look controller (Task 26) drives it from the settings.
     // The handle can be missing right after the show (the winit backend makes the native window
-    // once the event loop runs, as under `--e2e`): a short timer then attaches the material the
-    // moment the handle exists, or the window would stay solid for the whole run.
-    let material_timer = (!attach_window_material(&app, &material, &look, args.e2e))
-        .then(|| attach_material_when_ready(&app, &material, &look, args.e2e));
+    // once the event loop runs, as under `--e2e`): a short timer then attaches the frame the
+    // moment the handle exists, or the edge would never follow the theme.
+    let window_frame_timer = (!attach_window_frame(&app, &window_frame, &look, args.e2e))
+        .then(|| attach_frame_when_ready(&app, &window_frame, &look, args.e2e));
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
         app.get_grid_phys_width().max(0) as u32,
@@ -2238,7 +2231,7 @@ fn run_window_with(
     drop(beat_timer);
     drop(park_timer);
     drop(handle_timer);
-    drop(material_timer);
+    drop(window_frame_timer);
     drop(instance); // the lock is released last
     result
 }
@@ -2294,7 +2287,7 @@ struct FilterState {
     host: Rc<RefCell<GridHost>>,
     initial: Option<InitialWindow>,
     /// Filled after the show, when the window has its handle.
-    material: Rc<RefCell<Option<WindowMaterial>>>,
+    window_frame: Rc<RefCell<Option<WindowFrame>>>,
     /// The IME caret hold (Task 24b): a typed key opens its window.
     caret: Rc<RefCell<CaretFollower>>,
     /// `--e2e` or `--start-hidden`: the saved position is never applied (the window stays parked).
@@ -2866,7 +2859,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         front,
         host,
         initial,
-        material,
+        window_frame,
         caret,
         e2e,
         background_parked,
@@ -3109,10 +3102,10 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 // The software window reads 1.0 until its first resize at the monitor's scale (audit V6).
                 crate::e2e_hook::set_hello_scale(window.scale_factor());
                 let (maximised, fullscreen) = (window.is_maximized(), window.is_fullscreen());
-                // The look controller keeps the UI and the material in step (D7); without one
-                // the material alone follows.
+                // The look controller keeps the UI and the frame in step; without one
+                // the frame alone follows.
                 if !LookCtl::with_current(|l| l.window_state(maximised, fullscreen, Instant::now()))
-                    && let Ok(mut m) = material.try_borrow_mut()
+                    && let Ok(mut m) = window_frame.try_borrow_mut()
                     && let Some(m) = m.as_mut()
                 {
                     m.on_window_state(maximised, fullscreen, Instant::now());

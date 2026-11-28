@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use flare_render::color::{Palette, Rgba};
+use flare_render::color::Palette;
 use flare_render::cpu::{RgbaImage, paint_scene};
 use flare_render::decor::{Decor, build_scene_decor, hair_px};
 use flare_render::glyph::GlyphSource;
@@ -10,7 +10,7 @@ use flare_render::gpu::{GpuPainter, read_texture};
 use flare_render::grid::{CaretShape, Grid};
 use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dims};
 use flare_render::sample::sample_grid;
-use flare_render::scene::{GroundPaint, Scene};
+use flare_render::scene::Scene;
 use flare_render::stats::{FrameStats, FrameTrace, TracePhase};
 use slint::{Image, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer};
 
@@ -84,8 +84,6 @@ pub struct GridHost {
     /// The cols x rows last given to the source (None = not yet told).
     dims: Option<(usize, usize)>,
     palette: Palette,
-    /// Who paints the ground behind the cells: the grid, or the UI (glass).
-    ground: GroundPaint,
     glyphs: Box<dyn GlyphSource>,
     painter: GridPainter,
     /// The painter asked for (at start or by the overlay switch), restored when a GPU attaches.
@@ -125,7 +123,6 @@ impl GridHost {
             source: Box::new(SampleSource::new()),
             dims: None,
             palette: Palette::pt_default(),
-            ground: GroundPaint::InGrid,
             glyphs,
             painter,
             wanted: painter,
@@ -232,14 +229,14 @@ impl GridHost {
         self.painter = GridPainter::Cpu;
     }
 
-    /// Sets the palette and who paints the ground; marks dirty only when something differs.
+    /// Sets the palette (the grid paints its own ground: the window is solid); marks dirty only when it
+    /// differs.
     #[allow(dead_code)] // used by the look controller (Task 23)
-    pub fn set_look(&mut self, palette: Palette, ground: GroundPaint) {
-        if self.palette == palette && self.ground == ground {
+    pub fn set_look(&mut self, palette: Palette) {
+        if self.palette == palette {
             return;
         }
         self.palette = palette;
-        self.ground = ground;
         self.dirty = true;
     }
 
@@ -395,7 +392,7 @@ impl GridHost {
             self.grid_buf.cursor.visible = false;
         }
         let decor = self.source.decor();
-        let mut scene = FrameTrace::global().time(TracePhase::Scene, || {
+        let scene = FrameTrace::global().time(TracePhase::Scene, || {
             build_scene_decor(
                 &mut self.grid_buf,
                 &self.palette,
@@ -406,11 +403,6 @@ impl GridHost {
                 hair_px(self.scale),
             )
         });
-        // By UI: the grid clears to transparent so the glass shows through (build_scene_ground's
-        // rule for the clear colour; the cell rects follow the same default-background test).
-        if self.ground == GroundPaint::ByUi {
-            scene.clear = Rgba::default();
-        }
         Some(scene)
     }
 
@@ -423,8 +415,8 @@ impl GridHost {
         if self.painter == GridPainter::Gpu
             && let Some(gpu) = self.gpu.as_mut()
         {
-            // Slint reads an imported texture as straight alpha (docs/material.md E3): under glass
-            // the grid is un-premultiplied first, or text would be darker at its edges.
+            // Slint reads an imported texture as straight alpha (the material spike's E3, 2026-10-17): a
+            // part-covered pixel is un-premultiplied first, or text would be darker at its edges.
             let texture = gpu.paint_straight(&scene, self.glyphs.as_mut());
             match Image::try_from(texture) {
                 Ok(img) => {
@@ -478,10 +470,10 @@ impl GridHost {
     }
 }
 
-/// The grid image Slint shows. A picture with every pixel opaque (the software renderer's, which has no
-/// glass) goes over as RGB: Slint's software renderer copies an RGB image and blends an RGBA one pixel by
-/// pixel, which is the cost of repainting a 2.25x window on every frame of the sidebar slide (audit V4).
-/// A picture with any see-through pixel stays premultiplied RGBA.
+/// The grid image Slint shows. A picture with every pixel opaque (the solid window's) goes over as RGB:
+/// Slint's software renderer copies an RGB image and blends an RGBA one pixel by pixel, which is the cost
+/// of repainting a 2.25x window on every frame of the sidebar slide (audit V4). A picture with any
+/// see-through pixel stays premultiplied RGBA.
 fn slint_image(img: &RgbaImage) -> Image {
     let (w, h) = (img.width, img.height);
     if img.data.as_chunks::<4>().0.iter().all(|p| p[3] == 255) {
@@ -1239,16 +1231,16 @@ mod tests {
     }
 
     #[test]
-    fn render_rgba_in_by_ui_is_clear_where_the_ground_is() {
+    fn the_grid_paints_its_own_opaque_ground() {
         let mut h = host(GridPainter::Cpu);
-        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        h.set_look(Palette::pt_default());
         h.resize(200, 100, 1.0);
         let img = h.render_rgba().expect("image");
-        // The sample grid has its cursor and text; the far corner is a blank cell.
-        assert_eq!(img.pixel(199, 99)[3], 0);
+        // The sample grid has its cursor and text; the far corner is a blank cell on the ground.
+        assert_eq!(img.pixel(199, 99)[3], 255);
         assert!(
-            img.data.chunks(4).any(|px| px[3] == 255),
-            "a coloured block cell is opaque"
+            img.data.chunks(4).all(|px| px[3] == 255),
+            "every pixel is opaque"
         );
     }
 
@@ -1298,17 +1290,15 @@ mod tests {
         let mut h = host(GridPainter::Cpu);
         h.resize(200, 100, 1.0);
         h.render();
-        h.set_look(Palette::pt_default(), GroundPaint::InGrid);
-        assert!(!h.is_dirty());
-        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
-        assert!(h.is_dirty());
-        h.render();
-        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        h.set_look(Palette::pt_default());
         assert!(!h.is_dirty());
         let mut p = Palette::pt_default();
         p.fg = flare_render::color::Rgba::rgb(1, 1, 1);
-        h.set_look(p, GroundPaint::ByUi);
+        h.set_look(p.clone());
         assert!(h.is_dirty());
+        h.render();
+        h.set_look(p);
+        assert!(!h.is_dirty());
     }
 
     slint::slint! {

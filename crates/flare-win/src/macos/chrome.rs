@@ -129,7 +129,7 @@ pub fn install(view: isize) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
-    let Some(window) = crate::glass::window_of(view, mtm) else {
+    let Some(window) = crate::ns_window::window_of(view, mtm) else {
         return false;
     };
     install_on(&window)

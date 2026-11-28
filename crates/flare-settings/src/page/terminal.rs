@@ -262,7 +262,7 @@ mod tests {
     use crate::look::LookStore;
     use crate::new_tab::set_new_tab_folder;
     use crate::page::all_row_ids;
-    use crate::page::{DiagInfo, GlassSupport, PageEnv, ThemeColours};
+    use crate::page::{DiagInfo, PageEnv, ThemeColours};
     use crate::term_prefs::{save_shell_id, set_agent_keys};
 
     fn face_of_test(id: &str) -> String {
@@ -282,7 +282,6 @@ mod tests {
             home: String::new(),
             version: "0.0.0".to_string(),
             copyright: String::new(),
-            glass: GlassSupport::Ok,
             diag: DiagInfo {
                 verbose: false,
                 dir: String::new(),

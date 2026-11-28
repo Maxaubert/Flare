@@ -42,7 +42,6 @@ pub fn theme_agent_colours(
     // The accent as a LINE, never see-through: the indicator that follows the theme is opaque.
     let vars = chrome_tokens(
         &theme,
-        1.0,
         preset_accent,
         WindowEdges::Hairline,
         window_accent,
@@ -157,7 +156,6 @@ mod tests {
         let p = preset(id);
         chrome_tokens(
             &resolve_preset(p),
-            1.0,
             p.accent,
             WindowEdges::Hairline,
             None,
@@ -180,7 +178,6 @@ mod tests {
             let p = preset(id);
             let tokens = chrome_tokens(
                 &resolve_preset(p),
-                1.0,
                 p.accent,
                 WindowEdges::Hairline,
                 None,

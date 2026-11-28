@@ -11,7 +11,7 @@
 //! - `sidebar`: the pinned sidebar collapsing and expanding (Ctrl+Shift+B): the per-frame series of the slot
 //!   width and the panel x (frames, longest gap, the curve against the declared ease) and snapshots at fixed
 //!   offsets into the slide.
-//! - `general`: the tab strip, the tab menu, Settings, the command help, a theme switch and see-through; and
+//! - `general`: the tab strip, the tab menu, Settings, the command help and a theme switch; and
 //!   `dictation`: the pill while a clip is heard.
 //!
 //! Output: `<out>/<surface>/<pct>-<renderer>/` holds `frames/NN-*.png`, `numbers.json` and (made by
@@ -899,27 +899,7 @@ fn general_cell(
         format!("{label}: the window stayed parked ({problems:?})"),
     );
     app.close();
-
-    // See-through: a second launch with the level stored.
-    let w2 = ctx.new_world();
-    seed(&w2.profile, &[("flare.term.seeThrough", "40")])?;
-    // Prism Terminal's see-through frame is taken in its three-tab session, so this one has the same
-    // three tabs (alpha, beta, gamma), not one.
-    let g2 = gamma(&w2);
-    let mut app = start(
-        ctx,
-        &w2,
-        renderer,
-        Some(dpi),
-        vec![w2.alpha.clone(), w2.beta.clone(), g2],
-        Vec::new(),
-    )?;
-    let ok = ready(ctx, &mut app, 3);
-    ctx.ok(ok, format!("{label}: see-through 40 launched"));
-    if ok {
-        take(ctx, &mut app, &mut n, "see-through-40", &mut notes);
-    }
-    app.close();
+    // (Prism Terminal's see-through frame has no twin: the window is solid since 2026-11-28.)
 
     save_numbers(
         &dir,

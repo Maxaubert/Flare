@@ -4,7 +4,7 @@
 //! and nothing here sets a property. Nothing runs without --e2e, because `e2e_glue::install` is the
 //! only caller.
 //!
-//! Under --e2e the DWM border is never applied (`material_ctl`: `edge_enabled = !e2e`), so no call is
+//! Under --e2e the DWM border is never applied (`frame_ctl`: `edge_enabled = !e2e`), so no call is
 //! recorded for the harness to read. `window.edge` answers the border the controller WOULD set for
 //! the ground and edge word it is given: the same function the controller calls, so a wrong edge
 //! table shows here even though the call itself is off.

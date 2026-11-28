@@ -959,7 +959,7 @@ impl Scene {
         };
         // The look the scene wears: pt-default, or what the one-run overrides name. A bad theme
         // id stops here, before anything is made.
-        let look = scene_look(&args.look, true)?;
+        let look = scene_look(&args.look)?;
         let (families, base_px) = scene_font(&args.look);
         let families: Vec<&str> = families.iter().map(String::as_str).collect();
         let mut host = host;

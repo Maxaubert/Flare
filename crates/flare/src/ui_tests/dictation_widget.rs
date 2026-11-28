@@ -130,7 +130,7 @@ fn the_card_is_480_wide_and_the_heights_follow_the_state() {
                 1,
                 "card foot",
             );
-            // Transparent outside the card (the glass surface keeps its alpha).
+            // Transparent outside the card (the alpha surface keeps its alpha).
             assert_eq!(f.px(0, 0)[3], 0, "scale {s}: the corner is not clear");
         }
     }

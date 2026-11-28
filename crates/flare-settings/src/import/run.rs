@@ -562,21 +562,32 @@ mod tests {
     }
 
     #[test]
-    fn legacy_opacity_is_folded_and_the_legacy_keys_are_never_written() {
+    fn imported_transparency_maps_to_nothing_and_the_window_stays_solid() {
+        // The see-through window was removed on 2026-11-28: the legacy keys and the level write nothing.
         let a = tempfile::tempdir().unwrap();
         let t = tempfile::tempdir().unwrap();
         profile(
             a.path(),
             "PrismTerminalStable",
-            &[("prism.term.acrylic", "1"), ("prism.term.opacity", "60")],
+            &[
+                ("prism.term.theme", "dracula"),
+                ("prism.term.acrylic", "1"),
+                ("prism.term.opacity", "60"),
+                ("prism.term.seeThrough", "40"),
+            ],
         );
         let prefs = PrefStore::memory();
         run_once(&prefs, &paths(a.path(), t.path()), CEILING);
-        assert!(prefs.get("flare.term.seeThrough").is_some());
+        assert_eq!(prefs.get("flare.term.theme").as_deref(), Some("dracula"));
         let dump = prefs.get(DONE_KEY).unwrap();
         assert!(!dump.contains("opacity") && !dump.contains("acrylic"));
-        for key in ["flare.term.opacity", "flare.term.acrylic"] {
-            assert_eq!(prefs.get(key), None);
+        for key in [
+            "flare.term.opacity",
+            "flare.term.acrylic",
+            "flare.term.seeThrough",
+            "flare.window.background",
+        ] {
+            assert_eq!(prefs.get(key), None, "{key}");
         }
     }
 

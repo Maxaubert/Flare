@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use flare_settings::kv::PrefStore;
 use flare_settings::look::LookStore;
+use flare_settings::page::ThemeColours;
 use flare_settings::page::terminal::{HOTKEYS_BUTTON, HOTKEYS_TIP};
-use flare_settings::page::{GlassSupport, ThemeColours};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use flare_tabs::hotkeys::{APP, TABS, TYPING, hotkey_rows};
 use flare_tabs::keymap::{ChordId, KeyOs, MAC_ONLY, ORDER, chord, key_label_on};
@@ -63,7 +63,6 @@ fn fx_sized(scale: f32, w: u32, h: u32) -> Fx {
         clipboard: Rc::new(|_: &str| {}),
         shell_restart: Arc::new(flare_settings::app_icon::FakeShellRestart::new()),
         shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
-        glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|_: &str| String::new()),
         theme_colours: Rc::new(|| ThemeColours {
             accent: String::new(),
